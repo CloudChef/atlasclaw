@@ -50,6 +50,47 @@ _skill_registry: Optional[SkillRegistry] = None
 _agent_runner: Optional[AgentRunner] = None
 
 
+def _check_and_prompt_for_providers_skills(workspace_path: str | Path) -> None:
+    """Check if providers and skills directories are empty and prompt user to download.
+
+    Args:
+        workspace_path: Path to the workspace directory.
+    """
+    workspace = Path(workspace_path)
+    atlasclaw_dir = workspace / ".atlasclaw"
+    providers_dir = atlasclaw_dir / "providers"
+    skills_dir = atlasclaw_dir / "skills"
+
+    def _is_empty_or_missing(dir_path: Path) -> bool:
+        """Check if directory is empty or doesn't exist."""
+        if not dir_path.exists():
+            return True
+        try:
+            return not any(dir_path.iterdir())
+        except (OSError, PermissionError):
+            return True
+
+    providers_empty = _is_empty_or_missing(providers_dir)
+    skills_empty = _is_empty_or_missing(skills_dir)
+
+    if providers_empty or skills_empty:
+        print("\n" + "=" * 70)
+        print("[AtlasClaw] NOTICE: Providers and/or Skills directories are empty")
+        print("=" * 70)
+
+        if providers_empty:
+            print(f"  - Providers directory is empty: {providers_dir}")
+        if skills_empty:
+            print(f"  - Skills directory is empty: {skills_dir}")
+
+        print("\nTo get started with providers and skills, please run:")
+        print("\n  git clone https://github.com/CloudChef/atlasclaw-providers.git")
+        print(f"  cp -r atlasclaw-providers/providers/* {providers_dir}/")
+        print(f"  cp -r atlasclaw-providers/skills/* {skills_dir}/")
+        print("\nOr manually download and extract to the directories above.")
+        print("=" * 70 + "\n")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler for startup and shutdown."""
@@ -66,7 +107,10 @@ async def lifespan(app: FastAPI):
     if not workspace_initializer.is_initialized():
         workspace_initializer.initialize()
         print(f"[AtlasClaw] Initialized workspace at: {workspace_path}")
-    
+
+    # Check if providers and skills are empty and prompt user
+    _check_and_prompt_for_providers_skills(workspace_path)
+
     # Initialize default user directory (for non-authenticated mode)
     default_user_initializer = UserWorkspaceInitializer(workspace_path, "default")
     if not default_user_initializer.is_initialized():
