@@ -45,6 +45,7 @@ class TestMainStartup:
     def test_startup_with_env_vars_succeeds(self, test_config_path):
         """验证有环境变量配置时启动成功"""
         import importlib
+        os.environ["DEEPSEEK_API_KEY"] = "test-key"
         
         # 重新加载模块
         import app.atlasclaw.main as main_module
@@ -55,6 +56,10 @@ class TestMainStartup:
             resp = client.get("/api/health")
             assert resp.status_code == 200
             assert resp.json()["status"] == "healthy"
+            skills_resp = client.get("/api/skills")
+            assert skills_resp.status_code == 200
+            skill_names = [s["name"] for s in skills_resp.json()["skills"]]
+            assert "jira-issue" in skill_names, "应该从 providers_root 加载外部 Jira skill"
 
 
 

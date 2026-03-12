@@ -1,5 +1,6 @@
 {
   "agents_dir": "./.atlasclaw-test",
+  "providers_root": "../../atlasclaw-providers/providers",
   "model": {
     "primary": "deepseek/deepseek-chat",
     "fallbacks": [],

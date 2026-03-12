@@ -91,13 +91,28 @@ def _check_and_prompt_for_providers_skills(workspace_path: str | Path) -> None:
         print("=" * 70 + "\n")
 
 
+def _resolve_source_root(config_root: Path, providers_root: Path, root: str) -> Path:
+    """Resolve webhook skill roots with providers_root-aware fallback."""
+    root_path = Path(root).expanduser()
+    if root_path.is_absolute():
+        return root_path.resolve()
+
+    provider_relative = (providers_root / root_path).resolve()
+    if provider_relative.exists():
+        return provider_relative
+
+    return (config_root / root_path).resolve()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan handler for startup and shutdown."""
     global _session_manager, _session_queue, _skill_registry, _agent_runner, _global_provider_registry
     
     config = get_config()
-    config_root = get_config_path().parent if get_config_path() is not None else Path.cwd()
+    config_path = get_config_path()
+    config_root = config_path.parent if config_path is not None else Path.cwd()
+    providers_root = (config_root / config.providers_root).resolve()
     
     # Get workspace path from config
     workspace_path = config.workspace.path
@@ -134,6 +149,7 @@ async def lifespan(app: FastAPI):
     _skill_registry = SkillRegistry()
     
     _global_provider_registry = ServiceProviderRegistry()
+    _global_provider_registry.load_from_directory(providers_root)
     if config.service_providers:
         _global_provider_registry.load_instances_from_config(config.service_providers)
     
@@ -149,14 +165,12 @@ async def lifespan(app: FastAPI):
     print(f"[AtlasClaw] Registered {len(registered_tools)} built-in tools")
     
     # Load skills from multiple sources (priority: workspace > global > built-in)
-    # 1. Built-in provider skills (lowest priority)
-    providers_dir = Path(__file__).parent / "providers"
-    if providers_dir.exists():
-        for provider_path in providers_dir.iterdir():
-            if provider_path.is_dir():
-                provider_skills = provider_path / "skills"
-                if provider_skills.exists():
-                    _skill_registry.load_from_directory(str(provider_skills), location="built-in")
+    # 1. Provider skills from configured providers_root (lowest priority)
+    for provider_type in _global_provider_registry.list_providers():
+        template = _global_provider_registry.get_template(provider_type)
+        if template is None or not template.skills_dir.exists():
+            continue
+        _skill_registry.load_from_directory(str(template.skills_dir), location="built-in")
 
     # 2. Global skills (user home directory)
     global_skills = Path.home() / ".atlasclaw" / "skills"
@@ -171,7 +185,7 @@ async def lifespan(app: FastAPI):
     # 4. Additional webhook skill roots
     if config.webhook.enabled and config.webhook.skill_sources:
         for source in config.webhook.skill_sources:
-            source_root = (config_root / source.root).resolve()
+            source_root = _resolve_source_root(config_root, providers_root, source.root)
             if source_root.exists():
                 _skill_registry.load_from_directory(
                     str(source_root),

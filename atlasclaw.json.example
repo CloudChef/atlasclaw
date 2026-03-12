@@ -1,5 +1,6 @@
 {
   "_comment": "Example AtlasClaw configuration. This file stays valid JSON by using _comment fields instead of // comments.",
+  "providers_root": "../atlasclaw-providers/providers",
 
   "model": {
     "_comment": "Primary LLM configuration. Replace provider/model and env vars to match your deployment.",
@@ -38,12 +39,12 @@
       {
         "_comment": "External SmartCMP provider skills, addressed as smartcmp:<skill-name>.",
         "provider": "smartcmp",
-        "root": "../AtlasClaw-Providers/SmartCMP-Provider/skills"
+        "root": "SmartCMP-Provider/skills"
       },
       {
-        "_comment": "Built-in Jira markdown skills, addressed as jira:<skill-name> when exposed through webhook.",
+        "_comment": "External Jira markdown skills, addressed as jira:<skill-name> when exposed through webhook.",
         "provider": "jira",
-        "root": "app/atlasclaw/providers/jira/skills"
+        "root": "jira/skills"
       }
     ],
     "systems": [

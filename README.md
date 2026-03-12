@@ -123,6 +123,7 @@ AtlasClaw uses `atlasclaw.json` for configuration. Create a configuration file i
 
 ```json
 {
+  "providers_root": "../atlasclaw-providers/providers",
   "model": {
     "primary": "kimi/kimi-k2.5",
     "temperature": 0.7,
@@ -139,6 +140,7 @@ AtlasClaw uses `atlasclaw.json` for configuration. Create a configuration file i
 
 Configuration options:
 
+- `providers_root` - Root directory for external provider templates and skills, resolved relative to `atlasclaw.json`
 - `model.primary` - Primary model in format `provider/model-name`
 - `model.providers` - Provider configurations with `base_url`, `api_key`, and `api_type`
 - `api_type` - API type: `openai` (default) or `anthropic`
@@ -223,7 +225,7 @@ npm test
 - Entry point: `app/atlasclaw/main.py` - FastAPI application with lifespan management
 - The API surface lives under `app/atlasclaw/api/`
 - Core orchestration logic lives under `app/atlasclaw/agent/`, `app/atlasclaw/workflow/`, and `app/atlasclaw/tools/`
-- Provider integrations can be added under `app/atlasclaw/providers/`
+- Provider integrations are loaded from `providers_root` (for example `../atlasclaw-providers/providers/`)
 
 If you are integrating AtlasClaw into a host service, start by wiring the API layer, execution context, provider registry, and session manager together in your application bootstrap.
 
@@ -233,4 +235,3 @@ If you are integrating AtlasClaw into a host service, start by wiring the API la
 - [Tooling Documentation](docs/tools/index.md)
 - [Channel Documentation](docs/channels/index.md)
 - [Automation Documentation](docs/automation/webhook.md)
-

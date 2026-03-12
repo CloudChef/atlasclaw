@@ -42,59 +42,59 @@ class ResetMode(str, Enum):
 
 
 class PromptMode(str, Enum):
-    """System prompt mode"""
+    """Supported system prompt modes."""
     FULL = "full"
     MINIMAL = "minimal"
     NONE = "none"
 
 
 class SandboxMode(str, Enum):
-    """Sandbox mode"""
+    """Supported sandbox modes."""
     OFF = "off"
     AGENT = "agent"
     SESSION = "session"
 
 
 class HumanDelayMode(str, Enum):
-    """Human-like delay mode"""
+    """Supported human-like delay modes."""
     OFF = "off"
     NATURAL = "natural"
     CUSTOM = "custom"
 
 
 # ============================================================
-# configurationmodel
+# Configuration models
 # ============================================================
 
 class QueueConfig(BaseModel):
-    """configuration"""
+    """Queue configuration."""
     mode: QueueModeConfig = QueueModeConfig.COLLECT
-    debounce_ms: int = Field(default=1000, ge=0, description="防抖等待毫秒数")
-    cap: int = Field(default=20, ge=1, description="每会话最大排队消息数")
+    debounce_ms: int = Field(default=1000, ge=0, description="Debounce wait time in milliseconds")
+    cap: int = Field(default=20, ge=1, description="Maximum queued messages per session")
     drop: DropStrategy = DropStrategy.OLD
 
 
 class ResetConfig(BaseModel):
-    """session configuration"""
+    """Session reset configuration."""
     mode: ResetMode = ResetMode.DAILY
-    daily_hour: int = Field(default=4, ge=0, le=23, description="每日重置时间（小时）")
-    idle_minutes: int = Field(default=60, ge=1, description="空闲重置阈值（分钟）")
+    daily_hour: int = Field(default=4, ge=0, le=23, description="Daily reset hour")
+    idle_minutes: int = Field(default=60, ge=1, description="Idle reset threshold in minutes")
 
 
 class CompactionConfig(BaseModel):
     """Compaction configuration"""
-    reserve_tokens_floor: int = Field(default=20000, description="预留给新响应的 token 数")
-    soft_threshold_tokens: int = Field(default=4000, description="触发记忆刷新的软阈值")
-    context_window: int = Field(default=128000, description="模型上下文窗口大小")
+    reserve_tokens_floor: int = Field(default=20000, description="Tokens reserved for new responses")
+    soft_threshold_tokens: int = Field(default=4000, description="Soft threshold for triggering memory refresh")
+    context_window: int = Field(default=128000, description="Model context window size")
     memory_flush_enabled: bool = True
 
 
 class BlockChunkerConfig(BaseModel):
-    """streaming configuration"""
-    min_chars: int = Field(default=800, ge=1, description="最小分块字符数")
-    max_chars: int = Field(default=1200, ge=1, description="最大分块字符数")
-    break_preference: str = Field(default="paragraph", description="断点偏好")
-    idle_ms: int = Field(default=300, ge=0, description="空闲刷新毫秒数")
+    """Streaming block chunking configuration."""
+    min_chars: int = Field(default=800, ge=1, description="Minimum chunk size in characters")
+    max_chars: int = Field(default=1200, ge=1, description="Maximum chunk size in characters")
+    break_preference: str = Field(default="paragraph", description="Preferred chunk break strategy")
+    idle_ms: int = Field(default=300, ge=0, description="Idle flush interval in milliseconds")
 
 
 class HumanDelayConfig(BaseModel):
@@ -113,24 +113,24 @@ class SandboxConfig(BaseModel):
 
 
 class SecurityPolicyConfig(BaseModel):
-    """configuration"""
-    allowed_tools: list[str] = Field(default_factory=list, description="允许的工具列表（空=全部允许）")
-    denied_tools: list[str] = Field(default_factory=list, description="拒绝的工具列表（优先，支持 * 通配符）")
-    workspace_access: str = Field(default="rw", description="工作区访问权限：rw | ro | none")
+    """Security policy configuration."""
+    allowed_tools: list[str] = Field(default_factory=list, description="Allowed tools list (empty means all tools are allowed)")
+    denied_tools: list[str] = Field(default_factory=list, description="Denied tools list (takes priority, supports * wildcards)")
+    workspace_access: str = Field(default="rw", description="Workspace access level: rw | ro | none")
 
 
 class SkillsConfig(BaseModel):
     """MD Skills configuration"""
-    md_skills_max_count: int = Field(default=20, ge=1, description="索引段最多显示的 MD Skills 数量")
-    md_skills_desc_max_chars: int = Field(default=200, ge=1, description="单条描述最大字符数")
-    md_skills_index_max_chars: int = Field(default=3000, ge=1, description="索引段总字符上限")
-    md_skills_max_file_bytes: int = Field(default=262144, ge=1, description="单个 SKILL.md 文件最大字节数（默认 256KB）")
+    md_skills_max_count: int = Field(default=20, ge=1, description="Maximum number of MD skills shown in the index section")
+    md_skills_desc_max_chars: int = Field(default=200, ge=1, description="Maximum characters for a single skill description")
+    md_skills_index_max_chars: int = Field(default=3000, ge=1, description="Maximum total characters for the index section")
+    md_skills_max_file_bytes: int = Field(default=262144, ge=1, description="Maximum size of a single SKILL.md file in bytes (default 256KB)")
 
 
 class WebhookSkillSourceConfig(BaseModel):
     """Additional markdown-skill roots addressable by provider-qualified name."""
     provider: str = Field(description="Provider namespace used in provider:skill identifiers")
-    root: str = Field(description="Path to the skills root directory")
+    root: str = Field(description="Skills root directory; relative paths are resolved against providers_root first")
 
 
 class WebhookSystemConfig(BaseModel):
@@ -151,14 +151,14 @@ class WebhookConfig(BaseModel):
 
 
 class ModelConfig(BaseModel):
-    """modelconfiguration"""
-    primary: str = Field(default="doubao-pro-32k", description="主模型（格式: provider/model）")
-    fallbacks: list[str] = Field(default_factory=list, description="回退模型列表")
+    """Model configuration."""
+    primary: str = Field(default="doubao-pro-32k", description="Primary model in provider/model format")
+    fallbacks: list[str] = Field(default_factory=list, description="Fallback model list")
     temperature: float = Field(default=0.7, ge=0, le=2)
     max_tokens: Optional[int] = None
     providers: dict[str, Any] = Field(
         default_factory=dict,
-        description="LLM 提供商配置，{name: {base_url, api_key, api_type, models}}",
+        description="LLM provider configuration, {name: {base_url, api_key, api_type, models}}",
     )
 
 
@@ -171,19 +171,19 @@ class RetryConfig(BaseModel):
 
 
 class AgentDefaultsConfig(BaseModel):
-    """agentdefaultconfiguration"""
-    timeout_seconds: int = Field(default=600, ge=1, description="运行超时秒数")
-    max_concurrent: int = Field(default=4, ge=1, description="最大并发数")
-    max_tool_calls: int = Field(default=50, ge=1, description="单次运行最大工具调用数")
+    """Default agent configuration."""
+    timeout_seconds: int = Field(default=600, ge=1, description="Execution timeout in seconds")
+    max_concurrent: int = Field(default=4, ge=1, description="Maximum concurrency")
+    max_tool_calls: int = Field(default=50, ge=1, description="Maximum tool calls per run")
     prompt_mode: PromptMode = PromptMode.FULL
-    bootstrap_max_chars: int = Field(default=20000, description="Bootstrap 文件最大字符数")
+    bootstrap_max_chars: int = Field(default=20000, description="Maximum Bootstrap file size in characters")
     block_streaming_default: bool = False
     block_streaming_break: str = "text_end"
     human_delay: HumanDelayConfig = Field(default_factory=HumanDelayConfig)
 
 
 class MessagesConfig(BaseModel):
-    """messageconfiguration"""
+    """Message handling configuration."""
     queue: QueueConfig = Field(default_factory=QueueConfig)
     response_prefix: str = ""
     reply_to_mode: str = "auto"
@@ -192,27 +192,31 @@ class MessagesConfig(BaseModel):
 
 
 class MemoryConfig(BaseModel):
-    """configuration"""
+    """Memory configuration."""
     enabled: bool = True
-    vector_weight: float = Field(default=0.7, ge=0, le=1, description="向量搜索权重")
-    fulltext_weight: float = Field(default=0.3, ge=0, le=1, description="全文搜索权重")
-    time_decay_half_life_days: float = Field(default=30.0, ge=1, description="时间衰减半衰期（天）")
+    vector_weight: float = Field(default=0.7, ge=0, le=1, description="Vector search weight")
+    fulltext_weight: float = Field(default=0.3, ge=0, le=1, description="Full-text search weight")
+    time_decay_half_life_days: float = Field(default=30.0, ge=1, description="Time decay half-life in days")
     max_results: int = Field(default=6, ge=1)
 
 
 class WorkspaceConfig(BaseModel):
     """Workspace configuration"""
-    path: str = Field(default=".", description="工作区路径，默认为当前目录")
-    per_user_isolation: bool = Field(default=True, description="是否按用户隔离数据")
+    path: str = Field(default=".", description="Workspace path, defaults to the current directory")
+    per_user_isolation: bool = Field(default=True, description="Whether to isolate data per user")
 
 
 class AtlasClawConfig(BaseModel):
     """AtlasClaw configuration"""
     log_level: LogLevel = LogLevel.INFO
-    workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig, description="工作区配置")
-    agents_dir: str = Field(default="~/.atlasclaw/agents", description="智能体目录（向后兼容）")
+    workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig, description="Workspace configuration")
+    agents_dir: str = Field(default="~/.atlasclaw/agents", description="Agent directory (backward compatibility)")
+    providers_root: str = Field(
+        default="../atlasclaw-providers/providers",
+        description="Root directory for provider templates and skills, resolved relative to atlasclaw.json",
+    )
     
-    # subconfiguration
+    # Nested configuration sections
     agent_defaults: AgentDefaultsConfig = Field(default_factory=AgentDefaultsConfig)
     messages: MessagesConfig = Field(default_factory=MessagesConfig)
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
@@ -230,12 +234,12 @@ class AtlasClawConfig(BaseModel):
     # None means no auth config present; runtime falls back to anonymous mode.
     auth: Optional[Any] = Field(
         default=None,
-        description="认证配置，对应 atlasclaw.json 的 auth 节，缺少时回退为 anonymous 模式",
+        description="Authentication configuration mapped from the auth section of atlasclaw.json; falls back to anonymous mode when missing",
     )
     
-    # ServiceProvider instanceconfiguration
-    # :{provider_type:{instance_name:{param:value}}}
+    # Service provider instance configuration.
+    # Format: {provider_type: {instance_name: {param: value}}}
     service_providers: dict[str, dict[str, Any]] = Field(
         default_factory=dict,
-        description="企业服务提供者实例配置，{type: {instance: {params}}}",
+        description="Enterprise service provider instance configuration, {type: {instance: {params}}}",
     )

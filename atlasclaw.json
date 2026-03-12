@@ -1,4 +1,5 @@
 {
+  "providers_root": "../atlasclaw-providers/providers",
   "model": {
     "primary": "deepseek/deepseek-chat",
     "fallbacks": [],
@@ -28,11 +29,11 @@
     "skill_sources": [
       {
         "provider": "smartcmp",
-        "root": "../AtlasClaw-Providers/SmartCMP-Provider/skills"
+        "root": "SmartCMP-Provider/skills"
       },
       {
         "provider": "jira",
-        "root": "app/atlasclaw/providers/jira/skills"
+        "root": "jira/skills"
       }
     ],
     "systems": [
