@@ -88,17 +88,17 @@ The core runtime in this repository centers on:
 
 ```text
 project-root/
-鈹溾攢鈹€ app/atlasclaw/api/         # REST, SSE, WebSocket, gateway orchestration
-鈹溾攢鈹€ app/atlasclaw/agent/       # Agent runner, routing, streaming, prompt building
-鈹溾攢鈹€ app/atlasclaw/channels/    # Channel adapters and registries
-鈹溾攢鈹€ app/atlasclaw/core/        # Config, execution context, provider registry
-鈹溾攢鈹€ app/atlasclaw/memory/      # Memory manager and retrieval
-鈹溾攢鈹€ app/atlasclaw/session/     # Session context, queue, and manager
-鈹溾攢鈹€ app/atlasclaw/skills/      # Skill loading and registry
-鈹溾攢鈹€ app/atlasclaw/tools/       # Built-in tools and tool catalog
-鈹溾攢鈹€ app/atlasclaw/workflow/    # Workflow engine and orchestrator
-鈹溾攢鈹€ docs/                    # Concepts, tools, channels, and design notes
-鈹斺攢鈹€ tests/                   # Pytest test suite
+├── app/atlasclaw/api/         # REST, SSE, WebSocket, gateway orchestration
+├── app/atlasclaw/agent/       # Agent runner, routing, streaming, prompt building
+├── app/atlasclaw/channels/    # Channel adapters and registries
+├── app/atlasclaw/core/        # Config, execution context, provider registry
+├── app/atlasclaw/memory/      # Memory manager and retrieval
+├── app/atlasclaw/session/     # Session context, queue, and manager
+├── app/atlasclaw/skills/      # Skill loading and registry
+├── app/atlasclaw/tools/       # Built-in tools and tool catalog
+├── app/atlasclaw/workflow/    # Workflow engine and orchestrator
+├── docs/                      # Concepts, tools, channels, and design notes
+└── tests/                     # Pytest test suite
 ```
 
 ## Quick Start
