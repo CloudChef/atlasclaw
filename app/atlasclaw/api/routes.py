@@ -465,7 +465,7 @@ def create_router() -> APIRouter:
         key = SessionKey(
             agent_id=request.agent_id,
             channel=request.channel,
-            chat_type=request.chat_type,
+            chat_type=SessionChatType(request.chat_type),
             user_id=auth_user.user_id,
         )
         session_key_str = key.to_string(scope=SessionScope(request.scope))
@@ -1068,7 +1068,7 @@ def create_router() -> APIRouter:
         key = SessionKey(
             agent_id="main",
             channel="web",
-            chat_type=ChatType.DM,
+            chat_type=SessionChatType.DM,
             user_id=auth_result.subject,
         )
         session_key_str = key.to_string(scope=SessionScope.MAIN)

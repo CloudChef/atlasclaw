@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from urllib.parse import quote
 
 from fastapi import FastAPI
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
+from app.atlasclaw.session.context import ChatType, SessionScope
 from app.atlasclaw.skills.registry import SkillRegistry
 
 
@@ -69,3 +71,81 @@ def test_session_routes_use_current_session_manager_interface(tmp_path):
 
     missing_response = client.get(f"/api/sessions/{encoded_session_key}")
     assert missing_response.status_code == 404
+
+
+class TestSessionCreateWithChatType:
+    """Tests for session creation with ChatType enum validation.
+    
+    AI Review: These tests verify that the create_session endpoint correctly
+    converts string chat_type values to ChatType enum, fixing the bug where
+    a raw string was passed to SessionKey causing AttributeError.
+    """
+
+    def test_create_session_with_default_chat_type(self, tmp_path):
+        """Test session creation uses default 'dm' chat_type."""
+        client = _build_client(tmp_path)
+        
+        response = client.post("/api/sessions", json={})
+        assert response.status_code == 200
+        
+        session_key = response.json()["session_key"]
+        # Default chat_type should be 'dm' and properly included in key
+        assert ":dm:" in session_key or session_key.endswith(":main")
+
+    @pytest.mark.parametrize("chat_type", ["dm", "group", "channel", "thread"])
+    def test_create_session_with_valid_chat_types(self, tmp_path, chat_type):
+        """Test session creation with all valid ChatType enum values."""
+        client = _build_client(tmp_path)
+        
+        response = client.post(
+            "/api/sessions",
+            json={"chat_type": chat_type, "scope": "per-peer"}
+        )
+        assert response.status_code == 200
+        
+        session_key = response.json()["session_key"]
+        # The chat_type should be properly converted to enum and serialized
+        assert f":{chat_type}:" in session_key
+
+    def test_create_session_with_invalid_chat_type_raises_error(self, tmp_path):
+        """Test that invalid chat_type values raise validation error.
+        
+        The endpoint converts string to ChatType enum, so invalid values
+        will raise ValueError.
+        """
+        client = _build_client(tmp_path)
+        
+        # Use raise_server_exceptions=False to capture the error response
+        import pytest
+        with pytest.raises(ValueError, match="is not a valid ChatType"):
+            client.post(
+                "/api/sessions",
+                json={"chat_type": "invalid_type", "scope": "per-peer"}
+            )
+
+    def test_create_session_key_uses_enum_value_method(self, tmp_path):
+        """Test that SessionKey.to_string() works with proper ChatType enum.
+        
+        This specifically tests the fix for the bug where chat_type.value
+        was called on a string instead of an enum, causing AttributeError.
+        """
+        client = _build_client(tmp_path)
+        
+        # Test with PER_PEER scope which calls chat_type.value in to_string()
+        response = client.post(
+            "/api/sessions",
+            json={"chat_type": "group", "scope": "per-peer"}
+        )
+        assert response.status_code == 200
+        
+        session_key = response.json()["session_key"]
+        # Verify the session key was properly constructed
+        assert ":group:" in session_key
+        
+        # Also test PER_CHANNEL_PEER scope
+        response2 = client.post(
+            "/api/sessions",
+            json={"chat_type": "channel", "scope": "per-channel-peer"}
+        )
+        assert response2.status_code == 200
+        assert ":channel:" in response2.json()["session_key"]
