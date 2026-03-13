@@ -7,7 +7,7 @@
     "providers": {
       "deepseek": {
         "base_url": "https://api.deepseek.com",
-        "api_key": "${DS_API_KEY}",
+        "api_key": "${DEEPSEEK_API_KEY}",
         "api_type": "openai"
       }
     }
@@ -15,11 +15,9 @@
   "service_providers": {
     "smartcmp": {
       "local": {
-        "base_url": "https://192.168.12.70/platform-api",
-        "cookie": "username=%E5%B9%B3%E5%8F%B0%E7%AE%A1%E7%90%86%E5%91%98; userId=3e96745e-daf0-4299-bee6-a1484e9a2096; userLoginId=admin; useremail=%28AES%29EmVVLAZ6ckTKewUKL6ht1KOjqd7O%2Bjt2iZqL5nL%2Bd48%3D; tenantname=%E9%BB%98%E8%AE%A4%E7%A7%9F%E6%88%B7; tenant_id=default; userLastLogin=2026-03-12+18%3A08%3A56; CloudChef-Authenticate=eyJhbGciOiJIUzI1NiJ9.eyJ0ZW5hbnRJZCI6ImRlZmF1bHQiLCJzdWIiOiIzZTk2NzQ1ZS1kYWYwLTQyOTktYmVlNi1hMTQ4NGU5YTIwOTYiLCJleHAiOjE3NzMzMTE5MzYsImlhdCI6MTc3MzMxMDEzNn0.p_HPwBi0Oes0cZqGh-VLfZzsQ9O3YwhjCTBXjHQoVKw; CloudChef-Authenticate-Refresh=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIzZTk2NzQ1ZS1kYWYwLTQyOTktYmVlNi1hMTQ4NGU5YTIwOTYiLCJleHAiOjE3NzMzMTczMzYsImlhdCI6MTc3MzMxMDEzNn0.WO6lvbDftz2OY1h6Id0Gg9C341P148As3FgZLzhgQAM; JSESSIONID=28AC60616FE2B6C2B8F9C02F42A2A79A"
-      }
-    },
-    "smartcmp": {
+        "base_url": "${SMARTCMP_LOCAL_URL}",
+        "cookie": "${SMARTCMP_LOCAL_COOKIE}"
+      },
       "default": {
         "cmp_url": "${SMARTCMP_URL}",
         "cmp_cookie": "${SMARTCMP_COOKIE}"
