@@ -46,8 +46,8 @@ from app.atlasclaw.agent.agent_definition import AgentLoader
 from app.atlasclaw.channels import ChannelRegistry
 from app.atlasclaw.channels.manager import ChannelManager
 # Import channel handlers from providers
-from providers.feishu.channels.feishu import FeishuHandler
-from providers.dingtalk.channels.dingtalk import DingTalkHandler
+from app.atlasclaw.channels.handlers.feishu import FeishuHandler
+from app.atlasclaw.channels.handlers.dingtalk import DingTalkHandler
 from providers.wecom.channels.wecom import WeComHandler
 from app.atlasclaw.auth import AuthRegistry
 
@@ -296,6 +296,33 @@ async def lifespan(app: FastAPI):
         prompt_builder=prompt_builder,
         session_queue=_session_queue,
     )
+    
+    # Set agent runner on channel manager for message processing
+    _channel_manager.set_agent_runner(_agent_runner)
+    
+    # Auto-start enabled channel connections for default user
+    async def start_enabled_connections():
+        """Start all enabled channel connections on startup."""
+        try:
+            connections = _channel_manager.get_user_connections("default")
+            for conn in connections:
+                if conn.get("enabled"):
+                    channel_type = conn.get("channel_type")
+                    connection_id = conn.get("id")
+                    print(f"[AtlasClaw] Starting channel connection: {channel_type}/{connection_id}")
+                    success = await _channel_manager.initialize_connection(
+                        "default", channel_type, connection_id
+                    )
+                    if success:
+                        print(f"[AtlasClaw] Channel connection started: {channel_type}/{connection_id}")
+                    else:
+                        print(f"[AtlasClaw] Failed to start channel: {channel_type}/{connection_id}")
+        except Exception as e:
+            print(f"[AtlasClaw] Error starting channel connections: {e}")
+    
+    # Schedule connection startup (will run after event loop starts)
+    import asyncio
+    asyncio.create_task(start_enabled_connections())
 
     webhook_manager = WebhookDispatchManager(config.webhook, _skill_registry)
     webhook_manager.validate_startup()
