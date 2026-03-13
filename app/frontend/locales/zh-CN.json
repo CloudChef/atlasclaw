@@ -28,6 +28,58 @@
     "name_feishu": "飞书",
     "name_dingtalk": "钉钉",
     "name_wecom": "企业微信",
+    "field": {
+      "app_id": {
+        "title": "App ID",
+        "description": "飞书应用的 App ID",
+        "placeholder": "cli_xxxxxxxxxx"
+      },
+      "app_secret": {
+        "title": "App Secret",
+        "description": "飞书应用的 App Secret",
+        "placeholder": "应用密钥"
+      },
+      "encrypt_key": {
+        "title": "加密密钥",
+        "description": "消息加密密钥（可选）",
+        "placeholder": "用于消息加密"
+      },
+      "verification_token": {
+        "title": "验证 Token",
+        "description": "Webhook 验证令牌（可选）",
+        "placeholder": "用于 Webhook 验证"
+      },
+      "webhook_url": {
+        "title": "Webhook URL",
+        "description": "自定义机器人 Webhook 地址",
+        "placeholder": "https://oapi.dingtalk.com/robot/send?access_token=xxx"
+      },
+      "secret": {
+        "title": "签名密钥",
+        "description": "安全验证的签名密钥（可选）",
+        "placeholder": "SEC..."
+      },
+      "app_key": {
+        "title": "AppKey",
+        "description": "企业内部应用的 AppKey",
+        "placeholder": "dingxxxxxxxxxx"
+      },
+      "corpid": {
+        "title": "企业 ID",
+        "description": "企业微信的企业 ID",
+        "placeholder": "ww..."
+      },
+      "corpsecret": {
+        "title": "应用密钥",
+        "description": "应用的 Secret（与企业 ID 配合使用）",
+        "placeholder": "应用密钥"
+      },
+      "agentid": {
+        "title": "应用 ID",
+        "description": "应用的 AgentId（与企业 ID 配合使用）",
+        "placeholder": "1000001"
+      }
+    },
     "back": "← 返回",
     "backToChat": "返回对话",
     "available": "可用渠道",

@@ -274,14 +274,14 @@ class DingTalkHandler(ChannelHandler):
                 },
                 "app_key": {
                     "type": "string",
-                    "title": "App Key",
-                    "description": "Enterprise bot App Key (or use Webhook)",
+                    "title": "AppKey",
+                    "description": "Enterprise bot AppKey (or use Webhook)",
                     "placeholder": "dingxxxxxxxxxx",
                 },
                 "app_secret": {
                     "type": "string",
-                    "title": "App Secret",
-                    "description": "Enterprise bot App Secret (required with App Key)",
+                    "title": "AppSecret",
+                    "description": "Enterprise bot AppSecret (required with AppKey)",
                     "placeholder": "App secret",
                 },
             },

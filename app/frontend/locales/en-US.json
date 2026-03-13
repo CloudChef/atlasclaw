@@ -28,6 +28,58 @@
     "name_feishu": "Feishu",
     "name_dingtalk": "DingTalk",
     "name_wecom": "WeCom",
+    "field": {
+      "app_id": {
+        "title": "App ID",
+        "description": "Feishu application App ID",
+        "placeholder": "cli_xxxxxxxxxx"
+      },
+      "app_secret": {
+        "title": "App Secret",
+        "description": "Feishu application App Secret",
+        "placeholder": "App secret"
+      },
+      "encrypt_key": {
+        "title": "Encrypt Key",
+        "description": "Message encryption key (optional)",
+        "placeholder": "For message encryption"
+      },
+      "verification_token": {
+        "title": "Verification Token",
+        "description": "Webhook verification token (optional)",
+        "placeholder": "For webhook verification"
+      },
+      "webhook_url": {
+        "title": "Webhook URL",
+        "description": "Custom bot Webhook URL",
+        "placeholder": "https://oapi.dingtalk.com/robot/send?access_token=xxx"
+      },
+      "secret": {
+        "title": "Secret",
+        "description": "Signing secret for security verification (optional)",
+        "placeholder": "SEC..."
+      },
+      "app_key": {
+        "title": "AppKey",
+        "description": "Enterprise bot AppKey",
+        "placeholder": "dingxxxxxxxxxx"
+      },
+      "corpid": {
+        "title": "Corp ID",
+        "description": "WeCom Corp ID",
+        "placeholder": "ww..."
+      },
+      "corpsecret": {
+        "title": "Corp Secret",
+        "description": "Application secret (required with Corp ID)",
+        "placeholder": "App secret"
+      },
+      "agentid": {
+        "title": "Agent ID",
+        "description": "Application Agent ID (required with Corp ID)",
+        "placeholder": "1000001"
+      }
+    },
     "back": "← Back",
     "backToChat": "Back to Chat",
     "available": "Available Channels",

@@ -345,6 +345,18 @@ function renderConnectionItem(conn) {
 }
 
 /**
+ * Get localized field text (title, description, placeholder)
+ */
+function getFieldText(key, textType, fallback) {
+    const translated = t(`channel.field.${key}.${textType}`);
+    // If translation exists (not returning the key), use it
+    if (translated && !translated.startsWith('channel.field.')) {
+        return translated;
+    }
+    return fallback || '';
+}
+
+/**
  * Render config form from JSON Schema
  */
 function renderConfigForm(schema, values = {}) {
@@ -372,15 +384,18 @@ function renderConfigForm(schema, values = {}) {
         const isRequired = required.includes(key);
         const value = values.config?.[key] || '';
         const inputType = prop.type === 'string' && (key.toLowerCase().includes('secret') || key.toLowerCase().includes('password')) ? 'password' : 'text';
-        // Use prop.placeholder if available, otherwise fall back to description
-        const placeholder = prop.placeholder || prop.description || '';
+        
+        // Get localized text with fallback to schema values
+        const title = getFieldText(key, 'title', prop.title || key);
+        const description = getFieldText(key, 'description', prop.description || '');
+        const placeholder = getFieldText(key, 'placeholder', prop.placeholder || prop.description || '');
         
         html += `
             <div class="form-group">
-                <label>${prop.title || key} ${isRequired ? '<span class="required">*</span>' : ''}</label>
+                <label>${title} ${isRequired ? '<span class="required">*</span>' : ''}</label>
                 <input type="${inputType}" name="${key}" value="${value}" 
                        placeholder="${placeholder}" ${isRequired ? 'required' : ''}>
-                ${prop.description ? `<span class="hint">${prop.description}</span>` : ''}
+                ${description ? `<span class="hint">${description}</span>` : ''}
             </div>
         `;
     }
