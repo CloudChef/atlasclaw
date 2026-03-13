@@ -1,4 +1,7 @@
 {
+  "workspace": {
+    "path": "."
+  },
   "providers_root": "./.atlasclaw/providers",
   "model": {
     "primary": "deepseek/deepseek-chat",
@@ -19,8 +22,10 @@
         "cookie": "${SMARTCMP_LOCAL_COOKIE}"
       },
       "default": {
-        "CMP_URL": "${CMP_URL}",
-        "CMP_COOKIE": "${CMP_COOKIE}"
+        "cmp_url": "${CMP_URL}",
+        "cmp_cookie": "${CMP_COOKIE}",
+        "cmp_username": "${CMP_USERNAME}",
+        "cmp_password": "${CMP_PASSWORD}"
       }
     }
   },
