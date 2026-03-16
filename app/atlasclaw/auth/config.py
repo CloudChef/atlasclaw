@@ -44,6 +44,7 @@ class OIDCAuthConfig(BaseModel):
     token_endpoint: str = ""
     userinfo_endpoint: str = ""
     redirect_uri: str = ""
+    end_session_endpoint: str = ""  # Keycloak logout URL
     pkce_enabled: bool = True
     pkce_method: str = "S256"
 
@@ -57,6 +58,7 @@ class OIDCAuthConfig(BaseModel):
             authorization_endpoint=expand_env(self.authorization_endpoint),
             token_endpoint=expand_env(self.token_endpoint),
             userinfo_endpoint=expand_env(self.userinfo_endpoint),
+            end_session_endpoint=expand_env(self.end_session_endpoint),
             redirect_uri=expand_env(self.redirect_uri),
             pkce_enabled=self.pkce_enabled,
             pkce_method=self.pkce_method,
@@ -76,6 +78,7 @@ class NoneAuthConfig(BaseModel):
 
 class AuthConfig(BaseModel):
     """Top-level auth configuration block in atlasclaw.json."""
+    enabled: bool = True          # Set to false to disable auth (anonymous mode)
     provider: str = "none"
     header_name: str = "CloudChef-Authenticate"
     token_prefix: str = ""

@@ -19,7 +19,7 @@ from typing import Any, Optional
 from fastapi import FastAPI
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Header, status
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse
+from fastapi.responses import JSONResponse, StreamingResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from ..session.manager import SessionManager
@@ -1115,7 +1115,18 @@ def create_router() -> APIRouter:
                 samesite="lax",
                 max_age=86400
             )
-        
+
+        # Store id_token for logout id_token_hint (skips Keycloak confirm page)
+        if auth_result.id_token:
+            response.set_cookie(
+                key="oidc_id_token",
+                value=auth_result.id_token,
+                httponly=True,
+                secure=_secure,
+                samesite="lax",
+                max_age=86400
+            )
+
         # Clear SSO cookies
         response.delete_cookie("sso_state")
         response.delete_cookie("pkce_verifier")
@@ -1145,21 +1156,61 @@ def create_router() -> APIRouter:
             "session_key": session.key,
             "metadata": session.metadata,
         }
-    
-    @router.post("/auth/logout")
-    async def auth_logout(request: Request) -> JSONResponse:
-        """Logout and clear session."""
+
+    @router.get("/auth/logout")
+    async def auth_logout(request: Request, redirect: bool = True) -> Response:
+        """
+        Logout and clear session.
+
+        Args:
+            redirect: If True (default), redirect to IdP logout for single logout.
+                     Set to False for AJAX/API calls that just need local logout.
+        """
+        from ..auth.config import AuthConfig
+
         session_key = request.cookies.get("atlasclaw_session")
-        
+
         if session_key:
-            session_manager: SessionManager = request.app.state.session_manager
-            await session_manager.delete(session_key)
-        
-        response = JSONResponse(content={"status": "logged_out"})
+            ctx = get_api_context()
+            await ctx.session_manager.delete_session(session_key)
+
+        # Check if OIDC with end_session_endpoint is configured
+        auth_config: AuthConfig = request.app.state.config.auth
+        idp_logout_url = None
+        if (
+                auth_config
+                and auth_config.provider == "oidc"
+                and redirect
+        ):
+            oidc_config = auth_config.oidc.expanded()
+            if oidc_config.end_session_endpoint:
+                # Build Keycloak logout URL
+                # After Keycloak logout, redirect back to our SSO login to re-authenticate
+                post_logout_uri = str(request.base_url).rstrip("/") + "/api/auth/login"
+                id_token_hint = request.cookies.get("oidc_id_token", "")
+                logout_params = (
+                    f"?post_logout_redirect_uri={post_logout_uri}"
+                    f"&client_id={oidc_config.client_id}"
+                )
+                if id_token_hint:
+                    logout_params += f"&id_token_hint={id_token_hint}"
+                idp_logout_url = f"{oidc_config.end_session_endpoint}{logout_params}"
+
+        if idp_logout_url:
+            # Redirect to IdP logout for single logout
+            response = RedirectResponse(url=idp_logout_url, status_code=302)
+        else:
+            # Local logout only
+            response = JSONResponse(content={"status": "logged_out"})
+
+        # Always clear local cookies
         response.delete_cookie("atlasclaw_session")
+        response.delete_cookie("CloudChef-Authenticate")
+        response.delete_cookie("oidc_id_token")
         response.delete_cookie("sso_state")
         response.delete_cookie("pkce_verifier")
-        
+
         return response
-        
+
     return router
+

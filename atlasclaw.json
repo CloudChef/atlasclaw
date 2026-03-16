@@ -24,7 +24,8 @@
       }
     }
   },
-  "_auth": {
+  "auth": {
+    "enabled": false,
     "provider": "oidc",
     "cache_ttl_seconds": 300,
     "oidc": {
@@ -36,6 +37,7 @@
       "authorization_endpoint": "${OIDC_ISSUER}/protocol/openid-connect/auth",
       "token_endpoint": "${OIDC_ISSUER}/protocol/openid-connect/token",
       "userinfo_endpoint": "${OIDC_ISSUER}/protocol/openid-connect/userinfo",
+      "end_session_endpoint": "${OIDC_ISSUER}/protocol/openid-connect/logout",
       "redirect_uri": "${OIDC_REDIRECT_URI}",
       "pkce_enabled": true,
       "pkce_method": "S256"

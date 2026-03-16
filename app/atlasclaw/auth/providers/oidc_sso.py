@@ -238,5 +238,6 @@ class OIDCSSOProvider:
             roles=claims.get("roles", []) or claims.get("groups", []) or [],
             tenant_id=claims.get("tenant_id", claims.get("org_id", "default")),
             raw_token=access_token or id_token,
+            id_token=id_token,
             extra=dict(claims),
         )

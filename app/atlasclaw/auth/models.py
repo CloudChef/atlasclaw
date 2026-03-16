@@ -63,6 +63,7 @@ class AuthResult:
     roles: list[str] = field(default_factory=list)
     tenant_id: str = "default"
     raw_token: str = ""
+    id_token: str = ""              # OIDC ID Token (used for id_token_hint on logout)
     extra: dict[str, Any] = field(default_factory=dict)
 
 
