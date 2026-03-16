@@ -3,7 +3,7 @@
 
 # AtlasClaw
 
-![AtlasClaw logo](docs/images/architecture/atlasclaw-logo.png)
+![AtlasClaw logo](docs/images/atlasclaw-logo.png)
 
 AtlasClaw is an enterprise agent framework that lets employees interact with multiple enterprise systems through one conversational AI interface. Instead of switching between separate consoles, dashboards, and approval portals, users can use natural language to trigger workflows, query operational data, and complete cross-system tasks from a single entry point.
 
