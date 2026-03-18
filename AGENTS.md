@@ -55,9 +55,9 @@ Before making any feature changes, bug fixes, or architectural decisions, consul
 
 | Document | Content | Path |
 |----------|---------|------|
-| **Architecture** | Design philosophy, system architecture, bootstrap sequence, request lifecycle, security model, extension points | [docs/architecture.md](docs/architecture.md) |
-| **Module Details** | Per-module API surface, class/method/enum reference, configuration options, dependencies | [docs/module-details.md](docs/module-details.md) |
-| **Development Spec** | Code style, architecture patterns, error handling, security, testing, extension development, deployment & operations, review checklist | [docs/development-spec.md](docs/development-spec.md) |
+| **Architecture** | Design philosophy, system architecture, bootstrap sequence, request lifecycle, security model, extension points | [docs/ARCHITECTURE.MD](docs/ARCHITECTURE.MD) |
+| **Module Details** | Per-module API surface, class/method/enum reference, configuration options, dependencies | [docs/MODULE-DETAILS.MD](docs/MODULE-DETAILS.MD) |
+| **Development Spec** | Code style, architecture patterns, error handling, security, testing, extension development, deployment & operations, review checklist | [docs/DEVELOPMENT-SPEC.MD](docs/DEVELOPMENT-SPEC.MD) |
 
 **All development work MUST be consistent with these documents.** If a proposed change conflicts with documented patterns, update the documentation as part of the same change.
 
@@ -65,10 +65,10 @@ Before making any feature changes, bug fixes, or architectural decisions, consul
 
 | Document | Content |
 |----------|---------|
-| [Provider Guide](docs/PROVIDER_GUIDE.md) | Creating and deploying provider integrations |
-| [Skill Guide](docs/SKILL_GUIDE.md) | Creating executable, markdown, and hybrid skills |
-| [Channel Guide](docs/Channel%20Guide.md) | Channel handler implementation and integration |
-| [Overview](docs/OVERVIEW.MD) | End-user/developer usage guide |
+| [Provider Guide](docs/PROVIDER-GUIDE.MD) | Creating and deploying provider integrations |
+| [Skill Guide](docs/SKILL-GUIDE.MD) | Creating executable, markdown, and hybrid skills |
+| [Channel Guide](docs/CHANNEL-GUIDE.MD) | Channel handler implementation and integration |
+| [Overview](docs/OVERVIEW.md) | End-user/developer usage guide |
 
 ## Code Style Guidelines
 

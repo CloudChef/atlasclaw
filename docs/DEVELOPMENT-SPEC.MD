@@ -101,7 +101,9 @@ AtlasClaw-Core/
 │       │   ├── routing.py          # Multi-agent routing
 │       │   ├── prompt_builder.py   # System prompt builder
 │       │   ├── stream.py           # Streaming events & chunking
-│       │   └── compaction.py       # Context compaction
+│       │   ├── compaction.py       # Context compaction
+│       │   ├── token_policy.py     # Token selection strategies
+│       │   └── agent_pool.py       # Agent instance caching
 │       │
 │       ├── api/                    # API Layer
 │       │   ├── __init__.py
@@ -141,7 +143,10 @@ AtlasClaw-Core/
 │       │   ├── deps.py             # Skill dependency injection
 │       │   ├── execution_context.py
 │       │   ├── provider_registry.py
-│       │   └── tenant.py
+│       │   ├── tenant.py
+│       │   ├── token_pool.py       # Multi-token management
+│       │   ├── token_health_store.py # Token health persistence
+│       │   └── token_interceptor.py  # Rate-limit header extraction
 │       │
 │       ├── hooks/                  # Hook System
 │       │   └── system.py
@@ -290,12 +295,16 @@ Response Stream (SSE)
 
 **Core Logic**:
 
-| File                               | Purpose                |
-| ---------------------------------- | ---------------------- |
-| `app/atlasclaw/agent/runner.py`    | Agent execution engine |
-| `app/atlasclaw/skills/registry.py` | Skills registration    |
-| `app/atlasclaw/session/manager.py` | Session management     |
-| `app/atlasclaw/memory/manager.py`  | Memory management      |
+| File                               | Purpose                       |
+| ---------------------------------- | ----------------------------- |
+| `app/atlasclaw/agent/runner.py`    | Agent execution engine        |
+| `app/atlasclaw/agent/token_policy.py` | Token selection strategies  |
+| `app/atlasclaw/agent/agent_pool.py` | Agent instance caching        |
+| `app/atlasclaw/core/token_pool.py` | Multi-token management        |
+| `app/atlasclaw/core/token_health_store.py` | Token health persistence |
+| `app/atlasclaw/skills/registry.py` | Skills registration           |
+| `app/atlasclaw/session/manager.py` | Session management            |
+| `app/atlasclaw/memory/manager.py`  | Memory management             |
 
 **API**:
 
@@ -368,6 +377,12 @@ from ..core.config import get_config
 ~/.atlasclaw/
 ├── config.json
 └── workspace/
+```
+
+**Token health storage**:
+
+```
+<workspace>/token_health.json    # Token rate-limit state
 ```
 
 ***
@@ -1298,6 +1313,27 @@ Configure LLM provider in `atlasclaw.json`:
     "primary": "deepseek/deepseek-chat",
     "fallbacks": [],
     "temperature": 0.7,
+    "selection_strategy": "health",
+    "tokens": [
+      {
+        "id": "token-1",
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "base_url": "https://api.deepseek.com",
+        "api_key": "${DEEPSEEK_API_KEY_1}",
+        "priority": 100,
+        "weight": 100
+      },
+      {
+        "id": "token-2",
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "base_url": "https://api.deepseek.com",
+        "api_key": "${DEEPSEEK_API_KEY_2}",
+        "priority": 50,
+        "weight": 100
+      }
+    ],
     "providers": {
       "deepseek": {
         "base_url": "https://api.deepseek.com",
@@ -1308,6 +1344,12 @@ Configure LLM provider in `atlasclaw.json`:
   }
 }
 ```
+
+**Token Selection Strategies**:
+- `health` — Select by health score (highest first), then priority/weight
+- `priority` — Select by priority (highest first), then weight
+- `random` — Weighted random selection
+- `round_robin` — Rotate through available tokens
 
 Create `.env` file for secrets:
 

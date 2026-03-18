@@ -83,6 +83,8 @@ A single agent instance serves multiple access channels simultaneously (REST API
 │  │                   Agent Engine                            │  │
 │  │  AgentRunner · PromptBuilder · CompactionPipeline         │  │
 │  │  PydanticAI Agent · StreamEvent pipeline                  │  │
+│  │  TokenPool · DynamicTokenPolicy · AgentInstancePool       │  │
+│  │  TokenHealthStore · TokenHealthInterceptor                │  │
 │  └──────┬──────────────┬──────────────────┬─────────────────┘  │
 │         ▼              ▼                  ▼                     │
 │  ┌──────────┐  ┌──────────────┐  ┌───────────────┐            │
@@ -119,11 +121,11 @@ A single agent instance serves multiple access channels simultaneously (REST API
 | **Access Channels** | Protocol adaptation, message normalization | `channels/handlers/*` |
 | **API Layer** | HTTP routing, SSE streaming, WebSocket frames, webhook dispatch | `api/routes.py`, `api/sse.py`, `api/gateway.py` |
 | **Auth Middleware** | Credential extraction, provider authentication, shadow user resolution | `auth/middleware.py`, `auth/strategy.py` |
-| **Agent Engine** | LLM orchestration, prompt construction, streaming, context compaction | `agent/runner.py`, `agent/prompt_builder.py` |
+| **Agent Engine** | LLM orchestration, prompt construction, streaming, context compaction, token management, agent instance pooling | `agent/runner.py`, `agent/prompt_builder.py`, `agent/token_policy.py`, `agent/agent_pool.py`, `core/token_pool.py`, `core/token_health_store.py`, `core/token_interceptor.py` |
 | **Tools & Skills** | Executable capabilities exposed to the LLM | `tools/`, `skills/` |
 | **Hooks** | Lifecycle interception for cross-cutting concerns | `hooks/system.py` |
 | **Core Infrastructure** | Configuration, dependency injection, workspace, tenancy | `core/` |
-| **Data & State** | Persistence for sessions, memory, users, channels | `session/`, `memory/`, `auth/shadow_store.py` |
+| **Data & State** | Persistence for sessions, memory, users, channels, token health | `session/`, `memory/`, `auth/shadow_store.py` |
 
 ---
 
@@ -139,7 +141,10 @@ app/atlasclaw/
 │   ├── workspace.py               # WorkspaceInitializer, UserWorkspaceInitializer
 │   ├── provider_registry.py       # ServiceProviderRegistry
 │   ├── provider_scanner.py        # ProviderScanner (filesystem discovery)
-│   └── tenant.py                  # TenantManager, TenantConfig, TenantIsolation
+│   ├── tenant.py                  # TenantManager, TenantConfig, TenantIsolation
+│   ├── token_pool.py              # TokenPool, TokenEntry, TokenHealth
+│   ├── token_health_store.py      # TokenHealthStore (persistence)
+│   └── token_interceptor.py       # TokenHealthInterceptor (rate-limit headers)
 ├── auth/
 │   ├── models.py                  # UserInfo, AuthResult, ShadowUser
 │   ├── middleware.py              # AuthMiddleware (BaseHTTPMiddleware)
@@ -160,7 +165,9 @@ app/atlasclaw/
 │   ├── prompt_builder.py          # PromptBuilder (FULL/MINIMAL/NONE modes)
 │   ├── routing.py                 # AgentConfig, DmScope, ToolPolicy
 │   ├── agent_definition.py        # AgentLoader, AgentDefinitionParser
-│   └── compaction.py              # CompactionPipeline (context compression)
+│   ├── compaction.py              # CompactionPipeline (context compression)
+│   ├── token_policy.py            # DynamicTokenPolicy (session-level token selection)
+│   └── agent_pool.py              # AgentInstancePool (agent instance caching)
 ├── api/
 │   ├── routes.py                  # REST endpoints, APIContext
 │   ├── gateway.py                 # Gateway frames, ConnectionInfo
@@ -294,15 +301,17 @@ The `lifespan()` async context manager executes this ordered sequence:
 4. **Initialize ChannelManager** — Creates `ChannelManager` with workspace path
 5. **Scan providers** — `ProviderScanner` walks the providers directory (outside workspace), discovers auth and channel extensions
 6. **Load agent definitions** — `AgentLoader` reads `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md` from `agents/main/`
-7. **Initialize SessionManager** — Creates session manager with configured reset mode
-8. **Load ServiceProviderRegistry** — Reads service provider configurations, resolves environment variables
-9. **Register built-in tools** — `register_builtin_tools()` with the configured `ToolProfile`
-10. **Load skills** — From 4 sources in priority order: workspace → workspace providers → global → built-in
-11. **Create PydanticAI Agent** — Instantiates the agent with resolved model configuration
-12. **Register skills to agent** — `SkillRegistry.register_to_agent()`
-13. **Create AgentRunner** — With agent, session manager, prompt builder, compaction pipeline, hook system, session queue
-14. **Set up APIContext** — Global context holder for all API routes
-15. **Start channel connections** — Initialize active channel connections
+7. **Initialize TokenPool** — Creates `TokenPool` from `model.tokens` config, restores health state from `TokenHealthStore`
+8. **Initialize SessionManager** — Creates session manager with configured reset mode
+9. **Load ServiceProviderRegistry** — Reads service provider configurations, resolves environment variables
+10. **Register built-in tools** — `register_builtin_tools()` with the configured `ToolProfile`
+11. **Load skills** — From 4 sources in priority order: workspace → workspace providers → global → built-in
+12. **Create AgentInstancePool** — Creates pool for agent instance caching with concurrency control
+13. **Create PydanticAI Agent** — Instantiates the agent with resolved model configuration
+14. **Register skills to agent** — `SkillRegistry.register_to_agent()`
+15. **Create AgentRunner** — With agent, session manager, prompt builder, compaction pipeline, hook system, session queue, token policy, agent pool, token interceptor
+16. **Set up APIContext** — Global context holder for all API routes
+17. **Start channel connections** — Initialize active channel connections
 
 ### Shutdown Sequence
 
@@ -324,6 +333,9 @@ These objects are created once during startup and accessed globally:
 | `SkillRegistry` | Via `APIContext` |
 | `AgentRunner` | Via `APIContext` |
 | `ChannelManager` | Via `APIContext` |
+| `TokenPool` | Via `AgentRunner.token_pool` |
+| `TokenHealthStore` | Via `AgentRunner.health_store` |
+| `AgentInstancePool` | Via `AgentRunner.agent_pool` |
 
 ---
 
@@ -349,6 +361,8 @@ HTTP Request (POST /api/agent/run)
 │
 ├─ 3. AgentRunner.run() → AsyncIterator[StreamEvent]
 │     ├─ Emit lifecycle_start
+│     ├─ Select/pin token via DynamicTokenPolicy.get_or_select_session_token()
+│     ├─ Get or create agent instance from AgentInstancePool
 │     ├─ Load session transcript (JSONL)
 │     ├─ Build message history from transcript
 │     ├─ PromptBuilder.build() → system prompt
@@ -358,6 +372,7 @@ HTTP Request (POST /api/agent/run)
 │     ├─ PydanticAI Agent.run_stream() → model inference
 │     │     ├─ Yield assistant deltas (StreamEvent.ASSISTANT)
 │     │     ├─ Execute tool calls (StreamEvent.TOOL start/end)
+│     │     ├─ TokenHealthInterceptor.on_response() → update rate limits
 │     │     └─ Enforce max_tool_calls and timeout_seconds
 │     ├─ Persist transcript entries (append to JSONL)
 │     └─ Emit lifecycle_end
@@ -451,10 +466,14 @@ WebSocket Connection
 |---|---|---|
 | `AuthMiddleware` | `api/routes.py` | `request.state.user` (UserInfo) |
 | `api/routes.py` | `AgentRunner` | `SkillDeps` (request-scoped DI) |
+| `AgentRunner` | `TokenPool` | `DynamicTokenPolicy.get_or_select_session_token()` |
+| `AgentRunner` | `AgentInstancePool` | `get_or_create(agent_id, token)` |
 | `AgentRunner` | `PromptBuilder` | `build(session, skills, tools)` |
 | `AgentRunner` | `HookSystem` | `trigger(phase, context)` at each lifecycle point |
 | `AgentRunner` | `SessionManager` | `load_transcript()`, `append_transcript()` |
 | `AgentRunner` | `CompactionPipeline` | Triggered when context exceeds threshold |
+| `TokenHealthInterceptor` | `TokenPool` | `update_token_health()` on LLM response |
+| `TokenHealthInterceptor` | `TokenHealthStore` | `save()` after health update |
 | `SkillRegistry` | PydanticAI Agent | `register_to_agent()` — wraps skills as agent tools |
 | `ServiceProviderRegistry` | `SkillRegistry` | `register_skills_to()` — provider skills with instance awareness |
 | `ChannelManager` | `AgentRunner` | `receive_message()` → `run()` |
@@ -498,8 +517,10 @@ Resolved at config load time by `resolve_env()` in `models/providers.py`.
 
 | Section | Schema Class | Controls |
 |---|---|---|
-| `model` | `ModelConfig` | LLM provider, primary model, fallbacks, temperature |
-| `model.providers` | `ProviderConfig` | Per-provider base_url, api_key, api_type |
+| `model` | `ModelConfig` | LLM provider, primary token, fallbacks, temperature, selection strategy |
+| `model.tokens` | `list[TokenConfig]` | Multi-token pool configuration |
+| `model.selection_strategy` | `str` | Token selection strategy: `health`, `priority`, `random`, `round_robin` |
+| `model.providers` | `ProviderConfig` | Legacy per-provider base_url, api_key, api_type |
 | `service_providers` | (dict) | External service provider instances |
 | `auth` | `AuthConfig` | Auth provider selection, OIDC settings, cache TTL |
 | `agent_defaults` | `AgentDefaults` | Timeout, max tool calls, prompt mode, sandbox |
@@ -726,6 +747,24 @@ Configurable via `BlockChunkerConfig`, controls how streaming text is chunked fo
 - Workspace root (`<workspace>/atlasclaw.json`) — Workspace configuration
 - User home (`~/.atlasclaw/config.json`) — Global user configuration
 - Per-user (`<workspace>/users/<user_id>/user_setting.json`) — User-specific settings (channels, preferences)
+
+### 11.5 Token Health
+
+**Format**: JSON
+**Location**: `<workspace>/token_health.json`
+**Content**: Token health snapshots for rate-limit tracking
+
+```json
+{
+  "token-1": {
+    "remaining_tokens": 95000,
+    "remaining_requests": 95,
+    "reset_tokens_seconds": 60,
+    "reset_requests_seconds": 30,
+    "updated_at": "2026-03-17T10:30:00+00:00"
+  }
+}
+```
 
 ---
 

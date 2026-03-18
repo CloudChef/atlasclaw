@@ -33,7 +33,7 @@
 
 **Path**: `app/atlasclaw/core/`
 
-Provides configuration management, request-scoped dependency injection, workspace initialization, service provider registry, provider scanning, and multi-tenant isolation.
+Provides configuration management, request-scoped dependency injection, workspace initialization, service provider registry, provider scanning, multi-tenant isolation, and token pool management.
 
 ### 1.1 ConfigManager (`core/config.py`)
 
@@ -134,6 +134,88 @@ Pydantic models defining all configuration sections.
 | `MessagesConfig` | `queue`, `response_prefix=""`, `reply_to_mode="auto"`, `inbound_debounce_ms=1000`, `dedup_ttl_seconds=60` |
 | `MemoryConfig` | `enabled=True`, `vector_weight=0.7`, `fulltext_weight=0.3`, `time_decay_half_life_days=30.0`, `max_results=6` |
 | `WorkspaceConfig` | `path="./.atlasclaw"` |
+| `TokenConfig` | `id`, `provider`, `model`, `base_url`, `api_key`, `api_type="openai"`, `priority=0`, `weight=100` |
+
+### 1.4 Token Pool (`core/token_pool.py`)
+
+Multi-token management for LLM API endpoints with health-aware selection.
+
+**Dataclass: `TokenEntry`** — Single token endpoint configuration.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `token_id` | `str` | — | Unique token identifier |
+| `provider` | `str` | — | Provider name (e.g., `deepseek`, `openai`) |
+| `model` | `str` | — | Model name (e.g., `deepseek-chat`) |
+| `base_url` | `str` | — | API base URL |
+| `api_key` | `str` | — | API key (interpolated from env) |
+| `api_type` | `str` | `"openai"` | API type (`openai` or `anthropic`) |
+| `priority` | `int` | `0` | Selection priority (higher = preferred) |
+| `weight` | `int` | `100` | Selection weight for weighted strategies |
+
+**Dataclass: `TokenHealth`** — Health snapshot for rate-limit tracking.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `remaining_tokens` | `int` | `100000` | Remaining tokens in rate limit window |
+| `remaining_requests` | `int` | `100` | Remaining requests in rate limit window |
+| `reset_tokens_seconds` | `int` | `0` | Seconds until token limit resets |
+| `reset_requests_seconds` | `int` | `0` | Seconds until request limit resets |
+| `updated_at` | `datetime` | now (UTC) | Last update timestamp |
+
+**Properties**:
+- `health_score: float` — Computed score (0-100) based on remaining tokens/requests
+- `is_healthy: bool` — True if `remaining_requests > 0` and `remaining_tokens > 100`
+
+**Class: `TokenPool`** — Thread-safe token pool with health-aware selection.
+
+| Method | Signature | Description |
+|---|---|---|
+| `register_token` | `(token: TokenEntry) -> None` | Register a new token |
+| `restore_health` | `(token_id, health: TokenHealth) -> None` | Restore health from persistence |
+| `update_token_health` | `(token_id, headers: dict) -> None` | Update from response headers |
+| `select_token` | `(provider?, model?, strategy) -> TokenEntry?` | Select token by strategy |
+| `get_token_health` | `(token_id) -> TokenHealth?` | Get health snapshot |
+| `export_health_status` | `() -> dict[str, TokenHealth]` | Export all health states |
+
+**Selection Strategies**:
+- `health` — Select by health score (highest first), then priority/weight
+- `priority` — Select by priority (highest first), then weight
+- `random` — Weighted random selection
+- `round_robin` — Rotate through available tokens
+
+### 1.5 Token Health Store (`core/token_health_store.py`)
+
+Persistence for token health snapshots.
+
+**Class: `TokenHealthStore`**
+
+Constructor: `workspace_path: str`
+
+| Method | Signature | Description |
+|---|---|---|
+| `save` | `(health_status: dict[str, TokenHealth]) -> None` | Persist to `token_health.json` |
+| `load` | `() -> dict[str, TokenHealth]` | Load from `token_health.json` |
+
+**Storage Location**: `<workspace>/token_health.json`
+
+### 1.6 Token Health Interceptor (`core/token_interceptor.py`)
+
+Extracts rate-limit headers from LLM responses and updates token health.
+
+**Class: `TokenHealthInterceptor`**
+
+Constructor: `token_pool: TokenPool`, `health_store: TokenHealthStore`
+
+| Method | Signature | Description |
+|---|---|---|
+| `on_response` | `(token_id: str, headers: dict) -> None` | Update health from response headers |
+
+**Headers Extracted**:
+- `x-ratelimit-remaining-tokens`
+- `x-ratelimit-remaining-requests`
+- `x-ratelimit-reset-tokens`
+- `x-ratelimit-reset-requests`
 
 ### 1.4 Workspace Initialization (`core/workspace.py`)
 
@@ -399,7 +481,7 @@ Thread-safe and idempotent under concurrent access.
 
 **Path**: `app/atlasclaw/agent/`
 
-Core agent execution engine with streaming, prompt construction, routing, and context compaction.
+Core agent execution engine with streaming, prompt construction, routing, context compaction, token management, and agent instance pooling.
 
 ### 3.1 Agent Runner (`agent/runner.py`)
 
@@ -414,6 +496,12 @@ __init__(
     compaction: Optional[CompactionPipeline] = None,
     hook_system: Optional[HookSystem] = None,
     session_queue: Optional[SessionQueue] = None,
+    agent_id: str = "main",
+    token_pool: Optional[TokenPool] = None,
+    token_policy: Optional[DynamicTokenPolicy] = None,
+    agent_pool: Optional[AgentInstancePool] = None,
+    token_interceptor: Optional[TokenHealthInterceptor] = None,
+    agent_factory: Optional[Callable[[str, TokenEntry], Agent]] = None,
 )
 ```
 
@@ -421,16 +509,19 @@ __init__(
 
 **Execution Flow**:
 1. Emit `lifecycle_start`
-2. Load session and transcript from JSONL
-3. Build message history from transcript entries
-4. Build system prompt via `PromptBuilder.build()`
-5. Trigger `BEFORE_PROMPT_BUILD` hook
-6. Run `CompactionPipeline` if context exceeds threshold
-7. Check `SessionQueue` for steering/follow-up messages
-8. Execute `PydanticAI Agent.run_stream()` — model inference
-9. Yield `StreamEvent`s: assistant deltas, tool start/end, errors
-10. Persist transcript entries (append to JSONL)
-11. Emit `lifecycle_end` (or `lifecycle_aborted`/error)
+2. **Select/pin token** via `DynamicTokenPolicy.get_or_select_session_token()`
+3. **Get or create agent instance** from `AgentInstancePool`
+4. Load session and transcript from JSONL
+5. Build message history from transcript entries
+6. Build system prompt via `PromptBuilder.build()`
+7. Trigger `BEFORE_PROMPT_BUILD` hook
+8. Run `CompactionPipeline` if context exceeds threshold
+9. Check `SessionQueue` for steering/follow-up messages
+10. Execute `PydanticAI Agent.run_stream()` — model inference
+11. **Update token health** via `TokenHealthInterceptor.on_response()`
+12. Yield `StreamEvent`s: assistant deltas, tool start/end, errors
+13. Persist transcript entries (append to JSONL)
+14. Emit `lifecycle_end` (or `lifecycle_aborted`/error)
 
 Enforces `max_tool_calls` and `timeout_seconds` checkpoints.
 
@@ -538,6 +629,55 @@ Methods: `is_allowed(tool_name: str) -> bool`, `_match_pattern(pattern, name) ->
 ### 3.6 Compaction Pipeline (`agent/compaction.py`)
 
 Compresses context when it exceeds the configured token threshold. Triggered automatically by `AgentRunner` before each LLM call if context exceeds `CompactionConfig.context_window - reserve_tokens_floor`.
+
+### 3.7 Token Policy (`agent/token_policy.py`)
+
+Session-level token selection and pinning strategy.
+
+**Class: `DynamicTokenPolicy`**
+
+Constructor: `token_pool: TokenPool`, `strategy: str = "health"`, `primary_token_id: Optional[str] = None`
+
+| Method | Signature | Description |
+|---|---|---|
+| `select_for_session` | `(session_key, provider?, model?) -> TokenEntry?` | Select and pin token for session |
+| `get_session_token` | `(session_key) -> TokenEntry?` | Get pinned token for session |
+| `get_or_select_session_token` | `(session_key, provider?, model?) -> TokenEntry?` | Get existing or select new |
+| `refresh_session_token` | `(session_key) -> TokenEntry?` | Re-select if current token unhealthy |
+| `release_session_token` | `(session_key) -> None` | Release pinned token |
+
+**Token Pinning**: Once a token is selected for a session, it's reused for the entire session unless it becomes unhealthy.
+
+**Primary Token**: If `primary_token_id` is configured, it's always tried first if healthy.
+
+### 3.8 Agent Instance Pool (`agent/agent_pool.py`)
+
+Caches agent instances bound to specific tokens with per-instance concurrency control.
+
+**Dataclass: `AgentInstance`**
+
+| Field | Type | Description |
+|---|---|---|
+| `agent_id` | `str` | Agent identifier |
+| `token_id` | `str` | Bound token ID |
+| `agent` | `Any` | PydanticAI Agent instance |
+| `concurrency_sem` | `asyncio.Semaphore` | Concurrency limiter |
+| `created_at` | `datetime` | Creation timestamp |
+
+**Property**: `cache_key` — Returns `"{agent_id}:{token_id}"`
+
+**Class: `AgentInstancePool`**
+
+Constructor: `max_concurrent_per_instance: int = 4`
+
+| Method | Signature | Description |
+|---|---|---|
+| `get_or_create` | `(agent_id, token, agent_factory) -> AgentInstance` | Get existing or create new instance |
+| `get` | `(agent_id, token_id) -> AgentInstance?` | Get existing instance |
+
+**Cache Key**: `"{agent_id}:{token_id}"` — Each token gets its own agent instance.
+
+**Concurrency**: Each instance has a semaphore limiting concurrent requests (default 4).
 
 ---
 

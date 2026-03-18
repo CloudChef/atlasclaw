@@ -237,7 +237,7 @@ class AgentLoader:
             workspace_path: Path to the workspace root directory.
         """
         self.workspace_path = Path(workspace_path).resolve()
-        self.agents_dir = self.workspace_path / ".atlasclaw" / "agents"
+        self.agents_dir = self.workspace_path / "agents"
     
     def load_agent(self, agent_id: str) -> AgentConfig:
         """Load agent configuration from Markdown files.
