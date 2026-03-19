@@ -231,6 +231,134 @@ npm test
 
 If you are integrating AtlasClaw into a host service, start by wiring the API layer, execution context, provider registry, and session manager together in your application bootstrap.
 
+## Building from Source
+
+### Requirements
+
+- Python 3.11+
+- pip and build tools
+- Linux environment (for server deployment)
+- [atlasclaw-providers](https://github.com/CloudChef/atlasclaw-providers) repository (optional, for provider integrations)
+
+### Repository Setup
+
+AtlasClaw uses a separate repository for provider integrations. To include providers in your build:
+
+```bash
+# Clone the main repository
+git clone https://github.com/CloudChef/atlasclaw.git
+cd atlasclaw
+
+# Clone providers repository (optional)
+git clone https://github.com/CloudChef/atlasclaw-providers.git ../atlasclaw-providers
+```
+
+Configure `atlasclaw.json` to point to your providers directory:
+
+```json
+{
+  "providers_root": "../atlasclaw-providers/providers",
+  "model": {
+    "primary": "openai/gpt-4",
+    "providers": {
+      "openai": {
+        "api_key": "${OPENAI_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+The `providers_root` path is resolved relative to the `atlasclaw.json` configuration file location.
+
+### Build Python Wheel
+
+```bash
+pip install build
+python -m build --wheel --no-isolation
+```
+
+The wheel package will be created in `dist/` directory.
+
+### Quick Start with atlasclaw.sh (Development)
+
+For development or when you have internet access on the target server:
+
+```bash
+# Clone the repository
+git clone https://github.com/CloudChef/atlasclaw.git
+cd atlasclaw
+
+# Run the launcher (automatically sets up environment and starts service)
+./atlasclaw.sh
+
+```
+
+The `atlasclaw.sh` script will automatically:
+1. Check Python version (3.11+ recommended)
+2. Create a virtual environment (`venv/`)
+3. Install all dependencies from `requirements.txt`
+4. Create default configuration (`atlasclaw.json`) if not exists
+5. Start the AtlasClaw service
+
+**Note**: First run may take a few minutes to install dependencies. Subsequent runs will start immediately.
+
+### Build Offline Package (Production Deployment)
+
+For production deployment on servers without internet access:
+
+```bash
+# Build the offline package with all dependencies pre-installed
+./scripts/build-offline-package.sh
+
+# This creates: atlasclaw-offline.zip
+```
+
+**Package Contents:**
+- `atlasclaw/` - Core application code
+- `atlasclaw_providers/` - Provider integrations (from atlasclaw-providers repo)
+- `venv/` - Pre-installed Python dependencies
+- `atlasclaw.sh` - Launcher script
+- `atlasclaw.json` - Configuration file
+
+**Deployment:**
+
+```bash
+# 1. Copy the package to target server
+scp atlasclaw-offline.zip user@server:/opt/
+
+# 2. On the target server, unzip and run
+ssh user@server
+cd /opt
+unzip atlasclaw-offline.zip
+
+cd atlasclaw-offline
+./atlasclaw.sh
+```
+
+**Advantages:**
+- No internet connection required on target server
+- No waiting for dependency installation
+- All dependencies and providers bundled together
+- Consistent environment across deployments
+
+### Build Python Wheel
+
+```bash
+pip install build
+python -m build --wheel --no-isolation
+```
+
+The wheel package will be created in `dist/` directory.
+
+### CI/CD Build
+
+GitHub Actions automatically builds:
+- Python wheel package
+- Offline deployment package (`atlasclaw-offline.zip`)
+
+Trigger a build manually from the Actions tab or by pushing a version tag.
+
 ## Further Reading
 
 - [Architecture Concepts](docs/concepts/architecture.md)
