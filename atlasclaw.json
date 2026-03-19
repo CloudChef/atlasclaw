@@ -2,7 +2,7 @@
   "workspace": {
     "path": "./.atlasclaw"
   },
-  "providers_root": "../atlasclaw-providers/providers",
+  "providers_root": "./providers",
   "skills_root": "../atlasclaw-providers/skills",
   "channels_root": "../atlasclaw-providers/channels",
   "model": {
@@ -52,6 +52,14 @@
       "default": {
         "CMP_URL": "${CMP_URL}",
         "CMP_COOKIE": "${CMP_COOKIE}"
+      }
+    },
+    "dingtalk": {
+      "default": {
+        "base_url": "https://oapi.dingtalk.com",
+        "app_key": "${DINGTALK_APP_KEY}",
+        "app_secret": "${DINGTALK_APP_SECRET}",
+        "agent_id": "${DINGTALK_AGENT_ID}"
       }
     }
   },

@@ -305,7 +305,20 @@ async def lifespan(app: FastAPI):
 
 
 
-    # 2. Workspace provider skills (providers inside workspace)
+    # 2. External provider skills (from providers_root config)
+    if providers_root.exists():
+        for provider_path in providers_root.iterdir():
+            if provider_path.is_dir() and not provider_path.name.startswith(("_", ".")):
+                provider_skills = provider_path / "skills"
+                if provider_skills.exists():
+                    provider_name = provider_path.name
+                    _skill_registry.load_from_directory(
+                        str(provider_skills), 
+                        location="provider",
+                        provider=provider_name
+                    )
+
+    # 3. Workspace provider skills (providers inside workspace)
     workspace_providers_dir = Path(workspace_path) / "providers"
     if workspace_providers_dir.exists():
         for provider_path in workspace_providers_dir.iterdir():
@@ -319,12 +332,12 @@ async def lifespan(app: FastAPI):
                         provider=provider_name
                     )
 
-    # 3. Global skills (user home directory)
+    # 4. Global skills (user home directory)
     global_skills = Path.home() / ".atlasclaw" / "skills"
     if global_skills.exists():
         _skill_registry.load_from_directory(str(global_skills), location="global")
     
-    # 4. Workspace skills (highest priority)
+    # 5. Workspace skills (highest priority)
     workspace_skills = Path(workspace_path) / "skills"
     if workspace_skills.exists():
         _skill_registry.load_from_directory(str(workspace_skills), location="workspace")
