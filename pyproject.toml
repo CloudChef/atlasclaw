@@ -1,0 +1,197 @@
+# AtlasClaw Python Package Configuration (Unified Package)
+# 
+# This package includes both atlasclaw core and atlasclaw-providers.
+#
+# Build:   python -m build
+# Install: pip install dist/atlasclaw-*.whl
+# Dev:     pip install -e ".[dev]"
+# Full:    pip install dist/atlasclaw-*.whl[all]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "atlasclaw"
+version = "0.1.0"
+description = "Enterprise AI Agent Framework - Core + Providers unified package for cross-system enterprise workflows"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "AtlasClaw Team", email = "team@atlasclaw.dev" }
+]
+keywords = [
+    "ai",
+    "agent",
+    "enterprise",
+    "llm",
+    "fastapi",
+    "chatbot",
+    "automation",
+    "jira",
+    "smartcmp",
+    "providers"
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.6.0",
+    "pydantic-settings>=2.2.0",
+    "pydantic-ai>=0.0.14",
+    "openai>=1.12.0",
+    "python-dotenv>=1.0.0",
+    "sse-starlette>=2.0.0",
+    "httpx>=0.26.0",
+    "aiofiles>=23.2.0",
+    "lark-oapi>=1.5.0",
+    "dingtalk-stream>=0.24.0",
+]
+
+[project.optional-dependencies]
+# Development dependencies
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.2.0",
+    "mypy>=1.8.0",
+    "pyinstaller>=6.0.0",
+]
+# Database support (PostgreSQL)
+db = [
+    "asyncpg>=0.29.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "alembic>=1.13.0",
+]
+# Redis support
+redis = [
+    "redis>=5.0.0",
+]
+# Jira provider dependencies
+jira = [
+    "jira>=3.5.0",
+]
+# SmartCMP provider dependencies  
+smartcmp = [
+    "httpx>=0.26.0",
+]
+# All optional dependencies (includes all providers)
+all = [
+    "atlasclaw[db,redis,jira,smartcmp]",
+]
+
+[project.scripts]
+# CLI entry point
+atlasclaw = "app.atlasclaw.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/CloudChef/atlasclaw"
+Documentation = "https://github.com/CloudChef/atlasclaw/docs"
+Repository = "https://github.com/CloudChef/atlasclaw"
+Issues = "https://github.com/CloudChef/atlasclaw/issues"
+
+# Hatch build configuration
+[tool.hatch.build.targets.sdist]
+include = [
+    "/app",
+    "/providers",
+    "/atlasclaw_providers",
+    "/atlasclaw.json.example",
+    "/requirements.txt",
+    "/README.md",
+    "/LICENSE",
+]
+exclude = [
+    "/.git",
+    "/.idea",
+    "/__pycache__",
+    "/tests",
+    "/docs",
+    "/.venv",
+    "/dist",
+    "/build",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app", "atlasclaw_providers"]
+include = [
+    "app/**/*.py",
+    "app/**/*.html",
+    "app/**/*.css",
+    "app/**/*.js",
+    "app/**/*.json",
+    "atlasclaw_providers/**/*.py",
+    "atlasclaw_providers/**/*.md",
+    "atlasclaw_providers/**/*.json",
+]
+
+# Force include external atlasclaw-providers directory
+[tool.hatch.build.targets.wheel.force-include]
+"../atlasclaw-providers/providers" = "atlasclaw_providers/providers"
+"../atlasclaw-providers/skills" = "atlasclaw_providers/skills"
+
+# Ruff configuration (linter)
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+]
+ignore = [
+    "E501",  # line too long (handled by formatter)
+    "B008",  # do not perform function calls in argument defaults
+]
+
+[tool.ruff.isort]
+known-first-party = ["app"]
+
+# Pytest configuration
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+markers = [
+    "llm: marks tests that require LLM API access",
+    "e2e: marks end-to-end tests that require running service",
+]
+
+# MyPy configuration
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_ignores = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+
+# Coverage configuration
+[tool.coverage.run]
+source = ["app"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]

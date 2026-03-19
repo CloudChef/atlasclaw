@@ -1,0 +1,217 @@
+# AtlasClaw Build & Release Workflow
+#
+# Triggers:
+#   - Push to main/master branch
+#   - Pull requests to main/master
+#   - Manual trigger (workflow_dispatch)
+#   - Release tags (v*)
+#
+# Outputs:
+#   - Python wheel package
+#
+# Quick Start for Users:
+#   git clone https://github.com/CloudChef/atlasclaw.git
+#   cd atlasclaw
+#   ./atlasclaw.sh  # Automatically sets up environment and starts service
+
+name: Build & Release
+
+on:
+  push:
+    branches: [main, master]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      build_binaries:
+        description: 'Build platform binaries'
+        required: false
+        default: true
+        type: boolean
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  # ===========================================
+  # Job 1: Build Python Wheel
+  # ===========================================
+  build-wheel:
+    name: Build Python Wheel
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout atlasclaw
+        uses: actions/checkout@v4
+        with:
+          path: atlasclaw
+
+      - name: Checkout atlasclaw-providers
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/atlasclaw-providers
+          path: atlasclaw-providers
+          token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Create providers directory if not exists
+        run: |
+          if [ ! -d "atlasclaw-providers" ]; then
+            mkdir -p atlasclaw-providers/providers
+            mkdir -p atlasclaw-providers/skills
+            echo "Created empty providers directory"
+          fi
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Install build tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install build hatchling
+
+      - name: Build wheel
+        working-directory: atlasclaw
+        run: |
+          python -m build --wheel --no-isolation
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel
+          path: atlasclaw/dist/*.whl
+          retention-days: 30
+
+  # ===========================================
+  # Job 3: Build Offline Package
+  # ===========================================
+  build-offline:
+    name: Build Offline Package
+    runs-on: ubuntu-latest
+    needs: build-wheel
+    if: |
+      github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') ||
+      github.event_name == 'workflow_dispatch' && github.event.inputs.build_binaries == 'true'
+
+    steps:
+      - name: Checkout atlasclaw
+        uses: actions/checkout@v4
+
+      - name: Checkout atlasclaw-providers
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/atlasclaw-providers
+          path: atlasclaw-providers
+          token: ${{ secrets.GITHUB_TOKEN }}
+        continue-on-error: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Build offline package
+        run: |
+          chmod +x scripts/build-offline-package.sh
+          ./scripts/build-offline-package.sh
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: atlasclaw-offline
+          path: atlasclaw-offline.zip
+          retention-days: 30
+
+  # ===========================================
+  # Job 4: Run Tests
+  # ===========================================
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: build-wheel
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: Download wheel
+        uses: actions/download-artifact@v4
+        with:
+          name: wheel
+          path: dist
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install dist/*.whl
+          pip install pytest pytest-asyncio pytest-cov
+
+      - name: Run tests
+        run: |
+          pytest tests/ -v --cov=app --cov-report=xml
+        continue-on-error: true
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: coverage.xml
+        continue-on-error: true
+
+  # ===========================================
+  # Job 5: Create Release
+  # ===========================================
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: [build-wheel, build-offline, test]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release files
+        run: |
+          mkdir -p release
+          
+          # Copy wheel
+          cp artifacts/wheel/*.whl release/
+          
+          # Copy offline package
+          cp artifacts/atlasclaw-offline/atlasclaw-offline.zip release/
+          
+          # List release files
+          ls -la release/
+
+      - name: Extract version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: AtlasClaw v${{ steps.version.outputs.VERSION }}
+          draft: false
+          prerelease: ${{ contains(github.ref, '-alpha') || contains(github.ref, '-beta') || contains(github.ref, '-rc') }}
+          generate_release_notes: true
+          files: |
+            release/*.whl
+            release/*.zip
+            release/*.tar.gz
+            release/atlasclaw-macos-amd64.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
