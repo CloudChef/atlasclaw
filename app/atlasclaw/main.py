@@ -338,38 +338,23 @@ async def lifespan(app: FastAPI):
     
     # Load skills from multiple sources (priority: workspace > global > built-in)
 
-    # 1. Built-in skills from app providers
-    providers_dir = Path(__file__).parent / "providers"
-    if providers_dir.exists():
-        for provider_path in providers_dir.iterdir():
-            if provider_path.is_dir():
-                provider_skills = provider_path / "skills"
-                if provider_skills.exists():
-                    _skill_registry.load_from_directory(str(provider_skills), location="built-in")
-
-    # 2. External provider skills (from providers_root config)
+    # 1. External provider skills (from providers_root config)
     if providers_root.exists():
         for provider_path in providers_root.iterdir():
             if provider_path.is_dir() and not provider_path.name.startswith(("_", ".")):
                 provider_skills = provider_path / "skills"
                 if provider_skills.exists():
-                    provider_name = provider_path.name
+                    provider_namespace = _derive_provider_namespace(provider_path.name)
                     _skill_registry.load_from_directory(
                         str(provider_skills),
                         location="provider",
-                        provider=provider_name
+                        provider=provider_namespace
                     )
 
-    # 3. Global skills (user home directory)
-    global_skills = Path.home() / ".atlasclaw" / "skills"
-    if global_skills.exists():
-        _skill_registry.load_from_directory(str(global_skills), location="global")
+    # 2. Standalone skills (from skills_root config)
+    if skills_root.exists():
+        _skill_registry.load_from_directory(str(skills_root), location="skills-root")
 
-    # 4. Workspace skills (highest priority)
-    workspace_skills = Path(workspace_path) / "skills"
-    if workspace_skills.exists():
-        _skill_registry.load_from_directory(str(workspace_skills), location="workspace")
-    
     from pydantic_ai import Agent
     from app.atlasclaw.core.deps import SkillDeps
 
