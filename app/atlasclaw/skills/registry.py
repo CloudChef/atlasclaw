@@ -193,6 +193,27 @@ class SkillRegistry:
             }
             for meta, _ in self._skills.values()
         ]
+
+    def snapshot_builtins(self) -> list[dict]:
+        """Return a snapshot of built-in skills only, excluding tools derived from MD skills.
+
+        MD-skill-derived tools are already exposed via md_snapshot() and shown in the
+        MD Skills section of the system prompt / /skills API.  Including them again in
+        the executable-skills listing causes every such skill to appear twice.
+        """
+        md_derived: set[str] = set()
+        for tool_names in self._md_skill_tools.values():
+            md_derived.update(tool_names)
+        return [
+            {
+                "name": meta.name,
+                "description": meta.description,
+                "category": meta.category,
+                "location": meta.location,
+            }
+            for meta, _ in self._skills.values()
+            if meta.name not in md_derived
+        ]
     
     def to_tool_definitions(self) -> list[dict]:
         """Convert registered skills into tool-definition dictionaries."""

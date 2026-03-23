@@ -288,7 +288,7 @@ def _build_scoped_deps(
         "available_providers": ctx.available_providers,
         "provider_instances": ctx.provider_instances,
         "provider_config": provider_config or {},
-        "skills_snapshot": ctx.skill_registry.snapshot(),
+        "skills_snapshot": ctx.skill_registry.snapshot_builtins(),
         "md_skills_snapshot": ctx.skill_registry.md_snapshot(),
     }
     if extra:
@@ -719,7 +719,7 @@ def create_router() -> APIRouter:
     ) -> dict[str, Any]:
         """available Skills"""
         # Get executable skills (Python handlers)
-        executable_skills = ctx.skill_registry.snapshot()
+        executable_skills = ctx.skill_registry.snapshot_builtins()
         # Get markdown skills
         md_skills = ctx.skill_registry.md_snapshot()
         
