@@ -68,6 +68,48 @@ class OIDCAuthConfig(BaseModel):
         )
 
 
+class DingTalkOIDCAuthConfig(BaseModel):
+    """DingTalk Enterprise OIDC configuration via IDaaS."""
+    # Token validation settings
+    issuer: str = ""
+    client_id: str = ""
+    client_secret: str = ""
+    discovery_url: str = ""       # defaults to {issuer}/.well-known/openid-configuration
+    jwks_uri: str = ""
+
+    # SSO login flow settings (DingTalk-specific endpoints)
+    authorization_endpoint: str = "https://login.dingtalk.com/oauth2/auth"
+    token_endpoint: str = "https://api.dingtalk.com/v1.0/oauth2/userAccessToken"
+    userinfo_endpoint: str = "https://api.dingtalk.com/v1.0/contact/users/me"
+    end_session_endpoint: str = ""
+    redirect_uri: str = ""
+    scopes: list[str] = ["openid"]  # DingTalk only supports openid scope
+    pkce_enabled: bool = False       # DingTalk does not support PKCE
+    pkce_method: str = "S256"
+
+    # DingTalk-specific settings
+    corp_id: str = ""             # DingTalk corpId for tenant isolation
+    sub_mapping: str = "userid"   # sub claim mapping hint (e.g. "userid", "unionid")
+
+    def expanded(self) -> "DingTalkOIDCAuthConfig":
+        return DingTalkOIDCAuthConfig(
+            issuer=expand_env(self.issuer),
+            client_id=expand_env(self.client_id),
+            client_secret=expand_env(self.client_secret),
+            discovery_url=expand_env(self.discovery_url),
+            jwks_uri=expand_env(self.jwks_uri),
+            authorization_endpoint=expand_env(self.authorization_endpoint),
+            token_endpoint=expand_env(self.token_endpoint),
+            userinfo_endpoint=expand_env(self.userinfo_endpoint),
+            end_session_endpoint=expand_env(self.end_session_endpoint),
+            redirect_uri=expand_env(self.redirect_uri),
+            scopes=self.scopes,
+            pkce_enabled=self.pkce_enabled,
+            pkce_method=self.pkce_method,
+            corp_id=expand_env(self.corp_id),
+            sub_mapping=self.sub_mapping,
+        )
+
 
 class APIKeyAuthConfig(BaseModel):
     """Static API key provider configuration."""
@@ -120,6 +162,7 @@ class AuthConfig(BaseModel):
 
     smartcmp: SmartCMPAuthConfig = SmartCMPAuthConfig()
     oidc: OIDCAuthConfig = OIDCAuthConfig()
+    dingtalk_oidc: DingTalkOIDCAuthConfig = DingTalkOIDCAuthConfig()
     api_key: APIKeyAuthConfig = APIKeyAuthConfig()
     none: NoneAuthConfig = NoneAuthConfig()
     local: LocalAuthConfig = LocalAuthConfig()
@@ -143,6 +186,16 @@ class AuthConfig(BaseModel):
                 raise ValueError(
                     "auth.oidc.client_id is required when auth.provider='oidc'"
                 )
+        elif p == "dingtalk_oidc":
+            dt = self.dingtalk_oidc.expanded()
+            if not dt.issuer:
+                raise ValueError(
+                    "auth.dingtalk_oidc.issuer is required when auth.provider='dingtalk_oidc'"
+                )
+            if not dt.client_id:
+                raise ValueError(
+                    "auth.dingtalk_oidc.client_id is required when auth.provider='dingtalk_oidc'"
+                )
         elif p == "smartcmp":
             smartcmp = self.smartcmp.expanded()
             if not smartcmp.validate_url:
@@ -156,9 +209,7 @@ class AuthConfig(BaseModel):
                 )
 
         jwt_cfg = self.jwt.expanded()
-        if p in {"local", "oidc"} and not jwt_cfg.secret_key:
+        if p in {"local", "oidc", "dingtalk_oidc"} and not jwt_cfg.secret_key:
             raise ValueError(
-                "auth.jwt.secret_key is required when auth.provider is 'local' or 'oidc'"
+                "auth.jwt.secret_key is required when auth.provider is 'local', 'oidc', or 'dingtalk_oidc'"
             )
-
-

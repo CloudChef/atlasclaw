@@ -69,10 +69,10 @@ class ChannelManager:
             True if initialized successfully
         """
         try:
-            from app.atlasclaw.db import get_db_session
+            from app.atlasclaw.db import get_db_manager
 
             # Get connection config from database
-            async with get_db_session() as session:
+            async with get_db_manager().get_session() as session:
                 channel = await ChannelConfigService.get_by_id(session, connection_id)
                 if not channel or channel.user_id != user_id or channel.type != channel_type:
                     logger.error(f"Connection not found: {user_id}/{channel_type}/{connection_id}")
@@ -399,10 +399,10 @@ class ChannelManager:
         Returns:
             List of connection info
         """
-        from app.atlasclaw.db import get_db_session
+        from app.atlasclaw.db import get_db_manager
 
         result = []
-        async with get_db_session() as session:
+        async with get_db_manager().get_session() as session:
             if channel_type:
                 channels = await ChannelConfigService.list_by_user_and_type(
                     session, user_id, channel_type
@@ -431,9 +431,9 @@ class ChannelManager:
         Returns:
             True if enabled successfully
         """
-        from app.atlasclaw.db import get_db_session
+        from app.atlasclaw.db import get_db_manager
 
-        async with get_db_session() as session:
+        async with get_db_manager().get_session() as session:
             channel = await ChannelConfigService.update_status(session, connection_id, True)
             if not channel:
                 return False
@@ -456,10 +456,10 @@ class ChannelManager:
         Returns:
             True if disabled successfully
         """
-        from app.atlasclaw.db import get_db_session
+        from app.atlasclaw.db import get_db_manager
 
         await self.stop_connection(user_id, channel_type, connection_id)
 
-        async with get_db_session() as session:
+        async with get_db_manager().get_session() as session:
             channel = await ChannelConfigService.update_status(session, connection_id, False)
             return channel is not None

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.atlasclaw.auth.models import AuthResult, AuthenticationError
 from app.atlasclaw.auth.providers.base import AuthProvider
-from app.atlasclaw.db.database import get_db_session
+from app.atlasclaw.db.database import get_db_manager
 from app.atlasclaw.db.orm.user import UserService
 
 
@@ -29,7 +29,7 @@ class LocalAuthProvider(AuthProvider):
             raise AuthenticationError("Username or password is empty")
 
         try:
-            async with get_db_session() as session:
+            async with get_db_manager().get_session() as session:
                 user = await UserService.authenticate(session, username, password)
         except RuntimeError as exc:
             raise AuthenticationError("Database is not initialized") from exc

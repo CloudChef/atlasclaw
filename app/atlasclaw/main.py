@@ -758,17 +758,31 @@ async def lifespan(app: FastAPI):
 
 
     # Expose config on app.state so routes (e.g. SSO) can access it
+    # Preserve existing auth config if already set by create_app()
+    existing_auth = getattr(app.state.config, 'auth', None) if hasattr(app.state, 'config') else None
     app.state.config = config
+    
     # Coerce auth dict → AuthConfig object so SSO routes can call .provider / .oidc
-    if config.auth is not None:
-        from app.atlasclaw.auth.config import AuthConfig
-        if isinstance(config.auth, dict):
-            app.state.config.auth = AuthConfig(**config.auth)
+    from app.atlasclaw.auth.config import AuthConfig
+    auth_source = config.auth if config.auth is not None else existing_auth
+    
+    if auth_source is not None:
+        if isinstance(auth_source, dict):
+            auth_obj = AuthConfig(**auth_source)
+        elif isinstance(auth_source, AuthConfig):
+            auth_obj = auth_source
         else:
-            app.state.config.auth = config.auth
-        # Treat disabled auth same as no auth
-        if not app.state.config.auth.enabled:
+            auth_obj = None
+        
+        if auth_obj and auth_obj.enabled:
+            app.state.config.auth = auth_obj
+            print(f"[AtlasClaw] Auth configured with provider='{auth_obj.provider}'")
+        else:
             app.state.config.auth = None
+            print("[AtlasClaw] Auth disabled or not configured")
+    else:
+        app.state.config.auth = None
+        print("[AtlasClaw] Auth config not present, running in anonymous mode")
 
     api_context = APIContext(
         session_manager=_session_manager,

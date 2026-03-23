@@ -1126,35 +1126,57 @@ def create_router() -> APIRouter:
         
         # Get auth config from app state
         auth_config: AuthConfig = request.app.state.config.auth
-        if not auth_config or auth_config.provider != "oidc":
+        if not auth_config or auth_config.provider not in ("oidc", "dingtalk_oidc"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="OIDC provider not configured"
             )
         
-        oidc_config = auth_config.oidc.expanded()
-        if not oidc_config.redirect_uri:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="auth.oidc.redirect_uri is required for SSO login"
+        # Create SSO provider based on provider type
+        if auth_config.provider == "dingtalk_oidc":
+            from ..auth.providers.dingtalk_sso import DingTalkSSOProvider
+            dt_config = auth_config.dingtalk_oidc.expanded()
+            if not dt_config.redirect_uri:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="auth.dingtalk_oidc.redirect_uri is required for SSO login"
+                )
+            provider = DingTalkSSOProvider(
+                issuer=dt_config.issuer,
+                client_id=dt_config.client_id,
+                client_secret=dt_config.client_secret,
+                redirect_uri=dt_config.redirect_uri,
+                authorization_endpoint=dt_config.authorization_endpoint,
+                token_endpoint=dt_config.token_endpoint,
+                userinfo_endpoint=dt_config.userinfo_endpoint,
+                scopes=dt_config.scopes,
+                pkce_enabled=dt_config.pkce_enabled,
+                pkce_method=dt_config.pkce_method,
+                corp_id=dt_config.corp_id,
+            )
+            oidc_config = dt_config
+        else:
+            oidc_config = auth_config.oidc.expanded()
+            if not oidc_config.redirect_uri:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="auth.oidc.redirect_uri is required for SSO login"
+                )
+            provider = OIDCSSOProvider(
+                issuer=oidc_config.issuer,
+                client_id=oidc_config.client_id,
+                client_secret=oidc_config.client_secret,
+                redirect_uri=oidc_config.redirect_uri,
+                authorization_endpoint=oidc_config.authorization_endpoint,
+                token_endpoint=oidc_config.token_endpoint,
+                userinfo_endpoint=oidc_config.userinfo_endpoint,
+                jwks_uri=oidc_config.jwks_uri,
+                scopes=oidc_config.scopes,
+                pkce_enabled=oidc_config.pkce_enabled,
+                pkce_method=oidc_config.pkce_method,
             )
         
-        # Create SSO provider
-        provider = OIDCSSOProvider(
-            issuer=oidc_config.issuer,
-            client_id=oidc_config.client_id,
-            client_secret=oidc_config.client_secret,
-            redirect_uri=oidc_config.redirect_uri,
-            authorization_endpoint=oidc_config.authorization_endpoint,
-            token_endpoint=oidc_config.token_endpoint,
-            userinfo_endpoint=oidc_config.userinfo_endpoint,
-            jwks_uri=oidc_config.jwks_uri,
-            scopes=oidc_config.scopes,
-            pkce_enabled=oidc_config.pkce_enabled,
-            pkce_method=oidc_config.pkce_method,
-        )
-        
-        # Generate state and PKCE
+        # Generate state and PKCE (PKCE only if enabled)
         import secrets
         state = secrets.token_urlsafe(32)
         code_verifier, code_challenge = provider.generate_pkce()
@@ -1175,14 +1197,16 @@ def create_router() -> APIRouter:
             samesite="lax",
             max_age=600  # 10 minutes
         )
-        response.set_cookie(
-            key="pkce_verifier",
-            value=code_verifier,
-            httponly=True,
-            secure=_secure,
-            samesite="lax",
-            max_age=600
-        )
+        # Only set pkce_verifier cookie if PKCE is enabled
+        if code_verifier:
+            response.set_cookie(
+                key="pkce_verifier",
+                value=code_verifier,
+                httponly=True,
+                secure=_secure,
+                samesite="lax",
+                max_age=600
+            )
         
         return response
     
@@ -1190,6 +1214,7 @@ def create_router() -> APIRouter:
     async def sso_callback(
         request: Request,
         code: str = "",
+        authCode: str = "",
         state: str = "",
         error: str = "",
         error_description: str = ""
@@ -1197,6 +1222,9 @@ def create_router() -> APIRouter:
         """Handle OIDC SSO callback from identity provider."""
         from ..auth.config import AuthConfig
         from ..auth.providers.oidc_sso import OIDCSSOProvider
+        
+        # DingTalk uses authCode instead of code
+        actual_code = code or authCode
         
         # Handle IdP error
         if error:
@@ -1207,8 +1235,8 @@ def create_router() -> APIRouter:
         
         # Get cookies
         cookie_state = request.cookies.get("sso_state")
-        code_verifier = request.cookies.get("pkce_verifier")
-        logger.error(
+        code_verifier = request.cookies.get("pkce_verifier", "")
+        logger.info(
             "[SSOCallback] state=%s cookie_state=%s has_verifier=%s all_cookies=%s",
             state, cookie_state, bool(code_verifier), list(request.cookies.keys())
         )
@@ -1220,42 +1248,71 @@ def create_router() -> APIRouter:
                 detail="Invalid or missing state parameter"
             )
         
-        if not code_verifier:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="PKCE verifier missing or expired"
-            )
-        
-        # Get auth config
+        # Get auth config first to check pkce_enabled
         auth_config: AuthConfig = request.app.state.config.auth
-        if not auth_config or auth_config.provider != "oidc":
+        if not auth_config or auth_config.provider not in ("oidc", "dingtalk_oidc"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="OIDC provider not configured"
             )
         
-        oidc_config = auth_config.oidc.expanded()
+        # Check pkce_enabled from config
+        pkce_enabled = True  # Default for standard OIDC
+        if auth_config.provider == "dingtalk_oidc":
+            pkce_enabled = auth_config.dingtalk_oidc.pkce_enabled
+        elif auth_config.provider == "oidc":
+            pkce_enabled = auth_config.oidc.pkce_enabled
+        
+        # Only validate PKCE verifier if PKCE is enabled
+        if pkce_enabled and not code_verifier:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="PKCE verifier missing or expired"
+            )
+        
         jwt_cfg = auth_config.jwt.expanded()
-
-        # Create SSO provider
-
-        provider = OIDCSSOProvider(
-            issuer=oidc_config.issuer,
-            client_id=oidc_config.client_id,
-            client_secret=oidc_config.client_secret,
-            redirect_uri=oidc_config.redirect_uri,
-            authorization_endpoint=oidc_config.authorization_endpoint,
-            token_endpoint=oidc_config.token_endpoint,
-            userinfo_endpoint=oidc_config.userinfo_endpoint,
-            jwks_uri=oidc_config.jwks_uri,
-            scopes=oidc_config.scopes,
-            pkce_enabled=oidc_config.pkce_enabled,
-            pkce_method=oidc_config.pkce_method,
-        )
+        
+        # Create SSO provider based on provider type
+        if auth_config.provider == "dingtalk_oidc":
+            from ..auth.providers.dingtalk_sso import DingTalkSSOProvider
+            dt_config = auth_config.dingtalk_oidc.expanded()
+            provider = DingTalkSSOProvider(
+                issuer=dt_config.issuer,
+                client_id=dt_config.client_id,
+                client_secret=dt_config.client_secret,
+                redirect_uri=dt_config.redirect_uri,
+                authorization_endpoint=dt_config.authorization_endpoint,
+                token_endpoint=dt_config.token_endpoint,
+                userinfo_endpoint=dt_config.userinfo_endpoint,
+                scopes=dt_config.scopes,
+                pkce_enabled=dt_config.pkce_enabled,
+                pkce_method=dt_config.pkce_method,
+                corp_id=dt_config.corp_id,
+            )
+            oidc_config = dt_config
+        else:
+            oidc_config = auth_config.oidc.expanded()
+            provider = OIDCSSOProvider(
+                issuer=oidc_config.issuer,
+                client_id=oidc_config.client_id,
+                client_secret=oidc_config.client_secret,
+                redirect_uri=oidc_config.redirect_uri,
+                authorization_endpoint=oidc_config.authorization_endpoint,
+                token_endpoint=oidc_config.token_endpoint,
+                userinfo_endpoint=oidc_config.userinfo_endpoint,
+                jwks_uri=oidc_config.jwks_uri,
+                scopes=oidc_config.scopes,
+                pkce_enabled=oidc_config.pkce_enabled,
+                pkce_method=oidc_config.pkce_method,
+            )
         
         # Complete login
+        logger.info(
+            "[SSOCallback] Calling complete_login with code prefix: %s...",
+            actual_code[:10] if actual_code else "<empty>",
+        )
         try:
-            auth_result = await provider.complete_login(code, code_verifier)
+            auth_result = await provider.complete_login(actual_code, code_verifier)
         except Exception as exc:
             logger.error(f"SSO login failed: {exc}")
             raise HTTPException(

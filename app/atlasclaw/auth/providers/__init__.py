@@ -44,9 +44,27 @@ def create_provider(config: AuthConfig) -> AuthProvider:
         from app.atlasclaw.auth.providers.local import LocalAuthProvider
         return LocalAuthProvider()
 
+    # Built-in DingTalk OIDC provider (uses standard OIDCProvider with DingTalk config)
+    if provider_type == "dingtalk_oidc":
+        from app.atlasclaw.auth.providers.oidc import OIDCProvider
+        dt = config.dingtalk_oidc.expanded()
+        return OIDCProvider(
+            issuer=dt.issuer,
+            client_id=dt.client_id,
+            jwks_uri=dt.jwks_uri,
+        )
+
+    # --- Extension providers registered via AuthRegistry (e.g. from providers_root) ---
+    from app.atlasclaw.auth.registry import AuthRegistry
+    provider_class = AuthRegistry.get(provider_type)
+    if provider_class is not None:
+        # Generic fallback for other extension providers
+        return provider_class()
+
     raise ValueError(
         f"Unknown auth provider: {config.provider!r}. "
-        "Supported values: 'none', 'smartcmp', 'oidc', 'api_key', 'local'."
+        "Supported values: 'none', 'smartcmp', 'oidc', 'api_key', 'local', 'dingtalk_oidc', "
+        "plus any registered extension providers."
     )
 
 

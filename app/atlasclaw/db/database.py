@@ -234,12 +234,12 @@ async def init_database(config: DatabaseConfig) -> DatabaseManager:
     return _db_manager
 
 
-@asynccontextmanager
 async def get_db_session() -> AsyncGenerator[AsyncSession, None]:
-    """Convenience function to get a database session.
+    """FastAPI dependency to get a database session.
 
-    Usage:
-        async with get_db_session() as session:
+    Usage in FastAPI:
+        @router.get("/")
+        async def handler(session: AsyncSession = Depends(get_db_session)):
             # Use session
             pass
     """

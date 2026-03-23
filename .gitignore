@@ -15,5 +15,14 @@ workspace/
 **/.pytest_cache/
 
 .env
-nuldata/*.db  
-data/  
+nuldata/*.db
+data/
+
+# Temporary scripts with hardcoded credentials (prevent future creation)
+query_approval.py
+start_server.py
+dept_details.py
+
+# Screenshots (keep repo clean)
+*.png
+*.json.bak

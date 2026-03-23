@@ -16,6 +16,7 @@ from app.atlasclaw.auth.config import AuthConfig
 from app.atlasclaw.auth.jwt_token import verify_atlas_token
 from app.atlasclaw.auth.models import ANONYMOUS_USER, AuthenticationError, UserInfo
 from app.atlasclaw.auth.strategy import AuthStrategy
+from app.atlasclaw.session.context import SessionKey
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +96,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.state.user_info = ANONYMOUS_USER
             return await call_next(request)
 
-        if provider_name in {"local", "oidc"}:
+        # JWT-based authentication for local, oidc, and dingtalk_oidc providers
+        if provider_name in {"local", "oidc", "dingtalk_oidc"}:
             atlas_token = self._extract_atlas_token(request)
             if not atlas_token:
                 return self._auth_failed_response(request)
@@ -113,6 +115,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
             jwt_user_info = self._build_user_info_from_payload(payload, atlas_token)
 
+            # OCBC (OIDC Cookie Binding Check) for standard OIDC provider
             if provider_name == "oidc" and self._ocbc_enabled:
                 oidc_token = self._extract_oidc_token(request)
                 if not oidc_token:
@@ -137,6 +140,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             request.state.user_info = jwt_user_info
             return await call_next(request)
 
+        # Other providers (smartcmp, api_key, etc.): extract and validate credential
         credential = self._extract_provider_credential(request)
         if not credential:
             return self._auth_failed_response(request)
@@ -170,7 +174,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
     def _auth_failed_response(self, request: Request):
         if request.url.path == "/" or self._is_browser_request(request):
             provider_name = self._strategy.provider.provider_name()
-            if provider_name == "oidc" and self._oidc_redirect_uri:
+            # Redirect to SSO login for OIDC-based providers
+            if provider_name in {"oidc", "dingtalk_oidc"} and self._oidc_redirect_uri:
                 return RedirectResponse(url="/api/auth/login", status_code=302)
 
             original = f"{request.url.path}"
@@ -278,9 +283,12 @@ def setup_auth_middleware(
         )
         return
 
+    # Set redirect_uri for OIDC-based providers (standard OIDC and DingTalk OIDC)
     oidc_redirect_uri = ""
     if auth_config.provider.lower() == "oidc":
         oidc_redirect_uri = auth_config.oidc.expanded().redirect_uri
+    elif auth_config.provider.lower() == "dingtalk_oidc":
+        oidc_redirect_uri = auth_config.dingtalk_oidc.expanded().redirect_uri
 
     app.add_middleware(
         AuthMiddleware,
