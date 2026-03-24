@@ -55,9 +55,6 @@ COPY alembic.ini .
 RUN mkdir -p /app/workspace /app/data /app/workspace/logs \
     /app/extensions/providers /app/extensions/skills /app/extensions/channels
 
-# Copy default config to workspace
-COPY config/atlasclaw.json /app/workspace/atlasclaw.json
-
 # Expose port
 EXPOSE 8000
 
