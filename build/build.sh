@@ -122,7 +122,7 @@ fi
 if [[ "$MODE" == "opensource" ]]; then
     BASE_IMAGE_NAME="atlasclaw"
     DOCKERFILE="Dockerfile.opensource"
-    COMPOSE_FILE="docker-compose.opensource.yml"
+    COMPOSE_FILE="docker-compose.yml"
     DB_TYPE="sqlite"
 else
     BASE_IMAGE_NAME="atlasclaw-official"

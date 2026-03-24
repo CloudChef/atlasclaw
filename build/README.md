@@ -79,7 +79,7 @@ cd /opt/atlasclaw
 ### 2. Download Compose File
 
 ```bash
-curl -o docker-compose.yml https://raw.githubusercontent.com/CloudChef/AtlasClaw-Core/main/build/docker-compose.opensource.yml
+curl -o docker-compose.yml https://raw.githubusercontent.com/CloudChef/AtlasClaw-Core/main/build/docker-compose.yml
 ```
 
 ### 3. Download Extensions (Optional)

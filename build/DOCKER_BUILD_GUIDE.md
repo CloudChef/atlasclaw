@@ -49,7 +49,7 @@ AtlasClaw container uses the following internal directory structure:
 
 | File | Description |
 |------|-------------|
-| `docker-compose.opensource.yml` | Single AtlasClaw container |
+| `docker-compose.yml` | Single AtlasClaw container |
 | `docker-compose.enterprise.yml` | AtlasClaw + MySQL 8.5 + Secrets |
 
 ### Scripts
