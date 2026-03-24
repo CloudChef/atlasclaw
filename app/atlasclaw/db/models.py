@@ -14,7 +14,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, JSON, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, JSON, UniqueConstraint
 
 from sqlalchemy.dialects.mysql import JSON as MySQLJSON
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -225,3 +225,50 @@ class AuditLogModel(Base):
 
     def __repr__(self) -> str:
         return f"<AuditLogModel(id={self.id}, entity={self.entity_type}:{self.entity_id}, action={self.action})>"
+
+
+class ModelConfigModel(Base):
+    """Model configuration for LLM models.
+
+    Stores configuration for different LLM models including API settings,
+    token limits, and capabilities.
+    """
+
+    __tablename__ = "model_configs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    display_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
+
+    # Provider configuration
+    provider: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    model_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    base_url: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    api_key: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    api_type: Mapped[str] = mapped_column(String(20), default="openai", nullable=False)
+
+    # Model parameters
+    context_window: Mapped[int] = mapped_column(Integer, default=128000, nullable=False)
+    max_tokens: Mapped[int] = mapped_column(Integer, default=4096, nullable=False)
+    temperature: Mapped[float] = mapped_column(Float, default=0.7, nullable=False)
+
+    # Description and capabilities
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    capabilities_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Selection configuration
+    priority: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    weight: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    # Extra configuration
+    config_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    # Metadata
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<ModelConfigModel(id={self.id}, name={self.name}, provider={self.provider})>"

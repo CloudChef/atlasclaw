@@ -128,7 +128,7 @@ Built-in provider preset
 
 
 # ============================================================
-# 
+# Provider Presets
 # ============================================================
 
 BUILTIN_PROVIDERS: dict[str, ProviderPreset] = {
@@ -171,11 +171,93 @@ BUILTIN_PROVIDERS: dict[str, ProviderPreset] = {
         api_type="openai",
         env_key="DOUBAO_API_KEY",
     ),
+    "minimax": ProviderPreset(
+        base_url="https://api.minimax.io/v1",
+        api_type="openai",
+        env_key="MINIMAX_API_KEY",
+    ),
+    "qwen": ProviderPreset(
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        api_type="openai",
+        env_key="QWEN_API_KEY",
+    ),
+    "zhipu": ProviderPreset(
+        base_url="https://open.bigmodel.cn/api/paas/v4",
+        api_type="openai",
+        env_key="ZHIPU_API_KEY",
+    ),
+    "baichuan": ProviderPreset(
+        base_url="https://api.baichuan-ai.com/v1",
+        api_type="openai",
+        env_key="BAICHUAN_API_KEY",
+    ),
+    "yi": ProviderPreset(
+        base_url="https://api.lingyiwanwu.com/v1",
+        api_type="openai",
+        env_key="YI_API_KEY",
+    ),
+    "stepfun": ProviderPreset(
+        base_url="https://api.stepfun.com/v1",
+        api_type="openai",
+        env_key="STEPFUN_API_KEY",
+    ),
+    "siliconflow": ProviderPreset(
+        base_url="https://api.siliconflow.cn/v1",
+        api_type="openai",
+        env_key="SILICONFLOW_API_KEY",
+    ),
+    "mistral": ProviderPreset(
+        base_url="https://api.mistral.ai/v1",
+        api_type="openai",
+        env_key="MISTRAL_API_KEY",
+    ),
+    "cohere": ProviderPreset(
+        base_url="https://api.cohere.ai/compatibility/v1",
+        api_type="openai",
+        env_key="COHERE_API_KEY",
+    ),
+    "spark": ProviderPreset(
+        base_url="https://spark-api-open.xf-yun.com/v1",
+        api_type="openai",
+        env_key="SPARK_API_KEY",
+    ),
+    "hunyuan": ProviderPreset(
+        base_url="https://api.hunyuan.cloud.tencent.com/v1",
+        api_type="openai",
+        env_key="HUNYUAN_API_KEY",
+    ),
 }
 
 
 # ============================================================
-# 
+# Built-in model presets per provider
+# ============================================================
+
+PROVIDER_MODELS: dict[str, list[str]] = {
+    "openai":      ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3-mini", "o1", "o1-mini"],
+    "anthropic":   ["claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-5-haiku-20241022", "claude-3-opus-20240229"],
+    "google":      ["gemini-2.0-flash", "gemini-2.0-pro", "gemini-1.5-flash", "gemini-1.5-pro"],
+    "deepseek":    ["deepseek-chat", "deepseek-reasoner"],
+    "qwen":        ["qwen-max", "qwen-plus", "qwen-turbo", "qwen-long"],
+    "zhipu":       ["glm-4-plus", "glm-4", "glm-4-flash", "glm-4-long"],
+    "minimax":     ["MiniMax-Text-01", "abab6.5s-chat"],
+    "baichuan":    ["Baichuan4", "Baichuan3-Turbo", "Baichuan2-Turbo"],
+    "yi":          ["yi-large", "yi-medium", "yi-spark"],
+    "stepfun":     ["step-2-16k", "step-1-8k", "step-1-flash"],
+    "moonshot":    ["moonshot-v1-128k", "moonshot-v1-32k", "moonshot-v1-8k"],
+    "spark":       ["generalv3.5", "4.0Ultra"],
+    "hunyuan":     ["hunyuan-pro", "hunyuan-standard", "hunyuan-lite"],
+    "doubao":      ["doubao-pro-256k", "doubao-pro-128k", "doubao-lite-128k"],
+    "groq":        ["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "mixtral-8x7b-32768"],
+    "mistral":     ["mistral-large-latest", "mistral-small-latest", "open-mistral-nemo"],
+    "cohere":      ["command-r-plus", "command-r", "command-light"],
+    "siliconflow": ["deepseek-ai/DeepSeek-V3", "Qwen/Qwen2.5-72B-Instruct", "THUDM/glm-4-9b-chat"],
+    "ollama":      ["llama3", "qwen2", "mistral", "codellama", "gemma"],
+}
+
+
+# ============================================================
+# Exceptions
 # ============================================================
 
 class ProviderNotFoundError(Exception):
@@ -520,7 +602,7 @@ create PydanticAI Model instance
 
 
 # ============================================================
-# 
+# Global Registry Functions
 # ============================================================
 
 _default_registry: Optional[ProviderRegistry] = None
