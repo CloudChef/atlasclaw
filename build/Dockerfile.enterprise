@@ -3,6 +3,9 @@
 
 FROM python:3.11 as builder
 
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
 WORKDIR /build
 
 # Install build dependencies
@@ -17,6 +20,9 @@ RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Production stage
 FROM python:3.11
+
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app
 

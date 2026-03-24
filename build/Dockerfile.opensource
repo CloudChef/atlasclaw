@@ -3,6 +3,9 @@
 
 FROM python:3.11
 
+# Prevent interactive prompts during package installation
+ENV DEBIAN_FRONTEND=noninteractive
+
 WORKDIR /app
 
 # Install runtime dependencies (curl, wget, and Node.js for skills)
