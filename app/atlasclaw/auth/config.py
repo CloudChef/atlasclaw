@@ -18,18 +18,6 @@ def expand_env(value: str) -> str:
     return _ENV_RE.sub(lambda m: os.environ.get(m.group(1), m.group(0)), value)
 
 
-class SmartCMPAuthConfig(BaseModel):
-    """SmartCMP provider configuration."""
-    validate_url: str = ""
-    api_base_url: str = ""
-
-    def expanded(self) -> "SmartCMPAuthConfig":
-        return SmartCMPAuthConfig(
-            validate_url=expand_env(self.validate_url),
-            api_base_url=expand_env(self.api_base_url),
-        )
-
-
 class OIDCAuthConfig(BaseModel):
     """OIDC / OAuth2 provider configuration."""
     # Token validation settings
@@ -67,12 +55,6 @@ class OIDCAuthConfig(BaseModel):
             pkce_method=self.pkce_method,
         )
 
-
-
-class APIKeyAuthConfig(BaseModel):
-    """Static API key provider configuration."""
-    # Mapping: api_key_value -> {user_id, roles, display_name, ...}
-    keys: dict[str, dict[str, Any]] = {}
 
 
 class NoneAuthConfig(BaseModel):
@@ -118,9 +100,7 @@ class AuthConfig(BaseModel):
     cache_ttl_seconds: int = 300
 
 
-    smartcmp: SmartCMPAuthConfig = SmartCMPAuthConfig()
     oidc: OIDCAuthConfig = OIDCAuthConfig()
-    api_key: APIKeyAuthConfig = APIKeyAuthConfig()
     none: NoneAuthConfig = NoneAuthConfig()
     local: LocalAuthConfig = LocalAuthConfig()
     jwt: JWTAuthConfig = JWTAuthConfig()
@@ -142,12 +122,6 @@ class AuthConfig(BaseModel):
             if not oidc.client_id:
                 raise ValueError(
                     "auth.oidc.client_id is required when auth.provider='oidc'"
-                )
-        elif p == "smartcmp":
-            smartcmp = self.smartcmp.expanded()
-            if not smartcmp.validate_url:
-                raise ValueError(
-                    "auth.smartcmp.validate_url is required when auth.provider='smartcmp'"
                 )
         elif p == "local":
             if self.local.enabled and not self.local.default_admin_username:

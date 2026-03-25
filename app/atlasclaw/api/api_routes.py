@@ -16,7 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.atlasclaw.db import get_db_session
+from app.atlasclaw.db import get_db_session_dependency as get_db_session
 from app.atlasclaw.db.schemas import (
     AgentCreate,
     AgentUpdate,

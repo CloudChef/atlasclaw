@@ -1,4 +1,4 @@
-"""OIDCSSOProvider — implements OAuth2 Authorization Code flow with PKCE."""
+"""OIDCLoginProvider — implements OAuth2 Authorization Code flow with PKCE."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from app.atlasclaw.auth.models import AuthResult, AuthenticationError
 logger = logging.getLogger(__name__)
 
 
-class OIDCSSOProvider:
+class OIDCLoginProvider:
     """
     SSO Login flow with PKCE (Proof Key for Code Exchange).
     
@@ -110,7 +110,8 @@ class OIDCSSOProvider:
             auth = (self._client_id, self._client_secret)
 
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0, trust_env=True) as client:
+
                 resp = await client.post(
                     self._token_endpoint,
                     data=payload,
@@ -133,9 +134,10 @@ class OIDCSSOProvider:
     async def fetch_userinfo(self, access_token: str) -> dict[str, Any]:
         """Fetch user info from IdP."""
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=True) as client:
                 resp = await client.get(
                     self._userinfo_endpoint,
+
                     headers={"Authorization": f"Bearer {access_token}"}
                 )
                 resp.raise_for_status()
@@ -157,8 +159,9 @@ class OIDCSSOProvider:
 
         # Fetch JWKS
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=10.0, trust_env=True) as client:
                 resp = await client.get(self._jwks_uri)
+
                 resp.raise_for_status()
                 jwks = resp.json()
         except Exception as exc:

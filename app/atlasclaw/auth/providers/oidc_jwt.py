@@ -1,4 +1,4 @@
-"""OIDCProvider — validates JWT tokens via JWKS endpoint."""
+"""OIDCJWTProvider — validates JWT tokens via JWKS endpoint."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from app.atlasclaw.auth.providers.base import AuthProvider
 logger = logging.getLogger(__name__)
 
 
-class OIDCProvider(AuthProvider):
+class OIDCJWTProvider(AuthProvider):
     """
     Validates OIDC / OAuth2 JWT tokens.
 
@@ -38,13 +38,14 @@ class OIDCProvider(AuthProvider):
         self._jwks_cache: dict[str, Any] | None = None
 
     def provider_name(self) -> str:
-        return "oidc"
+        return "oidc_jwt"
 
     async def _fetch_jwks(self) -> dict[str, Any]:
         """Lazily fetch and cache JWKS from the identity provider."""
         if self._jwks_cache is None:
             try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
+                async with httpx.AsyncClient(timeout=10.0, trust_env=True) as client:
+
                     resp = await client.get(self._jwks_uri)
                     resp.raise_for_status()
                     self._jwks_cache = resp.json()
