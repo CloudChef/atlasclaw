@@ -67,6 +67,7 @@ from app.atlasclaw.core.token_health_store import TokenHealthStore
 from app.atlasclaw.core.token_interceptor import TokenHealthInterceptor
 from app.atlasclaw.core.token_pool import TokenEntry, TokenPool
 from app.atlasclaw.db.database import DatabaseConfig, DatabaseManager, init_database, get_db_manager
+from app.atlasclaw.db.orm.model_config import ModelConfigService
 
 
 
@@ -156,11 +157,8 @@ def _check_and_prompt_for_providers_skills(workspace_path: str | Path, providers
         if skills_empty:
             print(f"  - Workspace skills directory is empty: {skills_dir}")
 
-        print("\nTo get started with providers and skills, please download:")
-        print("\n  # Download and extract the providers repository:")
-        print("  curl -L -o atlasclaw-providers.zip https://github.com/CloudChef/atlasclaw-providers/archive/refs/heads/main.zip")
-        print("  unzip atlasclaw-providers.zip -d .")
-        print("  mv atlasclaw-providers-main atlasclaw-providers")
+        print("\nTo get started with providers and skills, please run:")
+        print("\n  git clone https://github.com/CloudChef/atlasclaw-providers.git")
         print(f"  # Configure atlasclaw.json with \"providers_root\": \"{providers_dir}\"")
         print("\nOr manually place provider folders under the providers_root directory above.")
         print("=" * 70 + "\n")
@@ -262,27 +260,37 @@ def _build_token_entries(config) -> tuple[list[TokenEntry], Optional[str]]:
         provider, model = "openai", model_name
 
     provider_config = config.model.providers.get(provider, {})
-    if not provider_config:
-        raise RuntimeError(
-            "No valid token configurations found in atlasclaw.json. "
-            "Please configure model.tokens[] with at least one token entry, e.g.:\n"
-            '  "tokens": [{"id": "main", "provider": "openai", "model": "gpt-4", '
-            '"base_url": "https://api.openai.com/v1", "api_key": "sk-xxx", "api_type": "openai"}]'
-        )
+
+    # Fall back to built-in provider presets if no explicit config exists
+    from app.atlasclaw.models.providers import BUILTIN_PROVIDERS
+    preset = BUILTIN_PROVIDERS.get(provider)
 
     base_url = _expand_env_value(provider_config.get("base_url", ""))
     api_key = _expand_env_value(provider_config.get("api_key", ""))
-    api_type = provider_config.get("api_type", "openai")
+    api_type = provider_config.get("api_type", "")
+
+    # Use preset defaults if not configured
+    if not base_url and preset:
+        base_url = preset.base_url
+    if not api_type and preset:
+        api_type = preset.api_type
+    if not api_key and preset and preset.env_key:
+        # Try to get API key from environment using preset's env_key
+        import os
+        api_key = os.environ.get(preset.env_key, "")
+
+    api_type = api_type or "openai"
 
     if not base_url:
         raise RuntimeError(
             f"Missing base_url for provider '{provider}'. "
-            f"Set environment variable or configure in atlasclaw.json"
+            f"Set environment variable or configure in atlasclaw.json under model.providers.{provider}"
         )
     if not api_key:
+        env_hint = f" or set {preset.env_key}" if preset and preset.env_key else ""
         raise RuntimeError(
             f"Missing api_key for provider '{provider}'. "
-            f"Set environment variable or configure in atlasclaw.json"
+            f"Configure in atlasclaw.json under model.providers.{provider}{env_hint}"
         )
 
     primary_id = f"{provider}-primary"
@@ -454,8 +462,8 @@ async def lifespan(app: FastAPI):
     _print_root_plugins("skills_root plugins", skills_root, skill_plugins)
     _print_root_plugins("channels_root plugins", channels_root, channel_plugins)
 
-    # Get workspace path from config and resolve to absolute path
-    workspace_path = str(Path(config.workspace.path).resolve())
+    # Get workspace path from config
+    workspace_path = config.workspace.path
 
     
     # Initialize workspace directory structure
@@ -518,7 +526,7 @@ async def lifespan(app: FastAPI):
     print(f"[AtlasClaw] Registered built-in channel handlers")
     
     # Initialize ChannelManager
-    _channel_manager = ChannelManager(Path(workspace_path))
+    _channel_manager = ChannelManager(workspace_path)
     set_channel_manager(_channel_manager)
     print(f"[AtlasClaw] Channel manager initialized")
     
@@ -640,25 +648,7 @@ async def lifespan(app: FastAPI):
             print(f"[AtlasClaw] Warning: Failed to load tokens from database: {e}")
 
     if not token_entries:
-        raise RuntimeError(
-            "No LLM token configurations found. AtlasClaw requires at least one model token to start.\n"
-            "Please configure model.tokens in atlasclaw.json before starting the service.\n"
-            "\nExample configuration:\n"
-            '  "model": {\n'
-            '    "primary": "deepseek-main",\n'
-            '    "tokens": [\n'
-            '      {\n'
-            '        "id": "deepseek-main",\n'
-            '        "provider": "deepseek",\n'
-            '        "model": "deepseek-chat",\n'
-            '        "base_url": "https://api.deepseek.com",\n'
-            '        "api_key": "sk-your-api-key-here",\n'
-            '        "api_type": "openai"\n'
-            '      }\n'
-            '    ]\n'
-            '  }\n'
-            "\nSee README.md for more configuration examples."
-        )
+        raise RuntimeError("No token configurations found. Please configure tokens in database or atlasclaw.json")
 
     if primary_token_id and not any(t.token_id == primary_token_id for t in token_entries):
         print(f"[AtlasClaw] Warning: primary token '{primary_token_id}' not found, using first token")
@@ -670,6 +660,29 @@ async def lifespan(app: FastAPI):
     token_pool = TokenPool()
     for token in token_entries:
         token_pool.register_token(token)
+
+    # Load model configs from DB and register as token entries
+    # Model configs can override token entries with the same name
+    if db_initialized:
+        try:
+            async with get_db_manager().get_session() as session:
+                db_model_configs = await ModelConfigService.list_active(session)
+                for mc in db_model_configs:
+                    entry = TokenEntry(
+                        token_id=mc.name,
+                        provider=mc.provider,
+                        model=mc.model_id,
+                        base_url=mc.base_url or "",
+                        api_key=ModelConfigService.get_decrypted_api_key(mc) or "",
+                        api_type=mc.api_type or "openai",
+                        priority=mc.priority or 0,
+                        weight=mc.weight or 100,
+                    )
+                    token_pool.register_token(entry)
+                if db_model_configs:
+                    print(f"[AtlasClaw] Loaded {len(db_model_configs)} model configs from database")
+        except Exception as e:
+            print(f"[AtlasClaw] Warning: Failed to load model configs from database: {e}")
 
     health_store = TokenHealthStore(workspace_path)
     restored_health = health_store.load()
@@ -887,6 +900,14 @@ def create_app() -> FastAPI:
             if login_path.exists():
                 return FileResponse(str(login_path))
             return {"error": "Login page not found"}
+        
+        # Serve models page
+        @app.get("/models.html", include_in_schema=False)
+        async def serve_models():
+            models_path = frontend_dir / "models.html"
+            if models_path.exists():
+                return FileResponse(str(models_path))
+            return {"error": "Models page not found"}
         
         # Serve config.json
 

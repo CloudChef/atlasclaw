@@ -265,6 +265,83 @@ class ChannelListResponse(BaseModel):
     total: int
 
 
+# ============== Model Config Schemas ==============
+
+
+class ModelConfigCreate(BaseModel):
+    """Schema for creating a new Model Config."""
+
+    name: str = Field(..., min_length=1, max_length=100, description="Model unique name")
+    display_name: Optional[str] = Field(default=None, max_length=200, description="Model display name")
+    provider: str = Field(..., min_length=1, max_length=50, description="Provider name (e.g., openai, anthropic)")
+    model_id: str = Field(..., min_length=1, max_length=200, description="Actual model identifier sent to API")
+    base_url: Optional[str] = Field(default=None, max_length=500, description="API base URL")
+    api_key: Optional[str] = Field(default=None, description="API key (will be encrypted)")
+    api_type: str = Field(default="openai", max_length=20, description="API type: openai or anthropic")
+    context_window: int = Field(default=128000, ge=1, description="Context window size")
+    max_tokens: int = Field(default=4096, ge=1, description="Maximum output tokens")
+    temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Temperature for generation")
+    description: Optional[str] = Field(default=None, description="Model description")
+    capabilities: Optional[Dict[str, Any]] = Field(default=None, description="Model capabilities as JSON")
+    priority: int = Field(default=0, ge=0, description="Model priority")
+    weight: int = Field(default=100, ge=1, le=1000, description="Model weight for weighted selection")
+    is_active: bool = Field(default=True, description="Whether model is active")
+    config: Optional[Dict[str, Any]] = Field(default=None, description="Extra configuration as JSON")
+
+
+class ModelConfigUpdate(BaseModel):
+    """Schema for updating an existing Model Config."""
+
+    display_name: Optional[str] = Field(default=None, max_length=200)
+    provider: Optional[str] = Field(default=None, max_length=50)
+    model_id: Optional[str] = Field(default=None, max_length=200)
+    base_url: Optional[str] = Field(default=None, max_length=500)
+    api_key: Optional[str] = Field(default=None, description="New API key (will be encrypted)")
+    api_type: Optional[str] = Field(default=None, max_length=20)
+    context_window: Optional[int] = Field(default=None, ge=1)
+    max_tokens: Optional[int] = Field(default=None, ge=1)
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    description: Optional[str] = None
+    capabilities: Optional[Dict[str, Any]] = None
+    priority: Optional[int] = Field(default=None, ge=0)
+    weight: Optional[int] = Field(default=None, ge=1, le=1000)
+    is_active: Optional[bool] = None
+    config: Optional[Dict[str, Any]] = None
+
+
+class ModelConfigResponse(BaseModel):
+    """Schema for Model Config API response."""
+
+    id: str
+    name: str
+    display_name: Optional[str] = None
+    provider: str
+    model_id: str
+    base_url: Optional[str] = None
+    api_key_masked: Optional[str] = Field(default=None, description="Masked API key (e.g., sk-xxx...xxx)")
+    api_type: str
+    context_window: int
+    max_tokens: int
+    temperature: float
+    description: Optional[str] = None
+    capabilities: Optional[Dict[str, Any]] = None
+    priority: int
+    weight: int
+    is_active: bool
+    config: Optional[Dict[str, Any]] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ModelConfigListResponse(BaseModel):
+    """Schema for Model Config list API response."""
+
+    model_configs: List[ModelConfigResponse]
+    total: int
+
+
 # ============== Pagination Schemas ==============
 
 

@@ -869,6 +869,13 @@ REST endpoints for configuration management with DB persistence.
 - `PUT /users/{id}` — Update
 - `DELETE /users/{id}` — Delete
 
+**Model Configs** (`/api/model-configs`):
+- `POST /model-configs` — Create model configuration (returns 201)
+- `GET /model-configs` — List with pagination and filtering (`provider`, `is_active`)
+- `GET /model-configs/{id}` — Get by ID
+- `PUT /model-configs/{id}` — Update
+- `DELETE /model-configs/{id}` — Delete (returns 204)
+
 ### 4.5 Other API Modules
 
 | File | Purpose |
@@ -1408,6 +1415,7 @@ Relational database abstraction with SQLAlchemy ORM, supporting SQLite (default)
 | `UserModel` | `users` | User accounts |
 | `ChannelModel` | `channels` | Channel configurations |
 | `ServiceProviderConfigModel` | `service_provider_configs` | Provider instance configs |
+| `ModelConfigModel` | `model_configs` | AI model configurations |
 
 **Common Fields**:
 - `id: str` — UUID primary key
@@ -1467,6 +1475,17 @@ Provider configurations are encrypted at rest. The `config` JSON field is automa
 - `delete(session, id) -> bool`
 - `verify_password(password, hash) -> bool` — Verify bcrypt password
 
+**ModelConfigService** (`db/orm/model_config.py`):
+- `create(session, data: ModelConfigCreate) -> ModelConfigModel`
+- `get_by_id(session, id) -> Optional[ModelConfigModel]`
+- `get_by_name(session, name) -> Optional[ModelConfigModel]`
+- `list_all(session, provider, is_active, page, page_size) -> tuple[list[ModelConfigModel], int]`
+- `list_active(session) -> list[ModelConfigModel]` — List active configs sorted by priority
+- `update(session, id, data: ModelConfigUpdate) -> Optional[ModelConfigModel]`
+- `delete(session, id) -> bool`
+- `get_masked_api_key(model) -> str` — Mask API key for display
+- `get_decrypted_api_key(model) -> str` — Decrypt API key
+
 ### 11.4 Pydantic Schemas (`db/schemas.py`)
 
 Request/response schemas for API validation:
@@ -1478,6 +1497,7 @@ Request/response schemas for API validation:
 | `ServiceProviderConfigCreate/Update/Response` | Provider config CRUD |
 | `UserCreate/UserUpdate/UserResponse` | User CRUD |
 | `ChannelCreate/ChannelUpdate/ChannelResponse` | Channel CRUD |
+| `ModelConfigCreate/ModelConfigUpdate/ModelConfigResponse` | Model config CRUD |
 
 ### 11.5 Migrations (`migrations/`)
 
@@ -1489,6 +1509,7 @@ Request/response schemas for API validation:
 - `001_initial.py` — Initial schema (agents, tokens, users, channels)
 - `002_add_channel_is_default.py` — Add `is_default` to channels
 - `003_add_service_provider_configs.py` — Add `service_provider_configs` table
+- `005_add_model_configs.py` — Add `model_configs` table
 
 ---
 

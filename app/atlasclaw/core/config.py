@@ -132,6 +132,8 @@ initializeConfiguration manager
 
         Placeholders in format ${VAR_NAME} are replaced with environment variable values.
         Encrypted values in format enc:v1:... are decrypted using the encryption service.
+        If the env var is not set, returns empty string for string fields (allows Pydantic
+        validation to pass) or None for other types.
         """
         from app.atlasclaw.core.encryption import decrypt, FORMAT_PREFIX
 
@@ -148,7 +150,8 @@ initializeConfiguration manager
             # Check for environment variable placeholder
             if obj.startswith("${") and obj.endswith("}"):
                 var_name = obj[2:-1]
-                return os.environ.get(var_name, obj)
+                # Return env var value or empty string if not set
+                return os.environ.get(var_name, "")
             return obj
         elif isinstance(obj, dict):
             return {k: self._expand_env_vars(v) for k, v in obj.items()}
