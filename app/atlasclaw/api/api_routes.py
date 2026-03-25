@@ -42,13 +42,18 @@ from app.atlasclaw.db.schemas import (
     ModelConfigUpdate,
     ModelConfigResponse,
     ModelConfigListResponse,
+    ProfileUpdate,
+    PasswordChange,
 )
 from app.atlasclaw.db.orm.agent_config import AgentConfigService
+from app.atlasclaw.db.orm.audit import AuditService
 from app.atlasclaw.db.orm.model_token_config import ModelTokenConfigService
 from app.atlasclaw.db.orm.service_provider_config import ServiceProviderConfigService
-from app.atlasclaw.db.orm.user import UserService
+from app.atlasclaw.db.orm.user import UserService, verify_password
 from app.atlasclaw.db.orm.model_config import ModelConfigService
 from app.atlasclaw.db.models import ModelConfigModel
+from app.atlasclaw.auth.guards import get_current_user, require_admin
+from app.atlasclaw.auth.models import UserInfo
 
 
 router = APIRouter(prefix="/api", tags=["Database API"])
@@ -319,8 +324,9 @@ async def delete_provider_config(
 async def create_user(
     user_data: UserCreate,
     session: AsyncSession = Depends(get_db_session),
+    admin: UserInfo = Depends(require_admin),
 ) -> UserResponse:
-    """Create a new User."""
+    """Create a new User. Requires admin privileges."""
     existing = await UserService.get_by_username(session, user_data.username)
     if existing:
         raise HTTPException(status_code=409, detail=f"User '{user_data.username}' already exists")
@@ -331,6 +337,27 @@ async def create_user(
             raise HTTPException(status_code=409, detail=f"Email '{user_data.email}' already exists")
 
     user = await UserService.create(session, user_data)
+
+    # Audit log for user creation
+    new_value = AuditService.sanitize_user_data({
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "display_name": user.display_name,
+        "is_active": user.is_active,
+        "is_admin": user.is_admin,
+        "auth_type": user.auth_type,
+        "roles": user.roles,
+    })
+    await AuditService.log_audit(
+        session=session,
+        entity_type="user",
+        entity_id=user.id,
+        action="CREATE",
+        user_id=admin.user_id,
+        new_value=new_value,
+    )
+
     return UserResponse.model_validate(user)
 
 
@@ -341,8 +368,9 @@ async def list_users(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     session: AsyncSession = Depends(get_db_session),
+    _admin: UserInfo = Depends(require_admin),
 ) -> UserListResponse:
-    """List all Users with optional filtering."""
+    """List all Users with optional filtering. Requires admin privileges."""
     users, total = await UserService.list_all(session, is_active=is_active, search=search, page=page, page_size=page_size)
     return UserListResponse(
         users=[UserResponse.model_validate(u) for u in users],
@@ -350,12 +378,83 @@ async def list_users(
     )
 
 
+# ============== User Self-Service Profile Routes ==============
+
+
+@router.get("/users/me/profile", response_model=UserResponse, status_code=200)
+async def get_my_profile(
+    current_user: UserInfo = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> UserResponse:
+    """Get the authenticated user's own profile."""
+    # current_user.user_id is the username from JWT, not database UUID
+    user = await UserService.get_by_username(session, current_user.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserResponse.model_validate(user)
+
+
+@router.put("/users/me/profile", response_model=UserResponse, status_code=200)
+async def update_my_profile(
+    profile_data: ProfileUpdate,
+    current_user: UserInfo = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> UserResponse:
+    """Update the authenticated user's own profile."""
+    # Build update dict from non-None fields only
+    update_fields = profile_data.model_dump(exclude_unset=True)
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    # Get user by username first to get the database ID
+    user = await UserService.get_by_username(session, current_user.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # If email is being changed, check uniqueness
+    if "email" in update_fields and update_fields["email"]:
+        existing = await UserService.get_by_email(session, update_fields["email"])
+        if existing and existing.id != user.id:
+            raise HTTPException(status_code=409, detail="Email already in use")
+
+    # Use UserService.update with database ID
+    updated = await UserService.update(session, user.id, UserUpdate(**update_fields))
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+    return UserResponse.model_validate(updated)
+
+
+@router.put("/users/me/password", status_code=200)
+async def change_my_password(
+    password_data: PasswordChange,
+    current_user: UserInfo = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """Change the authenticated user's own password."""
+    # Get user record first by username
+    user = await UserService.get_by_username(session, current_user.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Verify current password
+    if not user.password:
+        raise HTTPException(status_code=400, detail="Password authentication not available for this account")
+
+    if not verify_password(password_data.current_password, user.password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    # Update with new password using database ID
+    await UserService.update(session, user.id, UserUpdate(password=password_data.new_password))
+    return {"success": True, "message": "Password changed successfully"}
+
+
 @router.get("/users/{user_id}", response_model=UserResponse)
 async def get_user(
     user_id: str,
     session: AsyncSession = Depends(get_db_session),
+    _admin: UserInfo = Depends(require_admin),
 ) -> UserResponse:
-    """Get User by ID."""
+    """Get User by ID. Requires admin privileges."""
     user = await UserService.get_by_id(session, user_id)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
@@ -367,11 +466,50 @@ async def update_user(
     user_id: str,
     user_data: UserUpdate,
     session: AsyncSession = Depends(get_db_session),
+    admin: UserInfo = Depends(require_admin),
 ) -> UserResponse:
-    """Update a User."""
+    """Update a User. Requires admin privileges."""
+    # Fetch old user data for audit log
+    old_user = await UserService.get_by_id(session, user_id)
+    if old_user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    old_value = AuditService.sanitize_user_data({
+        "id": old_user.id,
+        "username": old_user.username,
+        "email": old_user.email,
+        "display_name": old_user.display_name,
+        "is_active": old_user.is_active,
+        "is_admin": old_user.is_admin,
+        "auth_type": old_user.auth_type,
+        "roles": old_user.roles,
+    })
+
     user = await UserService.update(session, user_id, user_data)
     if user is None:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Audit log for user update
+    new_value = AuditService.sanitize_user_data({
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "display_name": user.display_name,
+        "is_active": user.is_active,
+        "is_admin": user.is_admin,
+        "auth_type": user.auth_type,
+        "roles": user.roles,
+    })
+    await AuditService.log_audit(
+        session=session,
+        entity_type="user",
+        entity_id=user_id,
+        action="UPDATE",
+        user_id=admin.user_id,
+        old_value=old_value,
+        new_value=new_value,
+    )
+
     return UserResponse.model_validate(user)
 
 
@@ -379,11 +517,42 @@ async def update_user(
 async def delete_user(
     user_id: str,
     session: AsyncSession = Depends(get_db_session),
+    current_user: UserInfo = Depends(require_admin),
 ) -> None:
-    """Delete a User."""
+    """Delete a User. Requires admin privileges. Cannot delete own account."""
+    # Fetch user data for audit log before deletion
+    user = await UserService.get_by_id(session, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Prevent self-deletion (compare against username since current_user.user_id is username)
+    if current_user.user_id == user.username:
+        raise HTTPException(status_code=400, detail="Cannot delete your own account")
+
+    old_value = AuditService.sanitize_user_data({
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "display_name": user.display_name,
+        "is_active": user.is_active,
+        "is_admin": user.is_admin,
+        "auth_type": user.auth_type,
+        "roles": user.roles,
+    })
+
     deleted = await UserService.delete(session, user_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="User not found")
+
+    # Audit log for user deletion
+    await AuditService.log_audit(
+        session=session,
+        entity_type="user",
+        entity_id=user_id,
+        action="DELETE",
+        user_id=current_user.user_id,
+        old_value=old_value,
+    )
 
 
 # ============== Model Config Routes ==============

@@ -28,6 +28,14 @@ async function init() {
             return;
         }
 
+        // Show admin link if user is admin
+        if (authInfo.is_admin) {
+            const adminLink = document.getElementById('adminUsersLink');
+            if (adminLink) {
+                adminLink.style.display = '';
+            }
+        }
+
         // 2. Load configuration
         await loadConfig();
         

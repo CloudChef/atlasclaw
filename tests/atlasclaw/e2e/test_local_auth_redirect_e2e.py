@@ -41,7 +41,7 @@ def _create_local_auth_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> t
             "local": {
                 "enabled": True,
                 "default_admin_username": "admin",
-                "default_admin_password": "admin",
+                "default_admin_password": "Admin@123",
             },
         },
         "model": {
@@ -106,7 +106,7 @@ def test_login_then_access_root_and_auth_me(
         with TestClient(app) as client:
             login_resp = client.post(
                 "/api/auth/local/login",
-                json={"username": "admin", "password": "admin"},
+                json={"username": "admin", "password": "Admin@123"},
             )
             assert login_resp.status_code == 200
             login_body = login_resp.json()

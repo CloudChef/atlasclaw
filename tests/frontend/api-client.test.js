@@ -1,14 +1,14 @@
 /**
- * api-client.js 模块单元测试
+ * api-client.js module unit tests
  *
  * Spec coverage:
  *   - All REST fetch calls include `credentials: 'include'` (Cookie forwarding)
  *   - createSession no longer sends `user_id` in request body (identity from cookie)
  */
 
-// Mock config module
+// Mock config module to return relative paths (matches actual behavior)
 jest.mock('../../app/frontend/scripts/config.js', () => ({
-    buildApiUrl: (path) => `http://127.0.0.1:8000${path.startsWith('/') ? path : '/' + path}`
+    buildApiUrl: (path) => path.startsWith('/') ? path : `/${path}`
 }));
 
 // Mock fetch
@@ -94,7 +94,7 @@ describe('api-client.js', () => {
             const result = await createSession();
 
             expect(global.fetch).toHaveBeenCalledWith(
-                'http://127.0.0.1:8000/api/sessions',
+                '/api/sessions',
                 expect.objectContaining({
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
@@ -146,7 +146,7 @@ describe('api-client.js', () => {
             const result = await startAgentRun('session-key', 'Hello');
 
             expect(global.fetch).toHaveBeenCalledWith(
-                'http://127.0.0.1:8000/api/agent/run',
+                '/api/agent/run',
                 expect.objectContaining({
                     method: 'POST',
                     credentials: 'include'
@@ -182,7 +182,7 @@ describe('api-client.js', () => {
             const result = await getSession('test-key');
 
             expect(global.fetch).toHaveBeenCalledWith(
-                'http://127.0.0.1:8000/api/sessions/test-key',
+                '/api/sessions/test-key',
                 expect.objectContaining({ credentials: 'include' })
             );
             expect(result.status).toBe('active');
@@ -218,7 +218,7 @@ describe('api-client.js', () => {
             const result = await getAgentStatus('run-123');
 
             expect(global.fetch).toHaveBeenCalledWith(
-                'http://127.0.0.1:8000/api/agent/runs/run-123',
+                '/api/agent/runs/run-123',
                 expect.objectContaining({ credentials: 'include' })
             );
             expect(result.status).toBe('completed');
@@ -237,7 +237,7 @@ describe('api-client.js', () => {
             await abortAgentRun('run-123');
 
             expect(global.fetch).toHaveBeenCalledWith(
-                'http://127.0.0.1:8000/api/agent/runs/run-123/abort',
+                '/api/agent/runs/run-123/abort',
                 expect.objectContaining({ method: 'POST', credentials: 'include' })
             );
         });

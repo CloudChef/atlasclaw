@@ -195,6 +195,7 @@ class UserUpdate(BaseModel):
     auth_type: Optional[str] = Field(default=None, max_length=100)
     is_active: Optional[bool] = None
     is_admin: Optional[bool] = None
+    avatar_url: Optional[str] = Field(default=None, max_length=500)
 
 
 
@@ -215,6 +216,21 @@ class UserListResponse(BaseModel):
 
     users: List[UserResponse]
     total: int
+
+
+class ProfileUpdate(BaseModel):
+    """Schema for user self-service profile update."""
+
+    display_name: Optional[str] = Field(None, max_length=200)
+    email: Optional[str] = Field(None, max_length=255)
+    avatar_url: Optional[str] = Field(None, max_length=500)
+
+
+class PasswordChange(BaseModel):
+    """Schema for user password change."""
+
+    current_password: str
+    new_password: str = Field(min_length=1)
 
 
 # ============== Channel Schemas ==============

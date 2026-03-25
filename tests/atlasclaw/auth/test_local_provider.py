@@ -26,7 +26,7 @@ async def local_db(tmp_path: Path):
             session,
             UserCreate(
                 username="admin",
-                password="admin",
+                password="adminpass1",
                 display_name="Administrator",
                 roles={"admin": True},
                 auth_type="local",
@@ -44,7 +44,7 @@ class TestLocalAuthProvider:
     async def test_authenticate_success(self, local_db):
         provider = LocalAuthProvider()
 
-        result = await provider.authenticate("admin:admin")
+        result = await provider.authenticate("admin:adminpass1")
 
         assert result.subject == "admin"
         assert result.display_name == "Administrator"

@@ -1,11 +1,11 @@
 /**
- * config.js 模块单元测试
+ * config.js module unit tests
  */
 
 // Mock fetch
 global.fetch = jest.fn();
 
-// 在每个测试前重置模块状态
+// Reset module state before each test
 beforeEach(() => {
     jest.resetModules();
     global.fetch.mockClear();
@@ -16,20 +16,22 @@ describe('config.js', () => {
         test('should build correct URL with leading slash', async () => {
             const { buildApiUrl } = await import('../../app/frontend/scripts/config.js');
             const url = buildApiUrl('/api/sessions');
-            expect(url).toBe('http://127.0.0.1:8000/api/sessions');
+            // Default apiBaseUrl is empty, so relative path is returned
+            expect(url).toBe('/api/sessions');
         });
 
         test('should build correct URL without leading slash', async () => {
             const { buildApiUrl } = await import('../../app/frontend/scripts/config.js');
             const url = buildApiUrl('api/sessions');
-            expect(url).toBe('http://127.0.0.1:8000/api/sessions');
+            // buildApiUrl adds leading slash if missing, returns relative path when apiBaseUrl is empty
+            expect(url).toBe('/api/sessions');
         });
 
         test('should handle base URL with trailing slash', async () => {
             const { buildApiUrl } = await import('../../app/frontend/scripts/config.js');
-            // Default config has no trailing slash
+            // Default config has empty apiBaseUrl, returns relative path
             const url = buildApiUrl('/api/test');
-            expect(url).toBe('http://127.0.0.1:8000/api/test');
+            expect(url).toBe('/api/test');
         });
     });
 
@@ -41,7 +43,8 @@ describe('config.js', () => {
             await loadConfig();
             
             const config = getConfig();
-            expect(config.apiBaseUrl).toBe('http://127.0.0.1:8000');
+            // Default apiBaseUrl is empty string for relative path support
+            expect(config.apiBaseUrl).toBe('');
         });
 
         test('should load config from config.json', async () => {
@@ -79,7 +82,8 @@ describe('config.js', () => {
     describe('getApiBaseUrl', () => {
         test('should return default API base URL', async () => {
             const { getApiBaseUrl } = await import('../../app/frontend/scripts/config.js');
-            expect(getApiBaseUrl()).toBe('http://127.0.0.1:8000');
+            // Default apiBaseUrl is empty string for relative path support
+            expect(getApiBaseUrl()).toBe('');
         });
     });
 

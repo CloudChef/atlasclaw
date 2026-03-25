@@ -50,7 +50,7 @@ def test_local_login_success(tmp_path):
 
     resp = client.post(
         "/api/auth/local/login",
-        json={"username": "admin", "password": "admin"},
+        json={"username": "admin", "password": "adminpass1"},
     )
 
     assert resp.status_code == 200
@@ -88,7 +88,7 @@ def test_auth_me_requires_valid_jwt(tmp_path):
 
     login_resp = client.post(
         "/api/auth/local/login",
-        json={"username": "admin", "password": "admin"},
+        json={"username": "admin", "password": "adminpass1"},
     )
     assert login_resp.status_code == 200
     token = login_resp.json()["token"]
@@ -122,7 +122,7 @@ def init_database_sync(tmp_path: Path):
                 session,
                 UserCreate(
                     username="admin",
-                    password="admin",
+                    password="adminpass1",
                     display_name="Administrator",
                     roles={"admin": True},
                     auth_type="local",

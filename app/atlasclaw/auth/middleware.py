@@ -162,6 +162,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
         user_id = str(payload.get("sub", "")).strip() or "default"
         auth_type = str(payload.get("auth_type", "local")).strip() or "local"
 
+        # Include is_admin in extra for guards to check
+        extra = {
+            "login_time": payload.get("login_time", ""),
+            "is_admin": payload.get("is_admin", False),
+        }
+
         return UserInfo(
             user_id=user_id,
             display_name=user_id,
@@ -169,7 +175,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
             roles=roles,
             raw_token=raw_token,
             provider_subject=f"{auth_type}:{user_id}",
-            extra={"login_time": payload.get("login_time", "")},
+            extra=extra,
             auth_type=auth_type,
         )
 

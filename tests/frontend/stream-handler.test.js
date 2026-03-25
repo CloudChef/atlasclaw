@@ -1,10 +1,10 @@
 /**
- * stream-handler.js 模块单元测试
+ * stream-handler.js module unit tests
  */
 
-// Mock config module
+// Mock config module to return relative paths (matches actual behavior)
 jest.mock('../../app/frontend/scripts/config.js', () => ({
-    buildApiUrl: (path) => `http://127.0.0.1:8000${path}`
+    buildApiUrl: (path) => path.startsWith('/') ? path : `/${path}`
 }));
 
 // Mock EventSource
@@ -100,7 +100,8 @@ describe('stream-handler.js', () => {
             handler.start();
             
             expect(MockEventSource.instances.length).toBe(1);
-            expect(MockEventSource.instances[0].url).toBe('http://127.0.0.1:8000/api/agent/runs/run-123/stream');
+            // URL is relative path since buildApiUrl returns relative paths
+            expect(MockEventSource.instances[0].url).toBe('/api/agent/runs/run-123/stream');
         });
 
         test('should call onStart callback on lifecycle start event', async () => {

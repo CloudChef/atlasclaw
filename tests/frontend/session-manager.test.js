@@ -73,8 +73,9 @@ describe('session-manager.js', () => {
             const { initSession } = await import('../../app/frontend/scripts/session-manager.js');
             await initSession({ agentId: 'test-agent' });
             
+            // buildApiUrl returns relative path when apiBaseUrl is empty or cross-origin
             expect(global.fetch).toHaveBeenCalledWith(
-                'http://127.0.0.1:8000/api/sessions',
+                '/api/sessions',
                 expect.objectContaining({
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' }

@@ -58,7 +58,8 @@ describe('i18n Module', () => {
         test('should return default locale for unsupported language', async () => {
             global.navigator = { language: 'fr-FR' };
             const { detectBrowserLocale } = await import('../../app/frontend/scripts/i18n.js');
-            expect(detectBrowserLocale()).toBe('zh-CN');
+            // Default locale is en-US as defined in source
+            expect(detectBrowserLocale()).toBe('en-US');
         });
     });
 
@@ -108,7 +109,8 @@ describe('i18n Module', () => {
 
             const { loadLocale } = await import('../../app/frontend/scripts/i18n.js');
             await loadLocale('invalid-locale');
-            expect(global.fetch).toHaveBeenCalledWith('/locales/zh-CN.json');
+            // Default locale is en-US as defined in source
+            expect(global.fetch).toHaveBeenCalledWith('/locales/en-US.json');
         });
     });
 
@@ -183,6 +185,7 @@ describe('i18n Module', () => {
         test('should update elements with data-i18n attribute', async () => {
             const mockElement = {
                 getAttribute: jest.fn(() => 'app.title'),
+                setAttribute: jest.fn(),
                 textContent: ''
             };
             document.querySelectorAll.mockReturnValue([mockElement]);
