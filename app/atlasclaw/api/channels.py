@@ -13,8 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.atlasclaw.channels.manager import ChannelManager
 from app.atlasclaw.channels.registry import ChannelRegistry
-from app.atlasclaw.db import get_db_session
-from app.atlasclaw.db.orm.channel_config import ChannelConfigService
+from app.atlasclaw.db import get_db_session_dependency as get_db_session
+from app.atlasclaw.db.orm.channel_config import ChannelConfigService, _decrypt_config
 from app.atlasclaw.db.schemas import ChannelCreate, ChannelUpdate
 
 logger = logging.getLogger(__name__)
@@ -218,11 +218,14 @@ async def create_connection(
     
     channel = await ChannelConfigService.create(session, channel_data)
     
+    # Decrypt config for response
+    config = _decrypt_config(channel.config)
+    
     return ConnectionResponse(
         id=channel.id,
         name=channel.name,
         channel_type=channel.type,
-        config=channel.config or {},
+        config=config,
         enabled=channel.is_active,
         is_default=channel.is_default,
     )
@@ -265,11 +268,14 @@ async def update_connection(
     
     channel = await ChannelConfigService.update(session, connection_id, update_data)
     
+    # Decrypt config for response
+    config = _decrypt_config(channel.config)
+    
     return ConnectionResponse(
         id=channel.id,
         name=channel.name,
         channel_type=channel.type,
-        config=channel.config or {},
+        config=config,
         enabled=channel.is_active,
         is_default=channel.is_default,
     )
