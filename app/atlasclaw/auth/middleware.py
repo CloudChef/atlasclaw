@@ -188,7 +188,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.url.path == "/" or self._is_browser_request(request):
             provider_name = self._current_provider_name()
 
-            if provider_name == "oidc" and self._oidc_redirect_uri:
+            # SSO providers (oidc, dingtalk, etc.) redirect to /api/auth/login
+            # Use reverse exclusion pattern: all providers except local/none/empty are SSO
+            # This way, new SSO providers (feishu, wecom, etc.) work without code changes
+            if provider_name not in ("local", "none", ""):
                 return RedirectResponse(url="/api/auth/login", status_code=302)
 
             original = f"{request.url.path}"

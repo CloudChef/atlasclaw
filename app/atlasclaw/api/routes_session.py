@@ -22,6 +22,40 @@ from .schemas import (
 
 
 def register_session_routes(router: APIRouter) -> None:
+    @router.get("/sessions", response_model=list[SessionResponse])
+    async def list_sessions(
+        request_obj: Request,
+        ctx: APIContext = Depends(get_api_context),
+    ) -> list[SessionResponse]:
+        """List all sessions for the current user."""
+        auth_user: UserInfo = getattr(request_obj.state, "user_info", ANONYMOUS_USER)
+        all_sessions = await ctx.session_manager.list_sessions()
+
+        # Filter sessions by current user
+        user_sessions = []
+        for session in all_sessions:
+            try:
+                key = SessionKey.from_string(session.session_key)
+                if key.user_id == auth_user.user_id:
+                    user_sessions.append(
+                        SessionResponse(
+                            session_key=session.session_key,
+                            agent_id=key.agent_id,
+                            channel=key.channel,
+                            user_id=key.user_id,
+                            created_at=session.created_at,
+                            last_activity=session.updated_at,
+                            message_count=getattr(session, "message_count", 0),
+                            total_tokens=session.total_tokens,
+                        )
+                    )
+            except Exception:
+                continue
+
+        # Sort by last_activity descending (most recent first)
+        user_sessions.sort(key=lambda s: s.last_activity or s.created_at, reverse=True)
+        return user_sessions
+
     @router.post("/sessions", response_model=SessionResponse)
     async def create_session(
         request_obj: Request,

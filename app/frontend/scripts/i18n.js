@@ -235,6 +235,57 @@ export function isLocaleLoaded() {
     return localeLoaded;
 }
 
+/**
+ * Update translations for a specific container
+ * Same logic as updatePageTranslations but scoped to container
+ * @param {HTMLElement} container - Container element to update
+ */
+export function updateContainerTranslations(container) {
+    if (!container) return
+
+    // Skip if translations not loaded yet
+    if (!localeLoaded || Object.keys(translations).length === 0) {
+        console.warn('[i18n] Translations not loaded, skipping container update')
+        return
+    }
+
+    // Update text content
+    container.querySelectorAll('[data-i18n]').forEach(el => {
+        const key = el.getAttribute('data-i18n')
+        const translated = t(key)
+        if (translated && translated !== key) {
+            el.textContent = translated
+        }
+    })
+
+    // Update placeholder
+    container.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+        const key = el.getAttribute('data-i18n-placeholder')
+        const translated = t(key)
+        if (translated && translated !== key) {
+            el.placeholder = translated
+        }
+    })
+
+    // Update title attribute
+    container.querySelectorAll('[data-i18n-title]').forEach(el => {
+        const key = el.getAttribute('data-i18n-title')
+        const translated = t(key)
+        if (translated && translated !== key) {
+            el.title = translated
+        }
+    })
+
+    // Update aria-label attribute
+    container.querySelectorAll('[data-i18n-aria-label]').forEach(el => {
+        const key = el.getAttribute('data-i18n-aria-label')
+        const translated = t(key)
+        if (translated && translated !== key) {
+            el.setAttribute('aria-label', translated)
+        }
+    })
+}
+
 export default {
     initI18n,
     t,
@@ -243,5 +294,6 @@ export default {
     getSupportedLocales,
     detectBrowserLocale,
     updatePageTranslations,
+    updateContainerTranslations,
     isLocaleLoaded
 };

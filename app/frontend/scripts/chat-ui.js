@@ -121,7 +121,12 @@ details.thinking-block .thinking-body{padding:8px 0 8px 20px;font-size:14px;line
 export async function initChat(element) {
     chatElement = element;
 
-    await initSession();
+    try {
+        await initSession();
+    } catch (sessionError) {
+        console.error('[ChatUI] Failed to initialize session:', sessionError);
+        // Continue without session - chat may not work properly
+    }
     
     // Load agent info and set welcome message
     await loadAgentInfo(element);

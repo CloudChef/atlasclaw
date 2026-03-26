@@ -1,0 +1,558 @@
+/* ==========================================================================
+   Admin Users Page Styles
+   Extracted from admin-users.html for SPA architecture
+   ========================================================================== */
+
+/* Admin Users Page Specific Styles */
+
+/* User Table */
+.users-section {
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    overflow: hidden;
+}
+
+.users-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.users-table th,
+.users-table td {
+    padding: 14px 16px;
+    text-align: left;
+    border-bottom: 1px solid #eee;
+}
+
+.users-table th {
+    background: #f9f9f9;
+    font-weight: 600;
+    font-size: 13px;
+    color: #666;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.users-table td {
+    font-size: 14px;
+    color: #333;
+}
+
+.users-table tbody tr:hover {
+    background: #f8f9ff;
+}
+
+.users-table tbody tr:last-child td {
+    border-bottom: none;
+}
+
+/* Status Badge */
+.badge {
+    display: inline-block;
+    padding: 4px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 500;
+}
+
+.badge-active {
+    background: #e6f7ed;
+    color: #27ae60;
+}
+
+.badge-inactive {
+    background: #f0f0f0;
+    color: #888;
+}
+
+.badge-admin {
+    background: #fff3e0;
+    color: #e67e22;
+}
+
+.badge-local {
+    background: #e3f2fd;
+    color: #2196f3;
+}
+
+.badge-sso {
+    background: #f3e5f5;
+    color: #9c27b0;
+}
+
+/* Action Buttons */
+.action-btns {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-icon {
+    width: 32px;
+    height: 32px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: white;
+    color: #666;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+}
+
+.btn-icon:hover {
+    border-color: #bbb;
+    color: #333;
+}
+
+.btn-icon.btn-delete:hover {
+    border-color: #e74c3c;
+    color: #e74c3c;
+    background: #fff5f5;
+}
+
+.btn-icon svg {
+    width: 16px;
+    height: 16px;
+}
+
+/* Pagination */
+.pagination {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px;
+    border-top: 1px solid #eee;
+    background: #fafafa;
+}
+
+.pagination-info {
+    font-size: 13px;
+    color: #666;
+}
+
+.pagination-btns {
+    display: flex;
+    gap: 8px;
+}
+
+.pagination-btn {
+    padding: 8px 14px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: white;
+    color: #333;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.pagination-btn:hover:not(:disabled) {
+    border-color: #4b6cb7;
+    color: #4b6cb7;
+}
+
+.pagination-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.pagination-btn.active {
+    background: #4b6cb7;
+    border-color: #4b6cb7;
+    color: white;
+}
+
+/* Empty State */
+.empty-state {
+    text-align: center;
+    padding: 60px 20px;
+    color: #888;
+}
+
+.empty-state svg {
+    width: 64px;
+    height: 64px;
+    margin-bottom: 16px;
+    opacity: 0.5;
+}
+
+.empty-state p {
+    font-size: 14px;
+}
+
+/* Modal */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 1000;
+}
+
+.modal-overlay.hidden {
+    display: none;
+}
+
+.modal {
+    background: white;
+    border-radius: 12px;
+    width: 90%;
+    max-width: 640px;
+    max-height: 90vh;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.2);
+}
+
+.modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 24px;
+    border-bottom: 1px solid #eee;
+}
+
+.modal-header h2 {
+    font-size: 18px;
+    font-weight: 600;
+    color: #333;
+    margin: 0;
+}
+
+.modal-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    color: #888;
+    cursor: pointer;
+    padding: 0;
+    line-height: 1;
+}
+
+.modal-close:hover {
+    color: #333;
+}
+
+.modal-body {
+    padding: 24px;
+    max-height: calc(90vh - 140px);
+    overflow-y: auto;
+    overflow-x: hidden;
+}
+
+.modal-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 16px 24px;
+    border-top: 1px solid #eee;
+    background: #fafafa;
+}
+
+/* Form Elements */
+/* Horizontal form layout: label on left, input on right */
+.form-row {
+    display: flex;
+    align-items: flex-start;
+    margin-bottom: 16px;
+}
+
+.form-row:last-child {
+    margin-bottom: 0;
+}
+
+.form-row > label:first-child {
+    width: 120px;
+    min-width: 120px;
+    text-align: right;
+    margin-right: 12px;
+    margin-bottom: 0;
+    padding-top: 10px;
+    flex-shrink: 0;
+    display: inline-block;
+    font-size: 14px;
+    font-weight: 500;
+    color: #333;
+}
+
+/* Input/select fills remaining space */
+.form-row > input,
+.form-row > select {
+    flex: 1;
+    min-width: 0;
+    padding: 10px 14px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.form-row input:focus,
+.form-row select:focus {
+    outline: none;
+    border-color: #4b6cb7;
+    box-shadow: 0 0 0 3px rgba(75, 108, 183, 0.1);
+}
+
+.form-row .hint {
+    display: block;
+    margin-top: 4px;
+    font-size: 12px;
+    color: #888;
+}
+
+.form-row .required {
+    color: #e74c3c;
+}
+
+/* Fix dropdown select arrows */
+.form-row select {
+    appearance: auto !important;
+    -webkit-appearance: menulist !important;
+    -moz-appearance: menulist !important;
+    background-image: none !important;
+    padding-right: 14px;
+    cursor: pointer;
+}
+
+/* Universal input styling for all text inputs in form rows (any nesting level) */
+.form-row input[type="text"],
+.form-row input[type="email"],
+.form-row input[type="password"] {
+    padding: 10px 14px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: all 0.2s;
+    box-sizing: border-box;
+}
+
+/* Multi-select dropdown for Roles */
+.multi-select {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
+.multi-select-display {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    background: #fff;
+    cursor: pointer;
+    min-height: 42px;
+    font-size: 14px;
+    transition: border-color 0.2s;
+    box-sizing: border-box;
+}
+
+.multi-select-display:hover {
+    border-color: #9ca3af;
+}
+
+.multi-select-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #333;
+}
+
+.multi-select-text.placeholder {
+    color: #9ca3af;
+}
+
+.multi-select-arrow {
+    margin-left: 8px;
+    color: #6b7280;
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+.multi-select-dropdown {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    margin-top: 4px;
+    background: #fff;
+    border: 1px solid #d1d5db;
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+    z-index: 100;
+    padding: 6px 0;
+}
+
+.multi-select-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    cursor: pointer;
+    font-size: 14px;
+    color: #333;
+    transition: background 0.15s;
+    margin: 0;
+}
+
+.multi-select-option:hover {
+    background: #f3f4f6;
+}
+
+.multi-select-option input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.hidden {
+    display: none;
+}
+
+.form-row-inline {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding-left: 132px;  /* Align with label width 120px + 12px margin */
+}
+
+.form-row-inline input[type="checkbox"] {
+    width: auto;
+    flex: none;
+}
+
+.form-row-inline label {
+    margin-bottom: 0;
+    font-weight: normal;
+    width: auto;
+    min-width: 0;
+    text-align: left;
+    padding-top: 0;
+}
+
+/* Delete Confirm Modal */
+.confirm-message {
+    font-size: 14px;
+    color: #666;
+    line-height: 1.6;
+}
+
+.confirm-message strong {
+    color: #333;
+}
+
+.btn-danger {
+    padding: 10px 20px;
+    background: #e74c3c;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.btn-danger:hover {
+    background: #c0392b;
+}
+
+/* Toast Notifications - Top Right */
+.toast-container {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1001;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.toast-item {
+    padding: 12px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    color: white;
+    background: #333;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    animation: slideIn 0.3s ease;
+}
+
+.toast-item.success {
+    background: #27ae60;
+}
+
+.toast-item.error {
+    background: #e74c3c;
+}
+
+@keyframes slideIn {
+    from {
+        transform: translateX(100%);
+        opacity: 0;
+    }
+    to {
+        transform: translateX(0);
+        opacity: 1;
+    }
+}
+
+/* Loading State */
+.loading-row td {
+    text-align: center;
+    padding: 40px 20px;
+    color: #888;
+}
+
+/* Toolbar Layout - Left: create btn, Right: search */
+.admin-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin: 16px 0;
+    gap: 16px;
+    flex-wrap: wrap;
+}
+
+.admin-toolbar .search-input {
+    min-width: 200px;
+    max-width: 300px;
+    padding: 10px 14px;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    font-size: 14px;
+    transition: all 0.2s;
+}
+
+.admin-toolbar .search-input:focus {
+    outline: none;
+    border-color: #4b6cb7;
+    box-shadow: 0 0 0 3px rgba(75, 108, 183, 0.1);
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .users-table {
+        display: block;
+        overflow-x: auto;
+    }
+
+    .admin-toolbar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .admin-toolbar .search-input {
+        max-width: none;
+    }
+}

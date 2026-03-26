@@ -39,9 +39,14 @@
     import { checkAuth, login } from '/scripts/auth.js'
     import { initI18n, t, updatePageTranslations } from '/scripts/i18n.js'
 
-    // Initialize i18n first
-    await initI18n()
-    updatePageTranslations()
+    // Initialize i18n first (non-blocking)
+    try {
+      await initI18n()
+      updatePageTranslations()
+    } catch (i18nError) {
+      console.warn('[Login] i18n initialization failed:', i18nError)
+      // Continue without i18n - use default text content
+    }
 
     const form = document.getElementById('loginForm')
     const submitBtn = document.getElementById('submitBtn')

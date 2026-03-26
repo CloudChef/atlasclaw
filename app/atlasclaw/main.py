@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=False)
 
 from fastapi import FastAPI
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.atlasclaw.api.routes import create_router, APIContext, install_request_validation_logging, set_api_context
@@ -503,6 +504,20 @@ def create_app() -> FastAPI:
         agent_info_router=agent_info_router,
         db_api_router=db_api_router,
     )
+
+    # SPA catch-all: serve index.html for all non-API, non-static routes
+    # This MUST be AFTER all include_router calls to avoid intercepting API requests
+    if frontend_dir.exists():
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_catch_all(full_path: str):
+            """SPA catch-all: serve index.html for all non-API, non-static routes"""
+            # Skip API routes - should not reach here, but safety check
+            if full_path.startswith("api/"):
+                return JSONResponse(status_code=404, content={"detail": "API endpoint not found"})
+            index_file = frontend_dir / "index.html"
+            if index_file.exists():
+                return FileResponse(str(index_file))
+            return {"error": "Frontend index.html not found"}
 
     setup_auth_middleware_from_config(app)
     return app
