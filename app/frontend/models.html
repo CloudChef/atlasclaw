@@ -5,6 +5,103 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="model.title">Model Configs - AtlasClaw</title>
     <link rel="stylesheet" href="/styles/main.css?v=10">
+    <style>
+        /* ========== Model Modal UI Fixes ========== */
+        
+        /* 1. Make modal wider for better usability */
+        #modelModal .confirm-content {
+            max-width: 640px !important;
+            width: 95%;
+            overflow: hidden;
+            border-radius: 12px;
+        }
+        
+        /* 2. Horizontal form layout: label on left, input on right */
+        #modelModal .form-group {
+            display: flex;
+            align-items: flex-start;
+            margin-bottom: 16px;
+        }
+        
+        #modelModal .form-group > label:first-child {
+            width: 120px;
+            min-width: 120px;
+            text-align: right;
+            margin-right: 12px;
+            margin-bottom: 0;
+            padding-top: 10px;
+            flex-shrink: 0;
+            display: inline-block;
+        }
+        
+        #modelModal .form-group .required {
+            color: #e74c3c;
+            margin-left: 2px;
+        }
+        
+        /* Wrapper for input/select to fill remaining space */
+        #modelModal .form-group > input,
+        #modelModal .form-group > select,
+        #modelModal .form-group > textarea,
+        #modelModal .form-group > div:not(.advanced-toggle) {
+            flex: 1;
+            min-width: 0;
+        }
+        
+        /* 3. Fix dropdown select arrows - ensure native arrows display properly */
+        #modelModal select,
+        #modelModal .form-select {
+            appearance: auto !important;
+            -webkit-appearance: menulist !important;
+            -moz-appearance: menulist !important;
+            background-image: none !important;
+            padding-right: 14px;
+            cursor: pointer;
+        }
+        
+        /* Inner scrollable area for form content */
+        #modelModal #modelForm {
+            max-height: calc(90vh - 140px);
+            overflow-y: auto;
+            overflow-x: hidden;
+            padding-right: 8px;
+        }
+        
+        /* Advanced toggle styling */
+        #modelModal .advanced-toggle {
+            margin: 16px 0 8px;
+            padding-left: 132px;
+            cursor: pointer;
+            color: #666;
+            font-size: 14px;
+            user-select: none;
+            transition: color 0.2s;
+        }
+        
+        #modelModal .advanced-toggle:hover {
+            color: #4b6cb7;
+        }
+        
+        /* Hint text styling */
+        #modelModal .form-group .hint {
+            display: block;
+            margin-top: 4px;
+        }
+        
+        /* Modal title styling */
+        #modelModal .confirm-content > h3 {
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #eee;
+        }
+        
+        /* Button row spacing */
+        #modelModal .confirm-buttons {
+            margin-top: 16px;
+            padding-top: 16px;
+            border-top: 1px solid #eee;
+        }
+    </style>
 </head>
 <body>
     <!-- Left Sidebar -->
@@ -81,56 +178,54 @@
     
     <!-- Create/Edit Modal -->
     <div id="modelModal" class="confirm-dialog hidden">
-        <div class="confirm-content" style="max-width: 600px; max-height: 90vh; overflow-y: auto;">
+        <div class="confirm-content">
             <h3 id="modalTitle" style="color: #333;" data-i18n="model.createTitle">Create Model Config</h3>
             <form id="modelForm" class="config-form">
                 <!-- Basic Information (always visible) -->
                 <div class="form-group">
-                    <label data-i18n="model.name">Name</label> <span class="required">*</span>
+                    <label><span data-i18n="model.name">Name</span> <span class="required">*</span></label>
                     <input type="text" name="name" required data-i18n-placeholder="model.namePlaceholder" placeholder="e.g. gpt-4-main">
                 </div>
                 <div class="form-group">
-                    <label data-i18n="model.provider">Provider</label> <span class="required">*</span>
+                    <label><span data-i18n="model.provider">Provider</span> <span class="required">*</span></label>
                     <select name="provider" required class="form-select">
                         <option value="" disabled selected data-i18n="model.providerPlaceholder">Select provider</option>
-                        <option value="openai">OpenAI</option>
-                        <option value="anthropic">Anthropic</option>
-                        <option value="google">Google</option>
-                        <option value="mistral">Mistral</option>
-                        <option value="cohere">Cohere</option>
-                        <option value="groq">Groq</option>
-                        <option value="ollama">Ollama</option>
-                        <option value="deepseek">DeepSeek</option>
-                        <option value="qwen">Qwen (通义千问)</option>
-                        <option value="zhipu">ZhipuAI (智谱)</option>
-                        <option value="minimax">MiniMax</option>
-                        <option value="baichuan">Baichuan (百川)</option>
-                        <option value="yi">Yi (零一万物)</option>
-                        <option value="stepfun">StepFun (阶跃星辰)</option>
-                        <option value="moonshot">Moonshot</option>
-                        <option value="spark">Spark (讯飞星火)</option>
-                        <option value="hunyuan">Hunyuan (腾讯混元)</option>
-                        <option value="doubao">Doubao (豆包)</option>
-                        <option value="siliconflow">SiliconFlow</option>
-                        <option value="custom">Custom</option>
+                        <option value="anthropic" data-i18n="model.providers.anthropic">Anthropic</option>
+                        <option value="baichuan" data-i18n="model.providers.baichuan">Baichuan</option>
+                        <option value="cohere" data-i18n="model.providers.cohere">Cohere</option>
+                        <option value="deepseek" data-i18n="model.providers.deepseek">DeepSeek</option>
+                        <option value="doubao" data-i18n="model.providers.doubao">Doubao</option>
+                        <option value="google" data-i18n="model.providers.google">Google Gemini</option>
+                        <option value="groq" data-i18n="model.providers.groq">Groq</option>
+                        <option value="hunyuan" data-i18n="model.providers.hunyuan">Hunyuan</option>
+                        <option value="minimax" data-i18n="model.providers.minimax">MiniMax</option>
+                        <option value="mistral" data-i18n="model.providers.mistral">Mistral AI</option>
+                        <option value="moonshot" data-i18n="model.providers.moonshot">Moonshot</option>
+                        <option value="ollama" data-i18n="model.providers.ollama">Ollama</option>
+                        <option value="openai" data-i18n="model.providers.openai">OpenAI</option>
+                        <option value="qwen" data-i18n="model.providers.qwen">Qwen</option>
+                        <option value="siliconflow" data-i18n="model.providers.siliconflow">SiliconFlow</option>
+                        <option value="spark" data-i18n="model.providers.spark">Spark</option>
+                        <option value="stepfun" data-i18n="model.providers.stepfun">StepFun</option>
+                        <option value="vllm" data-i18n="model.providers.vllm">vLLM</option>
+                        <option value="yi" data-i18n="model.providers.yi">Yi</option>
+                        <option value="zhipu" data-i18n="model.providers.zhipu">ZhipuAI</option>
+                        <option value="custom" data-i18n="model.providers.custom">Custom</option>
                     </select>
                 </div>
                 <div class="form-group">
-                    <label data-i18n="model.modelId">Model ID</label> <span class="required">*</span>
-                    <div style="display: flex; gap: 8px; align-items: flex-start;">
-                        <select name="model_id" id="modelIdSelect" required class="form-select" style="flex: 1;">
+                    <label><span data-i18n="model.modelId">Model ID</span> <span class="required">*</span></label>
+                    <div style="display: flex; flex-direction: column; gap: 8px; flex: 1;">
+                        <select name="model_id" id="modelIdSelect" required class="form-select">
                             <option value="" disabled selected data-i18n="model.modelIdPlaceholder">Select or enter model ID</option>
                         </select>
-                        <button type="button" id="btnFetchModels" class="btn-small" style="white-space: nowrap; padding: 8px 12px; height: 38px;" data-i18n="model.fetchModels" title="Fetch models from provider API">
-                            ↻
-                        </button>
+                        <input type="text" name="model_id_custom" id="modelIdCustom" style="display: none;" data-i18n-placeholder="model.modelIdCustomPlaceholder" placeholder="Enter custom model ID">
                     </div>
-                    <input type="text" name="model_id_custom" id="modelIdCustom" style="display: none; margin-top: 8px;" data-i18n-placeholder="model.modelIdCustomPlaceholder" placeholder="Enter custom model ID">
                 </div>
                 <div class="form-group">
-                    <label data-i18n="model.apiKey">API Key</label>
-                    <div style="position: relative;">
-                        <input type="password" name="api_key" id="apiKeyInput" data-i18n-placeholder="model.apiKeyPlaceholder" placeholder="Enter API key" style="padding-right: 40px;">
+                    <label><span data-i18n="model.apiKey">API Key</span> <span class="required" id="apiKeyRequired" style="display: none;">*</span></label>
+                    <div style="position: relative; flex: 1;">
+                        <input type="password" name="api_key" id="apiKeyInput" data-i18n-placeholder="model.apiKeyPlaceholder" placeholder="Enter API key" style="padding-right: 40px; width: 100%;">
                         <button type="button" id="toggleApiKey" style="position: absolute; right: 8px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; color: #666;">
                             <svg id="eyeIcon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
@@ -141,7 +236,7 @@
                 </div>
 
                 <!-- Advanced Settings Toggle -->
-                <div class="advanced-toggle" id="advancedToggle" style="margin: 16px 0 8px; cursor: pointer; color: #666; font-size: 14px; user-select: none;">
+                <div class="advanced-toggle" id="advancedToggle">
                     <span id="advancedArrow">▶</span> <span data-i18n="model.advancedSettings">Advanced Settings</span>
                 </div>
 
@@ -177,20 +272,24 @@
                     </div>
                     <div class="form-group">
                         <label data-i18n="model.priority">Priority</label>
-                        <input type="number" name="priority" value="0" placeholder="0">
-                        <span class="hint" data-i18n="model.priorityHint">Higher priority models are preferred</span>
+                        <div style="flex: 1;">
+                            <input type="number" name="priority" value="0" placeholder="0" style="width: 100%;">
+                            <span class="hint" data-i18n="model.priorityHint">Higher priority models are preferred</span>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label data-i18n="model.weight">Weight</label>
-                        <input type="number" name="weight" value="100" placeholder="100">
-                        <span class="hint" data-i18n="model.weightHint">Used for load balancing</span>
+                        <div style="flex: 1;">
+                            <input type="number" name="weight" value="100" placeholder="100" style="width: 100%;">
+                            <span class="hint" data-i18n="model.weightHint">Used for load balancing</span>
+                        </div>
                     </div>
                     <div class="form-group">
                         <label data-i18n="model.description">Description</label>
                         <textarea name="description" rows="3" data-i18n-placeholder="model.descriptionPlaceholder" placeholder="Optional description"></textarea>
                     </div>
-                    <div class="form-group">
-                        <label style="display: flex; align-items: center; gap: 8px;">
+                    <div class="form-group" style="padding-left: 132px;">
+                        <label style="display: flex; align-items: center; gap: 8px; width: auto; min-width: 0; text-align: left; padding-top: 0;">
                             <input type="checkbox" name="is_active" checked style="width: auto;">
                             <span data-i18n="model.isActive">Is Active</span>
                         </label>
@@ -228,6 +327,17 @@
         let editingModelId = null;
         let pendingDeleteId = null;
 
+        // Providers that don't require API Key (local/self-hosted)
+        const NO_API_KEY_PROVIDERS = ['ollama', 'vllm', 'custom'];
+
+        function updateApiKeyRequired(provider) {
+            const required = provider && !NO_API_KEY_PROVIDERS.includes(provider);
+            const asterisk = document.getElementById('apiKeyRequired');
+            if (asterisk) {
+                asterisk.style.display = required ? 'inline' : 'none';
+            }
+        }
+
         // Provider presets and models - loaded from backend API
         let PROVIDER_PRESETS = {};
         let PROVIDER_MODELS = {};
@@ -251,28 +361,50 @@
                 console.error('[ModelConfigs] Failed to load provider data:', error);
                 // Fallback: leave empty, static options will work from select
             }
+
+            // Restore cached models from localStorage (with 24h TTL)
+            try {
+                const cached = JSON.parse(localStorage.getItem('atlasclaw_fetched_models') || '{}');
+                const now = Date.now();
+                const TTL = 24 * 60 * 60 * 1000; // 24 hours
+                for (const [prov, entry] of Object.entries(cached)) {
+                    if (entry.timestamp && (now - entry.timestamp) < TTL && entry.models?.length) {
+                        // Merge cached models with static preset
+                        const staticModels = PROVIDER_MODELS[prov] || [];
+                        PROVIDER_MODELS[prov] = [...new Set([...entry.models, ...staticModels])].sort((a, b) => a.localeCompare(b));
+                    }
+                }
+                console.log('[ModelConfigs] Restored cached models from localStorage');
+            } catch (e) {
+                // Ignore storage errors
+            }
         }
 
         // ========== Fetch Models from Provider API ==========
 
-        async function fetchModelsFromProvider() {
+        async function fetchModelsFromProvider(silent = false) {
             const form = document.getElementById('modelForm');
             const provider = form.querySelector('[name="provider"]')?.value;
             const apiKey = form.querySelector('[name="api_key"]')?.value?.trim();
             const baseUrl = form.querySelector('[name="base_url"]')?.value?.trim();
 
             if (!provider || provider === 'custom') {
-                showToast(t('model.providerRequired'), 'error');
+                if (!silent) showToast(t('model.providerRequired'), 'error');
                 return;
             }
 
-
-
-            // Show loading state on button
-            const btn = document.getElementById('btnFetchModels');
-            const originalText = btn.textContent;
-            btn.textContent = '...';
-            btn.disabled = true;
+            // Show loading state on model select
+            const modelSelect = document.getElementById('modelIdSelect');
+            if (modelSelect) {
+                modelSelect.disabled = true;
+                // Add loading option at the beginning
+                const loadingOption = document.createElement('option');
+                loadingOption.value = '__loading__';
+                loadingOption.textContent = 'Loading models...';
+                loadingOption.disabled = true;
+                modelSelect.insertBefore(loadingOption, modelSelect.firstChild);
+                modelSelect.value = '__loading__';
+            }
 
             try {
                 const res = await fetch('/api/providers/fetch-models', {
@@ -284,32 +416,50 @@
                 if (!res.ok) throw new Error(`HTTP ${res.status}`);
                 const data = await res.json();
 
+                // Get current model ID to preserve selection
+                const currentModelId = document.getElementById('modelIdCustom')?.value?.trim() ||
+                    (modelSelect?.value && modelSelect.value !== '__loading__' && modelSelect.value !== '__custom__' ? modelSelect.value : '');
+
                 if (data.models && data.models.length > 0) {
-                    // Update dropdown with fetched models
-                    const select = document.getElementById('modelIdSelect');
-                    const customInput = document.getElementById('modelIdCustom');
-                    const currentValue = select.value;
+                    // MERGE with static preset list
+                    const staticModels = PROVIDER_MODELS[provider] || [];
+                    const allModels = [...new Set([...data.models, ...staticModels])];
+                    allModels.sort((a, b) => a.localeCompare(b));
 
-                    let html = `<option value="" disabled>${t('model.modelIdPlaceholder')}</option>`;
-                    data.models.forEach(m => {
-                        html += `<option value="${m}"${m === currentValue ? ' selected' : ''}>${m}</option>`;
-                    });
-                    html += `<option value="__custom__">${t('model.customModelId')}</option>`;
-                    select.innerHTML = html;
+                    // Update cache
+                    PROVIDER_MODELS[provider] = allModels;
 
-                    // Also update local cache
-                    PROVIDER_MODELS[provider] = data.models;
+                    // Save to localStorage
+                    try {
+                        const cached = JSON.parse(localStorage.getItem('atlasclaw_fetched_models') || '{}');
+                        cached[provider] = { models: allModels, timestamp: Date.now() };
+                        localStorage.setItem('atlasclaw_fetched_models', JSON.stringify(cached));
+                    } catch (e) { /* ignore storage errors */ }
 
-                    showToast(t('model.fetchSuccess'), 'success');
-                } else {
-                    showToast(t('model.noModelsFound'), 'error');
+                    // Rebuild dropdown
+                    updateModelIdOptions(provider, currentModelId);
+
+                    if (!silent) {
+                        showToast(t('model.fetchSuccess'), 'success');
+                    }
+                } else if (!silent) {
+                    showToast(t('model.noModelsFound'), 'warning');
                 }
             } catch (error) {
                 console.error('[ModelConfigs] Failed to fetch models:', error);
-                showToast(error.message, 'error');
+                if (!silent) {
+                    showToast(error.message, 'error');
+                }
+                // Silent mode: just restore the dropdown without fetched models
+                const currentModelId = document.getElementById('modelIdCustom')?.value?.trim() || '';
+                updateModelIdOptions(provider, currentModelId);
             } finally {
-                btn.textContent = originalText;
-                btn.disabled = false;
+                if (modelSelect) {
+                    modelSelect.disabled = false;
+                    // Remove loading option if still present
+                    const loadingOption = modelSelect.querySelector('option[value="__loading__"]');
+                    if (loadingOption) loadingOption.remove();
+                }
             }
         }
 
@@ -463,6 +613,8 @@
                 modelSelect.innerHTML = `<option value="" disabled selected>${t('model.modelIdPlaceholder')}</option>`;
             }
             document.getElementById('modelIdCustom').style.display = 'none';
+            // Hide API Key required indicator for new model
+            updateApiKeyRequired('');
             document.getElementById('modelModal').classList.remove('hidden');
         }
 
@@ -480,6 +632,8 @@
             form.querySelector('[name="name"]').value = config.name || '';
             form.querySelector('[name="display_name"]').value = config.display_name || '';
             form.querySelector('[name="provider"]').value = config.provider || '';
+            // Update API Key required indicator based on provider
+            updateApiKeyRequired(config.provider || '');
             // Update model ID dropdown based on provider, then set value
             updateModelIdOptions(config.provider || '', config.model_id || '');
             form.querySelector('[name="base_url"]').value = config.base_url || '';
@@ -493,11 +647,11 @@
             form.querySelector('[name="description"]').value = config.description || '';
             form.querySelector('[name="is_active"]').checked = config.is_active !== false;
             
-            // Auto-expand advanced settings when editing
+            // Keep advanced settings collapsed when editing (user can expand if needed)
             const advFields = document.getElementById('advancedFields');
             const advArrow = document.getElementById('advancedArrow');
-            if (advFields) { advFields.style.display = 'block'; }
-            if (advArrow) { advArrow.textContent = '▼'; }
+            if (advFields) { advFields.style.display = 'none'; }
+            if (advArrow) { advArrow.textContent = '▶'; }
             // Mark base_url as not auto-filled when editing existing config
             const baseUrlInput = form.querySelector('[name="base_url"]');
             if (baseUrlInput) { baseUrlInput.dataset.autoFilled = 'false'; }
@@ -544,6 +698,11 @@
             }
             if (!data.model_id || data.model_id === '__custom__') {
                 showToast(t('model.modelIdRequired'), 'error');
+                return;
+            }
+            // API Key validation - required for cloud providers
+            if (!NO_API_KEY_PROVIDERS.includes(data.provider) && !data.api_key) {
+                showToast(t('model.apiKeyRequired') || 'API Key is required for this provider', 'error');
                 return;
             }
             
@@ -688,9 +847,6 @@
                 // Setup API key toggle
                 setupApiKeyToggle();
                 
-                // Setup fetch models button
-                document.getElementById('btnFetchModels')?.addEventListener('click', fetchModelsFromProvider);
-                
                 // Advanced settings toggle
                 document.getElementById('advancedToggle')?.addEventListener('click', () => {
                     const fields = document.getElementById('advancedFields');
@@ -706,6 +862,9 @@
 
                 // Auto-fill base_url, api_type and model options when provider changes
                 document.querySelector('[name="provider"]')?.addEventListener('change', (e) => {
+                    // Update API Key required indicator
+                    updateApiKeyRequired(e.target.value);
+                    
                     const preset = PROVIDER_PRESETS[e.target.value];
                     if (preset) {
                         const form = document.getElementById('modelForm');
@@ -722,7 +881,32 @@
                     }
                     // Update model ID options for the selected provider
                     updateModelIdOptions(e.target.value, '');
+
+                    // Auto-fetch models if API key already exists
+                    const provider = e.target.value;
+                    const apiKey = document.getElementById('apiKeyInput')?.value?.trim();
+                    if (provider && provider !== 'custom' && apiKey && apiKey.length >= 8) {
+                        // Auto-fetch with slight delay to let UI update first
+                        setTimeout(() => fetchModelsFromProvider(true), 200);
+                    }
                 });
+
+                // Debounced auto-fetch when api_key changes
+                let fetchDebounceTimer = null;
+                const apiKeyInput = document.getElementById('apiKeyInput');
+                if (apiKeyInput) {
+                    apiKeyInput.addEventListener('input', function() {
+                        clearTimeout(fetchDebounceTimer);
+                        const provider = document.getElementById('modelForm')?.querySelector('[name="provider"]')?.value;
+                        const apiKey = this.value?.trim();
+                        // Only auto-fetch for non-custom providers with a valid-looking API key
+                        if (provider && provider !== 'custom' && apiKey && apiKey.length >= 8) {
+                            fetchDebounceTimer = setTimeout(() => {
+                                fetchModelsFromProvider(true); // silent mode - no toast on success
+                            }, 800); // 800ms debounce
+                        }
+                    });
+                }
 
                 // Show/hide custom model ID input
                 document.getElementById('modelIdSelect')?.addEventListener('change', (e) => {
