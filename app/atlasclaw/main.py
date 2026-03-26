@@ -27,7 +27,7 @@ load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=F
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
@@ -874,13 +874,14 @@ def create_app() -> FastAPI:
                 return FileResponse(str(index_path))
             return {"error": "Frontend not found"}
         
-        # Serve channels.html for channel management
+        # Redirect old .html URLs to clean URLs for SPA compatibility
         @app.get("/channels.html", include_in_schema=False)
-        async def serve_channels():
-            channels_path = frontend_dir / "channels.html"
-            if channels_path.exists():
-                return FileResponse(str(channels_path))
-            return {"error": "Channels page not found"}
+        async def redirect_channels():
+            return RedirectResponse(url="/channels", status_code=301)
+        
+        @app.get("/models.html", include_in_schema=False)
+        async def redirect_models():
+            return RedirectResponse(url="/models", status_code=301)
 
         # Serve login page
         @app.get("/login.html", include_in_schema=False)
@@ -890,24 +891,7 @@ def create_app() -> FastAPI:
                 return FileResponse(str(login_path))
             return {"error": "Login page not found"}
 
-        # Serve admin users page
-        @app.get("/admin/users", include_in_schema=False)
-        async def serve_admin_users():
-            admin_users_path = frontend_dir / "admin-users.html"
-            if admin_users_path.exists():
-                return FileResponse(str(admin_users_path))
-            return {"error": "Admin users page not found"}
-        
-        # Serve models page
-        @app.get("/models.html", include_in_schema=False)
-        async def serve_models():
-            models_path = frontend_dir / "models.html"
-            if models_path.exists():
-                return FileResponse(str(models_path))
-            return {"error": "Models page not found"}
-        
         # Serve config.json
-
         @app.get("/config.json", include_in_schema=False)
         async def serve_config():
             config_path = frontend_dir / "config.json"
@@ -931,6 +915,22 @@ def create_app() -> FastAPI:
     
     # Include database API routes (Agent, Token, User CRUD)
     app.include_router(db_api_router)
+
+    # SPA catch-all: serve index.html for all non-API, non-static routes
+    # This MUST be AFTER all include_router calls to avoid intercepting API requests
+    if frontend_dir.exists():
+        from fastapi.responses import JSONResponse
+        
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def spa_catch_all(full_path: str):
+            """SPA catch-all: serve index.html for all non-API, non-static routes"""
+            # Skip API routes - should not reach here, but safety check
+            if full_path.startswith("api/"):
+                return JSONResponse(status_code=404, content={"detail": "API endpoint not found"})
+            index_file = frontend_dir / "index.html"
+            if index_file.exists():
+                return FileResponse(str(index_file))
+            return {"error": "Frontend index.html not found"}
 
     # Register AuthMiddleware — must be done at app creation time
     # (middleware cannot be added after startup)

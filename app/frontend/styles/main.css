@@ -98,6 +98,15 @@ body {
     background: white;
 }
 
+/* SPA Page Content Container */
+#page-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    min-height: 0;
+}
+
 .chat-header {
     padding: 16px 24px;
     border-bottom: 1px solid #e5e5e5;
@@ -178,6 +187,9 @@ body {
 .chat-wrapper {
     flex: 1;
     overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
 }
 
 deep-chat {
@@ -196,6 +208,22 @@ deep-chat::part(message-bubble),
 deep-chat::part(outer-container) {
     animation: none !important;
     transition: none !important;
+}
+
+/* DeepChat internal flex layout for full height */
+deep-chat::part(chat) {
+    display: flex !important;
+    flex-direction: column !important;
+    height: 100% !important;
+}
+
+deep-chat::part(messages-container) {
+    flex: 1 !important;
+    overflow-y: auto !important;
+}
+
+deep-chat::part(input-area) {
+    flex-shrink: 0 !important;
 }
 
 /* Confirm Dialog */

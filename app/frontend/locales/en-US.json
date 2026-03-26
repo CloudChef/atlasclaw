@@ -23,7 +23,14 @@
   },
   "chat": {
     "placeholder": "Enter your question...",
-    "introMessage": "Hello! I'm AtlasClaw AI Assistant.\n\nAtlasClaw is an enterprise agent framework that lets you interact with multiple enterprise systems through natural language, without switching between different consoles.\n\nI can help you:\n- Trigger cross-system workflows\n- Query operational data\n- Complete cross-system tasks\n- Manage tickets and approval processes\n\nTry saying: \"Query my pending tickets\" or \"Help me create a VM on Hushan Cloud\""
+    "introMessage": "Hello! I'm AtlasClaw AI Assistant.\n\nAtlasClaw is an enterprise agent framework that lets you interact with multiple enterprise systems through natural language, without switching between different consoles.\n\nI can help you:\n- Trigger cross-system workflows\n- Query operational data\n- Complete cross-system tasks\n- Manage tickets and approval processes\n\nTry saying: \"Query my pending tickets\" or \"Help me create a VM on Hushan Cloud\"",
+    "session": {
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "last7Days": "Last 7 Days",
+      "older": "Older",
+      "defaultTitle": "Chat"
+    }
   },
   "dialog": {
     "confirmTitle": "Confirm Action",

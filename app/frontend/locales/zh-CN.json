@@ -23,7 +23,14 @@
   },
   "chat": {
     "placeholder": "请输入您的问题...",
-    "introMessage": "你好！我是 AtlasClaw 智能助手。\n\nAtlasClaw 是一个企业级 Agent 框架，让你通过自然语言与多个企业系统交互，无需在不同控制台间切换。\n\n我可以帮你：\n- 触发跨系统工作流\n- 查询运营数据\n- 完成跨系统任务\n- 管理工单和审批流程\n\n试试说：\"查询我的待办工单\" 或 \"帮我创建一个虎山云的虚拟机\""
+    "introMessage": "你好！我是 AtlasClaw 智能助手。\n\nAtlasClaw 是一个企业级 Agent 框架，让你通过自然语言与多个企业系统交互，无需在不同控制台间切换。\n\n我可以帮你：\n- 触发跨系统工作流\n- 查询运营数据\n- 完成跨系统任务\n- 管理工单和审批流程\n\n试试说：\"查询我的待办工单\" 或 \"帮我创建一个虎山云的虚拟机\"",
+    "session": {
+      "today": "今天",
+      "yesterday": "昨天",
+      "last7Days": "最近7天",
+      "older": "更早前",
+      "defaultTitle": "对话"
+    }
   },
   "dialog": {
     "confirmTitle": "操作确认",

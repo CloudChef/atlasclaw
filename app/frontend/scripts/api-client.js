@@ -6,6 +6,22 @@
 import { buildApiUrl } from './config.js';
 
 /**
+ * List all sessions for the current user
+ * @returns {Promise<Array>} List of sessions
+ */
+export async function listSessions() {
+    const response = await fetch(buildApiUrl('/api/sessions'), {
+        credentials: 'include'
+    });
+    
+    if (!response.ok) {
+        throw new Error(`Failed to list sessions: ${response.status}`);
+    }
+    
+    return response.json();
+}
+
+/**
  * Create session
  * @param {object} params - Session parameters
  * @returns {Promise<object>} Session info { session_key, ... }
@@ -128,6 +144,7 @@ export async function abortAgentRun(runId) {
 }
 
 export default {
+    listSessions,
     createSession,
     getSession,
     resetSession,
