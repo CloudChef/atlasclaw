@@ -107,6 +107,16 @@
       "redirect_uri": "${OIDC_REDIRECT_URI}",
       "pkce_enabled": true,
       "pkce_method": "S256"
+    },
+    "dingtalk": {
+      "app_key": "${DINGTALK_APP_KEY}",
+      "app_secret": "${DINGTALK_APP_SECRET}",
+      "corp_id": "${DINGTALK_CORP_ID}",
+      "redirect_uri": "${DINGTALK_OIDC_REDIRECT_URI}",
+      "scopes": ["openid", "corpid"],
+      "pkce_enabled": true,
+      "pkce_method": "S256",
+      "subject_field": "unionId"
     }
   },
   "agent_defaults": {

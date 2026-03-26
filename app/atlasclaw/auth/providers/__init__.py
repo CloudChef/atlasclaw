@@ -3,7 +3,54 @@
 from __future__ import annotations
 
 from app.atlasclaw.auth.config import AuthConfig
+from app.atlasclaw.auth.models import AuthenticationError, AuthResult
 from app.atlasclaw.auth.providers.base import AuthProvider
+
+
+# SSO provider types that use external IdP for authentication
+# These providers don't need local credential validation - they use OAuth2 flows
+_SSO_PROVIDERS = frozenset({"oidc", "dingtalk", "feishu", "wecom"})
+
+
+class SSOPlaceholderProvider(AuthProvider):
+    """
+    Placeholder provider for SSO authentication modes (OIDC, DingTalk, etc.).
+    
+    This provider is used when config.provider is set to an SSO type.
+    It allows the middleware to:
+      1. Know the correct provider_name for redirect behavior
+      2. Continue using AtlasClaw JWT tokens for session management
+    
+    The actual SSO authentication flow is handled by:
+      - /api/auth/login -> begin_sso_login() -> external IdP
+      - /api/auth/callback -> complete_sso_login() -> issue AtlasClaw JWT
+    
+    This provider's authenticate() always fails because SSO users don't
+    present credentials directly - they go through the OAuth2 flow.
+    """
+    
+    def __init__(self, provider_name: str) -> None:
+        """
+        Args:
+            provider_name: The SSO provider type (e.g., "dingtalk", "oidc")
+        """
+        self._provider_name = provider_name
+    
+    async def authenticate(self, credential: str) -> AuthResult:
+        """
+        SSO providers don't authenticate via direct credentials.
+        
+        Raises:
+            AuthenticationError: Always, because SSO uses OAuth2 flow
+        """
+        raise AuthenticationError(
+            f"SSO provider '{self._provider_name}' does not support direct credential "
+            f"authentication. Use /api/auth/login to initiate SSO flow."
+        )
+    
+    def provider_name(self) -> str:
+        """Return the SSO provider type name."""
+        return self._provider_name
 
 
 def create_local_provider(config: AuthConfig) -> AuthProvider:
@@ -13,11 +60,18 @@ def create_local_provider(config: AuthConfig) -> AuthProvider:
     Primary providers (choose ONE via config.provider):
       - 'none': No authentication (development/single-user mode)
       - 'local': Local username/password authentication (database-backed)
+      - 'oidc': OIDC SSO authentication (via external IdP)
+      - 'dingtalk': DingTalk SSO authentication
+      - 'feishu': Feishu/Lark SSO authentication
+      - 'wecom': WeCom/WeChat Work SSO authentication
     
-    Other authentication mechanisms (oidc_jwt, oidc_login) are always available 
+    For SSO providers, this returns a placeholder that:
+      - Provides correct provider_name for middleware redirect logic
+      - Delegates actual authentication to OAuth2 flow via /api/auth/login
+    
+    Other authentication mechanisms (oidc_jwt) are always available 
     for specific use cases and DON'T need to be set as primary provider:
       - oidc_jwt: For validating JWT tokens from external API callers
-      - oidc_login: For handling browser SSO login flows
     
     Args:
         config: Auth configuration from atlasclaw.json
@@ -33,8 +87,9 @@ def create_local_provider(config: AuthConfig) -> AuthProvider:
         config.provider = "local"
         provider = create_provider(config)
         
-        # For API JWT validation (separate from primary auth)
-        jwt_validator = get_jwt_validator(issuer="https://idp.example.com")
+        # Primary auth: DingTalk SSO
+        config.provider = "dingtalk"
+        provider = create_provider(config)  # Returns SSOPlaceholderProvider
     """
     provider_type = config.provider.lower()
 
@@ -46,11 +101,14 @@ def create_local_provider(config: AuthConfig) -> AuthProvider:
         from app.atlasclaw.auth.providers.local import LocalAuthProvider
         return LocalAuthProvider()
 
+    # SSO providers use OAuth2 flow, return placeholder for middleware integration
+    if provider_type in _SSO_PROVIDERS:
+        return SSOPlaceholderProvider(provider_name=provider_type)
+
     raise ValueError(
         f"Unknown primary auth provider: {config.provider!r}. "
-        f"Supported: 'none', 'local'. "
-        f"Note: 'oidc_jwt' and 'oidc_login' are available via get_jwt_validator() "
-        f"and get_sso_handler() for API/SSO use cases."
+        f"Supported: 'none', 'local', 'oidc', 'dingtalk', 'feishu', 'wecom'. "
+        f"Note: 'oidc_jwt' is available via get_jwt_validator() for API use cases."
     )
 
 

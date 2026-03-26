@@ -23,6 +23,11 @@ query_approval.py
 start_server.py
 dept_details.py
 
+# Local secrets & helper scripts
+sshpwd.txt
+ssh_dingtalk_config.py
+paramiko.log
+
 # Screenshots (keep repo clean)
 *.png
 *.json.bak

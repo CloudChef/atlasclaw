@@ -197,10 +197,13 @@ class ChannelManager:
             
             # Import SkillDeps locally to avoid circular imports
             from app.atlasclaw.core.deps import SkillDeps
-            from app.atlasclaw.auth.models import ANONYMOUS_USER
+            from app.atlasclaw.auth.models import UserInfo
+            
+            # 使用连接所有者的 user_id，而非匿名用户
+            user_info = UserInfo(user_id=user_id, display_name=user_id.capitalize())
             
             deps = SkillDeps(
-                user_info=ANONYMOUS_USER,
+                user_info=user_info,
                 peer_id=message.sender_id,
                 session_key=session_key,
                 channel=channel_type,

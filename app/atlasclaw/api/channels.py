@@ -91,6 +91,11 @@ class ValidationResponse(BaseModel):
     errors: List[str] = []
 
 
+class ConfigValidationRequest(BaseModel):
+    """Request model for config validation without saving."""
+    config: Dict[str, Any]
+
+
 # Routes
 
 @router.get("")
@@ -315,6 +320,36 @@ async def delete_connection(
     return JSONResponse(content={"status": "ok", "message": "Connection deleted"})
 
 
+@router.post("/{channel_type}/validate-config")
+async def validate_config(
+    channel_type: str,
+    data: ConfigValidationRequest,
+    request: Request
+) -> ValidationResponse:
+    """Validate channel configuration without saving to database.
+    
+    Args:
+        channel_type: Channel type identifier
+        data: Configuration data to validate
+        
+    Returns:
+        Validation result
+    """
+    get_current_user_id(request)  # Still require authentication
+    
+    handler_class = ChannelRegistry.get(channel_type)
+    if not handler_class:
+        raise HTTPException(status_code=404, detail=f"Channel type not found: {channel_type}")
+    
+    try:
+        handler = handler_class(data.config)
+        result = await handler.validate_config(data.config)
+        return ValidationResponse(valid=result.valid, errors=result.errors)
+    except Exception as e:
+        logger.error(f"Config validation failed for {channel_type}: {e}")
+        return ValidationResponse(valid=False, errors=[str(e)])
+
+
 @router.post("/{channel_type}/connections/{connection_id}/verify")
 async def verify_connection(
     channel_type: str,
@@ -343,7 +378,7 @@ async def verify_connection(
     
     # Create handler instance and validate
     try:
-        config = channel.config or {}
+        config = _decrypt_config(channel.config)
         handler = handler_class(config)
         result = await handler.validate_config(config)
         return ValidationResponse(valid=result.valid, errors=result.errors)

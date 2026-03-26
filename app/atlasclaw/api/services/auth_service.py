@@ -34,11 +34,15 @@ def get_auth_config_or_400(request: Request, providers: tuple[str, ...]):
 
 
 def build_sso_provider(auth_config):
+    import logging
+    _logger = logging.getLogger(__name__)
     provider_name = auth_config.provider
     if provider_name == "dingtalk":
         from ...auth.providers.dingtalk_sso import DingTalkSSOProvider
 
         dt_config = auth_config.dingtalk.expanded()
+        _logger.warning(f"[DEBUG] DingTalk raw redirect_uri: {auth_config.dingtalk.redirect_uri}")
+        _logger.warning(f"[DEBUG] DingTalk expanded redirect_uri: {dt_config.redirect_uri}")
         provider = DingTalkSSOProvider(
             issuer="https://login.dingtalk.com",
             client_id=dt_config.app_key,
