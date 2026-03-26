@@ -1,0 +1,156 @@
+# -*- coding: utf-8 -*-
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+
+from ..auth.models import ANONYMOUS_USER, UserInfo
+from ..session.context import ChatType as SessionChatType
+from ..session.context import SessionKey, SessionScope
+from ..session.queue import QueueMode
+from .deps_context import APIContext, get_api_context
+from .schemas import (
+    CompactRequest,
+    QueueModeRequest,
+    SessionCreateRequest,
+    SessionResetRequest,
+    SessionResponse,
+    StatusResponse,
+)
+
+
+def register_session_routes(router: APIRouter) -> None:
+    @router.post("/sessions", response_model=SessionResponse)
+    async def create_session(
+        request_obj: Request,
+        request: SessionCreateRequest,
+        ctx: APIContext = Depends(get_api_context),
+    ) -> SessionResponse:
+        auth_user: UserInfo = getattr(request_obj.state, "user_info", ANONYMOUS_USER)
+
+        key = SessionKey(
+            agent_id=request.agent_id,
+            channel=request.channel,
+            chat_type=SessionChatType(request.chat_type),
+            user_id=auth_user.user_id,
+        )
+        session_key_str = key.to_string(scope=SessionScope(request.scope))
+        session = await ctx.session_manager.get_or_create(session_key_str)
+
+        return SessionResponse(
+            session_key=session_key_str,
+            agent_id=key.agent_id,
+            channel=key.channel,
+            user_id=key.user_id,
+            created_at=session.created_at,
+            last_activity=session.updated_at,
+            message_count=getattr(session, "message_count", 0),
+            total_tokens=session.total_tokens,
+        )
+
+    @router.get("/sessions/{session_key}", response_model=SessionResponse)
+    async def get_session(
+        session_key: str,
+        ctx: APIContext = Depends(get_api_context),
+    ) -> SessionResponse:
+        session = await ctx.session_manager.get_session(session_key)
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_key}",
+            )
+
+        key = SessionKey.from_string(session_key)
+        return SessionResponse(
+            session_key=session_key,
+            agent_id=key.agent_id,
+            channel=key.channel,
+            user_id=key.user_id,
+            created_at=session.created_at,
+            last_activity=session.updated_at,
+            message_count=getattr(session, "message_count", 0),
+            total_tokens=session.total_tokens,
+        )
+
+    @router.post("/sessions/{session_key}/reset")
+    async def reset_session(
+        session_key: str,
+        request: SessionResetRequest,
+        ctx: APIContext = Depends(get_api_context),
+    ) -> dict[str, Any]:
+        await ctx.session_manager.reset_session(session_key, archive=request.archive)
+        return {"status": "reset", "session_key": session_key}
+
+    @router.delete("/sessions/{session_key}")
+    async def delete_session(
+        session_key: str,
+        ctx: APIContext = Depends(get_api_context),
+    ) -> dict[str, Any]:
+        success = await ctx.session_manager.delete_session(session_key)
+        if not success:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_key}",
+            )
+        return {"status": "deleted", "session_key": session_key}
+
+    @router.get("/sessions/{session_key}/status", response_model=StatusResponse)
+    async def get_status(
+        session_key: str,
+        ctx: APIContext = Depends(get_api_context),
+    ) -> StatusResponse:
+        session = await ctx.session_manager.get_session(session_key)
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_key}",
+            )
+
+        queue_mode = ctx.session_queue.get_mode(session_key)
+        queue_size = ctx.session_queue.queue_size(session_key)
+        return StatusResponse(
+            session_key=session_key,
+            context_tokens=session.context_tokens,
+            input_tokens=session.input_tokens,
+            output_tokens=session.output_tokens,
+            queue_mode=queue_mode.value,
+            queue_size=queue_size,
+        )
+
+    @router.post("/sessions/{session_key}/queue")
+    async def set_queue_mode(
+        session_key: str,
+        request: QueueModeRequest,
+        ctx: APIContext = Depends(get_api_context),
+    ) -> dict[str, Any]:
+        try:
+            mode = QueueMode(request.mode)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid queue mode: {request.mode}",
+            )
+
+        ctx.session_queue.set_session_mode(session_key, mode)
+        return {"session_key": session_key, "queue_mode": request.mode}
+
+    @router.post("/sessions/{session_key}/compact")
+    async def trigger_compact(
+        session_key: str,
+        request: CompactRequest,
+        ctx: APIContext = Depends(get_api_context),
+    ) -> dict[str, Any]:
+        session = await ctx.session_manager.get_session(session_key)
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_key}",
+            )
+
+        return {
+            "session_key": session_key,
+            "status": "compaction_triggered",
+            "instruction": request.instruction,
+        }

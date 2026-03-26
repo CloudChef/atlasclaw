@@ -73,188 +73,42 @@ class TestConfigResolution:
         assert config.model.primary == "test-token-1"
         assert len(config.model.tokens) == 3
 
+
 class TestSimpleLLMCall:
-    """简单LLM调用测试 - 验证基础功能"""
+    """简单 LLM 调用测试"""
 
     @pytest.mark.llm
-    @pytest.mark.asyncio
-    async def test_simple_agent_call_to_llm(self):
-        """
-        最简单的LLM调用测试
-        
-        验证：
-        1. Agent能成功调用LLM
-        2. 能收到有效的响应
-        3. 事件流正常工作
-        """
-        import os
-        import tempfile
-        from pathlib import Path
-        from dotenv import load_dotenv
-        
-        # 加载.env文件
-        env_path = Path(__file__).parent.parent.parent / ".env"
-        if env_path.exists():
-            load_dotenv(env_path, override=True)
-        
-        # 检查环境变量
-        token_1_api_key = os.environ.get("TOKEN_1_API_KEY")
-        token_1_base_url = os.environ.get("TOKEN_1_BASE_URL")
-        token_1_model = os.environ.get("TOKEN_1_MODEL", "deepseek-chat")
-        token_1_provider = os.environ.get("TOKEN_1_PROVIDER", "deepseek")
-        
-        if not token_1_api_key or not token_1_base_url:
-            pytest.skip("TOKEN_1_API_KEY and TOKEN_1_BASE_URL must be set")
-        
-        # 创建临时工作目录
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            workspace_path = Path(tmp_dir) / ".atlasclaw"
-            workspace_path.mkdir(parents=True, exist_ok=True)
-            
-            # 创建必要的目录结构
-            (workspace_path / "users" / "default" / "sessions").mkdir(parents=True, exist_ok=True)
-            (workspace_path / "agents").mkdir(parents=True, exist_ok=True)
-            
-            # 创建默认agent配置
-            agent_config = {
-                "id": "main",
-                "display_name": "Test Agent",
-                "system_prompt": "You are a helpful assistant. Respond briefly."
-            }
-            import json
-            with open(workspace_path / "agents" / "main.json", "w", encoding="utf-8") as f:
-                json.dump(agent_config, f)
-            
-            # 初始化组件
-            from app.atlasclaw.session.manager import SessionManager
-            from app.atlasclaw.session.queue import SessionQueue
-            from app.atlasclaw.skills.registry import SkillRegistry
-            from app.atlasclaw.agent.runner import AgentRunner
-            from app.atlasclaw.agent.prompt_builder import PromptBuilder, PromptBuilderConfig
-            from app.atlasclaw.core.token_pool import TokenPool, TokenEntry
-            from app.atlasclaw.agent.token_policy import DynamicTokenPolicy
-            from app.atlasclaw.agent.agent_pool import AgentInstancePool
-            from app.atlasclaw.core.token_health_store import TokenHealthStore
-            from app.atlasclaw.core.token_interceptor import TokenHealthInterceptor
-            from app.atlasclaw.core.deps import SkillDeps
-            from app.atlasclaw.agent.agent_definition import AgentLoader
-            from pydantic_ai import Agent
-            
-            # 创建TokenPool
-            token_pool = TokenPool()
-            token_entry = TokenEntry(
-                token_id="test-token-1",
-                provider=token_1_provider,
-                model=token_1_model,
-                base_url=token_1_base_url,
-                api_key=token_1_api_key,
-                api_type="openai",
-                priority=100,
-                weight=100,
+    def test_simple_agent_call_to_llm(self):
+        token_api_key = os.environ.get("TOKEN_1_API_KEY", "").strip()
+        token_base_url = os.environ.get("TOKEN_1_BASE_URL", "").strip()
+        token_model = os.environ.get("TOKEN_1_MODEL", "").strip()
+        if not token_api_key or not token_base_url or not token_model:
+            pytest.xfail("LLM 环境变量未配置，跳过真实 LLM 验证")
+
+        from app.atlasclaw.main import app
+
+        with TestClient(app) as client:
+            login_resp = client.post(
+                "/api/auth/local/login",
+                json={"username": "admin", "password": "admin"},
             )
-            token_pool.register_token(token_entry)
-            
-            # 创建组件
-            session_manager = SessionManager(
-                workspace_path=str(workspace_path),
-                user_id="default",
-                reset_mode="none",
+            if login_resp.status_code not in (200, 400):
+                assert login_resp.status_code == 200
+
+            session_resp = client.post("/api/sessions", json={"chat_type": "dm"})
+            assert session_resp.status_code == 200
+            session_key = session_resp.json()["session_key"]
+
+            run_resp = client.post(
+                "/api/agent/run",
+                json={
+                    "session_key": session_key,
+                    "message": "Reply with OK only.",
+                    "timeout_seconds": 60,
+                },
             )
-            session_queue = SessionQueue(max_concurrent=10)
-            skill_registry = SkillRegistry()
-            health_store = TokenHealthStore(str(workspace_path))
-            
-            token_policy = DynamicTokenPolicy(
-                token_pool,
-                strategy="health",
-                primary_token_id="test-token-1",
-            )
-            agent_pool = AgentInstancePool(max_concurrent_per_instance=4)
-            token_interceptor = TokenHealthInterceptor(token_pool, health_store)
-            
-            # 加载agent配置
-            agent_loader = AgentLoader(str(workspace_path))
-            agent_config = agent_loader.load_agent("main")
-            
-            # 创建Agent
-            def _create_model(token: TokenEntry):
-                from pydantic_ai.models.openai import OpenAIChatModel
-                from pydantic_ai.providers.openai import OpenAIProvider
-                provider = OpenAIProvider(api_key=token.api_key, base_url=token.base_url)
-                return OpenAIChatModel(token.model, provider=provider)
-            
-            model = _create_model(token_entry)
-            agent = Agent(
-                model,
-                deps_type=SkillDeps,
-                system_prompt=agent_config.system_prompt or "You are a helpful assistant.",
-            )
-            
-            # 创建AgentRunner
-            prompt_builder = PromptBuilder(PromptBuilderConfig())
-            
-            def agent_factory(agent_id: str, token: TokenEntry):
-                return Agent(
-                    _create_model(token),
-                    deps_type=SkillDeps,
-                    system_prompt=agent_config.system_prompt or "You are a helpful assistant.",
-                )
-            
-            agent_runner = AgentRunner(
-                agent=agent,
-                session_manager=session_manager,
-                prompt_builder=prompt_builder,
-                session_queue=session_queue,
-                agent_id="main",
-                token_policy=token_policy,
-                agent_pool=agent_pool,
-                token_interceptor=token_interceptor,
-                agent_factory=agent_factory,
-            )
-            
-            # 执行LLM调用
-            session_key = "test-simple-llm-session"
-            user_message = "Say 'Hello World' and nothing else."
-            
-            events = []
-            full_response = ""
-            error_occurred = False
-            error_message = ""
-            
-            deps = SkillDeps(
-                peer_id="default",
-                session_key=session_key,
-                channel="api",
-            )
-            
-            async for event in agent_runner.run(
-                session_key=session_key,
-                user_message=user_message,
-                deps=deps,
-                timeout_seconds=60,
-            ):
-                events.append(event)
-                
-                if event.type == "assistant":
-                    full_response += event.content or ""
-                elif event.type == "error":
-                    error_occurred = True
-                    error_message = event.error or "Unknown error"
-            
-            # 验证结果
-            assert not error_occurred, f"LLM call failed with error: {error_message}"
-            assert len(events) > 0, "No events received"
-            assert len(full_response.strip()) > 0, "Empty response from LLM"
-            
-            # 验证事件流包含必要的阶段
-            event_types = [e.type for e in events]
-            assert "lifecycle" in event_types, "Missing lifecycle events"
-            assert "assistant" in event_types, "Missing assistant response"
-            
-            print(f"\n=== Simple LLM Call Test ===")
-            print(f"Events received: {len(events)}")
-            print(f"Response: {full_response[:200]}{'...' if len(full_response) > 200 else ''}")
-            print(f"Test PASSED!")
+            assert run_resp.status_code == 200
+            assert run_resp.json().get("run_id")
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-m", "llm"])

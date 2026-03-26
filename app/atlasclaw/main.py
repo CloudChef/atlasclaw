@@ -117,23 +117,16 @@ def _print_root_plugins(label: str, root: Path, plugins: list[str]) -> None:
         print(f"[AtlasClaw] {label}: {root} (not found)")
         return
 
+    count = len(plugins)
     if plugins:
-        print(f"[AtlasClaw] {label}: {root} -> {', '.join(plugins)}")
+        print(f"[AtlasClaw] {label}: {root} ({count}) -> {', '.join(plugins)}")
     else:
-        print(f"[AtlasClaw] {label}: {root} -> (none)")
+        print(f"[AtlasClaw] {label}: {root} (0) -> (none)")
 
 
-def _check_and_prompt_for_providers_skills(workspace_path: str | Path, providers_root: Path) -> None:
-
-    """Check if providers_root and workspace skills directories are empty.
-
-    Args:
-        workspace_path: Path to the workspace directory (the .atlasclaw directory).
-        providers_root: Resolved provider repository path.
-    """
-    workspace = Path(workspace_path)
+def _check_and_prompt_for_providers(providers_root: Path) -> None:
+    """Check if providers_root directory is empty."""
     providers_dir = providers_root
-    skills_dir = workspace / "skills"  # skills is directly under workspace
 
     def _is_empty_or_missing(dir_path: Path) -> bool:
         """Check if directory is empty or doesn't exist."""
@@ -145,17 +138,13 @@ def _check_and_prompt_for_providers_skills(workspace_path: str | Path, providers
             return True
 
     providers_empty = _is_empty_or_missing(providers_dir)
-    skills_empty = _is_empty_or_missing(skills_dir)
 
-    if providers_empty or skills_empty:
+    if providers_empty:
         print("\n" + "=" * 70)
-        print("[AtlasClaw] NOTICE: providers_root and/or workspace skills directories are empty")
+        print("[AtlasClaw] NOTICE: providers_root directory is empty")
         print("=" * 70)
 
-        if providers_empty:
-            print(f"  - Providers root is empty: {providers_dir}")
-        if skills_empty:
-            print(f"  - Workspace skills directory is empty: {skills_dir}")
+        print(f"  - Providers root is empty: {providers_dir}")
 
         print("\nTo get started with providers and skills, please run:")
         print("\n  git clone https://github.com/CloudChef/atlasclaw-providers.git")
@@ -472,8 +461,7 @@ async def lifespan(app: FastAPI):
         workspace_initializer.initialize()
         print(f"[AtlasClaw] Initialized workspace at: {workspace_path}")
 
-    # Check if providers and skills are empty and prompt user
-    _check_and_prompt_for_providers_skills(workspace_path, providers_root)
+    _check_and_prompt_for_providers(providers_root)
 
     # Initialize database if configured
     db_initialized = False
@@ -531,7 +519,7 @@ async def lifespan(app: FastAPI):
     print(f"[AtlasClaw] Channel manager initialized")
     
     # Scan providers for channel and auth extensions
-    providers_dir = Path(workspace_path) / ".atlasclaw" / "providers"
+    providers_dir = providers_root
     scan_results = ProviderScanner.scan_providers(providers_dir)
     print(f"[AtlasClaw] Provider scan complete: {len(scan_results['channels'])} channels, {len(scan_results['auth'])} auth providers")
     
