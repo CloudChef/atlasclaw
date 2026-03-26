@@ -19,14 +19,16 @@ import logging
 from contextlib import asynccontextmanager, nullcontext
 from typing import AsyncIterator, Optional, Any, TYPE_CHECKING
 
-from pydantic_ai.messages import ThinkingPart
 
 logger = logging.getLogger(__name__)
 
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.agent.compaction import CompactionPipeline, CompactionConfig
+from app.atlasclaw.agent.history_memory import HistoryMemoryCoordinator
 from app.atlasclaw.agent.prompt_builder import PromptBuilder, PromptBuilderConfig
+from app.atlasclaw.agent.runtime_events import RuntimeEventDispatcher
+from app.atlasclaw.agent.thinking_stream import ThinkingStreamEmitter
 
 if TYPE_CHECKING:
     from app.atlasclaw.agent.agent_pool import AgentInstancePool
@@ -39,39 +41,6 @@ if TYPE_CHECKING:
     from app.atlasclaw.session.queue import SessionQueue
     from app.atlasclaw.hooks.system import HookSystem
 
-
-def _split_thinking_chunks(text: str, target_size: int = 5) -> list[str]:
-    """Split thinking content into chunks for streaming display.
-    
-    For small target sizes (<=10), splits by fixed size to simulate token-level streaming.
-    For larger sizes, splits at natural break points (punctuation, whitespace).
-    """
-    if len(text) <= target_size:
-        return [text]
-    
-    # For small chunks, use simple fixed-size splitting (token simulation)
-    if target_size <= 10:
-        return [text[i:i + target_size] for i in range(0, len(text), target_size)]
-    
-    chunks = []
-    remaining = text
-    while remaining:
-        if len(remaining) <= target_size:
-            chunks.append(remaining)
-            break
-        
-        # Find natural break point
-        best_pos = target_size
-        for delim in ['\n', '。', '！', '？', '，', '.', '!', '?', ',', ' ']:
-            pos = remaining.rfind(delim, int(target_size * 0.6), target_size + 1)
-            if pos > 0:
-                best_pos = pos + len(delim)
-                break
-        
-        chunks.append(remaining[:best_pos])
-        remaining = remaining[best_pos:]
-    
-    return chunks
 
 
 class AgentRunner:
@@ -113,6 +82,8 @@ class AgentRunner:
         self.agent_pool = agent_pool
         self.token_interceptor = token_interceptor
         self.agent_factory = agent_factory
+        self.history = HistoryMemoryCoordinator(self.sessions, self.compaction)
+        self.runtime_events = RuntimeEventDispatcher(self.hooks, self.queue)
 
     
     async def run(
@@ -128,27 +99,27 @@ class AgentRunner:
         start_time = time.monotonic()
         tool_calls_count = 0
         compaction_applied = False
-        assistant_emitted = False
-        thinking_started = False
-        thinking_start_time = None
-        thinking_chunk_count = 0  # Track chunks for simulated elapsed time
+        thinking_emitter = ThinkingStreamEmitter()
         persist_override_messages: Optional[list[dict]] = None
         persist_override_base_len: int = 0
         runtime_agent: Any = self.agent
         selected_token_id: Optional[str] = None
         release_slot: Optional[Any] = None
+        flushed_memory_signatures: set[str] = set()
 
 
         try:
             yield StreamEvent.lifecycle_start()
 
             runtime_agent, selected_token_id, release_slot = await self._resolve_runtime_agent(session_key, deps)
+            runtime_context_window = self._resolve_runtime_context_window(selected_token_id, deps)
 
             # --:session + build prompt --
 
             session = await self.sessions.get_or_create(session_key)
             transcript = await self.sessions.load_transcript(session_key)
-            message_history = self._build_message_history(transcript)
+            message_history = self.history.build_message_history(transcript)
+            message_history = self.history.prune_summary_messages(message_history)
 
             system_prompt = self._build_system_prompt(session=session, deps=deps, agent=runtime_agent)
 
@@ -164,7 +135,25 @@ class AgentRunner:
                 system_prompt = prompt_ctx.get("system_prompt", system_prompt)
 
             # at iter,.
-            if message_history and self.compaction.should_compact(message_history, session):
+            if self.compaction.should_memory_flush(
+                message_history,
+                session,
+                context_window_override=runtime_context_window,
+            ):
+                await self.history.flush_history_to_timestamped_memory(
+                    session_key=session_key,
+                    messages=message_history,
+                    deps=deps,
+                    session=session,
+                    context_window=runtime_context_window,
+                    flushed_signatures=flushed_memory_signatures,
+                )
+
+            if message_history and self.compaction.should_compact(
+                message_history,
+                session,
+                context_window_override=runtime_context_window,
+            ):
                 if self.hooks:
                     await self.hooks.trigger(
                         "before_compaction",
@@ -175,7 +164,8 @@ class AgentRunner:
                     )
                 yield StreamEvent.compaction_start()
                 compressed_history = await self.compaction.compact(message_history, session)
-                message_history = self._normalize_messages(compressed_history)
+                message_history = self.history.normalize_messages(compressed_history)
+                message_history = await self.history.inject_memory_recall(message_history, deps)
                 await self.sessions.mark_compacted(session_key)
                 compaction_applied = True
                 yield StreamEvent.compaction_end()
@@ -200,14 +190,11 @@ class AgentRunner:
                 user_message = start_ctx.get("user_message", user_message)
 
                 # llm_input at leastat start trigger
-                await self.hooks.trigger(
-                    "llm_input",
-                    {
-                        "session_key": session_key,
-                        "user_message": user_message,
-                        "system_prompt": system_prompt,
-                        "message_history": message_history,
-                    },
+                await self.runtime_events.trigger_llm_input(
+                    session_key=session_key,
+                    user_message=user_message,
+                    system_prompt=system_prompt,
+                    message_history=message_history,
                 )
 
             # -- inject user_message to deps, for Skills --
@@ -217,11 +204,12 @@ class AgentRunner:
             # :PydanticAI iter()
             # ========================================
             try:
+                model_message_history = self.history.to_model_message_history(message_history)
                 async with self._run_iter_with_optional_override(
                     agent=runtime_agent,
                     user_message=user_message,
                     deps=deps,
-                    message_history=message_history,
+                    message_history=model_message_history,
                     system_prompt=system_prompt,
                 ) as agent_run:
 
@@ -241,8 +229,27 @@ class AgentRunner:
                             break
 
                         # -- checkpoint 3:context -> trigger --
-                        current_messages = self._normalize_messages(agent_run.all_messages())
-                        if self.compaction.should_compact(current_messages, session):
+                        current_messages = self.history.normalize_messages(agent_run.all_messages())
+                        current_messages = self.history.prune_summary_messages(current_messages)
+                        if self.compaction.should_memory_flush(
+                            current_messages,
+                            session,
+                            context_window_override=runtime_context_window,
+                        ):
+                            await self.history.flush_history_to_timestamped_memory(
+                                session_key=session_key,
+                                messages=current_messages,
+                                deps=deps,
+                                session=session,
+                                context_window=runtime_context_window,
+                                flushed_signatures=flushed_memory_signatures,
+                            )
+
+                        if self.compaction.should_compact(
+                            current_messages,
+                            session,
+                            context_window_override=runtime_context_window,
+                        ):
                             if self.hooks:
                                 await self.hooks.trigger(
                                     "before_compaction",
@@ -253,7 +260,11 @@ class AgentRunner:
                                 )
                             yield StreamEvent.compaction_start()
                             compressed = await self.compaction.compact(current_messages, session)
-                            persist_override_messages = self._normalize_messages(compressed)
+                            persist_override_messages = self.history.normalize_messages(compressed)
+                            persist_override_messages = await self.history.inject_memory_recall(
+                                persist_override_messages,
+                                deps,
+                            )
                             persist_override_base_len = len(current_messages)
                             await self.sessions.mark_compacted(session_key)
                             compaction_applied = True
@@ -269,139 +280,51 @@ class AgentRunner:
 
                         # -- hook:llm_input() --
                         if self.hooks and self._is_model_request_node(node):
-                            await self.hooks.trigger(
-                                "llm_input",
-                                {
-                                    "session_key": session_key,
-                                    "user_message": user_message,
-                                    "system_prompt": system_prompt,
-                                    "message_history": current_messages,
-                                },
+                            await self.runtime_events.trigger_llm_input(
+                                session_key=session_key,
+                                user_message=user_message,
+                                system_prompt=system_prompt,
+                                message_history=current_messages,
                             )
 
                         # Emit model output chunks as assistant deltas.
                         if hasattr(node, "model_response") and node.model_response:
-                            model_response = node.model_response
-                            if hasattr(model_response, "parts"):
-                                for part in model_response.parts:
-                                    # Detect thinking parts (e.g., Claude, DeepSeek reasoning)
-                                    part_kind = getattr(part, "part_kind", None)
-                                    is_thinking = (
-                                        part_kind == "thinking"
-                                        or isinstance(part, ThinkingPart)
-                                    )
-
-                                    if is_thinking:
-                                        # Emit thinking events
-                                        if not thinking_started:
-                                            yield StreamEvent.thinking_start()
-                                            thinking_started = True
-                                            thinking_start_time = time.time()
-                                            thinking_chunk_count = 0
-                                        thinking_content = getattr(part, "content", "")
-                                        if thinking_content:
-                                            content_str = str(thinking_content)
-                                            # Small chunks (5 chars) + delay to simulate token-level streaming
-                                            chunks = _split_thinking_chunks(content_str, target_size=5)
-                                            for chunk in chunks:
-                                                yield StreamEvent.thinking_delta(chunk)
-                                                thinking_chunk_count += 1
-                                                await asyncio.sleep(0.015)  # 15ms delay between tokens
-                                    else:
-                                        # Try to get content from 'content' or 'text' attribute
-                                        text_content = getattr(part, "content", None) or getattr(part, "text", None)
-                                        if text_content:
-                                            # End thinking phase if transitioning to regular content
-                                            if thinking_started:
-                                                # Use actual wall clock time, with minimum based on simulated delay
-                                                wall_elapsed = time.time() - thinking_start_time if thinking_start_time else 0
-                                                simulated_elapsed = thinking_chunk_count * 0.015  # 15ms per chunk
-                                                # Use the larger of wall clock or simulated time
-                                                thinking_elapsed = round(max(wall_elapsed, simulated_elapsed), 1)
-                                                yield StreamEvent.thinking_end(elapsed=thinking_elapsed)
-                                                thinking_started = False
-                                            content = str(text_content)
-                                            assistant_emitted = True
-                                            if self.hooks:
-                                                await self.hooks.trigger(
-                                                    "llm_output",
-                                                    {
-                                                        "session_key": session_key,
-                                                        "content": content,
-                                                    },
-                                                )
-                                            yield StreamEvent.assistant_delta(content)
+                            async for event in thinking_emitter.emit_from_model_response(
+                                model_response=node.model_response,
+                                hooks=self.hooks,
+                                session_key=session_key,
+                            ):
+                                yield event
                         elif hasattr(node, "content") and node.content:
                             content = str(node.content)
-                            if self.hooks:
-                                await self.hooks.trigger(
-                                    "llm_output",
-                                    {
-                                        "session_key": session_key,
-                                        "content": content,
-                                    },
-                                )
-                            assistant_emitted = True
-                            yield StreamEvent.assistant_delta(content)
+                            async for event in thinking_emitter.emit_plain_content(
+                                content=content,
+                                hooks=self.hooks,
+                                session_key=session_key,
+                            ):
+                                yield event
 
                         # Surface tool activity in the event stream.
-                        tool_calls_in_node = []
-                        if hasattr(node, "tool_call_metadata") and node.tool_call_metadata:
-                            tool_calls_in_node = node.tool_call_metadata
-                        elif hasattr(node, "tool_calls") and node.tool_calls:
-                            tool_calls_in_node = node.tool_calls
-                        elif hasattr(node, "tool_name"):
-                            tool_calls_in_node = [{"name": str(node.tool_name)}]
-                        
-                        for tc in tool_calls_in_node:
-                            tool_calls_count += 1
-                            if isinstance(tc, dict):
-                                tool_name = tc.get("name", tc.get("tool_name", "unknown_tool"))
-                            else:
-                                tool_name = getattr(tc, "tool_name", getattr(tc, "name", "unknown_tool"))
-                            tool_name = str(tool_name)
-
-                            # Abort before starting another tool when requested.
-                            if deps.is_aborted():
-                                yield StreamEvent.lifecycle_aborted()
-                                break
-
-                            # Enforce the tool-call safety cap.
-                            if tool_calls_count > max_tool_calls:
-                                yield StreamEvent.error_event("max_tool_calls_exceeded")
-                                break
-
-                            # -- hook:before_tool_call --
-                            if self.hooks:
-                                await self.hooks.trigger("before_tool_call", {"tool": tool_name})
-
-                            yield StreamEvent.tool_start(tool_name)
-                            # PydanticAI executes the tool internally.
-                            yield StreamEvent.tool_end(tool_name)
-
-                            # -- hook:after_tool_call --
-                            if self.hooks:
-                                await self.hooks.trigger("after_tool_call", {"tool": tool_name})
-
-                            # Inject queued steering messages after each tool call.
-                            if self.queue:
-                                steer_messages = self.queue.get_steer_messages(session_key)
-                                if steer_messages:
-                                    combined = "\n".join(steer_messages)
-                                    yield StreamEvent.assistant_delta(f"\n[用户补充]: {combined}\n")
-
+                        tool_calls_in_node = self.runtime_events.collect_tool_calls(node)
+                        tool_dispatch = await self.runtime_events.dispatch_tool_calls(
+                            tool_calls_in_node,
+                            tool_calls_count=tool_calls_count,
+                            max_tool_calls=max_tool_calls,
+                            deps=deps,
+                            session_key=session_key,
+                        )
+                        tool_calls_count = tool_dispatch.tool_calls_count
+                        for event in tool_dispatch.events:
+                            yield event
+                        if tool_dispatch.should_break:
+                            break
 
                     # Ensure thinking phase is properly closed if still active.
-                    if thinking_started:
-                        # Use actual wall clock time, with minimum based on simulated delay
-                        wall_elapsed = time.time() - thinking_start_time if thinking_start_time else 0
-                        simulated_elapsed = thinking_chunk_count * 0.015  # 15ms per chunk
-                        thinking_elapsed = round(max(wall_elapsed, simulated_elapsed), 1)
-                        yield StreamEvent.thinking_end(elapsed=thinking_elapsed)
-                        thinking_started = False
+                    async for event in thinking_emitter.close_if_active():
+                        yield event
 
                     # Persist the final normalized transcript.
-                    final_messages = self._normalize_messages(agent_run.all_messages())
+                    final_messages = self.history.normalize_messages(agent_run.all_messages())
                     if persist_override_messages is not None:
                         if len(final_messages) > persist_override_base_len > 0:
                             # Preserve override messages and append new run output.
@@ -409,7 +332,7 @@ class AgentRunner:
                         else:
                             final_messages = persist_override_messages
 
-                    if not assistant_emitted:
+                    if not thinking_emitter.assistant_emitted:
                         # Try to get response from agent_run.result first (pydantic-ai structure)
                         final_assistant = ""
                         if hasattr(agent_run, "result") and agent_run.result:
@@ -445,43 +368,31 @@ class AgentRunner:
                             )
                         
                         if final_assistant:
-                            assistant_emitted = True
+                            thinking_emitter.assistant_emitted = True
                             yield StreamEvent.assistant_delta(final_assistant)
                     await self.sessions.persist_transcript(session_key, final_messages)
 
             except Exception as e:
                 # Close thinking phase on exception to maintain contract
-                if thinking_started:
-                    wall_elapsed = time.time() - thinking_start_time if thinking_start_time else 0
-                    simulated_elapsed = thinking_chunk_count * 0.015
-                    thinking_elapsed = round(max(wall_elapsed, simulated_elapsed), 1)
-                    yield StreamEvent.thinking_end(elapsed=thinking_elapsed)
-                    thinking_started = False
+                async for event in thinking_emitter.close_if_active():
+                    yield event
                         
                 # Surface agent runtime errors as stream events.
                 yield StreamEvent.error_event(f"agent_error: {str(e)}")
 
             # -- hook:agent_end --
-            if self.hooks:
-                await self.hooks.trigger(
-                    "agent_end",
-                    {
-                        "session_key": session_key,
-                        "tool_calls_count": tool_calls_count,
-                        "compaction_applied": compaction_applied,
-                    },
-                )
+            await self.runtime_events.trigger_agent_end(
+                session_key=session_key,
+                tool_calls_count=tool_calls_count,
+                compaction_applied=compaction_applied,
+            )
 
             yield StreamEvent.lifecycle_end()
 
         except Exception as e:
             # Close thinking phase on exception to maintain contract
-            if thinking_started:
-                wall_elapsed = time.time() - thinking_start_time if thinking_start_time else 0
-                simulated_elapsed = thinking_chunk_count * 0.015
-                thinking_elapsed = round(max(wall_elapsed, simulated_elapsed), 1)
-                yield StreamEvent.thinking_end(elapsed=thinking_elapsed)
-                thinking_started = False
+            async for event in thinking_emitter.close_if_active():
+                yield event
                 
             yield StreamEvent.error_event(str(e))
         finally:
@@ -533,6 +444,28 @@ class AgentRunner:
             if isinstance(candidate, dict):
                 return {str(k): str(v) for k, v in candidate.items()}
         return {}
+
+    def _resolve_runtime_context_window(
+        self,
+        selected_token_id: Optional[str],
+        deps: SkillDeps,
+    ) -> Optional[int]:
+        """Resolve context window from current runtime model/token settings."""
+        # 1) Current selected token metadata (best source).
+        if selected_token_id and self.token_policy is not None:
+            token = self.token_policy.token_pool.tokens.get(selected_token_id)
+            context_window = getattr(token, "context_window", None) if token else None
+            if isinstance(context_window, int) and context_window > 0:
+                return context_window
+
+        # 2) Request-scoped overrides from deps.extra.
+        extra = deps.extra if isinstance(deps.extra, dict) else {}
+        extra_window = extra.get("context_window") or extra.get("model_context_window")
+        if isinstance(extra_window, int) and extra_window > 0:
+            return extra_window
+
+        # 3) Fall back to configured compaction context window.
+        return self.compaction.config.context_window
 
     @asynccontextmanager
 
@@ -687,94 +620,10 @@ class AgentRunner:
                 tools.append({"name": str(name), "description": str(description).strip()})
         return tools
 
-    def _normalize_messages(self, messages: list[Any]) -> list[dict]:
-        """Normalize agent messages into session-manager dictionaries."""
-        normalized: list[dict] = []
-        for msg in messages or []:
-            if isinstance(msg, dict):
-                item = dict(msg)
-                item.setdefault("role", "assistant")
-                item.setdefault("content", "")
-                normalized.append(item)
-                continue
-
-            role = self._extract_message_role(msg)
-            content = self._extract_message_content(msg)
-            item = {
-                "role": str(role),
-                "content": content if isinstance(content, str) else str(content),
-            }
-            tool_calls = getattr(msg, "tool_calls", None)
-            if tool_calls:
-                normalized_tool_calls = []
-                for tc in tool_calls:
-                    if isinstance(tc, dict):
-                        normalized_tool_calls.append(tc)
-                    else:
-                        normalized_tool_calls.append({
-                            "id": getattr(tc, "id", ""),
-                            "name": getattr(tc, "name", getattr(tc, "tool_name", "")),
-                            "args": getattr(tc, "args", {}),
-                        })
-                item["tool_calls"] = normalized_tool_calls
-            normalized.append(item)
-        return normalized
-
-    def _extract_message_role(self, msg: Any) -> str:
-        role = getattr(msg, "role", None)
-        if isinstance(role, str) and role:
-            return role
-
-        kind = getattr(msg, "kind", "")
-        if kind == "request":
-            return "user"
-        if kind == "response":
-            return "assistant"
-        return "assistant"
-
-    def _extract_message_content(self, msg: Any) -> str:
-        content = getattr(msg, "content", None)
-        if isinstance(content, str):
-            return content
-
-        parts = getattr(msg, "parts", None)
-        if not parts:
-            return "" if content is None else str(content)
-
-        chunks: list[str] = []
-        for part in parts:
-            part_kind = getattr(part, "part_kind", "")
-            part_content = getattr(part, "content", None)
-            # Skip thinking parts, extract all other text content
-            if part_kind == "thinking":
-                continue
-            # Include text parts and any other parts with content
-            if part_kind in {"text", "user-prompt", "system-prompt", ""}:
-                if isinstance(part_content, str) and part_content:
-                    chunks.append(part_content)
-                elif isinstance(part_content, (list, tuple)):
-                    chunks.extend(str(item) for item in part_content if item)
-                elif part_content:
-                    chunks.append(str(part_content))
-        return "".join(chunks)
-
     def _is_model_request_node(self, node: Any) -> bool:
         """Return whether a node represents a model request boundary."""
         node_type = type(node).__name__.lower()
         return "modelrequest" in node_type or node_type.endswith("requestnode")
-    
-    def _build_message_history(self, transcript: list) -> list[dict]:
-        """Convert transcript entries into PydanticAI-compatible messages."""
-        messages = []
-        for entry in transcript:
-            msg = {
-                "role": entry.role,
-                "content": entry.content,
-            }
-            if entry.tool_calls:
-                msg["tool_calls"] = entry.tool_calls
-            messages.append(msg)
-        return messages
     
     async def run_single(
         self,

@@ -43,12 +43,12 @@ class TestChannelManager:
         mock_channel.is_default = False
         mock_channel.user_id = "user-123"
         
-        with patch("app.atlasclaw.db.get_db_session") as mock_session, \
+        with patch("app.atlasclaw.db.get_db_manager") as mock_db_manager, \
              patch("app.atlasclaw.channels.manager.ChannelConfigService") as mock_service:
             
             # Setup async context manager
             mock_session_instance = AsyncMock()
-            mock_session.return_value.__aenter__.return_value = mock_session_instance
+            mock_db_manager.return_value.get_session.return_value.__aenter__.return_value = mock_session_instance
             # get_by_id is an async static method, need to use AsyncMock
             mock_service.get_by_id = AsyncMock(return_value=mock_channel)
             mock_service.to_channel_config.return_value = {
@@ -71,11 +71,11 @@ class TestChannelManager:
     @pytest.mark.asyncio
     async def test_initialize_connection_not_found(self):
         """Test initializing a non-existent connection."""
-        with patch("app.atlasclaw.db.get_db_session") as mock_session, \
+        with patch("app.atlasclaw.db.get_db_manager") as mock_db_manager, \
              patch("app.atlasclaw.channels.manager.ChannelConfigService") as mock_service:
             
             mock_session_instance = AsyncMock()
-            mock_session.return_value.__aenter__.return_value = mock_session_instance
+            mock_db_manager.return_value.get_session.return_value.__aenter__.return_value = mock_session_instance
             mock_service.get_by_id = AsyncMock(return_value=None)
             
             result = await self.manager.initialize_connection("user-123", "websocket", "nonexistent")
@@ -170,11 +170,11 @@ class TestChannelManager:
         mock_channel.is_active = True
         mock_channel.is_default = False
         
-        with patch("app.atlasclaw.db.get_db_session") as mock_session, \
+        with patch("app.atlasclaw.db.get_db_manager") as mock_db_manager, \
              patch("app.atlasclaw.channels.manager.ChannelConfigService") as mock_service:
             
             mock_session_instance = AsyncMock()
-            mock_session.return_value.__aenter__.return_value = mock_session_instance
+            mock_db_manager.return_value.get_session.return_value.__aenter__.return_value = mock_session_instance
             # update_status is an async static method, need to use AsyncMock
             mock_service.update_status = AsyncMock(return_value=mock_channel)
             mock_service.get_by_id = AsyncMock(return_value=mock_channel)
@@ -203,11 +203,11 @@ class TestChannelManager:
         
         mock_channel = MagicMock()
         
-        with patch("app.atlasclaw.db.get_db_session") as mock_session, \
+        with patch("app.atlasclaw.db.get_db_manager") as mock_db_manager, \
              patch("app.atlasclaw.channels.manager.ChannelConfigService") as mock_service:
             
             mock_session_instance = AsyncMock()
-            mock_session.return_value.__aenter__.return_value = mock_session_instance
+            mock_db_manager.return_value.get_session.return_value.__aenter__.return_value = mock_session_instance
             # update_status is an async static method, need to use AsyncMock
             mock_service.update_status = AsyncMock(return_value=mock_channel)
             

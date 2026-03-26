@@ -21,6 +21,7 @@ class TokenEntry:
     api_type: str = "openai"
     priority: int = 0
     weight: int = 100
+    context_window: Optional[int] = None
 
 
 @dataclass

@@ -96,21 +96,41 @@ class CompactionPipeline:
         
         return total_chars // 4
     
-    def get_available_tokens(self) -> int:
+    def _resolve_context_window(self, context_window_override: Optional[int] = None) -> int:
+        """Resolve effective context window for the current evaluation."""
+        if context_window_override and context_window_override > 0:
+            return context_window_override
+        return self.config.context_window
+
+    def get_available_tokens(self, context_window_override: Optional[int] = None) -> int:
         """Return the token budget available before memory flushing."""
+        context_window = self._resolve_context_window(context_window_override)
         return (
-            self.config.context_window
+            context_window
             - self.config.reserve_tokens_floor
             - self.config.soft_threshold_tokens
         )
     
-    def should_compact(self, messages: list[dict], session: Any = None) -> bool:
+    def should_compact(
+        self,
+        messages: list[dict],
+        session: Any = None,
+        *,
+        context_window_override: Optional[int] = None,
+    ) -> bool:
         """Return whether the transcript should be compacted now."""
         estimated = self.estimate_tokens(messages)
-        threshold = self.config.context_window - self.config.reserve_tokens_floor
+        context_window = self._resolve_context_window(context_window_override)
+        threshold = context_window - self.config.reserve_tokens_floor
         return estimated > threshold
     
-    def should_memory_flush(self, messages: list[dict], session: Any = None) -> bool:
+    def should_memory_flush(
+        self,
+        messages: list[dict],
+        session: Any = None,
+        *,
+        context_window_override: Optional[int] = None,
+    ) -> bool:
         """Return whether a memory flush reminder should run before compaction."""
         if not self.config.memory_flush_enabled:
             return False
@@ -121,8 +141,29 @@ class CompactionPipeline:
                 return False
         
         estimated = self.estimate_tokens(messages)
-        threshold = self.get_available_tokens()
+        threshold = self.get_available_tokens(context_window_override)
         return estimated > threshold
+
+    def _split_for_compaction(self, messages: list[dict]) -> tuple[Optional[dict], list[dict], list[dict]]:
+        """Split messages into system prompt, recent messages, and compressible history."""
+        system_prompt = messages[0] if messages and messages[0].get("role") == "system" else None
+
+        keep_count = self.config.keep_recent_turns * 2
+        recent_messages = messages[-keep_count:] if keep_count > 0 else []
+
+        start_idx = 1 if system_prompt else 0
+        end_idx = len(messages) - keep_count if keep_count > 0 else len(messages)
+        to_compress = messages[start_idx:end_idx]
+        return system_prompt, recent_messages, to_compress
+
+    async def summarize_overflow(self, messages: list[dict]) -> str:
+        """Generate a summary for the overflow section only (without rebuilding transcript)."""
+        if len(messages) <= self.config.keep_recent_turns * 2 + 1:
+            return ""
+        _, _, to_compress = self._split_for_compaction(messages)
+        if not to_compress:
+            return ""
+        return await self._generate_summary(to_compress)
     
     async def compact(
         self,
@@ -135,16 +176,7 @@ class CompactionPipeline:
             return messages
 
         # 1. Separate the system prompt from compressible history.
-        system_prompt = messages[0] if messages and messages[0].get("role") == "system" else None
-
-        # Keep the most recent user/assistant turns intact.
-        keep_count = self.config.keep_recent_turns * 2
-        recent_messages = messages[-keep_count:] if keep_count > 0 else []
-
-        # Select the older portion to summarize.
-        start_idx = 1 if system_prompt else 0
-        end_idx = len(messages) - keep_count if keep_count > 0 else len(messages)
-        to_compress = messages[start_idx:end_idx]
+        system_prompt, recent_messages, to_compress = self._split_for_compaction(messages)
         
         if not to_compress:
             return messages

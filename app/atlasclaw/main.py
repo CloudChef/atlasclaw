@@ -225,6 +225,7 @@ def _build_token_entries(config) -> tuple[list[TokenEntry], Optional[str]]:
                 api_type=token_cfg.api_type,
                 priority=token_cfg.priority,
                 weight=token_cfg.weight,
+                context_window=token_cfg.context_window,
             )
         )
 
@@ -290,6 +291,7 @@ def _build_token_entries(config) -> tuple[list[TokenEntry], Optional[str]]:
             api_type=api_type,
             priority=100,
             weight=100,
+            context_window=None,
         )
     ], primary_id
 
@@ -321,6 +323,7 @@ async def _build_token_entries_from_db(session) -> tuple[list[TokenEntry], Optio
                 api_type="openai",
                 priority=token.priority,
                 weight=token.weight,
+                context_window=None,
             )
         )
 
@@ -666,6 +669,7 @@ async def lifespan(app: FastAPI):
                         api_type=mc.api_type or "openai",
                         priority=mc.priority or 0,
                         weight=mc.weight or 100,
+                        context_window=mc.context_window,
                     )
                     token_pool.register_token(entry)
                 if db_model_configs:

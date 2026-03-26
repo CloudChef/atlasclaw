@@ -154,6 +154,7 @@ class TokenConfig(BaseModel):
     api_type: str = "openai"
     priority: int = 0
     weight: int = 100
+    context_window: Optional[int] = None
 
 
 class ModelConfig(BaseModel):

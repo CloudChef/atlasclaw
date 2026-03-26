@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 
@@ -23,6 +25,44 @@ from app.atlasclaw.hooks import HookDefinition, HookPhase, HookSystem
 from app.atlasclaw.messages.handler import ChatType, InboundMessage, MessageHandler
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
+
+
+def _normalize_history_for_assert(messages: list[object]) -> list[dict]:
+    normalized: list[dict] = []
+    for msg in messages:
+        if isinstance(msg, dict):
+            normalized.append(
+                {
+                    "role": str(msg.get("role", "assistant")),
+                    "content": str(msg.get("content", "")),
+                }
+            )
+            continue
+
+        kind = str(getattr(msg, "kind", ""))
+        parts = getattr(msg, "parts", None) or []
+
+        role = "assistant"
+        if kind == "request":
+            has_system = any(getattr(part, "part_kind", "") == "system-prompt" for part in parts)
+            role = "system" if has_system else "user"
+        elif kind == "response":
+            role = "assistant"
+
+        chunks: list[str] = []
+        for part in parts:
+            part_kind = getattr(part, "part_kind", "")
+            if part_kind == "thinking":
+                continue
+            content = getattr(part, "content", "")
+            if isinstance(content, str):
+                chunks.append(content)
+            elif content:
+                chunks.append(str(content))
+
+        normalized.append({"role": role, "content": "".join(chunks)})
+
+    return normalized
 
 
 class _TextNode:
@@ -101,7 +141,7 @@ class _EchoAgent:
         self.calls.append(
             {
                 "user_message": user_message,
-                "message_history": [dict(m) for m in message_history],
+                "message_history": _normalize_history_for_assert(list(message_history)),
             }
         )
         final_messages = list(message_history) + [
@@ -121,7 +161,7 @@ class _ToolThenReplyAgent:
         self.calls.append(
             {
                 "user_message": user_message,
-                "message_history": [dict(m) for m in message_history],
+                "message_history": _normalize_history_for_assert(list(message_history)),
             }
         )
         final_messages = list(message_history) + [
@@ -164,7 +204,7 @@ class _PromptInjectableEchoAgent(_EchoAgent):
         self.calls.append(
             {
                 "user_message": user_message,
-                "message_history": [dict(m) for m in message_history],
+                "message_history": _normalize_history_for_assert(list(message_history)),
                 "system_prompt": self.active_system_prompt,
             }
         )
@@ -203,8 +243,12 @@ class _SingleShotCompactionPipeline:
     def __init__(self):
         self.compact_calls = 0
         self.should_calls = 0
+        self.config = SimpleNamespace(context_window=200000)
 
-    def should_compact(self, messages, session=None):
+    def should_memory_flush(self, messages, session=None, context_window_override=None):
+        return False
+
+    def should_compact(self, messages, session=None, context_window_override=None):
         self.should_calls += 1
         return self.compact_calls == 0 and self.should_calls == 2 and len(messages) >= 2
 
@@ -216,7 +260,7 @@ class _SingleShotCompactionPipeline:
 class _InLoopSingleShotCompactionPipeline(_SingleShotCompactionPipeline):
     """仅在本轮 loop 内第一次节点检查时触发压缩。"""
 
-    def should_compact(self, messages, session=None):
+    def should_compact(self, messages, session=None, context_window_override=None):
         self.should_calls += 1
         return self.compact_calls == 0 and self.should_calls == 2
 
@@ -231,7 +275,7 @@ class _GrowingMessagesAgent:
         self.calls.append(
             {
                 "user_message": user_message,
-                "message_history": [dict(m) for m in message_history],
+                "message_history": _normalize_history_for_assert(list(message_history)),
             }
         )
         snapshots = [
