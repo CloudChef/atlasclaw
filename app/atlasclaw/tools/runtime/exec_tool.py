@@ -16,6 +16,7 @@ from typing import Optional, TYPE_CHECKING
 
 from app.atlasclaw.tools.base import ToolResult
 from app.atlasclaw.tools.truncation import truncate_output
+from app.atlasclaw.tools.work_dir_guard import resolve_cwd
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
@@ -46,13 +47,15 @@ execute shell
     status = "completed"
     exit_code = 0
     output = ""
+    effective_cwd = ""
 
     try:
+        effective_cwd = str(resolve_cwd(ctx, cwd))
         proc = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
-            cwd=cwd,
+            cwd=effective_cwd,
         )
 
         timeout_s = timeout_ms / 1000.0
@@ -89,7 +92,7 @@ execute shell
             "status": status,
             "exitCode": exit_code,
             "durationMs": duration_ms,
-            "cwd": cwd or "",
+            "cwd": effective_cwd,
         },
         is_error=(status != "completed"),
     )

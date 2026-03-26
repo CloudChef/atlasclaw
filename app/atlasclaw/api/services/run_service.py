@@ -10,6 +10,7 @@ from typing import Any, Optional
 from fastapi import HTTPException, status
 
 from ...auth.models import ANONYMOUS_USER, UserInfo
+from ...core.security_guard import encode_if_untrusted
 from ...session.context import SessionKey
 from ..deps_context import APIContext, build_scoped_deps
 
@@ -41,6 +42,11 @@ def init_run(
         "timeout_seconds": timeout_seconds,
     }
     ctx.sse_manager.create_stream(run_id)
+
+
+def normalize_user_message(message: str) -> str:
+    normalized, _ = encode_if_untrusted(message)
+    return normalized
 
 
 def get_run_or_404(ctx: APIContext, run_id: str) -> dict[str, Any]:

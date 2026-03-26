@@ -25,6 +25,7 @@ from typing import Any, Optional
 
 import aiofiles
 
+from app.atlasclaw.core.security_guard import encode_if_untrusted
 
 class MemoryType(Enum):
     """Memory storage category."""
@@ -178,13 +179,14 @@ class MemoryManager:
         if timestamp is None:
             timestamp = datetime.now(timezone.utc)
             
+        safe_content, encoded = encode_if_untrusted(content)
         entry = MemoryEntry(
             id=MemoryEntry.generate_id(content, timestamp),
-            content=content,
+            content=safe_content,
             memory_type=MemoryType.DAILY,
             source=source,
             timestamp=timestamp,
-            tags=tags or []
+            tags=(tags or []) + (["encoded_input"] if encoded else []),
         )
         
         # Format the entry as Markdown before writing it.
@@ -228,13 +230,14 @@ class MemoryManager:
         """
         timestamp = datetime.now(timezone.utc)
         
+        safe_content, encoded = encode_if_untrusted(content)
         entry = MemoryEntry(
             id=MemoryEntry.generate_id(content, timestamp),
-            content=content,
+            content=safe_content,
             memory_type=MemoryType.LONG_TERM,
             source=source,
             timestamp=timestamp,
-            tags=tags or [],
+            tags=(tags or []) + (["encoded_input"] if encoded else []),
             metadata={"section": section}
         )
         

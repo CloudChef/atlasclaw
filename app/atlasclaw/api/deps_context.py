@@ -11,6 +11,7 @@ from fastapi import HTTPException, Request, status
 from ..agent.routing import AgentRouter
 from ..auth.models import UserInfo
 from ..core.deps import SkillDeps
+from ..core.security_guard import ensure_user_work_dir
 from ..memory.manager import MemoryManager
 from ..session.manager import SessionManager
 from ..session.queue import SessionQueue
@@ -140,6 +141,12 @@ def build_scoped_deps(
         "provider_config": provider_config or {},
         "skills_snapshot": ctx.skill_registry.snapshot_builtins(),
         "md_skills_snapshot": ctx.skill_registry.md_snapshot(),
+        "work_dir": str(
+            ensure_user_work_dir(
+                str(scoped_session_mgr.workspace_path),
+                user_info.user_id,
+            ),
+        ),
     }
     if extra:
         deps_extra.update(extra)

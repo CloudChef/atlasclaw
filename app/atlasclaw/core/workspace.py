@@ -227,6 +227,7 @@ class UserWorkspaceInitializer:
             # channels/ is no longer created; user-level channel configs go in user_setting.json
             (self.user_dir / "sessions").mkdir(exist_ok=True)
             (self.user_dir / "memory").mkdir(exist_ok=True)
+            (self.user_dir / "work_dir").mkdir(exist_ok=True)
             
             # Create default user config if not exists
             self._create_default_user_config()
@@ -263,6 +264,7 @@ class UserWorkspaceInitializer:
             self.user_dir.exists()
             and (self.user_dir / "sessions").exists()
             and (self.user_dir / "memory").exists()
+            and (self.user_dir / "work_dir").exists()
         )
     
     def get_sessions_dir(self) -> Path:

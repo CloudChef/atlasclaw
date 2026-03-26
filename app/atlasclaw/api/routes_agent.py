@@ -16,6 +16,7 @@ from .services.run_service import (
     execute_agent_run,
     get_run_or_404,
     init_run,
+    normalize_user_message,
 )
 
 
@@ -31,14 +32,15 @@ def register_agent_routes(router: APIRouter) -> None:
         user_info: UserInfo = getattr(request_obj.state, "user_info", ANONYMOUS_USER)
         request_cookies = dict(request_obj.cookies)
         provider_config = build_provider_config(ctx)
-        init_run(ctx, run_id, request.session_key, request.message, request.timeout_seconds)
+        safe_message = normalize_user_message(request.message)
+        init_run(ctx, run_id, request.session_key, safe_message, request.timeout_seconds)
 
         background_tasks.add_task(
             execute_agent_run,
             ctx,
             run_id,
             request.session_key,
-            request.message,
+            safe_message,
             request.timeout_seconds,
             user_info,
             request_cookies,

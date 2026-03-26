@@ -10,6 +10,7 @@ import os
 from typing import TYPE_CHECKING
 
 from app.atlasclaw.tools.base import ToolResult
+from app.atlasclaw.tools.work_dir_guard import resolve_file_path
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
@@ -32,7 +33,13 @@ async def write_tool(
     Returns:
         Serialized `ToolResult` dictionary.
     """
-    path = os.path.abspath(file_path)
+    try:
+        path = str(resolve_file_path(ctx, file_path))
+    except ValueError as e:
+        return ToolResult.error(
+            str(e),
+            details={"file_path": file_path},
+        ).to_dict()
 
     try:
         # Create parent directories automatically when needed.

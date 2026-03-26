@@ -27,6 +27,7 @@ from typing import Optional
 import aiofiles
 import aiofiles.os
 
+from app.atlasclaw.core.security_guard import encode_if_untrusted
 from app.atlasclaw.session.context import (
     SessionKey,
     SessionMetadata,
@@ -313,8 +314,22 @@ class SessionManager:
         session = await self.get_or_create(session_key)
         transcript_path = self._get_transcript_path(session)
         
+        content = entry.content
+        metadata = dict(entry.metadata)
+        if str(entry.role).lower() == "user":
+            content, encoded = encode_if_untrusted(content)
+            if encoded:
+                metadata["encoded_input"] = True
+        sanitized = TranscriptEntry(
+            timestamp=entry.timestamp,
+            role=entry.role,
+            content=content,
+            tool_calls=entry.tool_calls,
+            tool_results=entry.tool_results,
+            metadata=metadata,
+        )
         async with aiofiles.open(transcript_path, "a", encoding="utf-8") as f:
-            await f.write(json.dumps(entry.to_dict(), ensure_ascii=False) + "\n")
+            await f.write(json.dumps(sanitized.to_dict(), ensure_ascii=False) + "\n")
         
         # Update the session timestamp after appending.
         session.updated_at = datetime.now()
@@ -345,6 +360,10 @@ class SessionManager:
                     tool_calls=msg.get("tool_calls", []),
                     tool_results=msg.get("tool_results", []),
                 )
+                if str(entry.role).lower() == "user":
+                    entry.content, encoded = encode_if_untrusted(entry.content)
+                    if encoded:
+                        entry.metadata["encoded_input"] = True
                 await f.write(json.dumps(entry.to_dict(), ensure_ascii=False) + "\n")
         
         session.updated_at = datetime.now()
