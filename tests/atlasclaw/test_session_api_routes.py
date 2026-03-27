@@ -5,17 +5,38 @@ from __future__ import annotations
 import pytest
 from urllib.parse import quote
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
+from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.session.context import ChatType, SessionScope
 from app.atlasclaw.skills.registry import SkillRegistry
 
 
-def _build_client(tmp_path) -> TestClient:
+# Default test user ID used by SessionManager when no user_id is specified
+DEFAULT_TEST_USER_ID = "default"
+
+
+class MockAuthMiddleware(BaseHTTPMiddleware):
+    """Middleware that sets a mock authenticated user on request.state."""
+    
+    def __init__(self, app, user_id: str = DEFAULT_TEST_USER_ID):
+        super().__init__(app)
+        self.user_id = user_id
+    
+    async def dispatch(self, request: Request, call_next):
+        request.state.user_info = UserInfo(
+            user_id=self.user_id,
+            display_name="Test User",
+        )
+        return await call_next(request)
+
+
+def _build_client(tmp_path, user_id: str = DEFAULT_TEST_USER_ID) -> TestClient:
     ctx = APIContext(
         session_manager=SessionManager(agents_dir=str(tmp_path / "agents")),
         session_queue=SessionQueue(),
@@ -24,6 +45,7 @@ def _build_client(tmp_path) -> TestClient:
     set_api_context(ctx)
 
     app = FastAPI()
+    app.add_middleware(MockAuthMiddleware, user_id=user_id)
     app.include_router(create_router())
     return TestClient(app)
 
