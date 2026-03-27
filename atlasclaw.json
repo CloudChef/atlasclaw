@@ -80,8 +80,8 @@
     }
   },
   "auth": {
-    "enabled": false,
-    "provider": "none",
+    "enabled": true,
+    "provider": "local",
     "cache_ttl_seconds": 300,
     "jwt": {
       "header_name": "AtlasClaw-Authenticate",
