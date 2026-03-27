@@ -24,7 +24,7 @@
   "skills_root": "../atlasclaw-providers/skills",
   "channels_root": "../atlasclaw-providers/channels",
   "model": {
-    "primary": "model-1",
+    "primary": "model-2",
     "fallbacks": [],
     "temperature": "${LLM_TEMPERATURE}",
     "selection_strategy": "health",
@@ -63,13 +63,11 @@
   },
   "service_providers": {
     "smartcmp": {
-      "local": {
-        "base_url": "${SMARTCMP_LOCAL_URL}",
-        "cookie": "${SMARTCMP_LOCAL_COOKIE}"
-      },
       "default": {
-        "CMP_URL": "${CMP_URL}",
-        "CMP_COOKIE": "${CMP_COOKIE}"
+        "base_url": "${CMP_URL}",
+        "cookie": "${CMP_COOKIE}",
+        "username": "${CMP_USERNAME}",
+        "password": "${CMP_PASSWORD}"
       }
     },
     "dingtalk": {

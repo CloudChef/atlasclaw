@@ -42,10 +42,7 @@ async def execute_webhook_dispatch(
 
     provider_config: dict[str, Any] = {}
     if ctx.service_provider_registry:
-        for pt in ctx.service_provider_registry.list_providers():
-            instances = ctx.service_provider_registry.list_instances(pt)
-            if instances:
-                provider_config[pt] = instances
+        provider_config = ctx.service_provider_registry.get_all_instance_configs()
 
     deps = build_scoped_deps(
         ctx,

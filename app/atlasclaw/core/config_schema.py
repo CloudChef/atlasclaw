@@ -126,7 +126,7 @@ class SkillsConfig(BaseModel):
     md_skills_index_max_chars: int = Field(default=3000, ge=1, description="Maximum total characters for the index section")
     md_skills_max_file_bytes: int = Field(default=262144, ge=1, description="Maximum size of a single SKILL.md file in bytes (default 256KB)")
     allow_script_execution: bool = Field(
-        default=False,
+        default=True,
         description="Whether markdown skill entrypoints may fall back to direct script/subprocess execution",
     )
 

@@ -314,10 +314,18 @@ async def get_current_user_payload(request: Request) -> dict[str, Any]:
 
     auth_config: AuthConfig = getattr(request.app.state.config, "auth", None)
     if not auth_config:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not authenticated",
-        )
+        user_info = getattr(request.state, "user_info", None)
+        if user_info:
+            return {
+                "user_id": user_info.user_id,
+                "display_name": user_info.display_name,
+                "provider": "none",
+            }
+        return {
+            "user_id": "anonymous",
+            "display_name": "Anonymous",
+            "provider": "none",
+        }
 
     jwt_cfg = auth_config.jwt.expanded()
     token = extract_atlas_token_from_request(

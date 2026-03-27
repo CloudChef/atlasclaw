@@ -18,13 +18,9 @@ logger = logging.getLogger(__name__)
 
 
 def build_provider_config(ctx: APIContext) -> dict[str, Any]:
-    provider_config: dict[str, Any] = {}
     if ctx.service_provider_registry:
-        for pt in ctx.service_provider_registry.list_providers():
-            instances = ctx.service_provider_registry.list_instances(pt)
-            if instances:
-                provider_config[pt] = instances
-    return provider_config
+        return ctx.service_provider_registry.get_all_instance_configs()
+    return {}
 
 
 def init_run(

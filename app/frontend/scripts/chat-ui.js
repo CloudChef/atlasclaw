@@ -339,9 +339,9 @@ function buildMessageText(thinkingContent, responseContent, elapsedSeconds = nul
         let html = THINKING_STYLES;
         html += `<div class="thinking-block thinking">`;
         html += `<div class="thinking-header">`;
-        html += `<span class="thinking-icon">�?/span>`;
+        html += `<span class="thinking-icon">⚡</span>`;
         html += `<span class="thinking-label">${thinkingLabel}</span>`;
-        html += `<span class="thinking-toggle">�?/span>`;
+        html += `<span class="thinking-toggle">▸</span>`;
         html += `</div>`;
         html += `<div class="thinking-body"><div class="thinking-content-text">${escapeHtml(thinkingText)}</div></div>`;
         html += `</div>`;
@@ -358,15 +358,15 @@ function buildMessageText(thinkingContent, responseContent, elapsedSeconds = nul
             displayElapsed = 0.1;
         }
         const timerText = displayElapsed !== null ? `${displayElapsed}s` : '';
-        const labelText = timerText ? `已思考（用时 ${timerText}）` : '已思�?;
+        const labelText = timerText ? `Thought for ${timerText}` : 'Thought';
 
         let html = THINKING_STYLES;
         // Use native <details>/<summary> for collapsed state
         html += `<details class="thinking-block">`;
         html += `<summary class="thinking-header">`;
-        html += `<span class="thinking-icon">�?/span>`;
+        html += `<span class="thinking-icon">⚡</span>`;
         html += `<span class="thinking-label">${labelText}</span>`;
-        html += `<span class="thinking-toggle">�?/span>`;
+        html += `<span class="thinking-toggle">▸</span>`;
         html += `</summary>`;
         html += `<div class="thinking-body"><div class="thinking-content-text">${escapeHtml(thinkingContent)}</div></div>`;
         html += `</details>`;
@@ -549,9 +549,9 @@ async function handleStreamWithSignals(runId, signals) {
                 const initialHtml = `<div class="message-wrapper">${THINKING_STYLES}
                     <div class="thinking-block thinking" id="${thinkingBlockId}">
                         <div class="thinking-header">
-                            <span class="thinking-icon">�?/span>
+                            <span class="thinking-icon">⚡</span>
                             <span class="thinking-label">思考中<span class="thinking-dots"><span>.</span><span>.</span><span>.</span></span></span>
-                            <span class="thinking-toggle">�?/span>
+                            <span class="thinking-toggle">▸</span>
                         </div>
                         <div class="thinking-body">
                             <div class="thinking-content-text" id="${thinkingBlockId}-content"></div>
@@ -628,7 +628,7 @@ async function handleStreamWithSignals(runId, signals) {
                         updateUI();
                     } else {
                         try {
-                            signals.onResponse({ html: '<div class="response-content">�?/div>', overwrite: true });
+                            signals.onResponse({ html: '<div class="response-content">⋯</div>', overwrite: true });
                         } catch (e) {}
                     }
 
