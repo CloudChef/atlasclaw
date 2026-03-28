@@ -1,29 +1,29 @@
 > [!NOTE]
-> This repository contains the AtlasClaw core implementation, including the agent runtime, API layer, channel adapters, provider registry, skills, tools, and session/memory management，see [atlasclaw.ai](https://atlasclaw.ai/).
+> This repository contains the Xuanwu core implementation, including the agent runtime, API layer, channel adapters, provider registry, skills, tools, and session/memory management，see [xuanwu.ai](https://xuanwu.ai/).
 
-# AtlasClaw
+# Xuanwu
 
-![AtlasClaw logo](docs/images/atlasclaw-icon.png)
+![Xuanwu logo](docs/images/xuanwu-icon.png)
 
-AtlasClaw is an enterprise agent framework that lets employees interact with multiple enterprise systems through one conversational AI interface. Instead of switching between separate consoles, dashboards, and approval portals, users can use natural language to trigger workflows, query operational data, and complete cross-system tasks from a single entry point.
+Xuanwu is an enterprise agent framework that lets employees interact with multiple enterprise systems through one conversational AI interface. Instead of switching between separate consoles, dashboards, and approval portals, users can use natural language to trigger workflows, query operational data, and complete cross-system tasks from a single entry point.
 
 ## Background
 
 Enterprise software teams often need to work across CRM, ITSM, Monitoring, HR, Finance, OA and other internal systems. The challenge is not only system fragmentation, but also the mismatch between data models, workflow boundaries, authorization models, and user experience across those systems.
 
-AtlasClaw is designed around two practical developer questions:
+Xuanwu is designed around two practical developer questions:
 
 - How do you provide one unified AI Agent experience on top of the systems an enterprise already has?
 - How do you let enterprise software developers add AI Agent capabilities to their own systems quickly, without rebuilding agent infrastructure from scratch?
 
-AtlasClaw addresses those problems with a developer-oriented agent framework:
+Xuanwu addresses those problems with a developer-oriented agent framework:
 
 - A unified conversational layer for cross-system workflows and operations
 - A pluggable provider model that lets developers expose system capabilities to the agent quickly
 - Strict permission inheritance so every action runs under the authenticated user's real access rights
 - Multi-channel access through web UI, embedded panels, chat platforms, and programmatic webhooks
 
-The framework is built to help teams add agent capabilities to existing enterprise software without weakening governance. AtlasClaw does not bypass RBAC, does not escalate privileges, and keeps platform-specific authorization and auditing where they already belong.
+The framework is built to help teams add agent capabilities to existing enterprise software without weakening governance. Xuanwu does not bypass RBAC, does not escalate privileges, and keeps platform-specific authorization and auditing where they already belong.
 
 ## Key Capabilities
 
@@ -38,11 +38,11 @@ The framework is built to help teams add agent capabilities to existing enterpri
 
 ## Deployment Modes
 
-AtlasClaw supports two practical usage modes for enterprise software teams.
+Xuanwu supports two practical usage modes for enterprise software teams.
 
 ### Embedded Agent Mode
 
-AtlasClaw can be embedded into an existing enterprise system as a module inside that system. In this mode, the AI Agent becomes part of the product itself, serving that system's own users, data, and business scenarios.
+Xuanwu can be embedded into an existing enterprise system as a module inside that system. In this mode, the AI Agent becomes part of the product itself, serving that system's own users, data, and business scenarios.
 
 - Embedded as an in-product AI module
 - Supports both user-facing interaction interfaces and agent-style automation
@@ -51,7 +51,7 @@ AtlasClaw can be embedded into an existing enterprise system as a module inside 
 
 ### Standalone Agent Mode
 
-AtlasClaw can also run as an independent enterprise AI Agent system that connects multiple existing systems together. In this mode, it acts as a unified AI layer above those systems rather than belonging to only one of them.
+Xuanwu can also run as an independent enterprise AI Agent system that connects multiple existing systems together. In this mode, it acts as a unified AI layer above those systems rather than belonging to only one of them.
 
 - Runs as an independent AI Agent platform for the enterprise
 - Connects and coordinates multiple systems through Providers
@@ -60,23 +60,23 @@ AtlasClaw can also run as an independent enterprise AI Agent system that connect
 
 ## Architecture
 
-AtlasClaw is organized around a thin core plus rich providers.
+Xuanwu is organized around a thin core plus rich providers.
 
 - Access channels support both embedded in-system experiences and standalone enterprise entry points
-- AtlasClaw Core hosts the API layer, session/config services, and the agent engine
+- Xuanwu Core hosts the API layer, session/config services, and the agent engine
 - LLM services are external and replaceable through configuration
 - Providers encapsulate authentication, skills, and scripts for each connected enterprise platform
 - Enterprise systems remain the source of truth for authorization and auditing
 
 ### Overall Architecture
 
-![AtlasClaw overall architecture](docs/images/architecture/v4-01-overall-architecture.png)
+![Xuanwu overall architecture](docs/images/architecture/v4-01-overall-architecture.png)
 
-At a high level, requests enter through one of the supported channels, pass through the AtlasClaw Core, and are executed against enterprise systems through Providers. In embedded mode, the entry point can be an AI panel or module inside an existing enterprise application. In standalone mode, AtlasClaw exposes an independent AI Agent interface that sits above multiple enterprise systems. In both cases, the core remains lightweight and reusable, while each Provider contains the system-specific integration logic.
+At a high level, requests enter through one of the supported channels, pass through the Xuanwu Core, and are executed against enterprise systems through Providers. In embedded mode, the entry point can be an AI panel or module inside an existing enterprise application. In standalone mode, Xuanwu exposes an independent AI Agent interface that sits above multiple enterprise systems. In both cases, the core remains lightweight and reusable, while each Provider contains the system-specific integration logic.
 
 ### Core Architecture
 
-![AtlasClaw core architecture](docs/images/architecture/v4-04-agent-core-components.png)
+![Xuanwu core architecture](docs/images/architecture/v4-04-agent-core-components.png)
 
 The core runtime in this repository centers on:
 
@@ -91,15 +91,15 @@ The core runtime in this repository centers on:
 
 ```text
 project-root/
-├── app/atlasclaw/api/         # REST, SSE, WebSocket, gateway orchestration
-├── app/atlasclaw/agent/       # Agent runner, routing, streaming, prompt building
-├── app/atlasclaw/channels/    # Channel adapters and registries
-├── app/atlasclaw/core/        # Config, execution context, provider registry
-├── app/atlasclaw/memory/      # Memory manager and retrieval
-├── app/atlasclaw/session/     # Session context, queue, and manager
-├── app/atlasclaw/skills/      # Skill loading and registry
-├── app/atlasclaw/tools/       # Built-in tools and tool catalog
-├── app/atlasclaw/workflow/    # Workflow engine and orchestrator
+├── app/xuanwu/api/         # REST, SSE, WebSocket, gateway orchestration
+├── app/xuanwu/agent/       # Agent runner, routing, streaming, prompt building
+├── app/xuanwu/channels/    # Channel adapters and registries
+├── app/xuanwu/core/        # Config, execution context, provider registry
+├── app/xuanwu/memory/      # Memory manager and retrieval
+├── app/xuanwu/session/     # Session context, queue, and manager
+├── app/xuanwu/skills/      # Skill loading and registry
+├── app/xuanwu/tools/       # Built-in tools and tool catalog
+├── app/xuanwu/workflow/    # Workflow engine and orchestrator
 ├── docs/                      # Concepts, tools, channels, and design notes
 └── tests/                     # Pytest test suite
 ```
@@ -122,11 +122,11 @@ pip install -r requirements.txt
 
 ### Configure Environment
 
-AtlasClaw uses `atlasclaw.json` for configuration. Create a configuration file in the project root:
+Xuanwu uses `xuanwu.json` for configuration. Create a configuration file in the project root:
 
 ```json
 {
-  "providers_root": "../atlasclaw-providers/providers",
+  "providers_root": "../xuanwu-providers/providers",
   "model": {
     "primary": "kimi/kimi-k2.5",
     "temperature": 0.7,
@@ -143,7 +143,7 @@ AtlasClaw uses `atlasclaw.json` for configuration. Create a configuration file i
 
 Configuration options:
 
-- `providers_root` - Root directory for external provider templates and skills, resolved relative to `atlasclaw.json`
+- `providers_root` - Root directory for external provider templates and skills, resolved relative to `xuanwu.json`
 - Provider skills discovered under `providers_root` are registered as `provider:skill` to avoid name collisions
 - `model.primary` - Primary model in format `provider/model-name`
 - `model.providers` - Provider configurations with `base_url`, `api_key`, and `api_type`
@@ -165,15 +165,15 @@ export DOUBAO_API_KEY="your-api-key"
 
 ```bash
 # Run all tests
-pytest tests/atlasclaw -q
+pytest tests/xuanwu -q
 
 # Run LLM integration tests (requires API credentials)
 export ANTHROPIC_BASE_URL="https://api.moonshot.cn/anthropic"
 export ANTHROPIC_API_KEY="your-api-key"
-pytest tests/atlasclaw/test_agent_integration.py -v -m llm
+pytest tests/xuanwu/test_agent_integration.py -v -m llm
 
 # Run e2e tests (requires running service)
-pytest tests/atlasclaw/test_e2e_api.py -v -m e2e
+pytest tests/xuanwu/test_e2e_api.py -v -m e2e
 ```
 
 ### Start the Service
@@ -181,7 +181,7 @@ pytest tests/atlasclaw/test_e2e_api.py -v -m e2e
 Start the backend API server:
 
 ```bash
-uvicorn app.atlasclaw.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.xuanwu.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 The API will be available at `http://127.0.0.1:8000`.
@@ -226,12 +226,12 @@ npm test
 
 ## Development Notes
 
-- Entry point: `app/atlasclaw/main.py` - FastAPI application with lifespan management
-- The API surface lives under `app/atlasclaw/api/`
-- Core orchestration logic lives under `app/atlasclaw/agent/`, `app/atlasclaw/workflow/`, and `app/atlasclaw/tools/`
+- Entry point: `app/xuanwu/main.py` - FastAPI application with lifespan management
+- The API surface lives under `app/xuanwu/api/`
+- Core orchestration logic lives under `app/xuanwu/agent/`, `app/xuanwu/workflow/`, and `app/xuanwu/tools/`
 - Provider integrations are loaded from `providers_root` (default: `../providers`)
 
-If you are integrating AtlasClaw into a host service, start by wiring the API layer, execution context, provider registry, and session manager together in your application bootstrap.
+If you are integrating Xuanwu into a host service, start by wiring the API layer, execution context, provider registry, and session manager together in your application bootstrap.
 
 ## Further Reading
 

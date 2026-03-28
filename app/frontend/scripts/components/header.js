@@ -34,7 +34,7 @@ export function renderHeader(container) {
 
   // Render header HTML
   container.innerHTML = `
-    <h1 id="page-title" data-i18n="app.title">AtlasClaw</h1>
+    <h1 id="page-title" data-i18n="app.title">Xuanwu</h1>
     <div class="header-actions">
       <button id="logoutBtn" class="logout-btn" type="button" data-i18n-title="logout.title" data-i18n-aria-label="logout.title" title="Logout" aria-label="Logout">
         ${LOGOUT_ICON}
@@ -61,7 +61,7 @@ export function updateHeaderTitleText(titleText) {
   }
 
   titleElement.removeAttribute('data-i18n')
-  titleElement.textContent = titleText || 'AtlasClaw'
+  titleElement.textContent = titleText || 'Xuanwu'
   document.title = titleElement.textContent
 }
 
@@ -88,7 +88,7 @@ export function updateHeaderTitle(titleKey) {
     }
 
     // Also update document title
-    document.title = titleElement.textContent + ' - AtlasClaw'
+    document.title = titleElement.textContent + ' - Xuanwu'
   }
 }
 
@@ -112,7 +112,7 @@ async function handleLogout() {
  */
 function getDefaultTitle(key) {
   const defaults = {
-    'app.title': 'AtlasClaw',
+    'app.title': 'Xuanwu',
     'app.chatTitle': 'Chat',
     'channel.title': 'Channel Management',
     'model.pageTitle': 'Model Management',

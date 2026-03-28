@@ -1,4 +1,4 @@
-# AtlasClaw User Guide
+# Xuanwu User Guide
 
 ## Table of Contents
 
@@ -23,7 +23,7 @@
 
 ## 1. Overview
 
-**AtlasClaw** is an enterprise-grade AI Agent framework that lets employees interact with multiple enterprise systems through a single conversational AI interface. Instead of switching between separate consoles, dashboards, and portals, users can use natural language to trigger workflows, query operational data, and complete cross-system tasks from one entry point.
+**Xuanwu** is an enterprise-grade AI Agent framework that lets employees interact with multiple enterprise systems through a single conversational AI interface. Instead of switching between separate consoles, dashboards, and portals, users can use natural language to trigger workflows, query operational data, and complete cross-system tasks from one entry point.
 
 ### Core Design Principles
 
@@ -64,8 +64,8 @@
 ### Install Dependencies
 
 ```bash
-# Navigate to AtlasClaw-Core
-cd AtlasClaw-Core
+# Navigate to Xuanwu-Core
+cd Xuanwu-Core
 
 # Create a virtual environment (recommended)
 python3 -m venv .venv
@@ -81,10 +81,10 @@ pip install -r requirements.txt
 **Step 1 — Create the configuration file**
 
 ```bash
-cp atlasclaw.json.example atlasclaw.json
+cp xuanwu.json.example xuanwu.json
 ```
 
-Edit `atlasclaw.json` to select your LLM provider (see [Section 3.1](#31-model-configuration)):
+Edit `xuanwu.json` to select your LLM provider (see [Section 3.1](#31-model-configuration)):
 
 ```json
 {
@@ -126,7 +126,7 @@ ANTHROPIC_API_KEY=your-api-key
 **Step 3 — Start the service**
 
 ```bash
-uvicorn app.atlasclaw.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.xuanwu.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 **Step 4 — Open the Web UI**
@@ -137,12 +137,12 @@ Navigate to `http://127.0.0.1:8000` in your browser.
 
 ## 3. Configuration
 
-The main configuration file is `atlasclaw.json`, located in the project root. All `${VAR_NAME}` placeholders are automatically expanded from environment variables at runtime.
+The main configuration file is `xuanwu.json`, located in the project root. All `${VAR_NAME}` placeholders are automatically expanded from environment variables at runtime.
 
 > **Configuration priority (high → low):**
 > 1. Runtime overrides (via `config_manager.set()`)
-> 2. Environment variables (`ATLASCLAW_*` prefix)
-> 3. `atlasclaw.json`
+> 2. Environment variables (`XUANWU_*` prefix)
+> 3. `xuanwu.json`
 > 4. Built-in defaults (`core/config_schema.py`)
 
 ### 3.1 Model Configuration
@@ -219,15 +219,15 @@ Configure inbound webhooks for provider-qualified skills already loaded from `pr
 
 ```json
 {
-  "providers_root": "../atlasclaw-providers/providers",
+  "providers_root": "../xuanwu-providers/providers",
   "webhook": {
     "enabled": true,
-    "header_name": "X-AtlasClaw-SK",
+    "header_name": "X-Xuanwu-SK",
     "systems": [
       {
         "system_id": "smartcmp-preapproval",
         "enabled": true,
-        "sk_env": "ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL",
+        "sk_env": "XUANWU_WEBHOOK_SK_SMARTCMP_PREAPPROVAL",
         "default_agent_id": "main",
         "allowed_skills": ["smartcmp:preapproval-agent"]
       }
@@ -247,36 +247,36 @@ Configured under the `auth` section. See [Section 9](#9-authentication) for full
 ### Development Mode (with hot reload)
 
 ```bash
-uvicorn app.atlasclaw.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.xuanwu.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 ### Production Mode
 
 ```bash
-uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000 --workers 4
+uvicorn app.xuanwu.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
 ### Using Gunicorn
 
 ```bash
-gunicorn app.atlasclaw.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+gunicorn app.xuanwu.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 ```
 
 ### Successful Startup Log
 
 ```
-[AtlasClaw] Registered 12 built-in tools
-[AtlasClaw] Agent created with model: openai:deepseek-chat
-[AtlasClaw] Application started successfully
-[AtlasClaw] Session storage: ~/.atlasclaw/agents
-[AtlasClaw] Skills loaded: 5 executable, 3 markdown
+[Xuanwu] Registered 12 built-in tools
+[Xuanwu] Agent created with model: openai:deepseek-chat
+[Xuanwu] Application started successfully
+[Xuanwu] Session storage: ~/.xuanwu/agents
+[Xuanwu] Skills loaded: 5 executable, 3 markdown
 ```
 
 ### Environment Variables for Deployment
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ATLASCLAW_CONFIG` | Path to `atlasclaw.json` | `atlasclaw.json` |
+| `XUANWU_CONFIG` | Path to `xuanwu.json` | `xuanwu.json` |
 | `UNICLAW_API_BASE_URL` | Public URL served to the frontend (for cross-origin deployment) | — |
 | `CORS_ORIGINS` | Comma-separated allowed CORS origins | localhost origins only |
 | `LOG_LEVEL` | Logging level (`DEBUG` / `INFO` / `WARNING`) | `INFO` |
@@ -297,7 +297,7 @@ http://127.0.0.1:8000
 - **Chat Interface** — DeepChat-powered UI with streaming responses
 - **Real-time Streaming** — Agent thinking and tool execution steps shown live via SSE
 - **Multi-language** — Chinese / English toggle (`app/frontend/locales/zh-CN.json` / `en-US.json`)
-- **Session Persistence** — Conversation history saved automatically to `~/.atlasclaw/agents/`
+- **Session Persistence** — Conversation history saved automatically to `~/.xuanwu/agents/`
 
 ### Runtime Configuration
 
@@ -338,9 +338,9 @@ All API paths are prefixed with `/api`.
 
 Sessions track conversation context. A `session_key` is returned on creation and used for all subsequent calls.
 
-AtlasClaw now treats session ownership and chat threading as separate concerns:
+Xuanwu now treats session ownership and chat threading as separate concerns:
 
-- `user_id` in the canonical `SessionKey` identifies the AtlasClaw user that owns the session bucket
+- `user_id` in the canonical `SessionKey` identifies the Xuanwu user that owns the session bucket
 - `channel`, `account_id`, `chat_type`, and `peer_id` identify the external conversation scope
 - `thread_id` identifies an independent chat thread inside the same scope
 - Session metadata and transcripts are stored under `workspace/users/<user_id>/sessions/`
@@ -436,7 +436,7 @@ Content-Type: application/json
 
 {
   "skill_name": "web_search",
-  "args": { "query": "AtlasClaw documentation" }
+  "args": { "query": "Xuanwu documentation" }
 }
 ```
 
@@ -467,9 +467,9 @@ Skills are discovered at startup in the following order (later entries override 
 
 | Priority | Location | Description |
 |----------|----------|-------------|
-| 1 (lowest) | `app/atlasclaw/providers/*/skills/` | Built-in provider skills |
-| 2 | `app/atlasclaw/skills/built_in/` | Core built-in skills |
-| 3 | `~/.atlasclaw/skills/` | User personal skills |
+| 1 (lowest) | `app/xuanwu/providers/*/skills/` | Built-in provider skills |
+| 2 | `app/xuanwu/skills/built_in/` | Core built-in skills |
+| 3 | `~/.xuanwu/skills/` | User personal skills |
 | 4 (highest) | `skills/` (project root) | Workspace / project-level skills |
 
 ### 7.3 Creating a Markdown Skill
@@ -524,7 +524,7 @@ skills/my-skill/
 
 ```python
 from pydantic_ai import RunContext
-from app.atlasclaw.core.deps import SkillDeps
+from app.xuanwu.core.deps import SkillDeps
 
 SKILL_METADATA = {
     "name": "my_skill",
@@ -573,13 +573,13 @@ providers/<provider-name>/
 
 ### 8.2 Available Providers
 
-**Jira Provider** (`app/atlasclaw/providers/jira/`):
+**Jira Provider** (`app/xuanwu/providers/jira/`):
 - Issue creation, retrieval, update, deletion, listing
 - JQL search
 - Project / component / issue-type metadata
 - Configuration: see [Section 3.2](#32-service-providers-configuration)
 
-**SmartCMP Provider** (external, `AtlasClaw-Providers/SmartCMP-Provider/`):
+**SmartCMP Provider** (external, `Xuanwu-Providers/SmartCMP-Provider/`):
 - Approval workflow management
 - Skills: list pending approvals, approve / reject / retreat / cancel / batch process
 
@@ -587,9 +587,9 @@ providers/<provider-name>/
 
 | Location | Path | Priority |
 |----------|------|----------|
-| Built-in | `app/atlasclaw/providers/<name>/` | Lowest |
+| Built-in | `app/xuanwu/providers/<name>/` | Lowest |
 | Workspace | `{workspace}/providers/<name>/` | Higher |
-| User | `~/.atlasclaw/providers/<name>/` | Highest |
+| User | `~/.xuanwu/providers/<name>/` | Highest |
 
 ### 8.4 SmartCMP Approval Skill — Quick Usage
 
@@ -617,7 +617,7 @@ Agent: Approved successfully!
 
 1. Create `providers/<name>/` with `PROVIDER.md` and `skills/`
 2. Add skills following [Section 7.3](#73-creating-a-markdown-skill) / [7.4](#74-creating-an-executable-skill)
-3. Register the instance in `atlasclaw.json` under `service_providers`
+3. Register the instance in `xuanwu.json` under `service_providers`
 4. Restart the service — provider is discovered automatically
 
 See [PROVIDER-GUIDE.MD](./PROVIDER-GUIDE.MD) for the complete guide.
@@ -626,7 +626,7 @@ See [PROVIDER-GUIDE.MD](./PROVIDER-GUIDE.MD) for the complete guide.
 
 ## 9. Authentication
 
-Configured under the `auth` section in `atlasclaw.json`. The following providers are supported:
+Configured under the `auth` section in `xuanwu.json`. The following providers are supported:
 
 ### 9.1 No Authentication (development / testing)
 
@@ -694,7 +694,7 @@ Supported IdPs: Keycloak, Okta, Azure AD, Auth0, Dex, or any OIDC-compliant IdP.
       "issuer": "https://sso.example.com/realms/your-realm",
       "client_id": "${SSO_CLIENT_ID}",
       "client_secret": "${SSO_CLIENT_SECRET}",
-      "redirect_base_url": "https://atlasclaw.example.com",
+      "redirect_base_url": "https://xuanwu.example.com",
       "post_login_redirect": "/",
       "post_logout_redirect": "/",
       "scopes": ["openid", "profile", "email"],
@@ -714,7 +714,7 @@ Supported IdPs: Keycloak, Okta, Azure AD, Auth0, Dex, or any OIDC-compliant IdP.
 | `issuer` | Yes | — | IdP issuer URL; OIDC Discovery performed automatically |
 | `client_id` | Yes | — | OAuth2 client ID registered in the IdP |
 | `client_secret` | Yes | — | OAuth2 client secret |
-| `redirect_base_url` | Yes | — | Public base URL of this AtlasClaw instance, used to build the callback URL |
+| `redirect_base_url` | Yes | — | Public base URL of this Xuanwu instance, used to build the callback URL |
 | `scopes` | No | `["openid","profile","email"]` | OAuth2 scopes |
 | `session_secret` | No | auto-generated | HMAC-SHA256 signing key; if omitted, sessions are invalidated on restart |
 | `session_ttl_seconds` | No | `28800` (8 h) | Session validity |
@@ -734,7 +734,7 @@ Supported IdPs: Keycloak, Okta, Azure AD, Auth0, Dex, or any OIDC-compliant IdP.
 #### Login Flow
 
 ```
-Browser                    AtlasClaw                  IdP
+Browser                    Xuanwu                  IdP
    │  GET /auth/login         │                         │
    │─────────────────────────>│                         │
    │<─ 302 + state cookie ────│                         │
@@ -747,7 +747,7 @@ Browser                    AtlasClaw                  IdP
    │                          │<─ tokens ───────────────│
    │                          │── GET /userinfo ────────>│
    │                          │<─ profile ──────────────│
-   │<─ 302 + Set-Cookie: atlasclaw_sso_session=... ─────│
+   │<─ 302 + Set-Cookie: xuanwu_sso_session=... ─────│
    │  (subsequent requests carry session cookie)        │
 ```
 
@@ -775,9 +775,9 @@ window.location.href = '/auth/logout';
 {
   "sso": {
     "issuer": "https://keycloak.example.com/realms/my-realm",
-    "client_id": "atlasclaw",
+    "client_id": "xuanwu",
     "client_secret": "${KEYCLOAK_CLIENT_SECRET}",
-    "redirect_base_url": "https://atlasclaw.example.com"
+    "redirect_base_url": "https://xuanwu.example.com"
   }
 }
 ```
@@ -789,7 +789,7 @@ window.location.href = '/auth/logout';
     "issuer": "https://your-org.okta.com/oauth2/default",
     "client_id": "${OKTA_CLIENT_ID}",
     "client_secret": "${OKTA_CLIENT_SECRET}",
-    "redirect_base_url": "https://atlasclaw.example.com"
+    "redirect_base_url": "https://xuanwu.example.com"
   }
 }
 ```
@@ -802,12 +802,12 @@ window.location.href = '/auth/logout';
     "client_id": "${AZURE_CLIENT_ID}",
     "client_secret": "${AZURE_CLIENT_SECRET}",
     "scopes": ["openid", "profile", "email", "offline_access"],
-    "redirect_base_url": "https://atlasclaw.example.com"
+    "redirect_base_url": "https://xuanwu.example.com"
   }
 }
 ```
 
-> Register `https://atlasclaw.example.com/auth/callback` as an allowed redirect URI in your IdP console.
+> Register `https://xuanwu.example.com/auth/callback` as an allowed redirect URI in your IdP console.
 
 ---
 
@@ -911,19 +911,19 @@ Automatically compresses long conversation history to stay within context window
 
 ```bash
 # Run all tests
-pytest tests/atlasclaw -q
+pytest tests/xuanwu -q
 
 # Run a single test file
-pytest tests/atlasclaw/test_agent.py -v
+pytest tests/xuanwu/test_agent.py -v
 
 # LLM integration tests (requires a real API key)
-pytest tests/atlasclaw/test_agent_integration.py -v -m llm
+pytest tests/xuanwu/test_agent_integration.py -v -m llm
 
 # End-to-end tests (requires a running service)
-pytest tests/atlasclaw/test_e2e_api.py -v -m e2e
+pytest tests/xuanwu/test_e2e_api.py -v -m e2e
 
 # With coverage report
-pytest --cov=app.atlasclaw --cov-report=term-missing
+pytest --cov=app.xuanwu --cov-report=term-missing
 
 # Skip slow tests
 pytest -m "not slow"
@@ -950,7 +950,7 @@ npm test
 
 ```bash
 export LOG_LEVEL=DEBUG
-uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.xuanwu.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### 11.5 Adding a Custom Skill
@@ -981,7 +981,7 @@ curl -X POST http://localhost:8000/api/skills/execute \
 ### Repository Layout
 
 ```
-AtlasClaw-Core/
+Xuanwu-Core/
 ├── app/
 │   ├── frontend/               # Web UI (DeepChat + custom JS)
 │   │   ├── index.html
@@ -990,7 +990,7 @@ AtlasClaw-Core/
 │   │   ├── locales/            # i18n (zh-CN.json, en-US.json)
 │   │   ├── static/             # Static assets (DeepChat bundle)
 │   │   └── config.json         # Runtime frontend config
-│   └── atlasclaw/              # Core backend
+│   └── xuanwu/              # Core backend
 │       ├── main.py             # FastAPI application entry
 │       ├── agent/              # Agent engine (runner, routing, prompt builder, streaming)
 │       ├── api/                # REST / WebSocket / SSE endpoints
@@ -1004,11 +1004,11 @@ AtlasClaw-Core/
 │       ├── tools/              # Built-in tool suite
 │       └── workflow/           # Workflow engine
 ├── tests/                      # Test suite
-│   ├── atlasclaw/              # Python tests
+│   ├── xuanwu/              # Python tests
 │   └── frontend/               # JavaScript tests
 ├── docs/                       # Documentation
-├── atlasclaw.json              # Main configuration (create from .example)
-├── atlasclaw.json.example      # Configuration template
+├── xuanwu.json              # Main configuration (create from .example)
+├── xuanwu.json.example      # Configuration template
 └── requirements.txt
 ```
 
@@ -1033,7 +1033,7 @@ Response Stream (SSE)
 ### Session & Memory Storage
 
 ```
-~/.atlasclaw/
+~/.xuanwu/
 ├── agents/
 │   └── <agent_id>/
 │       ├── sessions/

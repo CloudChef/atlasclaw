@@ -1,11 +1,11 @@
 #!/bin/bash
-# AtlasClaw remote deploy helper
-# Usage: ./remote-deploy.sh root@192.168.16.21 /opt/atlasclaw
+# Xuanwu remote deploy helper
+# Usage: ./remote-deploy.sh root@192.168.16.21 /opt/xuanwu
 
 set -e
 
 REMOTE_HOST="$1"
-REMOTE_DIR="${2:-/opt/atlasclaw}"
+REMOTE_DIR="${2:-/opt/xuanwu}"
 SSH_OPTS="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
 
 echo "[deploy] Syncing code to $REMOTE_HOST..."

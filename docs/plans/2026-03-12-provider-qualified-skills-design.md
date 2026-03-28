@@ -2,7 +2,7 @@
 
 **Context**
 
-AtlasClaw currently loads provider skills from `providers_root`, but they are not consistently registered as `provider:skill`. This leaves room for name collisions and forces webhook dispatch to depend on a separate `webhook.skill_sources` loading path.
+Xuanwu currently loads provider skills from `providers_root`, but they are not consistently registered as `provider:skill`. This leaves room for name collisions and forces webhook dispatch to depend on a separate `webhook.skill_sources` loading path.
 
 **Decision**
 
@@ -25,4 +25,4 @@ Examples:
 
 - Provider markdown skills are always namespaced.
 - Webhook dispatch resolves allowed skills only from already-loaded provider skills.
-- `atlasclaw.json` no longer needs `webhook.skill_sources`.
+- `xuanwu.json` no longer needs `webhook.skill_sources`.

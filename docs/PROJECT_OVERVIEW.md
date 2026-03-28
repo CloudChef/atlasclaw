@@ -1,11 +1,11 @@
-# AtlasClaw-Core Project Overview
+# Xuanwu-Core Project Overview
 
 > **DEPRECATED**: This document has been superseded by [Architecture](./ARCHITECTURE.MD).
 > Please refer to the canonical architecture document for up-to-date information.
 
 ## Introduction
 
-**AtlasClaw** is an enterprise-grade AI Agent framework designed to enable employees to interact with multiple enterprise systems through a unified conversational AI interface. It addresses the fragmentation challenges faced by enterprise software teams working across CRM, ITSM, monitoring, HR, finance, and other systems.
+**Xuanwu** is an enterprise-grade AI Agent framework designed to enable employees to interact with multiple enterprise systems through a unified conversational AI interface. It addresses the fragmentation challenges faced by enterprise software teams working across CRM, ITSM, monitoring, HR, finance, and other systems.
 
 ---
 
@@ -75,10 +75,10 @@ Supports multiple entry points:
 ## Directory Structure
 
 ```
-AtlasClaw-Core/
+Xuanwu-Core/
 ├── app/
 │   ├── frontend/              # Web UI (DeepChat + custom)
-│   └── atlasclaw/               # Core backend
+│   └── xuanwu/               # Core backend
 │       ├── agent/             # Agent engine
 │       ├── api/               # API layer
 │       ├── auth/              # Authentication system
@@ -103,7 +103,7 @@ AtlasClaw-Core/
 
 ## Key Components
 
-### 1. Agent Runner (`app/atlasclaw/agent/runner.py`)
+### 1. Agent Runner (`app/xuanwu/agent/runner.py`)
 
 The AgentRunner is a PydanticAI-based streaming Agent executor providing:
 
@@ -125,7 +125,7 @@ class AgentRunner:
         # Execute Agent and yield streaming events
 ```
 
-### 2. Prompt Builder (`app/atlasclaw/agent/prompt_builder.py`)
+### 2. Prompt Builder (`app/xuanwu/agent/prompt_builder.py`)
 
 Supports three modes of system prompt building:
 
@@ -135,7 +135,7 @@ Supports three modes of system prompt building:
 | `MINIMAL` | Sub-agent mode without optional runtime parts |
 | `NONE` | Basic identity line only |
 
-### 3. Skill Registry (`app/atlasclaw/skills/registry.py`)
+### 3. Skill Registry (`app/xuanwu/skills/registry.py`)
 
 Manages executable Python Skills and Markdown-based Skill metadata:
 
@@ -143,7 +143,7 @@ Manages executable Python Skills and Markdown-based Skill metadata:
 - **MD Skills**: Metadata Skills loaded from `SKILL.md` files
 - **Search Path Priority**: Workspace > User > Built-in
 
-### 4. Session Manager (`app/atlasclaw/session/manager.py`)
+### 4. Session Manager (`app/xuanwu/session/manager.py`)
 
 Handles session persistence and management:
 
@@ -151,7 +151,7 @@ Handles session persistence and management:
 - Message history management
 - Session reset and compaction
 
-### 5. Memory System (`app/atlasclaw/memory/manager.py`)
+### 5. Memory System (`app/xuanwu/memory/manager.py`)
 
 Provides long-term memory capabilities:
 
@@ -290,8 +290,8 @@ skills/<skill-name>/               # Standalone skills (skills_root)
 channels/<channel-name>/           # System-level channels (channels_root)
 └── config.json
 
-<workspace>/                       # User data only (default: ./.atlasclaw)
-├── atlasclaw.json               # Core configuration
+<workspace>/                       # User data only (default: ./.xuanwu)
+├── xuanwu.json               # Core configuration
 ├── agents/
 └── users/
     └── <user_id>/
@@ -320,7 +320,7 @@ entrypoint: handler.py:handler
 **2. Python Skills (Programmatic)**
 ```python
 from pydantic_ai import RunContext
-from app.atlasclaw.core.deps import SkillDeps
+from app.xuanwu.core.deps import SkillDeps
 
 async def my_skill(ctx: RunContext[SkillDeps], param: str) -> dict:
     return {"result": f"Processed: {param}"}
@@ -361,8 +361,8 @@ class MyAuthProvider(AuthProvider):
 Configuration loaded in priority order (high to low):
 
 1. **Runtime overrides** (via `config_manager.set()`)
-2. **Environment variables** (`ATLASCLAW_*` prefix)
-3. **Config file** (`atlasclaw.json` / `atlasclaw.yaml`)
+2. **Environment variables** (`XUANWU_*` prefix)
+3. **Config file** (`xuanwu.json` / `xuanwu.yaml`)
 4. **Defaults** (`config_schema.py`)
 
 ### Configuration Format
@@ -401,11 +401,11 @@ Configuration loaded in priority order (high to low):
 
 ### Environment Variables
 
-Format: `ATLASCLAW_<PATH>__<KEY>`
+Format: `XUANWU_<PATH>__<KEY>`
 
 ```bash
-ATLASCLAW_AGENT_DEFAULTS__TIMEOUT_SECONDS=300
-ATLASCLAW_MODEL__TEMPERATURE=0.5
+XUANWU_AGENT_DEFAULTS__TIMEOUT_SECONDS=300
+XUANWU_MODEL__TEMPERATURE=0.5
 ```
 
 Configuration files support `${VAR_NAME}` syntax for environment variable references.
@@ -419,8 +419,8 @@ Configuration files support `${VAR_NAME}` syntax for environment variable refere
 ```
 tests/
 ├── conftest.py                    # pytest configuration
-├── atlasclaw.test.json              # Test configuration
-├── atlasclaw/                       # Python tests
+├── xuanwu.test.json              # Test configuration
+├── xuanwu/                       # Python tests
 │   ├── test_core.py
 │   ├── test_agent.py
 │   ├── test_agent_integration.py
@@ -445,16 +445,16 @@ tests/
 
 ```bash
 # Run all tests
-pytest tests/atlasclaw -q
+pytest tests/xuanwu -q
 
 # Run LLM integration tests
-pytest tests/atlasclaw/test_agent_integration.py -v -m llm
+pytest tests/xuanwu/test_agent_integration.py -v -m llm
 
 # Run E2E tests
-pytest tests/atlasclaw/test_e2e_api.py -v -m e2e
+pytest tests/xuanwu/test_e2e_api.py -v -m e2e
 
 # Run with coverage
-pytest --cov=app.atlasclaw --cov-report=term-missing
+pytest --cov=app.xuanwu --cov-report=term-missing
 ```
 
 ---

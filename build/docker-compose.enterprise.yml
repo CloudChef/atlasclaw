@@ -1,23 +1,23 @@
 version: '3.8'
 
 services:
-  atlasclaw:
-    image: registry.cn-shanghai.aliyuncs.com/atlasclaw/atlasclaw-official:latest
-    container_name: atlasclaw
+  xuanwu:
+    image: registry.cn-shanghai.aliyuncs.com/xuanwu/xuanwu-official:latest
+    container_name: xuanwu
     ports:
       - "8000:8000"
     environment:
-      - ATLASCLAW_CONFIG=/app/workspace/atlasclaw.json
+      - XUANWU_CONFIG=/app/workspace/xuanwu.json
     working_dir: /app/workspace
     volumes:
-      # Workspace: host /opt/atlasclaw/workspace -> container /app/workspace
-      - /opt/atlasclaw/workspace:/app/workspace
-      # Data: host /opt/atlasclaw/data -> container /app/data
-      - /opt/atlasclaw/data:/app/data
-      # Extensions: host /opt/atlasclaw/extensions -> container /app/extensions
-      - /opt/atlasclaw/extensions/providers:/app/extensions/providers
-      - /opt/atlasclaw/extensions/skills:/app/extensions/skills
-      - /opt/atlasclaw/extensions/channels:/app/extensions/channels
+      # Workspace: host /opt/xuanwu/workspace -> container /app/workspace
+      - /opt/xuanwu/workspace:/app/workspace
+      # Data: host /opt/xuanwu/data -> container /app/data
+      - /opt/xuanwu/data:/app/data
+      # Extensions: host /opt/xuanwu/extensions -> container /app/extensions
+      - /opt/xuanwu/extensions/providers:/app/extensions/providers
+      - /opt/xuanwu/extensions/skills:/app/extensions/skills
+      - /opt/xuanwu/extensions/channels:/app/extensions/channels
     depends_on:
       mysql:
         condition: service_healthy
@@ -39,11 +39,11 @@ services:
 
   mysql:
     image: mysql:8.4
-    container_name: atlasclaw-mysql
+    container_name: xuanwu-mysql
     environment:
       MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
-      MYSQL_DATABASE: atlasclaw
-      MYSQL_USER: atlasclaw
+      MYSQL_DATABASE: xuanwu
+      MYSQL_USER: xuanwu
       MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
     secrets:
       - mysql_root_password

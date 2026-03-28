@@ -69,10 +69,19 @@ describe('i18n Module', () => {
             expect(getSavedLocale()).toBeNull();
         });
 
+        test('should restore and migrate legacy saved locale', async () => {
+            localStorageMock.store['atlasclaw_locale'] = 'en-US';
+
+            const { getSavedLocale } = await import('../../app/frontend/scripts/i18n.js');
+            expect(getSavedLocale()).toBe('en-US');
+            expect(localStorageMock.setItem).toHaveBeenCalledWith('xuanwu_locale', 'en-US');
+            expect(localStorageMock.removeItem).toHaveBeenCalledWith('atlasclaw_locale');
+        });
+
         test('should save locale to localStorage', async () => {
             const { saveLocale } = await import('../../app/frontend/scripts/i18n.js');
             saveLocale('en-US');
-            expect(localStorageMock.setItem).toHaveBeenCalledWith('atlasclaw_locale', 'en-US');
+            expect(localStorageMock.setItem).toHaveBeenCalledWith('xuanwu_locale', 'en-US');
         });
     });
 
@@ -117,7 +126,7 @@ describe('i18n Module', () => {
     describe('t (translate)', () => {
         test('should return translation for valid key', async () => {
             const mockTranslations = {
-                app: { title: 'AtlasClaw AI', greeting: 'Hello {{name}}' }
+                app: { title: 'Xuanwu AI', greeting: 'Hello {{name}}' }
             };
             
             global.fetch.mockResolvedValueOnce({
@@ -127,7 +136,7 @@ describe('i18n Module', () => {
             
             const { loadLocale, t } = await import('../../app/frontend/scripts/i18n.js');
             await loadLocale('zh-CN');
-            expect(t('app.title')).toBe('AtlasClaw AI');
+            expect(t('app.title')).toBe('Xuanwu AI');
         });
 
         test('should return key for missing translation', async () => {
@@ -205,7 +214,7 @@ describe('i18n Module', () => {
 
     describe('initI18n', () => {
         test('should initialize with saved locale', async () => {
-            localStorageMock.store['atlasclaw_locale'] = 'en-US';
+            localStorageMock.store['xuanwu_locale'] = 'en-US';
             
             global.fetch.mockResolvedValueOnce({
                 ok: true,
@@ -241,7 +250,7 @@ describe('i18n Module', () => {
             const { setLocale } = await import('../../app/frontend/scripts/i18n.js');
             await setLocale('en-US');
             
-            expect(localStorageMock.setItem).toHaveBeenCalledWith('atlasclaw_locale', 'en-US');
+            expect(localStorageMock.setItem).toHaveBeenCalledWith('xuanwu_locale', 'en-US');
         });
     });
 });

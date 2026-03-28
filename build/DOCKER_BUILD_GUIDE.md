@@ -1,15 +1,15 @@
-# AtlasClaw Build
+# Xuanwu Build
 
-This directory contains build scripts and configurations for both OpenSource and Enterprise editions of AtlasClaw.
+This directory contains build scripts and configurations for both OpenSource and Enterprise editions of Xuanwu.
 
 ## Container Directory Structure
 
-AtlasClaw container uses the following internal directory structure:
+Xuanwu container uses the following internal directory structure:
 
 ```
 /app/
 ├── workspace/          # Configuration, user data, logs, agents
-│   ├── atlasclaw.json  # Main configuration file
+│   ├── xuanwu.json  # Main configuration file
 │   └── logs/           # Application logs
 ├── data/               # Database files
 └── extensions/         # Custom extensions
@@ -19,11 +19,11 @@ AtlasClaw container uses the following internal directory structure:
 ```
 
 **Host Mount Points:**
-- Host `/opt/atlasclaw/workspace` → Container `/app/workspace`
-- Host `/opt/atlasclaw/data` → Container `/app/data`
-- Host `/opt/atlasclaw/extensions/providers` → Container `/app/extensions/providers`
-- Host `/opt/atlasclaw/extensions/skills` → Container `/app/extensions/skills`
-- Host `/opt/atlasclaw/extensions/channels` → Container `/app/extensions/channels`
+- Host `/opt/xuanwu/workspace` → Container `/app/workspace`
+- Host `/opt/xuanwu/data` → Container `/app/data`
+- Host `/opt/xuanwu/extensions/providers` → Container `/app/extensions/providers`
+- Host `/opt/xuanwu/extensions/skills` → Container `/app/extensions/skills`
+- Host `/opt/xuanwu/extensions/channels` → Container `/app/extensions/channels`
 
 ## Quick Comparison
 
@@ -49,8 +49,8 @@ AtlasClaw container uses the following internal directory structure:
 
 | File | Description |
 |------|-------------|
-| `docker-compose.yml` | Single AtlasClaw container |
-| `docker-compose.enterprise.yml` | AtlasClaw + MySQL 8.5 + Secrets |
+| `docker-compose.yml` | Single Xuanwu container |
+| `docker-compose.enterprise.yml` | Xuanwu + MySQL 8.5 + Secrets |
 
 ### Scripts
 
@@ -68,21 +68,21 @@ AtlasClaw container uses the following internal directory structure:
 
 | Option | Description |
 |--------|-------------|
-| `--mode opensource` | Build OpenSource edition (image: `atlasclaw`) |
-| `--mode enterprise` | Build Enterprise edition (image: `atlasclaw-official`) |
+| `--mode opensource` | Build OpenSource edition (image: `xuanwu`) |
+| `--mode enterprise` | Build Enterprise edition (image: `xuanwu-official`) |
 | `--tag, -t` | Version tag (default: `v0.6.1`) |
 | `--push` | Push image to registry after build |
 | `--username, -u` | Registry username (required with --push) |
 | `--password, -p` | Registry password (required with --push) |
 | `--registry` | Custom registry URL (default: `registry.cn-shanghai.aliyuncs.com`) |
-| `--namespace` | Custom namespace (default: `atlasclaw`) |
+| `--namespace` | Custom namespace (default: `xuanwu`) |
 
 ### Default Registry
 
 By default, images are tagged for Aliyun Container Registry (ACR) Shanghai:
 - **Registry**: `registry.cn-shanghai.aliyuncs.com`
-- **Namespace**: `atlasclaw`
-- **Full image path**: `registry.cn-shanghai.aliyuncs.com/atlasclaw/atlasclaw:{tag}`
+- **Namespace**: `xuanwu`
+- **Full image path**: `registry.cn-shanghai.aliyuncs.com/xuanwu/xuanwu:{tag}`
 
 ### OpenSource Edition
 
@@ -93,11 +93,11 @@ By default, images are tagged for Aliyun Container Registry (ACR) Shanghai:
 # Build and push to ACR
 ./build.sh --mode opensource --tag v0.6.1 --push --username your-user --password your-pass
 
-# Creates image: registry.cn-shanghai.aliyuncs.com/atlasclaw/atlasclaw:v0.6.1
+# Creates image: registry.cn-shanghai.aliyuncs.com/xuanwu/xuanwu:v0.6.1
 ```
 
 **Features:**
-- Image name: `atlasclaw`
+- Image name: `xuanwu`
 - Single Docker container
 - SQLite database (auto-created)
 - Minimal resource usage
@@ -108,10 +108,10 @@ By default, images are tagged for Aliyun Container Registry (ACR) Shanghai:
 cd build
 
 # Create host directories
-mkdir -p /opt/atlasclaw/{workspace,data,extensions/{providers,skills,channels}}
+mkdir -p /opt/xuanwu/{workspace,data,extensions/{providers,skills,channels}}
 
 # Copy config to workspace
-cp config/atlasclaw.json /opt/atlasclaw/workspace/
+cp config/xuanwu.json /opt/xuanwu/workspace/
 
 # Start container
 docker-compose up -d
@@ -126,11 +126,11 @@ docker-compose up -d
 # Build and push to ACR
 ./build.sh --mode enterprise --tag v0.6.1 --push --username your-user --password your-pass
 
-# Creates image: registry.cn-shanghai.aliyuncs.com/atlasclaw/atlasclaw-official:v0.6.1
+# Creates image: registry.cn-shanghai.aliyuncs.com/xuanwu/xuanwu-official:v0.6.1
 ```
 
 **Features:**
-- Image name: `atlasclaw-official`
+- Image name: `xuanwu-official`
 - MySQL 8.4 LTS database
 - Docker secrets for passwords
 - Resource limits (4 CPU / 8GB RAM)
@@ -142,16 +142,16 @@ docker-compose up -d
 cd build
 
 # Create host directories
-mkdir -p /opt/atlasclaw/{workspace,data,extensions/{providers,skills,channels}}
+mkdir -p /opt/xuanwu/{workspace,data,extensions/{providers,skills,channels}}
 
 # Copy config to workspace
-cp config/atlasclaw.json /opt/atlasclaw/workspace/
+cp config/xuanwu.json /opt/xuanwu/workspace/
 
 # Start container
 docker-compose up -d
 
 # Run database migrations
-docker-compose exec atlasclaw alembic upgrade head
+docker-compose exec xuanwu alembic upgrade head
 ```
 
 ## Build Script
@@ -159,7 +159,7 @@ docker-compose exec atlasclaw alembic upgrade head
 The `build.sh` script automates:
 
 1. **Prerequisites check** - Docker
-2. **Configuration generation** - Creates `atlasclaw.json` with correct paths
+2. **Configuration generation** - Creates `xuanwu.json` with correct paths
 3. **Secret generation** (Enterprise) - Auto-generates MySQL passwords
 4. **Docker build** - Builds the appropriate image with tags
 5. **Image push** (optional) - Pushes to registry with credentials
@@ -172,27 +172,27 @@ After running build script:
 ```
 build/
 ├── config/
-│   └── atlasclaw.json          # Main configuration (with /app paths)
+│   └── xuanwu.json          # Main configuration (with /app paths)
 ├── secrets/                    # Enterprise only
 │   ├── mysql_root_password.txt
 │   └── mysql_password.txt
 └── docker-compose.yml -> docker-compose.{mode}.yml
 ```
 
-**Note:** Data directories are created on the host at `/opt/atlasclaw/` during first deployment.
+**Note:** Data directories are created on the host at `/opt/xuanwu/` during first deployment.
 
 ## Configuration
 
 ### OpenSource
 
-Edit `config/atlasclaw.json`:
+Edit `config/xuanwu.json`:
 
 ```json
 {
   "database": {
     "type": "sqlite",
     "sqlite": {
-      "path": "./data/atlasclaw.db"
+      "path": "./data/xuanwu.db"
     }
   }
 }
@@ -200,7 +200,7 @@ Edit `config/atlasclaw.json`:
 
 ### Enterprise
 
-Edit `config/atlasclaw.json`:
+Edit `config/xuanwu.json`:
 
 ```json
 {
@@ -209,8 +209,8 @@ Edit `config/atlasclaw.json`:
     "mysql": {
       "host": "mysql",
       "port": 3306,
-      "database": "atlasclaw",
-      "user": "atlasclaw",
+      "database": "xuanwu",
+      "user": "xuanwu",
       "password": "auto-generated",
       "charset": "utf8mb4"
     }
@@ -225,7 +225,7 @@ Edit `config/atlasclaw.json`:
 ### View Logs
 
 ```bash
-docker-compose logs -f atlasclaw
+docker-compose logs -f xuanwu
 docker-compose logs -f mysql    # Enterprise only
 ```
 
@@ -245,7 +245,7 @@ tar -czf backup.tar.gz config/ data/ logs/
 **Enterprise:**
 ```bash
 # Backup database
-docker exec atlasclaw-mysql mysqldump -u root -p atlasclaw > db_backup.sql
+docker exec xuanwu-mysql mysqldump -u root -p xuanwu > db_backup.sql
 
 # Backup files
 tar -czf backup.tar.gz config/ data/ logs/
@@ -265,7 +265,7 @@ ports:
 ### Permission Denied
 
 ```bash
-chmod 600 config/atlasclaw.json
+chmod 600 config/xuanwu.json
 chmod 600 secrets/*.txt  # Enterprise
 ```
 

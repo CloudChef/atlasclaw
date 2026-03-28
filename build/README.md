@@ -1,6 +1,6 @@
-# AtlasClaw
+# Xuanwu
 
-This guide describes how to deploy AtlasClaw in your own environment using pre-built Docker images.
+This guide describes how to deploy Xuanwu in your own environment using pre-built Docker images.
 
 ## Prerequisites
 
@@ -67,17 +67,17 @@ docker compose version
 ### 1. Create Deployment Directory
 
 ```bash
-mkdir -p /opt/atlasclaw/{workspace,data,extensions/{providers,skills,channels}}
-cd /opt/atlasclaw
+mkdir -p /opt/xuanwu/{workspace,data,extensions/{providers,skills,channels}}
+cd /opt/xuanwu
 ```
 
 **Directory Structure:**
 
 ```
-/opt/atlasclaw/
+/opt/xuanwu/
 ├── docker-compose.yml      # Docker Compose orchestration file
 ├── workspace/              # Configuration, logs, user data
-│   └── atlasclaw.json      # Main configuration file
+│   └── xuanwu.json      # Main configuration file
 ├── data/                   # SQLite database and runtime data
 └── extensions/
     ├── providers/          # Provider extensions
@@ -88,7 +88,7 @@ cd /opt/atlasclaw
 ### 2. Download Compose File
 
 ```bash
-curl -o docker-compose.yml https://raw.githubusercontent.com/CloudChef/atlasclaw/main/build/docker-compose.yml
+curl -o docker-compose.yml https://raw.githubusercontent.com/CloudChef/xuanwu/main/build/docker-compose.yml
 ```
 
 ### 3. Download Extensions (Optional)
@@ -96,13 +96,13 @@ curl -o docker-compose.yml https://raw.githubusercontent.com/CloudChef/atlasclaw
 Download providers, skills, and channels from the official repository:
 
 ```bash
-cd /opt/atlasclaw/extensions
+cd /opt/xuanwu/extensions
 
 # Download and extract the repository (no git required)
-curl -L -o atlasclaw-providers.zip https://github.com/CloudChef/atlasclaw-providers/archive/refs/heads/main.zip
-unzip atlasclaw-providers.zip
-mv atlasclaw-providers-main src
-rm -f atlasclaw-providers.zip
+curl -L -o xuanwu-providers.zip https://github.com/CloudChef/xuanwu-providers/archive/refs/heads/main.zip
+unzip xuanwu-providers.zip
+mv xuanwu-providers-main src
+rm -f xuanwu-providers.zip
 
 # Copy providers (optional)
 cp -r src/providers/* ./providers/ 2>/dev/null || true
@@ -117,14 +117,14 @@ cp -r src/channels/* ./channels/ 2>/dev/null || true
 rm -rf src
 ```
 
-**Note:** Extensions are optional. AtlasClaw will start successfully even without any extensions installed.
+**Note:** Extensions are optional. Xuanwu will start successfully even without any extensions installed.
 
 ### 4. Configure LLM Model (Required)
 
-**⚠️ You MUST configure at least one LLM token before starting AtlasClaw.**
+**⚠️ You MUST configure at least one LLM token before starting Xuanwu.**
 
 The service will fail to start without a valid model configuration. Tokens can be added via:
-- Configuration file (atlasclaw.json) - for initial setup
+- Configuration file (xuanwu.json) - for initial setup
 - Web UI (Admin Panel) - for runtime management via CRUD
 
 #### Supported LLM Providers
@@ -137,7 +137,7 @@ The service will fail to start without a valid model configuration. Tokens can b
 
 ### 4. Create Configuration
 
-Create `/opt/atlasclaw/workspace/atlasclaw.json`:
+Create `/opt/xuanwu/workspace/xuanwu.json`:
 
 ```json
 {
@@ -147,7 +147,7 @@ Create `/opt/atlasclaw/workspace/atlasclaw.json`:
   "database": {
     "type": "sqlite",
     "sqlite": {
-      "path": "/app/data/atlasclaw.db"
+      "path": "/app/data/xuanwu.db"
     }
   },
   "providers_root": "/app/extensions/providers",
@@ -176,7 +176,7 @@ Create `/opt/atlasclaw/workspace/atlasclaw.json`:
       "default_admin_password": "admin"
     },
     "jwt": {
-      "secret_key": "atlasclaw-docker-secret-CHANGE-ME",
+      "secret_key": "xuanwu-docker-secret-CHANGE-ME",
       "expires_minutes": 480
     }
   }
@@ -188,7 +188,7 @@ Create `/opt/atlasclaw/workspace/atlasclaw.json`:
 1. **You MUST replace `YOUR_API_KEY_HERE`** with your actual LLM API key (e.g., DeepSeek, OpenAI)
 2. **`model.tokens` cannot be empty** - At least one token entry is **required** for startup
 3. **`providers_root`**, **`skills_root`**, and **`channels_root`** should be set to `/app/extensions/providers`, `/app/extensions/skills`, `/app/extensions/channels`
-4. Database path uses container path `/app/data/atlasclaw.db`
+4. Database path uses container path `/app/data/xuanwu.db`
 5. `workspace.path` should use container path `/app/workspace`
 
 **Example with real API key:**
@@ -212,13 +212,13 @@ Create `/opt/atlasclaw/workspace/atlasclaw.json`:
 
 Set proper permissions:
 ```bash
-chmod 600 /opt/atlasclaw/workspace/atlasclaw.json
+chmod 600 /opt/xuanwu/workspace/xuanwu.json
 ```
 
-### 5. Start AtlasClaw
+### 5. Start Xuanwu
 
 ```bash
-cd /opt/atlasclaw
+cd /opt/xuanwu
 docker compose up -d
 ```
 
@@ -239,13 +239,13 @@ Access the web UI at: `http://your-server-ip:8000`
 
 ## Optional: Skills & Channels Configuration
 
-Skills and channels in `/opt/atlasclaw/extensions/` are automatically loaded on startup.
+Skills and channels in `/opt/xuanwu/extensions/` are automatically loaded on startup.
 
 ### Skill Structure
 
 **Markdown Skill:**
 ```
-/opt/atlasclaw/extensions/skills/
+/opt/xuanwu/extensions/skills/
 └── deployment/
     ├── SKILL.md             # Skill definition
     ├── requirements.txt     # Dependencies (optional)
@@ -255,7 +255,7 @@ Skills and channels in `/opt/atlasclaw/extensions/` are automatically loaded on 
 
 **Executable Skill:**
 ```
-/opt/atlasclaw/extensions/skills/
+/opt/xuanwu/extensions/skills/
 └── monitoring/
     ├── __init__.py
     ├── skill.py             # Python implementation
@@ -265,7 +265,7 @@ Skills and channels in `/opt/atlasclaw/extensions/` are automatically loaded on 
 
 ### Channel Configuration
 
-Add to `/opt/atlasclaw/workspace/atlasclaw.json`:
+Add to `/opt/xuanwu/workspace/xuanwu.json`:
 
 ```json
 {
@@ -285,10 +285,10 @@ Add to `/opt/atlasclaw/workspace/atlasclaw.json`:
 
 ```bash
 # Reload without restart
-docker compose exec atlasclaw atlasclaw reload all
+docker compose exec xuanwu xuanwu reload all
 
 # Or restart
-docker compose restart atlasclaw
+docker compose restart xuanwu
 ```
 
 ---
@@ -298,7 +298,7 @@ docker compose restart atlasclaw
 ### View Logs
 
 ```bash
-docker compose logs -f atlasclaw
+docker compose logs -f xuanwu
 ```
 
 ### Stop Services
@@ -318,7 +318,7 @@ docker compose up -d
 
 ```bash
 # Backup data and config
-tar -czf atlasclaw-backup-$(date +%Y%m%d).tar.gz /opt/atlasclaw/data /opt/atlasclaw/workspace
+tar -czf xuanwu-backup-$(date +%Y%m%d).tar.gz /opt/xuanwu/data /opt/xuanwu/workspace
 ```
 
 ---
@@ -356,7 +356,7 @@ tar -czf atlasclaw-backup-$(date +%Y%m%d).tar.gz /opt/atlasclaw/data /opt/atlasc
       "default_admin_password": "admin"
     },
     "jwt": {
-      "secret_key": "atlasclaw-docker-secret-CHANGE-ME",
+      "secret_key": "xuanwu-docker-secret-CHANGE-ME",
       "expires_minutes": 480
     }
   }
@@ -371,20 +371,20 @@ tar -czf atlasclaw-backup-$(date +%Y%m%d).tar.gz /opt/atlasclaw/data /opt/atlasc
 
 ```bash
 # Check logs
-docker compose logs atlasclaw
+docker compose logs xuanwu
 
 # Verify config syntax
-docker run --rm -v /opt/atlasclaw/workspace/atlasclaw.json:/app/atlasclaw.json:ro registry.cn-shanghai.aliyuncs.com/atlasclaw/atlasclaw:latest python -c "import json; json.load(open('/app/atlasclaw.json'))"
+docker run --rm -v /opt/xuanwu/workspace/xuanwu.json:/app/xuanwu.json:ro registry.cn-shanghai.aliyuncs.com/xuanwu/xuanwu:latest python -c "import json; json.load(open('/app/xuanwu.json'))"
 ```
 
 ### Providers Not Loading
 
 ```bash
 # Check providers directory exists
-ls -la /opt/atlasclaw/extensions/providers/
+ls -la /opt/xuanwu/extensions/providers/
 
 # Verify providers_root in config
-cat /opt/atlasclaw/workspace/atlasclaw.json | grep -A 1 providers_root
+cat /opt/xuanwu/workspace/xuanwu.json | grep -A 1 providers_root
 ```
 
 ### Port Already in Use
@@ -399,12 +399,12 @@ ports:
 ### Permission Denied
 
 ```bash
-chmod 600 /opt/atlasclaw/workspace/atlasclaw.json
-chown -R $(id -u):$(id -g) /opt/atlasclaw/data
+chmod 600 /opt/xuanwu/workspace/xuanwu.json
+chown -R $(id -u):$(id -g) /opt/xuanwu/data
 ```
 
 ---
 
 ## Support
 
-For technical support, contact your AtlasClaw representative or refer to the full documentation at [docs link].
+For technical support, contact your Xuanwu representative or refer to the full documentation at [docs link].

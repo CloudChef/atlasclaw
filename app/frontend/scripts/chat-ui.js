@@ -1,6 +1,6 @@
 /**
  * DeepChat UI Configuration and Interaction
- * Configure DeepChat component integration with AtlasClaw API
+ * Configure DeepChat component integration with Xuanwu API
  */
 
 import { getSessionKey, initSession } from './session-manager.js';

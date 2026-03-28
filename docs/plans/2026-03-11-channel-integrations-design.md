@@ -4,7 +4,7 @@
 
 ## Goal
 
-Design a unified channel integration architecture for AtlasClaw that supports:
+Design a unified channel integration architecture for Xuanwu that supports:
 
 - user-managed channel connections
 - multiple connections per user per channel type
@@ -15,9 +15,9 @@ The first implementation target is Feishu as a chat channel only. Document, wiki
 
 ## Background
 
-AtlasClaw currently has:
+Xuanwu currently has:
 
-- a core API layer for browser and client interaction under `app/atlasclaw/api`
+- a core API layer for browser and client interaction under `app/xuanwu/api`
 - a session and memory model already isolated by user
 - a provider model for enterprise system capabilities under `service_providers`
 
@@ -34,7 +34,7 @@ At the same time, the repo now includes imported OpenClaw channel extensions for
 - `extionsions/slack`
 - `extionsions/whatsapp`
 
-These extensions are useful as reference implementations, but they are not directly compatible with AtlasClaw's current architecture.
+These extensions are useful as reference implementations, but they are not directly compatible with Xuanwu's current architecture.
 
 ## Scope
 
@@ -43,7 +43,7 @@ These extensions are useful as reference implementations, but they are not direc
 - unified channel connection model for multiple channel types
 - file-based per-user channel configuration
 - runtime management for user-owned channel connections
-- inbound message routing from external channels into AtlasClaw conversations
+- inbound message routing from external channels into Xuanwu conversations
 - outbound message delivery back to the originating channel connection
 - frontend-facing REST APIs for connection management
 - support for channel-specific webhook or websocket runtimes through per-channel drivers
@@ -54,7 +54,7 @@ These extensions are useful as reference implementations, but they are not direc
 - direct reuse of OpenClaw plugin registration or `plugin-sdk`
 - merging channel webhooks into the existing markdown skill webhook dispatch system
 - full implementation details for every supported channel in this design
-- replacing AtlasClaw's current browser/client websocket protocol
+- replacing Xuanwu's current browser/client websocket protocol
 
 ## Findings
 
@@ -71,7 +71,7 @@ The imported OpenClaw extensions do not represent one uniform channel model.
 - outbound message and typing support
 - unrelated document/wiki/drive/permission tools
 
-For AtlasClaw, only the chat-channel subset is relevant.
+For Xuanwu, only the chat-channel subset is relevant.
 
 #### Slack
 
@@ -86,9 +86,9 @@ This means a generic channel architecture cannot assume webhook-only transport.
 
 `extionsions/whatsapp` uses a very different model based on local auth/session state and long-lived runtime listeners. It is not a simple credential + webhook integration.
 
-### AtlasClaw API Layer Analysis
+### Xuanwu API Layer Analysis
 
-The current `app/atlasclaw/api` package divides responsibilities in a way that matters for this design.
+The current `app/xuanwu/api` package divides responsibilities in a way that matters for this design.
 
 #### Reusable
 
@@ -105,7 +105,7 @@ The current `app/atlasclaw/api` package divides responsibilities in a way that m
 - `gateway.py`
 - `websocket.py`
 
-These implement AtlasClaw's own client protocol, not third-party chat channel transports. Their connection lifecycle ideas are useful, but their protocol and runtime cannot be reused directly for external channels.
+These implement Xuanwu's own client protocol, not third-party chat channel transports. Their connection lifecycle ideas are useful, but their protocol and runtime cannot be reused directly for external channels.
 
 #### Keep Separate
 
@@ -119,7 +119,7 @@ This is a markdown-skill dispatch subsystem authenticated by shared secret and t
 2. User-owned channel connections must be isolated from platform-level static config.
 3. Different channel types must share a common outer model but keep channel-specific inner config.
 4. Channel runtimes must be pluggable because transport and auth models differ.
-5. AtlasClaw conversation orchestration should remain channel-agnostic.
+5. Xuanwu conversation orchestration should remain channel-agnostic.
 
 ## Recommended Architecture
 
@@ -165,14 +165,14 @@ Responsibilities:
 - validate channel-specific config
 - start and stop channel-specific runtimes
 - handle inbound webhook or websocket events
-- convert inbound traffic into AtlasClaw message input
+- convert inbound traffic into Xuanwu message input
 - send outbound replies, typing indicators, and media when supported
 - expose channel-specific frontend form schema
 
 ## Proposed Module Layout
 
 ```text
-app/atlasclaw/channels/integrations/
+app/xuanwu/channels/integrations/
   __init__.py
   models.py
   store.py
@@ -190,20 +190,20 @@ app/atlasclaw/channels/integrations/
 Suggested API additions:
 
 ```text
-app/atlasclaw/api/channel_routes.py
-app/atlasclaw/api/channel_hooks.py
+app/xuanwu/api/channel_routes.py
+app/xuanwu/api/channel_hooks.py
 ```
 
 ## Storage Model
 
 ### Directory Layout
 
-Channel configuration should live in user-owned storage, not in `atlasclaw.json`.
+Channel configuration should live in user-owned storage, not in `xuanwu.json`.
 
 Recommended layout:
 
 ```text
-~/.atlasclaw/users/<user_id>/
+~/.xuanwu/users/<user_id>/
   channels/
     feishu.json
     slack.json
@@ -339,7 +339,7 @@ For an inbound event:
 3. manager loads the matching connection record
 4. matching driver validates the request and parses the event
 5. driver returns a normalized inbound payload
-6. payload is converted to AtlasClaw message input
+6. payload is converted to Xuanwu message input
 7. request is routed into `RequestOrchestrator`
 8. model output is sent back using the same connection
 
@@ -384,9 +384,9 @@ The new channel hook subsystem should serve:
 
 Some channels use persistent websocket or socket-based transports.
 
-These should not reuse AtlasClaw's existing API websocket/gateway runtime directly because:
+These should not reuse Xuanwu's existing API websocket/gateway runtime directly because:
 
-- current websocket code serves AtlasClaw's own client protocol
+- current websocket code serves Xuanwu's own client protocol
 - third-party channel protocols are different
 - auth and reconnect logic differ by platform
 
@@ -481,7 +481,7 @@ The channel layer should attach extra context such as:
 
 ### `gateway.py` and `websocket.py`
 
-These should remain dedicated to AtlasClaw browser/client communication.
+These should remain dedicated to Xuanwu browser/client communication.
 
 No direct runtime reuse is recommended for external channel transports.
 
@@ -545,7 +545,7 @@ File-based config means encryption-at-rest and redacted API responses are mandat
 
 ## Decision Summary
 
-AtlasClaw should not port OpenClaw channel plugins directly.
+Xuanwu should not port OpenClaw channel plugins directly.
 
 Instead, it should introduce a unified channel integration subsystem with:
 

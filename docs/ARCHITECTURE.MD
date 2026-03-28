@@ -1,6 +1,6 @@
-# AtlasClaw Architecture
+# Xuanwu Architecture
 
-> **Canonical architecture reference for the AtlasClaw enterprise agent framework.**
+> **Canonical architecture reference for the Xuanwu enterprise agent framework.**
 > All future development and feature changes MUST consult this document.
 >
 > Related documents:
@@ -28,7 +28,7 @@
 
 ## 1. Design Philosophy
 
-AtlasClaw is built on five core design principles that govern all architectural decisions:
+Xuanwu is built on five core design principles that govern all architectural decisions:
 
 ### 1.1 Thin Core, Rich Providers
 
@@ -36,7 +36,7 @@ The framework core handles routing, lifecycle, and coordination. All domain-spec
 
 ### 1.2 Permission Inheritance (No RBAC Bypass)
 
-AtlasClaw never creates its own authorization layer. Every operation inherits the authenticated user's permissions from the connected enterprise system. If a user cannot perform an action in the upstream system, the agent cannot perform it on their behalf. This is enforced through `SkillDeps.user_info` propagation to every skill and tool invocation.
+Xuanwu never creates its own authorization layer. Every operation inherits the authenticated user's permissions from the connected enterprise system. If a user cannot perform an action in the upstream system, the agent cannot perform it on their behalf. This is enforced through `SkillDeps.user_info` propagation to every skill and tool invocation.
 
 ### 1.3 Async-First
 
@@ -44,7 +44,7 @@ All I/O-bound operations are async. The framework uses `asyncio.Event` for cance
 
 ### 1.4 Hybrid Storage Model
 
-AtlasClaw uses a hybrid storage approach combining file-system and relational database:
+Xuanwu uses a hybrid storage approach combining file-system and relational database:
 
 **File-System Storage** (lightweight/embedded mode):
 - **Sessions**: JSONL (one JSON object per line, append-only)
@@ -56,12 +56,12 @@ AtlasClaw uses a hybrid storage approach combining file-system and relational da
 - **SQLite** (default): Zero-config, file-based, auto-creates schema via ORM on startup
 - **MySQL** (enterprise): Requires Alembic migrations for DDL/DML management
 
-**Database Configuration** (`atlasclaw.json`):
+**Database Configuration** (`xuanwu.json`):
 ```json
 {
   "database": {
     "type": "sqlite",
-    "sqlite": { "path": "./data/atlasclaw.db" },
+    "sqlite": { "path": "./data/xuanwu.db" },
     "mysql": {
       "host": "${MYSQL_HOST}",
       "port": 3306,
@@ -156,9 +156,9 @@ A single agent instance serves multiple access channels simultaneously (REST API
 
 ### Session Scope Model
 
-AtlasClaw uses a canonical `SessionKey` to separate session ownership from conversation scope:
+Xuanwu uses a canonical `SessionKey` to separate session ownership from conversation scope:
 
-- `user_id`: the AtlasClaw user that owns the persisted session bucket
+- `user_id`: the Xuanwu user that owns the persisted session bucket
 - `channel` + `account_id`: the ingress surface and concrete channel connection
 - `chat_type` + `peer_id`: the external conversation scope
 - `thread_id`: an optional independent thread inside the same scope
@@ -175,7 +175,7 @@ Runtime rules:
 ## 3. Directory Structure
 
 ```
-app/atlasclaw/
+app/xuanwu/
 ├── main.py                        # FastAPI application factory + lifespan
 ├── core/
 │   ├── config.py                  # ConfigManager (6-level priority chain)
@@ -295,7 +295,7 @@ app/frontend/
 └── locales/                       # i18n translation files
 
 tests/
-├── atlasclaw/                     # Python test suite (~48 test files)
+├── xuanwu/                     # Python test suite (~48 test files)
 │   ├── conftest.py                # Shared fixtures
 │   ├── test_agent.py              # Agent engine tests
 │   ├── test_config.py             # Configuration tests
@@ -310,7 +310,7 @@ providers/                         # Provider repository (code/templates)
     ├── channels/
     └── skills/
 
-<workspace>/                       # Runtime workspace (default: ./.atlasclaw)
+<workspace>/                       # Runtime workspace (default: ./.xuanwu)
 ├── agents/
 │   └── main/
 │       ├── SOUL.md                # Agent capabilities and behavior
@@ -328,7 +328,7 @@ providers/                         # Provider repository (code/templates)
 
 ## 4. Application Bootstrap & Lifespan
 
-The application starts via `app/atlasclaw/main.py`:
+The application starts via `app/xuanwu/main.py`:
 
 ```
 create_app() → FastAPI(lifespan=lifespan)
@@ -338,8 +338,8 @@ create_app() → FastAPI(lifespan=lifespan)
 
 The `lifespan()` async context manager executes this ordered sequence:
 
-1. **Load configuration** — `ConfigManager.load()` reads `atlasclaw.json`/`atlasclaw.yaml` with environment variable interpolation
-2. **Initialize workspace** — `WorkspaceInitializer.initialize()` creates the `.atlasclaw/` directory tree and copies the default `agents/main/` files from the repo template directory when they are missing
+1. **Load configuration** — `ConfigManager.load()` reads `xuanwu.json`/`xuanwu.yaml` with environment variable interpolation
+2. **Initialize workspace** — `WorkspaceInitializer.initialize()` creates the `.xuanwu/` directory tree and copies the default `agents/main/` files from the repo template directory when they are missing
 3. **Register built-in channel handlers** — Feishu, DingTalk, WeCom handlers registered in `ChannelRegistry`
 4. **Initialize ChannelManager** — Creates `ChannelManager` with workspace path
 5. **Scan providers** — `ProviderScanner` walks the providers directory (outside workspace), discovers auth and channel extensions
@@ -533,17 +533,17 @@ WebSocket Connection
 | Priority | Source | Example |
 |---|---|---|
 | 1 | Runtime overrides | `config_manager.set("agent_defaults.timeout_seconds", 600)` |
-| 2 | Environment variables | `ATLASCLAW_AGENT_DEFAULTS__TIMEOUT_SECONDS=600` |
-| 3 | User config | `~/.atlasclaw/config.json` |
-| 4 | Workspace config | `.atlasclaw/atlasclaw.json` |
-| 5 | Project config file | `atlasclaw.json` / `atlasclaw.yaml` in project root |
+| 2 | Environment variables | `XUANWU_AGENT_DEFAULTS__TIMEOUT_SECONDS=600` |
+| 3 | User config | `~/.xuanwu/config.json` |
+| 4 | Workspace config | `.xuanwu/xuanwu.json` |
+| 5 | Project config file | `xuanwu.json` / `xuanwu.yaml` in project root |
 | 6 | Schema defaults | Defined in `config_schema.py` Pydantic models |
 
 ### 7.2 Environment Variable Format
 
-Pattern: `ATLASCLAW_<SECTION>__<KEY>` (double underscore for nesting)
+Pattern: `XUANWU_<SECTION>__<KEY>` (double underscore for nesting)
 
-Example: `ATLASCLAW_MODEL__PRIMARY=openai/gpt-4o`
+Example: `XUANWU_MODEL__PRIMARY=openai/gpt-4o`
 
 ### 7.3 Environment Variable Interpolation
 
@@ -578,7 +578,7 @@ Resolved at config load time by `resolve_env()` in `models/providers.py`.
 
 ### 7.5 Per-User Configuration
 
-Each user can have overrides at `<workspace>/users/<user_id>/atlasclaw.json`. Loaded via `ConfigManager.load_user_config(user_id)` and merged with the global config at request time.
+Each user can have overrides at `<workspace>/users/<user_id>/xuanwu.json`. Loaded via `ConfigManager.load_user_config(user_id)` and merged with the global config at request time.
 
 ---
 
@@ -648,7 +648,7 @@ Quota enforcement: `TenantManager.check_quota()` validates `max_sessions`, `max_
 
 ## 9. Extension Points
 
-AtlasClaw provides four main extension mechanisms:
+Xuanwu provides four main extension mechanisms:
 
 ### 9.1 Provider Extension
 
@@ -670,10 +670,10 @@ Providers are the primary extension point. A provider is a directory containing:
 
 **Locations** (override priority):
 1. Workspace: `<workspace>/skills/` (optional, for development)
-2. Global: `~/.atlasclaw/skills/`
-3. Skills root: `<skills_root>/` (configured in atlasclaw.json, default: `../atlasclaw-providers/skills`)
-4. Providers: `<providers_root>/<provider>/skills/` (configured in atlasclaw.json, default: `../atlasclaw-providers/providers`)
-5. Built-in: `app/atlasclaw/providers/`
+2. Global: `~/.xuanwu/skills/`
+3. Skills root: `<skills_root>/` (configured in xuanwu.json, default: `../xuanwu-providers/skills`)
+4. Providers: `<providers_root>/<provider>/skills/` (configured in xuanwu.json, default: `../xuanwu-providers/providers`)
+5. Built-in: `app/xuanwu/providers/`
 
 ### 9.2 Skill Extension
 
@@ -792,16 +792,16 @@ Configurable via `BlockChunkerConfig`, controls how streaming text is chunked fo
 ### 11.3 Users
 
 **Format**: JSON
-**Location**: `~/.atlasclaw/users.json`
+**Location**: `~/.xuanwu/users.json`
 **Content**: Shadow user mappings (`provider:subject` → `user_id` → `ShadowUser`)
 
 ### 11.4 Configuration
 
 **Format**: JSON or YAML
 **Locations**: 
-- Project root (`atlasclaw.json`) — Core configuration
-- Workspace root (`<workspace>/atlasclaw.json`) — Workspace configuration
-- User home (`~/.atlasclaw/config.json`) — Global user configuration
+- Project root (`xuanwu.json`) — Core configuration
+- Workspace root (`<workspace>/xuanwu.json`) — Workspace configuration
+- User home (`~/.xuanwu/config.json`) — Global user configuration
 - Per-user (`<workspace>/users/<user_id>/user_setting.json`) — User-specific settings (channels, preferences)
 
 ### 11.5 Token Health
@@ -824,7 +824,7 @@ Configurable via `BlockChunkerConfig`, controls how streaming text is chunked fo
 
 ### 11.6 Relational Database (Enterprise)
 
-**Tables** (SQLAlchemy ORM models in `app/atlasclaw/db/models.py`):
+**Tables** (SQLAlchemy ORM models in `app/xuanwu/db/models.py`):
 
 | Table | Purpose | Key Fields |
 |---|---|---|
@@ -854,9 +854,9 @@ Configurable via `BlockChunkerConfig`, controls how streaming text is chunked fo
 
 All sensitive data is encrypted at rest using **AES-256-GCM**:
 
-**Encryption Service** (`app/atlasclaw/core/encryption.py`):
+**Encryption Service** (`app/xuanwu/core/encryption.py`):
 - Algorithm: AES-256-GCM with authenticated encryption
-- Key: 32-byte key (configurable via `ATLASCLAW_ENCRYPTION_KEY` environment variable)
+- Key: 32-byte key (configurable via `XUANWU_ENCRYPTION_KEY` environment variable)
 - Format: `v1:key_id:base64(nonce+ciphertext+tag)`
 
 **Encrypted Fields**:

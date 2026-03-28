@@ -1,5 +1,6 @@
-const AUTH_STORAGE_KEY = 'atlasclaw_auth_token'
-const AUTH_HEADER_NAME = 'AtlasClaw-Authenticate'
+const AUTH_STORAGE_KEY = 'xuanwu_auth_token'
+const LEGACY_AUTH_STORAGE_KEY = 'atlasclaw_auth_token'
+const AUTH_HEADER_NAME = 'Xuanwu-Authenticate'
 
 export function redirectToLogin() {
   const current = `${window.location.pathname}${window.location.search}`
@@ -9,7 +10,18 @@ export function redirectToLogin() {
 
 export function getAuthToken() {
   try {
-    return sessionStorage.getItem(AUTH_STORAGE_KEY) || ''
+    const token = sessionStorage.getItem(AUTH_STORAGE_KEY)
+    if (token) {
+      return token
+    }
+
+    const legacyToken = sessionStorage.getItem(LEGACY_AUTH_STORAGE_KEY) || ''
+    if (legacyToken) {
+      sessionStorage.setItem(AUTH_STORAGE_KEY, legacyToken)
+      sessionStorage.removeItem(LEGACY_AUTH_STORAGE_KEY)
+    }
+
+    return legacyToken
   } catch (_error) {
     return ''
   }
@@ -28,13 +40,14 @@ export function setAuthToken(token) {
 export function clearAuthToken() {
   try {
     sessionStorage.removeItem(AUTH_STORAGE_KEY)
+    sessionStorage.removeItem(LEGACY_AUTH_STORAGE_KEY)
   } catch (_error) {
     // ignore
   }
 }
 
 export function installAuthFetchInterceptor() {
-  if (window.__atlasclawFetchWrapped) {
+  if (window.__xuanwuFetchWrapped) {
     return
   }
 
@@ -62,7 +75,7 @@ export function installAuthFetchInterceptor() {
     return rawFetch(input, nextInit)
   }
 
-  window.__atlasclawFetchWrapped = true
+  window.__xuanwuFetchWrapped = true
 }
 
 export async function checkAuth({ redirect = true } = {}) {

@@ -5,7 +5,7 @@
  * All page initialization logic has been moved to app.js.
  *
  * Original main.js content (for chat page) has been preserved in
- * .atlasclaw/main_original.js.bak for reference when creating pages/chat.js
+ * .xuanwu/main_original.js.bak for reference when creating pages/chat.js
  */
 
 import { initApp } from './app.js'

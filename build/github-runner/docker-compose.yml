@@ -19,7 +19,7 @@ services:
       ACCESS_TOKEN: ${ACCESS_TOKEN:-}
 
       # Runner identity / behavior
-      RUNNER_NAME: ${RUNNER_NAME:-atlasclaw-runner}
+      RUNNER_NAME: ${RUNNER_NAME:-xuanwu-runner}
       RUNNER_NAME_PREFIX: ${RUNNER_NAME_PREFIX:-runner}
       RUNNER_WORKDIR: ${RUNNER_WORKDIR:-/tmp/github-runner-workdir}
       RUNNER_GROUP: ${RUNNER_GROUP:-Default}

@@ -1,6 +1,6 @@
-# AGENTS.md - AtlasClaw Coding Guidelines
+# AGENTS.md - Xuanwu Coding Guidelines
 
-Coding guidelines for AI assistants working on the AtlasClaw enterprise agent framework.
+Coding guidelines for AI assistants working on the Xuanwu enterprise agent framework.
 
 ## Build / Test / Lint Commands
 
@@ -8,19 +8,19 @@ Coding guidelines for AI assistants working on the AtlasClaw enterprise agent fr
 
 ```bash
 # Run the service
-uvicorn app.atlasclaw.main:app --reload --host 0.0.0.0 --port 8000
+uvicorn app.xuanwu.main:app --reload --host 0.0.0.0 --port 8000
 
 # Run all tests
-pytest tests/atlasclaw -q
+pytest tests/xuanwu -q
 
 # Run a single test file
-pytest tests/atlasclaw/test_agent.py -v
+pytest tests/xuanwu/test_agent.py -v
 
 # Run a single test class
-pytest tests/atlasclaw/test_agent.py::TestStreamEvent -v
+pytest tests/xuanwu/test_agent.py::TestStreamEvent -v
 
 # Run a single test method
-pytest tests/atlasclaw/test_agent.py::TestStreamEvent::test_create_lifecycle_start -v
+pytest tests/xuanwu/test_agent.py::TestStreamEvent::test_create_lifecycle_start -v
 
 # Run tests with specific markers
 pytest -m "not slow"              # Skip slow tests
@@ -28,7 +28,7 @@ pytest -m llm                     # Run LLM integration tests (needs API key)
 pytest -m e2e                     # Run end-to-end tests
 
 # Run with coverage
-pytest --cov=app.atlasclaw --cov-report=term-missing
+pytest --cov=app.xuanwu --cov-report=term-missing
 ```
 
 ### Frontend (JavaScript)
@@ -78,7 +78,7 @@ Before making any feature changes, bug fixes, or architectural decisions, consul
 - Use `from __future__ import annotations` at the top for forward references
 - Standard library imports first, third-party second, local third
 - Group imports with a blank line between groups
-- Use absolute imports: `from app.atlasclaw.core.deps import SkillDeps`
+- Use absolute imports: `from app.xuanwu.core.deps import SkillDeps`
 
 **Formatting:**
 - UTF-8 encoding: Include `# -*- coding: utf-8 -*-` header in Python files
@@ -150,8 +150,8 @@ Before making any feature changes, bug fixes, or architectural decisions, consul
 ## Project Structure
 
 ```
-AtlasClaw-Core/
-├── app/atlasclaw/          # Main application code
+Xuanwu-Core/
+├── app/xuanwu/          # Main application code
 │   ├── agent/            # Agent engine, streaming, routing
 │   ├── api/              # REST, WebSocket, SSE endpoints
 │   ├── auth/             # Authentication, authorization
@@ -163,7 +163,7 @@ AtlasClaw-Core/
 │   ├── skills/           # Skill loading and registry
 │   └── tools/            # Built-in tools
 ├── tests/                # Test suite
-│   ├── atlasclaw/          # Python tests
+│   ├── xuanwu/          # Python tests
 │   └── frontend/         # JavaScript tests
 ├── app/frontend/         # Frontend application
 ├── docs/                 # Documentation
@@ -173,8 +173,8 @@ AtlasClaw-Core/
 
 ## Configuration
 
-- **Backend config:** `atlasclaw.json` (in project root)
-- **Test config:** `tests/atlasclaw.test.json`
+- **Backend config:** `xuanwu.json` (in project root)
+- **Test config:** `tests/xuanwu.test.json`
 - **Environment variables:** Use `${VAR_NAME}` format in config
 
 ## Architecture Patterns

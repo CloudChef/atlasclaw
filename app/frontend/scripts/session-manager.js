@@ -5,7 +5,8 @@
 
 import { createThreadSession } from './api-client.js';
 
-const SESSION_KEY_STORAGE = 'atlasclaw_session_key';
+const SESSION_KEY_STORAGE = 'xuanwu_session_key';
+const LEGACY_SESSION_KEY_STORAGE = 'atlasclaw_session_key';
 
 let currentSessionKey = null;
 
@@ -22,6 +23,15 @@ export async function initSession(params = {}) {
     if (storedKey) {
         currentSessionKey = storedKey;
         console.log('[Session] Restored:', currentSessionKey);
+        return currentSessionKey;
+    }
+
+    const legacyStoredKey = sessionStorage.getItem(LEGACY_SESSION_KEY_STORAGE);
+    if (legacyStoredKey) {
+        currentSessionKey = legacyStoredKey;
+        sessionStorage.setItem(SESSION_KEY_STORAGE, legacyStoredKey);
+        sessionStorage.removeItem(LEGACY_SESSION_KEY_STORAGE);
+        console.log('[Session] Restored legacy key:', currentSessionKey);
         return currentSessionKey;
     }
     
@@ -86,6 +96,7 @@ export async function startNewSession(archive = true, params = {}) {
  */
 export function clearSession() {
     sessionStorage.removeItem(SESSION_KEY_STORAGE);
+    sessionStorage.removeItem(LEGACY_SESSION_KEY_STORAGE);
     currentSessionKey = null;
     console.log('[Session] Cleared');
 }

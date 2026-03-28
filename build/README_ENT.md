@@ -1,6 +1,6 @@
-# AtlasClaw Enterprise Deployment Guide
+# Xuanwu Enterprise Deployment Guide
 
-This guide describes how to deploy AtlasClaw Enterprise Edition using Docker images with MySQL support, high availability, and OIDC authentication.
+This guide describes how to deploy Xuanwu Enterprise Edition using Docker images with MySQL support, high availability, and OIDC authentication.
 
 ## Prerequisites
 
@@ -67,20 +67,20 @@ docker compose version
 ### 1. Create Deployment Directory
 
 ```bash
-mkdir -p /opt/atlasclaw/{workspace,data,secrets,extensions/{providers,skills,channels}}
-cd /opt/atlasclaw
+mkdir -p /opt/xuanwu/{workspace,data,secrets,extensions/{providers,skills,channels}}
+cd /opt/xuanwu
 ```
 
 **Directory Structure:**
 
 ```
-/opt/atlasclaw/
+/opt/xuanwu/
 ├── docker-compose.yml      # Docker Compose orchestration file
 ├── secrets/                # MySQL passwords
 │   ├── mysql_root_password.txt
 │   └── mysql_password.txt
 ├── workspace/              # Configuration, logs, user data
-│   └── atlasclaw.json      # Main configuration file
+│   └── xuanwu.json      # Main configuration file
 ├── data/                   # Database runtime data
 └── extensions/
     ├── providers/          # Provider extensions
@@ -91,7 +91,7 @@ cd /opt/atlasclaw
 ### 2. Download Compose File
 
 ```bash
-curl -o docker-compose.yml https://raw.githubusercontent.com/CloudChef/atlasclaw/main/build/docker-compose.enterprise.yml
+curl -o docker-compose.yml https://raw.githubusercontent.com/CloudChef/xuanwu/main/build/docker-compose.enterprise.yml
 ```
 
 ### 3. Download Extensions (Optional)
@@ -99,13 +99,13 @@ curl -o docker-compose.yml https://raw.githubusercontent.com/CloudChef/atlasclaw
 Download providers, skills, and channels from the official repository:
 
 ```bash
-cd /opt/atlasclaw/extensions
+cd /opt/xuanwu/extensions
 
 # Download and extract the repository (no git required)
-curl -L -o atlasclaw-providers.zip https://github.com/CloudChef/atlasclaw-providers/archive/refs/heads/main.zip
-unzip atlasclaw-providers.zip
-mv atlasclaw-providers-main src
-rm atlasclaw-providers.zip
+curl -L -o xuanwu-providers.zip https://github.com/CloudChef/xuanwu-providers/archive/refs/heads/main.zip
+unzip xuanwu-providers.zip
+mv xuanwu-providers-main src
+rm xuanwu-providers.zip
 
 # Copy providers (optional)
 cp -r src/providers/* ./providers/ 2>/dev/null || true
@@ -120,14 +120,14 @@ cp -r src/channels/* ./channels/ 2>/dev/null || true
 rm -rf src
 ```
 
-**Note:** Extensions are optional. AtlasClaw will start successfully even without any extensions installed.
+**Note:** Extensions are optional. Xuanwu will start successfully even without any extensions installed.
 
 ### 4. Configure LLM Model (Required)
 
-**⚠️ You MUST configure at least one LLM token before starting AtlasClaw.**
+**⚠️ You MUST configure at least one LLM token before starting Xuanwu.**
 
 The service will fail to start without a valid model configuration. Tokens can be added via:
-- Configuration file (atlasclaw.json) - for initial setup
+- Configuration file (xuanwu.json) - for initial setup
 - Web UI (Admin Panel) - for runtime management via CRUD
 
 #### Supported LLM Providers
@@ -143,14 +143,14 @@ The service will fail to start without a valid model configuration. Tokens can b
 Create password files:
 
 ```bash
-echo "your-mysql-root-password" > /opt/atlasclaw/secrets/mysql_root_password.txt
-echo "your-mysql-password" > /opt/atlasclaw/secrets/mysql_password.txt
-chmod 600 /opt/atlasclaw/secrets/*.txt
+echo "your-mysql-root-password" > /opt/xuanwu/secrets/mysql_root_password.txt
+echo "your-mysql-password" > /opt/xuanwu/secrets/mysql_password.txt
+chmod 600 /opt/xuanwu/secrets/*.txt
 ```
 
 ### 6. Create Configuration
 
-Create `/opt/atlasclaw/workspace/atlasclaw.json`:
+Create `/opt/xuanwu/workspace/xuanwu.json`:
 
 ```json
 {
@@ -162,8 +162,8 @@ Create `/opt/atlasclaw/workspace/atlasclaw.json`:
     "mysql": {
       "host": "mysql",
       "port": 3306,
-      "database": "atlasclaw",
-      "user": "atlasclaw",
+      "database": "xuanwu",
+      "user": "xuanwu",
       "password": "your-mysql-password",
       "charset": "utf8mb4"
     }
@@ -190,9 +190,9 @@ Create `/opt/atlasclaw/workspace/atlasclaw.json`:
     "provider": "oidc",
     "oidc": {
       "issuer": "https://auth.your-company.com",
-      "client_id": "atlasclaw-client",
+      "client_id": "xuanwu-client",
       "client_secret": "your-client-secret",
-      "redirect_uri": "https://atlasclaw.your-company.com/api/auth/callback"
+      "redirect_uri": "https://xuanwu.your-company.com/api/auth/callback"
     }
   }
 }
@@ -227,20 +227,20 @@ Create `/opt/atlasclaw/workspace/atlasclaw.json`:
 
 Set proper permissions:
 ```bash
-chmod 600 /opt/atlasclaw/workspace/atlasclaw.json
+chmod 600 /opt/xuanwu/workspace/xuanwu.json
 ```
 
-### 7. Start AtlasClaw
+### 7. Start Xuanwu
 
 ```bash
-cd /opt/atlasclaw
+cd /opt/xuanwu
 docker compose up -d
 ```
 
 ### 8. Run Database Migrations
 
 ```bash
-docker compose exec atlasclaw alembic upgrade head
+docker compose exec xuanwu alembic upgrade head
 ```
 
 ### 9. Verify Deployment
@@ -260,27 +260,27 @@ Access the web UI at: `http://your-server-ip:8000`
 
 ## Enterprise Edition
 
-- **Image**: `registry.cn-shanghai.aliyuncs.com/atlasclaw/atlasclaw-official:latest`
+- **Image**: `registry.cn-shanghai.aliyuncs.com/xuanwu/xuanwu-official:latest`
 - **Features**: MySQL support, multi-container, high availability, OIDC authentication
 - **Best for**: Production, large organizations
 
 ### Pull Image Manually
 
 ```bash
-docker pull registry.cn-shanghai.aliyuncs.com/atlasclaw/atlasclaw-official:latest
+docker pull registry.cn-shanghai.aliyuncs.com/xuanwu/xuanwu-official:latest
 ```
 
 ---
 
 ## Optional: Skills & Channels Configuration
 
-Skills and channels in `/opt/atlasclaw/extensions/` are automatically loaded on startup.
+Skills and channels in `/opt/xuanwu/extensions/` are automatically loaded on startup.
 
 ### Skill Structure
 
 **Markdown Skill:**
 ```
-/opt/atlasclaw/extensions/skills/
+/opt/xuanwu/extensions/skills/
 └── deployment/
     ├── SKILL.md             # Skill definition
     ├── requirements.txt     # Dependencies (optional)
@@ -290,7 +290,7 @@ Skills and channels in `/opt/atlasclaw/extensions/` are automatically loaded on 
 
 **Executable Skill:**
 ```
-/opt/atlasclaw/extensions/skills/
+/opt/xuanwu/extensions/skills/
 └── monitoring/
     ├── __init__.py
     ├── skill.py             # Python implementation
@@ -298,7 +298,7 @@ Skills and channels in `/opt/atlasclaw/extensions/` are automatically loaded on 
     └── config.json
 ```
 
-To restrict available skills, edit `/opt/atlasclaw/workspace/atlasclaw.json`:
+To restrict available skills, edit `/opt/xuanwu/workspace/xuanwu.json`:
 
 ```json
 {
@@ -310,7 +310,7 @@ To restrict available skills, edit `/opt/atlasclaw/workspace/atlasclaw.json`:
 
 ### Channel Configuration
 
-Add to `/opt/atlasclaw/workspace/atlasclaw.json`:
+Add to `/opt/xuanwu/workspace/xuanwu.json`:
 
 ```json
 {
@@ -330,10 +330,10 @@ Add to `/opt/atlasclaw/workspace/atlasclaw.json`:
 
 ```bash
 # Reload without restart
-docker compose exec atlasclaw atlasclaw reload all
+docker compose exec xuanwu xuanwu reload all
 
 # Or restart
-docker compose restart atlasclaw
+docker compose restart xuanwu
 ```
 
 ### Verifying Extensions
@@ -358,7 +358,7 @@ curl http://localhost:8000/api/channels
 ### View Logs
 
 ```bash
-docker compose logs -f atlasclaw
+docker compose logs -f xuanwu
 ```
 
 ### Stop Services
@@ -377,17 +377,17 @@ docker compose pull
 docker compose up -d
 
 # Run migrations
-docker compose exec atlasclaw alembic upgrade head
+docker compose exec xuanwu alembic upgrade head
 ```
 
 ### Backup
 
 ```bash
 # Backup database
-docker exec atlasclaw-mysql mysqldump -u root -p atlasclaw > atlasclaw-db-$(date +%Y%m%d).sql
+docker exec xuanwu-mysql mysqldump -u root -p xuanwu > xuanwu-db-$(date +%Y%m%d).sql
 
 # Backup files
-tar -czf atlasclaw-backup-$(date +%Y%m%d).tar.gz /opt/atlasclaw/data /opt/atlasclaw/workspace
+tar -czf xuanwu-backup-$(date +%Y%m%d).tar.gz /opt/xuanwu/data /opt/xuanwu/workspace
 ```
 
 ---
@@ -436,20 +436,20 @@ tar -czf atlasclaw-backup-$(date +%Y%m%d).tar.gz /opt/atlasclaw/data /opt/atlasc
 
 ```bash
 # Check logs
-docker compose logs atlasclaw
+docker compose logs xuanwu
 
 # Verify config syntax
-docker run --rm -v /opt/atlasclaw/workspace/atlasclaw.json:/app/atlasclaw.json:ro registry.cn-shanghai.aliyuncs.com/atlasclaw/atlasclaw-official:latest python -c "import json; json.load(open('/app/atlasclaw.json'))"
+docker run --rm -v /opt/xuanwu/workspace/xuanwu.json:/app/xuanwu.json:ro registry.cn-shanghai.aliyuncs.com/xuanwu/xuanwu-official:latest python -c "import json; json.load(open('/app/xuanwu.json'))"
 ```
 
 ### Providers Not Loading
 
 ```bash
 # Check providers directory exists
-ls -la /opt/atlasclaw/extensions/providers/
+ls -la /opt/xuanwu/extensions/providers/
 
 # Verify providers_root in config
-cat /opt/atlasclaw/workspace/atlasclaw.json | grep -A 1 providers_root
+cat /opt/xuanwu/workspace/xuanwu.json | grep -A 1 providers_root
 ```
 
 ### Database Connection Failed
@@ -460,7 +460,7 @@ docker compose ps mysql
 docker compose logs mysql
 
 # Test MySQL connection
-docker compose exec mysql mysql -u atlasclaw -p -e "SELECT 1"
+docker compose exec mysql mysql -u xuanwu -p -e "SELECT 1"
 ```
 
 ### Port Already in Use
@@ -475,13 +475,13 @@ ports:
 ### Permission Denied
 
 ```bash
-chmod 600 /opt/atlasclaw/workspace/atlasclaw.json
-chmod 600 /opt/atlasclaw/secrets/*.txt
-chown -R $(id -u):$(id -g) /opt/atlasclaw/data
+chmod 600 /opt/xuanwu/workspace/xuanwu.json
+chmod 600 /opt/xuanwu/secrets/*.txt
+chown -R $(id -u):$(id -g) /opt/xuanwu/data
 ```
 
 ---
 
 ## Support
 
-For technical support, contact your AtlasClaw representative or refer to the full documentation at [docs link].
+For technical support, contact your Xuanwu representative or refer to the full documentation at [docs link].

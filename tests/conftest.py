@@ -15,8 +15,8 @@ import pytest
 # 娣诲姞椤圭洰鏍圭洰褰曞埌 Python 璺緞
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
-# Default all tests to tests/atlasclaw.test.json unless caller overrides ATLASCLAW_CONFIG
-os.environ.setdefault('ATLASCLAW_CONFIG', str((Path(__file__).parent / 'atlasclaw.test.json').resolve()))
+# Default all tests to tests/xuanwu.test.json unless caller overrides XUANWU_CONFIG
+os.environ.setdefault('XUANWU_CONFIG', str((Path(__file__).parent / 'xuanwu.test.json').resolve()))
 
 
 
@@ -37,7 +37,7 @@ def anyio_backend():
 @pytest.fixture(scope="session")
 def test_config_path():
     """娴嬭瘯閰嶇疆鏂囦欢璺緞"""
-    return Path(__file__).parent / "atlasclaw.test.json"
+    return Path(__file__).parent / "xuanwu.test.json"
 
 
 @pytest.fixture(scope="session")
@@ -46,7 +46,7 @@ def kimi_env_vars():
     
     浼樺厛绾?
     1. 鐜鍙橀噺 ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY
-    2. tests/atlasclaw.test.json 閰嶇疆鏂囦欢
+    2. tests/xuanwu.test.json 閰嶇疆鏂囦欢
     
     浣跨敤鏂瑰紡:
        $env:ANTHROPIC_BASE_URL="https://api.moonshot.cn/anthropic"
@@ -60,7 +60,7 @@ def kimi_env_vars():
     
     # 濡傛灉鐜鍙橀噺鏈缃紝浠庢祴璇曢厤缃枃浠惰鍙?
     if not base_url or not api_key:
-        test_config_path = Path(__file__).parent / "atlasclaw.test.json"
+        test_config_path = Path(__file__).parent / "xuanwu.test.json"
         if test_config_path.exists():
             with open(test_config_path, "r", encoding="utf-8") as f:
                 config = json.load(f)
@@ -74,7 +74,7 @@ def kimi_env_vars():
                 api_key = kimi_config.get("api_key", "")
     
     if not base_url or not api_key:
-        pytest.skip("ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY must be set for LLM tests (or configure in tests/atlasclaw.test.json)")
+        pytest.skip("ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY must be set for LLM tests (or configure in tests/xuanwu.test.json)")
     
     return {"base_url": base_url, "api_key": api_key}
 
@@ -82,7 +82,7 @@ def kimi_env_vars():
 @pytest.fixture
 def skill_registry():
     """鍒涘缓绌虹殑 SkillRegistry"""
-    from app.atlasclaw.skills.registry import SkillRegistry
+    from app.xuanwu.skills.registry import SkillRegistry
     return SkillRegistry()
 
 
@@ -93,7 +93,7 @@ def sample_skill_handler():
     
     if TYPE_CHECKING:
         from pydantic_ai import RunContext
-        from app.atlasclaw.core.deps import SkillDeps
+        from app.xuanwu.core.deps import SkillDeps
     
     async def handler(ctx: "RunContext[SkillDeps]", query: str) -> dict:
         """绀轰緥宸ュ叿鍑芥暟"""

@@ -2,9 +2,9 @@
 # -*- coding: utf-8 -*-
 """Configuration migration script.
 
-Migrates configuration from atlasclaw.json to database.
+Migrates configuration from xuanwu.json to database.
 Usage:
-    python scripts/migrate_config.py [--config atlasclaw.json] [--dry-run]
+    python scripts/migrate_config.py [--config xuanwu.json] [--dry-run]
 """
 
 from __future__ import annotations
@@ -38,9 +38,9 @@ async def migrate_tokens(config: dict[str, Any], dry_run: bool = False) -> int:
     Returns:
         Number of tokens migrated.
     """
-    from app.atlasclaw.db.database import DatabaseConfig, init_database, get_db_manager
-    from app.atlasclaw.db.orm.model_token_config import ModelTokenConfigService
-    from app.atlasclaw.db.schemas import TokenCreate
+    from app.xuanwu.db.database import DatabaseConfig, init_database, get_db_manager
+    from app.xuanwu.db.orm.model_token_config import ModelTokenConfigService
+    from app.xuanwu.db.schemas import TokenCreate
     
     model_config = config.get("model", {})
     tokens = model_config.get("tokens", [])
@@ -99,10 +99,10 @@ async def migrate_agents(config: dict[str, Any], workspace_path: str, dry_run: b
     Returns:
         Number of agents migrated.
     """
-    from app.atlasclaw.db.database import DatabaseConfig, init_database, get_db_manager
-    from app.atlasclaw.db.orm.agent_config import AgentConfigService
-    from app.atlasclaw.db.schemas import AgentCreate
-    from app.atlasclaw.agent.agent_definition import AgentLoader
+    from app.xuanwu.db.database import DatabaseConfig, init_database, get_db_manager
+    from app.xuanwu.db.orm.agent_config import AgentConfigService
+    from app.xuanwu.db.schemas import AgentCreate
+    from app.xuanwu.agent.agent_definition import AgentLoader
     
     # Initialize database
     db_config = DatabaseConfig.from_config(config)
@@ -169,10 +169,10 @@ async def migrate_channels(config: dict[str, Any], workspace_path: str, dry_run:
     Returns:
         Number of channels migrated.
     """
-    from app.atlasclaw.db.database import DatabaseConfig, init_database, get_db_manager
-    from app.atlasclaw.db.orm.channel_config import ChannelConfigService
-    from app.atlasclaw.db.orm.user import UserService
-    from app.atlasclaw.db.schemas import ChannelCreate
+    from app.xuanwu.db.database import DatabaseConfig, init_database, get_db_manager
+    from app.xuanwu.db.orm.channel_config import ChannelConfigService
+    from app.xuanwu.db.orm.user import UserService
+    from app.xuanwu.db.schemas import ChannelCreate
     
     # Initialize database
     db_config = DatabaseConfig.from_config(config)
@@ -240,8 +240,8 @@ async def main():
     parser = argparse.ArgumentParser(description="Migrate configuration to database")
     parser.add_argument(
         "--config",
-        default="atlasclaw.json",
-        help="Path to configuration file (default: atlasclaw.json)",
+        default="xuanwu.json",
+        help="Path to configuration file (default: xuanwu.json)",
     )
     parser.add_argument(
         "--dry-run",
@@ -275,7 +275,7 @@ async def main():
     with open(config_path, "r", encoding="utf-8") as f:
         config = json.load(f)
     
-    workspace_path = config.get("workspace", {}).get("path", "./.atlasclaw")
+    workspace_path = config.get("workspace", {}).get("path", "./.xuanwu")
     
     print(f"Configuration file: {config_path}")
     print(f"Workspace: {workspace_path}")

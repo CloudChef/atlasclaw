@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="model.title">Model Configs - AtlasClaw</title>
+    <title data-i18n="model.title">Model Configs - Xuanwu</title>
     <link rel="stylesheet" href="/styles/main.css?v=10">
     <style>
         /* ========== Model Modal UI Fixes ========== */
@@ -363,7 +363,11 @@
 
             // Restore cached models from localStorage (with 24h TTL)
             try {
-                const cached = JSON.parse(localStorage.getItem('atlasclaw_fetched_models') || '{}');
+                const cached = JSON.parse(
+                    localStorage.getItem('xuanwu_fetched_models')
+                    || localStorage.getItem('atlasclaw_fetched_models')
+                    || '{}'
+                );
                 const now = Date.now();
                 const TTL = 24 * 60 * 60 * 1000; // 24 hours
                 for (const [prov, entry] of Object.entries(cached)) {
@@ -430,9 +434,14 @@
 
                     // Save to localStorage
                     try {
-                        const cached = JSON.parse(localStorage.getItem('atlasclaw_fetched_models') || '{}');
+                        const cached = JSON.parse(
+                            localStorage.getItem('xuanwu_fetched_models')
+                            || localStorage.getItem('atlasclaw_fetched_models')
+                            || '{}'
+                        );
                         cached[provider] = { models: allModels, timestamp: Date.now() };
-                        localStorage.setItem('atlasclaw_fetched_models', JSON.stringify(cached));
+                        localStorage.setItem('xuanwu_fetched_models', JSON.stringify(cached));
+                        localStorage.removeItem('atlasclaw_fetched_models');
                     } catch (e) { /* ignore storage errors */ }
 
                     // Rebuild dropdown

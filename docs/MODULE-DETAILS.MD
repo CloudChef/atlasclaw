@@ -1,6 +1,6 @@
-# AtlasClaw Module Details
+# Xuanwu Module Details
 
-> **Canonical per-module API reference for the AtlasClaw enterprise agent framework.**
+> **Canonical per-module API reference for the Xuanwu enterprise agent framework.**
 > All future development and feature changes MUST consult this document.
 >
 > Related documents:
@@ -31,7 +31,7 @@
 
 ## 1. Core Module
 
-**Path**: `app/atlasclaw/core/`
+**Path**: `app/xuanwu/core/`
 
 Provides configuration management, request-scoped dependency injection, workspace initialization, service provider registry, provider scanning, multi-tenant isolation, token pool management, and encryption services for sensitive data.
 
@@ -41,29 +41,29 @@ Singleton configuration manager with a 6-level priority chain.
 
 **Priority Chain** (highest → lowest):
 1. Runtime overrides via `config_manager.set()`
-2. Environment variables (`ATLASCLAW_<SECTION>__<KEY>`)
-3. User config (`~/.atlasclaw/config.json`)
-4. Workspace config (`.atlasclaw/atlasclaw.json`)
-5. Project config file (`atlasclaw.json` / `atlasclaw.yaml`)
+2. Environment variables (`XUANWU_<SECTION>__<KEY>`)
+3. User config (`~/.xuanwu/config.json`)
+4. Workspace config (`.xuanwu/xuanwu.json`)
+5. Project config file (`xuanwu.json` / `xuanwu.yaml`)
 6. Schema defaults (Pydantic model defaults)
 
 **Class: `ConfigManager`**
 
 | Method | Signature | Description |
 |---|---|---|
-| `load` | `() -> AtlasClawConfig` | Multi-source config loading; lazy on first access |
-| `reload` | `() -> AtlasClawConfig` | Force reload from all sources |
+| `load` | `() -> XuanwuConfig` | Multi-source config loading; lazy on first access |
+| `reload` | `() -> XuanwuConfig` | Force reload from all sources |
 | `set` | `(key: str, value: Any) -> None` | Runtime override with dotted key path (e.g. `"agent_defaults.timeout_seconds"`) |
 | `get` | `(key: str, default: Any) -> Any` | Get nested config value by dotted key |
-| `load_user_config` | `(user_id: str) -> dict` | Load per-user configuration from `<workspace>/users/<user_id>/atlasclaw.json` |
+| `load_user_config` | `(user_id: str) -> dict` | Load per-user configuration from `<workspace>/users/<user_id>/xuanwu.json` |
 
 **Properties**:
-- `config: AtlasClawConfig` — Lazily loaded configuration object
+- `config: XuanwuConfig` — Lazily loaded configuration object
 - `resolved_config_path: Optional[Path]` — Absolute path of the loaded config file
 
 **Module-Level Functions**:
 - `get_config_manager() -> ConfigManager` — Get singleton instance
-- `get_config() -> AtlasClawConfig` — Shorthand for `get_config_manager().config`
+- `get_config() -> XuanwuConfig` — Shorthand for `get_config_manager().config`
 - `get_config_path() -> Optional[Path]` — Get resolved config file path
 
 ### 1.2 SkillDeps (`core/deps.py`)
@@ -117,7 +117,7 @@ Pydantic models defining all configuration sections.
 
 | Model | Key Fields (with defaults) |
 |---|---|
-| `AtlasClawConfig` | `log_level=INFO`, `workspace`, `agents_dir`, `providers_root`, `agent_defaults`, `messages`, `compaction`, `block_chunker`, `model`, `retry`, `memory`, `sandbox`, `security`, `skills`, `reset`, `webhook`, `auth`, `service_providers` |
+| `XuanwuConfig` | `log_level=INFO`, `workspace`, `agents_dir`, `providers_root`, `agent_defaults`, `messages`, `compaction`, `block_chunker`, `model`, `retry`, `memory`, `sandbox`, `security`, `skills`, `reset`, `webhook`, `auth`, `service_providers` |
 | `QueueConfig` | `mode=COLLECT`, `debounce_ms=1000`, `cap=20`, `drop=OLD` |
 | `ResetConfig` | `mode=DAILY`, `daily_hour=4`, `idle_minutes=60` |
 | `CompactionConfig` | `reserve_tokens_floor=20000`, `soft_threshold_tokens=4000`, `context_window=128000`, `memory_flush_enabled=True` |
@@ -126,14 +126,14 @@ Pydantic models defining all configuration sections.
 | `SandboxConfig` | `enabled=False`, `mode=OFF`, `workspace_root=""`, `elevated_exec=False` |
 | `SecurityPolicyConfig` | `allowed_tools=[]`, `denied_tools=[]`, `workspace_access="rw"` |
 | `SkillsConfig` | `md_skills_max_count=20`, `md_skills_desc_max_chars=200`, `md_skills_index_max_chars=3000`, `md_skills_max_file_bytes=262144`, `allow_script_execution=False` |
-| `WebhookConfig` | `enabled=False`, `header_name="X-AtlasClaw-SK"`, `systems=[]` |
+| `WebhookConfig` | `enabled=False`, `header_name="X-Xuanwu-SK"`, `systems=[]` |
 | `WebhookSystemConfig` | `system_id`, `enabled=True`, `sk_env`, `default_agent_id="main"`, `allowed_skills=[]` |
 | `ModelConfig` | `primary="doubao-pro-32k"`, `fallbacks=[]`, `temperature=0.7`, `max_tokens=None`, `providers={}` |
 | `RetryConfig` | `attempts=3`, `min_delay_ms=1000`, `max_delay_ms=30000`, `jitter=0.1` |
 | `AgentDefaultsConfig` | `timeout_seconds=600`, `max_concurrent=4`, `max_tool_calls=50`, `prompt_mode=FULL`, `bootstrap_max_chars=20000`, `block_streaming_default=False` |
 | `MessagesConfig` | `queue`, `response_prefix=""`, `reply_to_mode="auto"`, `inbound_debounce_ms=1000`, `dedup_ttl_seconds=60` |
 | `MemoryConfig` | `enabled=True`, `vector_weight=0.7`, `fulltext_weight=0.3`, `time_decay_half_life_days=30.0`, `max_results=6` |
-| `WorkspaceConfig` | `path="./.atlasclaw"` |
+| `WorkspaceConfig` | `path="./.xuanwu"` |
 | `TokenConfig` | `id`, `provider`, `model`, `base_url`, `api_key`, `api_type="openai"`, `priority=0`, `weight=100` |
 
 ### 1.4 Token Pool (`core/token_pool.py`)
@@ -233,13 +233,13 @@ Constructor: `key: bytes` (32-byte encryption key)
 | `decrypt_json` | `(ciphertext: str) -> dict` | Decrypt to dict |
 
 **Key Management**:
-- Primary key from `ATLASCLAW_ENCRYPTION_KEY` environment variable (base64-encoded 32 bytes)
+- Primary key from `XUANWU_ENCRYPTION_KEY` environment variable (base64-encoded 32 bytes)
 - Built-in default key for development (must be overridden in production)
 - Support for envelope encryption with rotating data keys (optional)
 
 **Usage**:
 ```python
-from app.atlasclaw.core.encryption import encrypt_json, decrypt_json
+from app.xuanwu.core.encryption import encrypt_json, decrypt_json
 
 # Encrypt before storage
 encrypted = encrypt_json({"api_key": "secret123"})
@@ -251,7 +251,7 @@ data = decrypt_json(encrypted)
 ```
 
 **Config File Encryption**:
-Values in `atlasclaw.json` with `enc:` prefix are automatically decrypted on load:
+Values in `xuanwu.json` with `enc:` prefix are automatically decrypted on load:
 ```json
 {
   "model": {
@@ -282,7 +282,7 @@ Creates the global workspace directory structure on first run:
 ```
 
 Default `agents/main/` files are copied from the repo template directory at
-`app/atlasclaw/templates/agents/main/`. Existing files are preserved; only
+`app/xuanwu/templates/agents/main/`. Existing files are preserved; only
 missing files are restored.
 
 | Method | Signature | Description |
@@ -358,7 +358,7 @@ Manages provider templates, instance configurations, and skill registration with
 | `register_skills_to` | `(skill_registry) -> int` | Register provider skills with instance wrappers |
 
 **Instance Config Merge Behavior**:
-1. JSON config (`atlasclaw.json` `service_providers`) loaded first
+1. JSON config (`xuanwu.json` `service_providers`) loaded first
 2. DB configs (`service_provider_configs` table) loaded second
 3. DB entries override JSON entries with same `(provider_type, instance_name)`
 
@@ -366,7 +366,7 @@ Instance wrapper logic: when a skill is invoked, if the provider has a single in
 
 **Environment Variable Resolution**: Config values containing `${VAR_NAME}` or `${VAR_NAME:default}` are resolved at load time.
 
-**Database Persistence** (`app/atlasclaw/db/orm/service_provider_config.py`):
+**Database Persistence** (`app/xuanwu/db/orm/service_provider_config.py`):
 
 | Service Method | Description |
 |---|---|
@@ -432,7 +432,7 @@ Instance wrapper logic: when a skill is invoked, if the provider has a single in
 
 ## 2. Auth Module
 
-**Path**: `app/atlasclaw/auth/`
+**Path**: `app/xuanwu/auth/`
 
 Implements the authentication pipeline: credential extraction → provider authentication → shadow user resolution → UserInfo injection.
 
@@ -470,7 +470,7 @@ Properties: `is_anonymous: bool`, `is_default: bool`
 | `raw_token` | `str` | `""` |
 | `extra` | `dict[str, Any]` | `{}` |
 
-**Dataclass: `ShadowUser`** — Internal user record persisted in `~/.atlasclaw/users.json`.
+**Dataclass: `ShadowUser`** — Internal user record persisted in `~/.xuanwu/users.json`.
 
 | Field | Type | Description |
 |---|---|---|
@@ -495,7 +495,7 @@ Constructor: `strategy: AuthStrategy`, `anonymous_fallback: bool = False`, `oidc
 
 **Credential Extraction Order**:
 1. `Authorization: Bearer <token>` header
-2. `AtlasClaw-Authenticate` header
+2. `Xuanwu-Authenticate` header
 3. Cookie-based tokens (configurable via `jwt.cookie_name`)
 
 **Skip Paths** (no auth required): `/health`, `/ping`, `/favicon.ico`, `/docs`, `/openapi.json`, `/static/`, `/styles/`, `/scripts/`, `/locales/`, `/config.json`, `/index.html`, `/login.html`, `/api/auth/login`, `/api/auth/local/login`, `/api/auth/callback`, `/api/auth/logout`, `/api/auth/me`
@@ -550,7 +550,7 @@ Constructor: `provider: AuthProvider`, `shadow_store: ShadowUserStore`, `cache_t
 
 **Class: `ShadowUserStore`**
 
-Constructor: `store_path: str = "~/.atlasclaw/users.json"`, `workspace_path: str = "."`
+Constructor: `store_path: str = "~/.xuanwu/users.json"`, `workspace_path: str = "."`
 
 | Method | Signature | Description |
 |---|---|---|
@@ -581,7 +581,7 @@ Thread-safe and idempotent under concurrent access.
 
 ## 3. Agent Module
 
-**Path**: `app/atlasclaw/agent/`
+**Path**: `app/xuanwu/agent/`
 
 Core agent execution engine with streaming, prompt construction, routing, context compaction, token management, and agent instance pooling.
 
@@ -672,7 +672,7 @@ Constructor: `min_chars=800`, `max_chars=1200`, `break_preference=PARAGRAPH`, `i
 | `user_timezone` | `None` | User timezone |
 | `time_format` | `"auto"` | Time format (auto/12/24) |
 | `sandbox` | `SandboxConfig()` | Sandbox settings |
-| `agent_name` | `"AtlasClaw"` | Agent display name |
+| `agent_name` | `"Xuanwu"` | Agent display name |
 | `agent_description` | `"Enterprise AI Assistant"` | Agent description |
 | `md_skills_max_index_chars` | `3000` | Max MD skills index size |
 | `md_skills_desc_max_chars` | `200` | Max per-skill description size |
@@ -785,7 +785,7 @@ Constructor: `max_concurrent_per_instance: int = 4`
 
 ## 4. API Module
 
-**Path**: `app/atlasclaw/api/`
+**Path**: `app/xuanwu/api/`
 
 HTTP routing, SSE streaming, WebSocket gateway, webhook dispatch, and response handling.
 
@@ -905,7 +905,7 @@ REST endpoints for configuration management with DB persistence.
 
 ## 5. Channels Module
 
-**Path**: `app/atlasclaw/channels/`
+**Path**: `app/xuanwu/channels/`
 
 Channel handler abstraction, registry, manager, and built-in handler implementations.
 
@@ -1000,7 +1000,7 @@ Constructor: `workspace_path: Path`
 
 ## 6. Tools Module
 
-**Path**: `app/atlasclaw/tools/`
+**Path**: `app/xuanwu/tools/`
 
 Built-in tool definitions, profiles, group management, and registration.
 
@@ -1073,7 +1073,7 @@ Built-in tool definitions, profiles, group management, and registration.
 
 ## 7. Session Module
 
-**Path**: `app/atlasclaw/session/`
+**Path**: `app/xuanwu/session/`
 
 JSONL-based session persistence with hierarchical key formats, async locking, and queue management.
 
@@ -1197,7 +1197,7 @@ Constructor: `workspace_path="."`, `user_id="default"`, `reset_mode=DAILY`, `dai
 
 ## 8. Memory Module
 
-**Path**: `app/atlasclaw/memory/`
+**Path**: `app/xuanwu/memory/`
 
 Markdown-backed memory storage with hybrid search (keyword + semantic).
 
@@ -1250,7 +1250,7 @@ Combines keyword matching and semantic similarity with configurable weights:
 
 ## 9. Skills Module
 
-**Path**: `app/atlasclaw/skills/`
+**Path**: `app/xuanwu/skills/`
 
 Skill registration, loading, Markdown skill discovery, and frontmatter parsing.
 
@@ -1296,8 +1296,8 @@ Skill registration, loading, Markdown skill discovery, and frontmatter parsing.
 **Loading Priority** (highest → lowest):
 1. Workspace skills: `<workspace>/skills/`
 2. Workspace provider skills: `<workspace>/providers/<provider>/skills/`
-3. Global skills: `~/.atlasclaw/skills/`
-4. Built-in skills: `app/atlasclaw/providers/*/skills/`
+3. Global skills: `~/.xuanwu/skills/`
+4. Built-in skills: `app/xuanwu/providers/*/skills/`
 
 ### 9.2 Frontmatter Parser (`skills/frontmatter.py`)
 
@@ -1327,7 +1327,7 @@ Features: BOM handling, CRLF → LF conversion, quote stripping, list parsing (d
 
 ## 10. Hooks Module
 
-**Path**: `app/atlasclaw/hooks/`
+**Path**: `app/xuanwu/hooks/`
 
 Extensible lifecycle hook system with sequential and parallel execution modes.
 
@@ -1380,7 +1380,7 @@ Extensible lifecycle hook system with sequential and parallel execution modes.
 
 ## 11. Database Module
 
-**Path**: `app/atlasclaw/db/`
+**Path**: `app/xuanwu/db/`
 
 Relational database abstraction with SQLAlchemy ORM, supporting SQLite (default) and MySQL (enterprise).
 
@@ -1459,7 +1459,7 @@ All API keys are encrypted at rest using AES-256-GCM. The service provides trans
 
 **Encryption Details**:
 - Algorithm: AES-256-GCM
-- Key: Configurable via `ATLASCLAW_ENCRYPTION_KEY` env var (32-byte base64)
+- Key: Configurable via `XUANWU_ENCRYPTION_KEY` env var (32-byte base64)
 - Default: Built-in key for development (not for production)
 - Format: `v1:key_id:base64(nonce+ciphertext+tag)`
 - Backward compatible: Legacy unencrypted values are read as-is
@@ -1525,7 +1525,7 @@ Request/response schemas for API validation:
 
 ## 12. Models Module
 
-**Path**: `app/atlasclaw/models/`
+**Path**: `app/xuanwu/models/`
 
 LLM provider configuration and failover/retry logic.
 
@@ -1559,7 +1559,7 @@ LLM provider configuration and failover/retry logic.
 
 ## 12. Messages Module
 
-**Path**: `app/atlasclaw/messages/`
+**Path**: `app/xuanwu/messages/`
 
 Inbound/outbound message normalization and slash command parsing.
 
@@ -1613,7 +1613,7 @@ Properties: `is_group_chat`, `is_command`, `has_media`
 
 ## 13. Workflow Module
 
-**Path**: `app/atlasclaw/workflow/`
+**Path**: `app/xuanwu/workflow/`
 
 DAG-based workflow engine with conditional branching.
 
@@ -1645,7 +1645,7 @@ DAG-based workflow engine with conditional branching.
 
 ## 14. Media Module
 
-**Path**: `app/atlasclaw/media/`
+**Path**: `app/xuanwu/media/`
 
 Media processing utilities.
 

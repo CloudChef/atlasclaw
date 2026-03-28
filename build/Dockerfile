@@ -1,4 +1,4 @@
-# AtlasClaw OpenSource Edition
+# Xuanwu OpenSource Edition
 # Lightweight build with SQLite for single-node deployment
 
 FROM python:3.11-slim-bookworm
@@ -42,4 +42,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
 # Start server (SQLite auto-creates on startup)
-CMD ["uvicorn", "app.atlasclaw.main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app.xuanwu.main:app", "--host", "0.0.0.0", "--port", "8000"]

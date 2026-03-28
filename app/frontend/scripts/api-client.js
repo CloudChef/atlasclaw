@@ -1,5 +1,5 @@
 /**
- * AtlasClaw API Client
+ * Xuanwu API Client
  * Encapsulate communication with backend API
  */
 

@@ -13,8 +13,8 @@ on:
 
 env:
   REGISTRY: registry.cn-shanghai.aliyuncs.com
-  NAMESPACE: atlasclaw
-  IMAGE_NAME: atlasclaw
+  NAMESPACE: xuanwu
+  IMAGE_NAME: xuanwu
 
 jobs:
   build-and-push:
@@ -45,12 +45,12 @@ jobs:
       - name: Generate default config for Docker build
         run: |
           mkdir -p config
-          cat > config/atlasclaw.json <<'EOF'
+          cat > config/xuanwu.json <<'EOF'
           {
             "workspace": { "path": "/app/data" },
             "database": {
               "type": "sqlite",
-              "sqlite": { "path": "/app/data/atlasclaw.db" }
+              "sqlite": { "path": "/app/data/xuanwu.db" }
             },
             "model": {
               "primary": "deepseek-main",
@@ -93,7 +93,7 @@ jobs:
   deploy-on-self-hosted:
     name: Deploy to self-hosted runner
     needs: build-and-push
-    runs-on: [self-hosted, linux, atlasclaw]
+    runs-on: [self-hosted, linux, xuanwu]
 
     steps:
       - name: Login to Aliyun ACR
@@ -105,89 +105,89 @@ jobs:
 
       - name: Prepare deployment directories
         run: |
-          sudo mkdir -p /opt/atlasclaw/{workspace,data,extensions/{providers,skills,channels}}
-          sudo chown -R "$(id -u):$(id -g)" /opt/atlasclaw
+          sudo mkdir -p /opt/xuanwu/{workspace,data,extensions/{providers,skills,channels}}
+          sudo chown -R "$(id -u):$(id -g)" /opt/xuanwu
 
       - name: Download compose and extensions with curl (with fallback)
         run: |
           set -euo pipefail
-          cd /opt/atlasclaw
+          cd /opt/xuanwu
 
           if ! curl --retry 3 --retry-delay 3 --connect-timeout 10 -fL -o docker-compose.yml \
-            https://raw.githubusercontent.com/CloudChef/atlasclaw/main/build/docker-compose.yml; then
-            if [[ ! -f /opt/atlasclaw/docker-compose.yml ]]; then
+            https://raw.githubusercontent.com/CloudChef/xuanwu/main/build/docker-compose.yml; then
+            if [[ ! -f /opt/xuanwu/docker-compose.yml ]]; then
               echo "Failed to download docker-compose.yml and local file not found" >&2
               exit 1
             fi
-            echo "Using existing /opt/atlasclaw/docker-compose.yml"
+            echo "Using existing /opt/xuanwu/docker-compose.yml"
           fi
 
-          cd /opt/atlasclaw/extensions
-          if curl --retry 3 --retry-delay 3 --connect-timeout 10 -fL -o atlasclaw-providers.zip \
-            https://github.com/CloudChef/atlasclaw-providers/archive/refs/heads/main.zip; then
+          cd /opt/xuanwu/extensions
+          if curl --retry 3 --retry-delay 3 --connect-timeout 10 -fL -o xuanwu-providers.zip \
+            https://github.com/CloudChef/xuanwu-providers/archive/refs/heads/main.zip; then
             # Check if unzip is available
             if ! command -v unzip &> /dev/null; then
               echo "ERROR: unzip command not found. Please install unzip: sudo apt-get install unzip (or yum install unzip)" >&2
-              rm -f atlasclaw-providers.zip
+              rm -f xuanwu-providers.zip
               exit 1
             fi
 
             # Clean up old temp directory
-            rm -rf atlasclaw-providers-main
+            rm -rf xuanwu-providers-main
 
             # Extract zip
-            if ! unzip -o atlasclaw-providers.zip; then
-              echo "ERROR: Failed to extract atlasclaw-providers.zip" >&2
-              rm -f atlasclaw-providers.zip
+            if ! unzip -o xuanwu-providers.zip; then
+              echo "ERROR: Failed to extract xuanwu-providers.zip" >&2
+              rm -f xuanwu-providers.zip
               exit 1
             fi
-            rm -f atlasclaw-providers.zip
+            rm -f xuanwu-providers.zip
 
             # Verify extracted directory exists
-            if [[ ! -d atlasclaw-providers-main ]]; then
-              echo "ERROR: Expected directory 'atlasclaw-providers-main' not found after extraction" >&2
+            if [[ ! -d xuanwu-providers-main ]]; then
+              echo "ERROR: Expected directory 'xuanwu-providers-main' not found after extraction" >&2
               exit 1
             fi
 
             # Copy files to extensions directories
-            if [[ -d atlasclaw-providers-main/providers ]]; then
-              cp -r atlasclaw-providers-main/providers/* ./providers/ 2>/dev/null || true
+            if [[ -d xuanwu-providers-main/providers ]]; then
+              cp -r xuanwu-providers-main/providers/* ./providers/ 2>/dev/null || true
             fi
-            if [[ -d atlasclaw-providers-main/skills ]]; then
-              cp -r atlasclaw-providers-main/skills/* ./skills/ 2>/dev/null || true
+            if [[ -d xuanwu-providers-main/skills ]]; then
+              cp -r xuanwu-providers-main/skills/* ./skills/ 2>/dev/null || true
             fi
-            if [[ -d atlasclaw-providers-main/channels ]]; then
-              cp -r atlasclaw-providers-main/channels/* ./channels/ 2>/dev/null || true
+            if [[ -d xuanwu-providers-main/channels ]]; then
+              cp -r xuanwu-providers-main/channels/* ./channels/ 2>/dev/null || true
             fi
 
             # Clean up
-            rm -rf atlasclaw-providers-main
+            rm -rf xuanwu-providers-main
             echo "Extensions updated successfully"
           else
             echo "Failed to download providers zip, keep existing extension directories"
           fi
 
-      - name: Initialize atlasclaw.json if missing
+      - name: Initialize xuanwu.json if missing
         env:
-          ATLASCLAW_MODEL_API_KEY: ${{ secrets.ATLASCLAW_MODEL_API_KEY }}
-          ATLASCLAW_JWT_SECRET: ${{ secrets.ATLASCLAW_JWT_SECRET }}
+          XUANWU_MODEL_API_KEY: ${{ secrets.XUANWU_MODEL_API_KEY }}
+          XUANWU_JWT_SECRET: ${{ secrets.XUANWU_JWT_SECRET }}
         run: |
           set -euo pipefail
 
-          CONFIG_PATH="/opt/atlasclaw/workspace/atlasclaw.json"
+          CONFIG_PATH="/opt/xuanwu/workspace/xuanwu.json"
           if [[ -f "$CONFIG_PATH" ]]; then
-            echo "atlasclaw.json exists, keeping current configuration."
+            echo "xuanwu.json exists, keeping current configuration."
             exit 0
           fi
 
-          if [[ -z "${ATLASCLAW_MODEL_API_KEY:-}" ]]; then
-            echo "ATLASCLAW_MODEL_API_KEY secret is required for deployment." >&2
+          if [[ -z "${XUANWU_MODEL_API_KEY:-}" ]]; then
+            echo "XUANWU_MODEL_API_KEY secret is required for deployment." >&2
             exit 1
           fi
 
-          JWT_SECRET="${ATLASCLAW_JWT_SECRET:-atlasclaw-docker-secret-CHANGE-ME}"
-          if [[ -z "${ATLASCLAW_JWT_SECRET:-}" ]]; then
-            echo "ATLASCLAW_JWT_SECRET not set, using default placeholder; change it after first deploy." >&2
+          JWT_SECRET="${XUANWU_JWT_SECRET:-xuanwu-docker-secret-CHANGE-ME}"
+          if [[ -z "${XUANWU_JWT_SECRET:-}" ]]; then
+            echo "XUANWU_JWT_SECRET not set, using default placeholder; change it after first deploy." >&2
           fi
 
           cat > "$CONFIG_PATH" <<EOF
@@ -198,7 +198,7 @@ jobs:
             "database": {
               "type": "sqlite",
               "sqlite": {
-                "path": "/app/data/atlasclaw.db"
+                "path": "/app/data/xuanwu.db"
               }
             },
             "providers_root": "/app/extensions/providers",
@@ -214,7 +214,7 @@ jobs:
                   "provider": "deepseek",
                   "model": "deepseek-chat",
                   "base_url": "https://api.deepseek.com",
-                  "api_key": "${ATLASCLAW_MODEL_API_KEY}",
+                  "api_key": "${XUANWU_MODEL_API_KEY}",
                   "api_type": "openai"
                 }
               ]
@@ -238,7 +238,7 @@ jobs:
       - name: Pull and deploy latest image
         run: |
           set -euo pipefail
-          cd /opt/atlasclaw
+          cd /opt/xuanwu
 
           IMAGE="${{ env.REGISTRY }}/${{ env.NAMESPACE }}/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image_tag }}"
           docker pull "$IMAGE"
@@ -252,8 +252,8 @@ jobs:
           set -euo pipefail
 
           for i in {1..45}; do
-            status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' atlasclaw 2>/dev/null || echo "missing")
-            echo "atlasclaw status: ${status}"
+            status=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' xuanwu 2>/dev/null || echo "missing")
+            echo "xuanwu status: ${status}"
             if [[ "${status}" == "healthy" || "${status}" == "running" ]]; then
               echo "Health check passed"
               exit 0
@@ -262,6 +262,6 @@ jobs:
           done
 
           echo "Health check failed after waiting for container readiness" >&2
-          docker compose -f /opt/atlasclaw/docker-compose.yml ps || true
-          docker compose -f /opt/atlasclaw/docker-compose.yml logs --tail=200 atlasclaw || true
+          docker compose -f /opt/xuanwu/docker-compose.yml ps || true
+          docker compose -f /opt/xuanwu/docker-compose.yml logs --tail=200 xuanwu || true
           exit 1

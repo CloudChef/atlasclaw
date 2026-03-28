@@ -106,7 +106,7 @@ describe('chat-ui.js handler mode', () => {
     });
 
     test('initChat restores persisted session history for active session', async () => {
-        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+        sessionStorage.setItem('xuanwu_session_key', 'session-123');
 
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const element = createChatElement();

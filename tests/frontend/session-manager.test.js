@@ -45,6 +45,23 @@ describe('session-manager.js', () => {
             expect(global.fetch).not.toHaveBeenCalled();
         });
 
+        test('should restore and migrate legacy session key storage', async () => {
+            sessionStorageMock.getItem
+                .mockReturnValueOnce(null)
+                .mockReturnValueOnce('legacy-session-key');
+
+            const { initSession } = await import('../../app/frontend/scripts/session-manager.js');
+            const key = await initSession();
+
+            expect(key).toBe('legacy-session-key');
+            expect(sessionStorageMock.setItem).toHaveBeenCalledWith(
+                'xuanwu_session_key',
+                'legacy-session-key'
+            );
+            expect(sessionStorageMock.removeItem).toHaveBeenCalledWith('atlasclaw_session_key');
+            expect(global.fetch).not.toHaveBeenCalled();
+        });
+
         test('should create new session when none stored', async () => {
             sessionStorageMock.getItem.mockReturnValueOnce(null);
             global.fetch.mockResolvedValueOnce({
@@ -58,7 +75,7 @@ describe('session-manager.js', () => {
             expect(key).toBe('new-session-key');
             expect(global.fetch).toHaveBeenCalled();
             expect(sessionStorageMock.setItem).toHaveBeenCalledWith(
-                'atlasclaw_session_key',
+                'xuanwu_session_key',
                 'new-session-key'
             );
         });
@@ -110,7 +127,7 @@ describe('session-manager.js', () => {
             setSessionKey('new-key');
             
             expect(sessionStorageMock.setItem).toHaveBeenCalledWith(
-                'atlasclaw_session_key',
+                'xuanwu_session_key',
                 'new-key'
             );
         });
@@ -119,7 +136,7 @@ describe('session-manager.js', () => {
             const { setSessionKey } = await import('../../app/frontend/scripts/session-manager.js');
             setSessionKey(null);
             
-            expect(sessionStorageMock.removeItem).toHaveBeenCalledWith('atlasclaw_session_key');
+            expect(sessionStorageMock.removeItem).toHaveBeenCalledWith('xuanwu_session_key');
         });
     });
 
@@ -192,7 +209,7 @@ describe('session-manager.js', () => {
             const { clearSession } = await import('../../app/frontend/scripts/session-manager.js');
             clearSession();
             
-            expect(sessionStorageMock.removeItem).toHaveBeenCalledWith('atlasclaw_session_key');
+            expect(sessionStorageMock.removeItem).toHaveBeenCalledWith('xuanwu_session_key');
         });
     });
 });

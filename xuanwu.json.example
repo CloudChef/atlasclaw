@@ -1,0 +1,128 @@
+{
+  "_comment": "Example Xuanwu configuration. This file stays valid JSON by using _comment fields instead of // comments.",
+  "workspace": {
+    "_comment": "Workspace configuration for runtime data and user sessions",
+    "path": "./.xuanwu"
+  },
+  "database": {
+    "_comment": "Default sqlite. Switch type to mysql in enterprise deployments.",
+    "type": "sqlite",
+    "sqlite": {
+      "path": "./data/xuanwu.db"
+    },
+    "mysql": {
+      "host": "${MYSQL_HOST}",
+      "port": 3306,
+      "database": "${MYSQL_DATABASE}",
+      "user": "${MYSQL_USER}",
+      "password": "${MYSQL_PASSWORD}",
+      "charset": "utf8mb4"
+    },
+    "pool_size": 5,
+    "max_overflow": 10,
+    "echo": false
+  },
+  "providers_root": "../xuanwu-providers/providers",
+
+  "skills_root": "../xuanwu-providers/skills",
+  "channels_root": "../xuanwu-providers/channels",
+
+  "model": {
+    "_comment": "Token pool configuration for multi-token LLM access. Set reasoning: true for models that support thinking/reasoning output.",
+    "primary": "deepseek-main",
+    "fallbacks": [],
+    "temperature": 0.2,
+    "selection_strategy": "health",
+    "tokens": [
+      {
+        "id": "deepseek-main",
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "base_url": "https://api.deepseek.com",
+        "api_key": "${DS_API_KEY}",
+        "api_type": "openai",
+        "priority": 100,
+        "weight": 100
+      },
+      {
+        "_comment": "Example reasoning model configuration. Enable reasoning: true for models with thinking output.",
+        "id": "deepseek-reasoner",
+        "provider": "deepseek",
+        "model": "deepseek-reasoner",
+        "base_url": "https://api.deepseek.com",
+        "api_key": "${DS_API_KEY}",
+        "api_type": "openai",
+        "reasoning": true,
+        "priority": 80,
+        "weight": 50
+      }
+    ]
+  },
+
+
+  "service_providers": {
+    "_comment": "Enterprise system instances used by skills. Instance names like dev/prod are referenced at runtime.",
+    "jira": {
+      "dev": {
+        "_comment": "Jira supports either password or token. Keep only the one you actually use.",
+        "base_url": "https://jira-dev.example.com/",
+        "username": "${JIRA_USERNAME}",
+        "password": "${JIRA_PASSWORD}",
+        "api_version": "2",
+        "default_project": "TEST"
+      }
+    }
+  },
+
+  "webhook": {
+    "_comment": "Inbound webhook dispatch for provider-qualified markdown skills already loaded from providers_root.",
+    "enabled": true,
+    "header_name": "X-Xuanwu-SK",
+    "systems": [
+      {
+        "_comment": "One external caller. sk_env points to the shared secret variable, typically defined in .env.",
+        "system_id": "smartcmp-preapproval",
+        "enabled": true,
+        "sk_env": "XUANWU_WEBHOOK_SK_SMARTCMP_PREAPPROVAL",
+        "default_agent_id": "main",
+        "allowed_skills": [
+          "smartcmp:preapproval-agent"
+        ]
+      }
+    ]
+  },
+
+  "auth": {
+    "_comment": "Optional API authentication config for normal REST/UI access. Webhook secret auth is configured separately above.",
+    "provider": "none",
+    "cache_ttl_seconds": 300,
+
+    "smartcmp": {
+      "validate_url": "https://smartcmp.example.com/platform-api/auth/validate",
+      "api_base_url": "https://smartcmp.example.com"
+    },
+
+    "oidc": {
+      "_comment": "OIDC/OAuth2 configuration for Bearer token validation and SSO login flow",
+      "issuer": "https://auth.example.com",
+      "client_id": "${OIDC_CLIENT_ID}",
+      "client_secret": "${OIDC_CLIENT_SECRET}",
+      "jwks_uri": "",
+      "scopes": ["openid", "profile", "email"],
+      "_comment_sso": "SSO login flow endpoints (auto-discovered from issuer if empty)",
+      "authorization_endpoint": "",
+      "token_endpoint": "",
+      "userinfo_endpoint": "",
+      "redirect_uri": "https://xuanwu.example.com/api/auth/callback",
+      "pkce_enabled": true,
+      "pkce_method": "S256"
+    }
+  },
+
+  "agent_defaults": {
+    "_comment": "Default agent execution settings",
+    "max_concurrent": 10,
+    "timeout_seconds": 600,
+    "max_tool_calls": 50
+  }
+}

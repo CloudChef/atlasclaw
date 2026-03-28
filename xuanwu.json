@@ -1,0 +1,148 @@
+{
+  "workspace": {
+    "path": "./.xuanwu"
+  },
+  "database": {
+    "type": "sqlite",
+    "sqlite": {
+      "path": "./data/xuanwu.db"
+    },
+    "mysql": {
+      "host": "${MYSQL_HOST}",
+      "port": 3306,
+      "database": "${MYSQL_DATABASE}",
+      "user": "${MYSQL_USER}",
+      "password": "${MYSQL_PASSWORD}",
+      "charset": "utf8mb4"
+    },
+    "pool_size": 5,
+    "max_overflow": 10,
+    "echo": false
+  },
+
+  "providers_root": "../xuanwu-providers/providers",
+  "skills_root": "../xuanwu-providers/skills",
+  "channels_root": "../xuanwu-providers/channels",
+  "model": {
+    "primary": "model-2",
+    "fallbacks": [],
+    "temperature": "${LLM_TEMPERATURE}",
+    "selection_strategy": "health",
+    "tokens": [
+      {
+        "id": "model-1",
+        "provider": "${TOKEN_1_PROVIDER}",
+        "model": "${TOKEN_1_MODEL}",
+        "base_url": "${TOKEN_1_BASE_URL}",
+        "api_key": "${TOKEN_1_API_KEY}",
+        "api_type": "openai",
+        "priority": 100,
+        "weight": 100
+      },
+      {
+        "id": "model-2",
+        "provider": "${TOKEN_2_PROVIDER}",
+        "model": "${TOKEN_2_MODEL}",
+        "base_url": "${TOKEN_2_BASE_URL}",
+        "api_key": "${TOKEN_2_API_KEY}",
+        "api_type": "openai",
+        "priority": 90,
+        "weight": 80
+      },
+      {
+        "id": "model-3",
+        "provider": "${TOKEN_3_PROVIDER}",
+        "model": "${TOKEN_3_MODEL}",
+        "base_url": "${TOKEN_3_BASE_URL}",
+        "api_key": "${TOKEN_3_API_KEY}",
+        "api_type": "openai",
+        "priority": 80,
+        "weight": 60
+      }
+    ]
+  },
+  "service_providers": {
+    "smartcmp": {
+      "default": {
+        "base_url": "${CMP_URL}",
+        "cookie": "${CMP_COOKIE}",
+        "username": "${CMP_USERNAME}",
+        "password": "${CMP_PASSWORD}"
+      }
+    },
+    "dingtalk": {
+      "default": {
+        "base_url": "https://oapi.dingtalk.com",
+        "app_key": "${DINGTALK_APP_KEY}",
+        "app_secret": "${DINGTALK_APP_SECRET}",
+        "agent_id": "${DINGTALK_AGENT_ID}"
+      }
+    }
+  },
+  "auth": {
+    "enabled": true,
+    "provider": "local",
+    "cache_ttl_seconds": 300,
+    "jwt": {
+      "header_name": "Xuanwu-Authenticate",
+      "cookie_name": "Xuanwu-Authenticate",
+      "issuer": "xuanwu",
+      "secret_key": "${XUANWU_JWT_SECRET}",
+      "expires_minutes": 480
+    },
+    "oidc": {
+      "issuer": "${OIDC_ISSUER}",
+      "client_id": "${OIDC_CLIENT_ID}",
+      "client_secret": "${OIDC_CLIENT_SECRET}",
+      "jwks_uri": "${OIDC_ISSUER}/protocol/openid-connect/certs",
+      "scopes": ["openid", "profile", "email"],
+      "ocbc_enabled": true,
+
+      "authorization_endpoint": "${OIDC_ISSUER}/protocol/openid-connect/auth",
+      "token_endpoint": "${OIDC_ISSUER}/protocol/openid-connect/token",
+      "userinfo_endpoint": "${OIDC_ISSUER}/protocol/openid-connect/userinfo",
+      "end_session_endpoint": "${OIDC_ISSUER}/protocol/openid-connect/logout",
+      "redirect_uri": "${OIDC_REDIRECT_URI}",
+      "pkce_enabled": true,
+      "pkce_method": "S256"
+    },
+    "dingtalk": {
+      "app_key": "${DINGTALK_APP_KEY}",
+      "app_secret": "${DINGTALK_APP_SECRET}",
+      "corp_id": "${DINGTALK_CORP_ID}",
+      "redirect_uri": "${DINGTALK_OIDC_REDIRECT_URI}",
+      "scopes": ["openid", "corpid"],
+      "pkce_enabled": true,
+      "pkce_method": "S256",
+      "subject_field": "unionId"
+    }
+  },
+  "agent_defaults": {
+    "max_concurrent": 10
+  },
+  "webhook": {
+    "enabled": false,
+    "header_name": "X-UniClaw-SK",
+    "skill_sources": [
+      {
+        "provider": "smartcmp",
+        "root": "../UniClaw-Providers/SmartCMP-Provider/skills"
+      },
+      {
+        "provider": "jira",
+        "root": "app/xuanwu/providers/jira/skills"
+      }
+    ],
+    "systems": [
+      {
+        "system_id": "smartcmp-preapproval",
+        "enabled": true,
+        "sk_env": "XUANWU_WEBHOOK_SK_SMARTCMP_PREAPPROVAL",
+        "default_agent_id": "main",
+        "allowed_skills": [
+          "smartcmp:preapproval-agent"
+        ]
+      }
+    ]
+  }
+}

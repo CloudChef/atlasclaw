@@ -12,8 +12,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 # Import models to ensure they are registered with Base.metadata
-from app.atlasclaw.db.models import Base
-from app.atlasclaw.core.config import get_config
+from app.xuanwu.db.models import Base
+from app.xuanwu.core.config import get_config
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -31,14 +31,14 @@ target_metadata = Base.metadata
 def get_url() -> str:
     """Get database URL from configuration."""
     try:
-        atlasclaw_config = get_config()
-        db_config = atlasclaw_config.database
+        xuanwu_config = get_config()
+        db_config = xuanwu_config.database
 
         if hasattr(db_config, "get"):
             # Dict format
             db_type = db_config.get("type", "sqlite")
             if db_type == "sqlite":
-                path = db_config.get("sqlite", {}).get("path", "./data/atlasclaw.db")
+                path = db_config.get("sqlite", {}).get("path", "./data/xuanwu.db")
                 return f"sqlite+aiosqlite:///{path}"
             elif db_type == "mysql":
                 mysql = db_config.get("mysql", {})
@@ -51,7 +51,7 @@ def get_url() -> str:
             # Pydantic model format
             db_type = getattr(db_config, "type", "sqlite")
             if db_type == "sqlite":
-                path = getattr(db_config, "sqlite_path", "./data/atlasclaw.db")
+                path = getattr(db_config, "sqlite_path", "./data/xuanwu.db")
                 return f"sqlite+aiosqlite:///{path}"
             elif db_type == "mysql":
                 return (
@@ -63,7 +63,7 @@ def get_url() -> str:
         pass
 
     # Fallback to alembic.ini setting
-    return config.get_main_option("sqlalchemy.url", "sqlite+aiosqlite:///./data/atlasclaw.db")
+    return config.get_main_option("sqlalchemy.url", "sqlite+aiosqlite:///./data/xuanwu.db")
 
 
 def run_migrations_offline() -> None:

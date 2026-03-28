@@ -2,18 +2,18 @@
 
 **Context**
 
-AtlasClaw currently hardcodes provider skill discovery to `app/atlasclaw/providers`, while provider templates are not loaded from any configured location at startup. The repository now keeps providers in a separate sibling directory, `../providers`.
+Xuanwu currently hardcodes provider skill discovery to `app/xuanwu/providers`, while provider templates are not loaded from any configured location at startup. The repository now keeps providers in a separate sibling directory, `../providers`.
 
 **Decision**
 
-Add a top-level `providers_root` field to `atlasclaw.json` and `atlasclaw.json.example`. Resolve it relative to the loaded config file path. Use this path for both provider template discovery and markdown skill loading. Remove the in-repo `app/atlasclaw/providers` directory so AtlasClaw no longer depends on built-in providers.
+Add a top-level `providers_root` field to `xuanwu.json` and `xuanwu.json.example`. Resolve it relative to the loaded config file path. Use this path for both provider template discovery and markdown skill loading. Remove the in-repo `app/xuanwu/providers` directory so Xuanwu no longer depends on built-in providers.
 
 **Scope**
 
 - Add `providers_root` to the runtime config schema.
 - Update startup to load provider templates and provider skills from `providers_root`.
 - Update shipped config files to use `../providers`.
-- Remove `atlasclaw/app/atlasclaw/providers`.
+- Remove `xuanwu/app/xuanwu/providers`.
 
 **Compatibility**
 

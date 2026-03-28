@@ -1,6 +1,6 @@
-# AtlasClaw Development Specification
+# Xuanwu Development Specification
 
-> **Canonical development standards for the AtlasClaw enterprise agent framework.**
+> **Canonical development standards for the Xuanwu enterprise agent framework.**
 > All future development and feature changes MUST follow these specifications.
 >
 > This document consolidates content previously in `CODE_STRUCTURE.md`, `CODING_STANDARDS.md`,
@@ -76,7 +76,7 @@ Each function, class, and module should have one clear purpose.
 ### 2.1 Directory Tree
 
 ```
-AtlasClaw-Core/
+Xuanwu-Core/
 ├── app/
 │   ├── frontend/                    # Web UI (DeepChat-based)
 │   │   ├── index.html              # Main entry point
@@ -89,7 +89,7 @@ AtlasClaw-Core/
 │   │   ├── locales/                # i18n translations
 │   │   └── static/                 # Static assets
 │   │
-│   └── atlasclaw/                    # Core backend
+│   └── xuanwu/                    # Core backend
 │       ├── __init__.py
 │       ├── main.py                 # FastAPI application entry
 │       │
@@ -203,8 +203,8 @@ AtlasClaw-Core/
 │
 ├── tests/                          # Test Suite
 │   ├── conftest.py                 # pytest configuration
-│   ├── atlasclaw.test.json           # Test configuration
-│   ├── atlasclaw/                    # Python tests
+│   ├── xuanwu.test.json           # Test configuration
+│   ├── xuanwu/                    # Python tests
 │   │   ├── test_core.py
 │   │   ├── test_agent.py
 │   │   ├── test_agent_integration.py
@@ -227,7 +227,7 @@ AtlasClaw-Core/
 │   ├── changes/
 │   └── completed/
 │
-├── atlasclaw.json                    # Main configuration
+├── xuanwu.json                    # Main configuration
 └── requirements.txt                # Python dependencies
 ```
 
@@ -275,33 +275,33 @@ Response Stream (SSE)
 
 | File | Purpose |
 |------|---------|
-| `app/atlasclaw/main.py` | FastAPI application entry |
+| `app/xuanwu/main.py` | FastAPI application entry |
 | `app/frontend/index.html` | Web UI entry |
 
 **Configuration**:
 
 | File | Purpose |
 |------|---------|
-| `atlasclaw.json` | Main configuration file |
-| `tests/atlasclaw.test.json` | Test configuration |
-| `app/atlasclaw/core/config_schema.py` | Configuration schemas |
+| `xuanwu.json` | Main configuration file |
+| `tests/xuanwu.test.json` | Test configuration |
+| `app/xuanwu/core/config_schema.py` | Configuration schemas |
 
 **Core Logic**:
 
 | File | Purpose |
 |------|---------|
-| `app/atlasclaw/agent/runner.py` | Agent execution engine |
-| `app/atlasclaw/skills/registry.py` | Skills registration |
-| `app/atlasclaw/session/manager.py` | Session management |
-| `app/atlasclaw/memory/manager.py` | Memory management |
+| `app/xuanwu/agent/runner.py` | Agent execution engine |
+| `app/xuanwu/skills/registry.py` | Skills registration |
+| `app/xuanwu/session/manager.py` | Session management |
+| `app/xuanwu/memory/manager.py` | Memory management |
 
 **API**:
 
 | File | Purpose |
 |------|---------|
-| `app/atlasclaw/api/routes.py` | REST API routes |
-| `app/atlasclaw/api/sse.py` | SSE streaming |
-| `app/atlasclaw/api/websocket.py` | WebSocket handler |
+| `app/xuanwu/api/routes.py` | REST API routes |
+| `app/xuanwu/api/sse.py` | SSE streaming |
+| `app/xuanwu/api/websocket.py` | WebSocket handler |
 
 ### 2.5 File Naming Conventions
 
@@ -329,8 +329,8 @@ import httpx
 from pydantic import BaseModel
 
 # Local application
-from app.atlasclaw.core.config import get_config
-from app.atlasclaw.session.manager import SessionManager
+from app.xuanwu.core.config import get_config
+from app.xuanwu.session.manager import SessionManager
 ```
 
 **Relative imports** (within a package):
@@ -367,7 +367,7 @@ workspace/users/<user_id>/memory/
 
 **Configuration storage**:
 ```
-~/.atlasclaw/
+~/.xuanwu/
 ├── config.json
 └── workspace/
 ```
@@ -416,11 +416,11 @@ from pydantic import BaseModel, Field
 from pydantic_ai import Agent, RunContext
 
 # 3. Local
-from app.atlasclaw.core.deps import SkillDeps
-from app.atlasclaw.auth.models import UserInfo
+from app.xuanwu.core.deps import SkillDeps
+from app.xuanwu.auth.models import UserInfo
 ```
 
-- Use absolute imports: `from app.atlasclaw.core.deps import SkillDeps`
+- Use absolute imports: `from app.xuanwu.core.deps import SkillDeps`
 - Relative imports allowed within the same package (e.g., `from .models import UserInfo`)
 - Use `TYPE_CHECKING` for imports only needed for type hints to avoid circular imports
 - Never use wildcard imports (`from module import *`)
@@ -429,7 +429,7 @@ from app.atlasclaw.auth.models import UserInfo
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from app.atlasclaw.agent.runner import AgentRunner
+    from app.xuanwu.agent.runner import AgentRunner
 ```
 
 **Type Hints**:
@@ -618,11 +618,11 @@ The `HookSystem` provides cross-cutting concern injection at 17+ lifecycle phase
 Define custom exceptions for your module:
 
 ```python
-class AtlasClawError(Exception):
-    """Base exception for all AtlasClaw errors."""
+class XuanwuError(Exception):
+    """Base exception for all Xuanwu errors."""
     pass
 
-class SessionError(AtlasClawError):
+class SessionError(XuanwuError):
     """Exception raised for session-related errors."""
     pass
 
@@ -929,7 +929,7 @@ async def test_fetch_data_with_mock():
 # Use fixtures for shared resources
 @pytest.fixture
 def mock_config():
-    return AtlasClawConfig(log_level=LogLevel.DEBUG)
+    return XuanwuConfig(log_level=LogLevel.DEBUG)
 
 # Use parametrize for data-driven tests
 @pytest.mark.parametrize("scope,expected", [
@@ -951,19 +951,19 @@ def test_session_key_format(scope, expected):
 
 ```bash
 # All backend tests
-pytest tests/atlasclaw -q
+pytest tests/xuanwu -q
 
 # Single file
-pytest tests/atlasclaw/test_agent.py -v
+pytest tests/xuanwu/test_agent.py -v
 
 # Single class
-pytest tests/atlasclaw/test_agent.py::TestStreamEvent -v
+pytest tests/xuanwu/test_agent.py::TestStreamEvent -v
 
 # Single method
-pytest tests/atlasclaw/test_agent.py::TestStreamEvent::test_create_lifecycle_start -v
+pytest tests/xuanwu/test_agent.py::TestStreamEvent::test_create_lifecycle_start -v
 
 # With coverage
-pytest --cov=app.atlasclaw --cov-report=term-missing
+pytest --cov=app.xuanwu --cov-report=term-missing
 
 # Skip slow tests
 pytest -m "not slow"
@@ -1008,7 +1008,7 @@ avoid_when:
 ---
 ```
 
-**Instance configuration** (in `atlasclaw.json`):
+**Instance configuration** (in `xuanwu.json`):
 ```json
 {
   "service_providers": {
@@ -1047,7 +1047,7 @@ parameters:
 **Executable skill handler** (`handler.py`):
 ```python
 from pydantic_ai import RunContext
-from app.atlasclaw.core.deps import SkillDeps
+from app.xuanwu.core.deps import SkillDeps
 
 async def handler(ctx: RunContext[SkillDeps], param1: str) -> str:
     """Execute the skill logic."""
@@ -1062,8 +1062,8 @@ async def handler(ctx: RunContext[SkillDeps], param1: str) -> str:
 Implement `ChannelHandler` ABC and register:
 
 ```python
-from app.atlasclaw.channels.handler import ChannelHandler
-from app.atlasclaw.channels.models import ChannelMode
+from app.xuanwu.channels.handler import ChannelHandler
+from app.xuanwu.channels.models import ChannelMode
 
 class MyChannelHandler(ChannelHandler):
     channel_type = "my-channel"
@@ -1079,7 +1079,7 @@ class MyChannelHandler(ChannelHandler):
     async def disconnect(self) -> bool: ...
 
 # Register
-from app.atlasclaw.channels.registry import ChannelRegistry
+from app.xuanwu.channels.registry import ChannelRegistry
 ChannelRegistry.register("my-channel", MyChannelHandler)
 ```
 
@@ -1088,8 +1088,8 @@ ChannelRegistry.register("my-channel", MyChannelHandler)
 Extend `AuthProvider` ABC:
 
 ```python
-from app.atlasclaw.auth.providers.base import AuthProvider
-from app.atlasclaw.auth.models import AuthResult
+from app.xuanwu.auth.providers.base import AuthProvider
+from app.xuanwu.auth.models import AuthResult
 
 class MyAuthProvider(AuthProvider):
     @property
@@ -1105,7 +1105,7 @@ class MyAuthProvider(AuthProvider):
         )
 
 # Register
-from app.atlasclaw.auth.registry import AuthRegistry
+from app.xuanwu.auth.registry import AuthRegistry
 AuthRegistry.register("my-auth", MyAuthProvider)
 ```
 
@@ -1130,10 +1130,10 @@ class MyFeatureConfig(BaseModel):
     max_retries: int = Field(default=3, ge=1, description="Maximum retry attempts")
 ```
 
-2. Add the field to `AtlasClawConfig`:
+2. Add the field to `XuanwuConfig`:
 
 ```python
-class AtlasClawConfig(BaseModel):
+class XuanwuConfig(BaseModel):
     ...
     my_feature: MyFeatureConfig = Field(default_factory=MyFeatureConfig)
 ```
@@ -1148,12 +1148,12 @@ if config.my_feature.enabled:
 
 ### 10.2 Environment Variable Naming
 
-Pattern: `ATLASCLAW_<SECTION>__<KEY>` (double underscore for nesting)
+Pattern: `XUANWU_<SECTION>__<KEY>` (double underscore for nesting)
 
 Examples:
-- `ATLASCLAW_LOG_LEVEL=debug`
-- `ATLASCLAW_AGENT_DEFAULTS__TIMEOUT_SECONDS=300`
-- `ATLASCLAW_MODEL__PRIMARY=openai/gpt-4o`
+- `XUANWU_LOG_LEVEL=debug`
+- `XUANWU_AGENT_DEFAULTS__TIMEOUT_SECONDS=300`
+- `XUANWU_MODEL__PRIMARY=openai/gpt-4o`
 
 ### 10.3 Secret Interpolation
 
@@ -1168,7 +1168,7 @@ Use `${VAR_NAME}` or `${VAR_NAME:default_value}` in config files:
 
 ### 10.4 Per-User Overrides
 
-Per-user configuration in `<workspace>/users/<user_id>/atlasclaw.json` is merged with the global config. Only include fields that differ from the default.
+Per-user configuration in `<workspace>/users/<user_id>/xuanwu.json` is merged with the global config. Only include fields that differ from the default.
 
 ---
 
@@ -1225,7 +1225,7 @@ repos:
 ```bash
 # Clone and enter project
 git clone <repository-url>
-cd AtlasClaw-Core
+cd Xuanwu-Core
 
 # Create and activate virtual environment
 python -m venv venv
@@ -1240,7 +1240,7 @@ pip install -r requirements.txt
 uv pip install -r requirements.txt
 
 # Verify installation
-python -c "import app.atlasclaw; print('Installation successful')"
+python -c "import app.xuanwu; print('Installation successful')"
 ```
 
 ### 12.3 Configuration
@@ -1248,10 +1248,10 @@ python -c "import app.atlasclaw; print('Installation successful')"
 Create configuration file:
 
 ```bash
-cp atlasclaw.json.example atlasclaw.json
+cp xuanwu.json.example xuanwu.json
 ```
 
-Configure LLM provider in `atlasclaw.json`:
+Configure LLM provider in `xuanwu.json`:
 
 ```json
 {
@@ -1277,7 +1277,7 @@ Configure LLM provider in `atlasclaw.json`:
   "database": {
     "type": "sqlite",
     "sqlite": {
-      "path": "./data/atlasclaw.db"
+      "path": "./data/xuanwu.db"
     },
     "mysql": {
       "host": "${MYSQL_HOST}",
@@ -1304,12 +1304,12 @@ DEEPSEEK_API_KEY=your-api-key-here
 
 # MySQL (only needed for enterprise mode)
 MYSQL_HOST=localhost
-MYSQL_DATABASE=atlasclaw
-MYSQL_USER=atlasclaw
+MYSQL_DATABASE=xuanwu
+MYSQL_USER=xuanwu
 MYSQL_PASSWORD=your-password
 
 # Optional: Custom config path
-ATLASCLAW_CONFIG=/path/to/atlasclaw.json
+XUANWU_CONFIG=/path/to/xuanwu.json
 ```
 
 ### 12.4 Running the Application
@@ -1318,24 +1318,24 @@ ATLASCLAW_CONFIG=/path/to/atlasclaw.json
 ```bash
 # Set environment variables (Windows PowerShell)
 $env:NO_PROXY="*"
-$env:ATLASCLAW_CONFIG="atlasclaw.json"
+$env:XUANWU_CONFIG="xuanwu.json"
 
 # Run development server
-uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.xuanwu.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 **Production mode**:
 ```bash
 export NO_PROXY="*"
-export ATLASCLAW_CONFIG="atlasclaw.json"
+export XUANWU_CONFIG="xuanwu.json"
 
 # Run with multiple workers
-uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000 --workers 4
+uvicorn app.xuanwu.main:app --host 0.0.0.0 --port 8000 --workers 4
 ```
 
 **Using Gunicorn**:
 ```bash
-gunicorn app.atlasclaw.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
+gunicorn app.xuanwu.main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
 ```
 
 **Verify deployment**:
@@ -1377,20 +1377,20 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
     CMD curl -f http://localhost:8000/api/health || exit 1
 
 # Run migrations and start server
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "alembic upgrade head && uvicorn app.xuanwu.main:app --host 0.0.0.0 --port 8000"]
 ```
 
 ```bash
 # Build from docker directory
-docker build -f docker/Dockerfile -t atlasclaw-core .
+docker build -f docker/Dockerfile -t xuanwu-core .
 
 # Run with config
 docker run -d \
-  --name atlasclaw \
+  --name xuanwu \
   -p 8000:8000 \
-  -v $(pwd)/atlasclaw.json:/app/atlasclaw.json:ro \
-  -e ATLASCLAW_ENCRYPTION_KEY=your-key \
-  atlasclaw-core
+  -v $(pwd)/xuanwu.json:/app/xuanwu.json:ro \
+  -e XUANWU_ENCRYPTION_KEY=your-key \
+  xuanwu-core
 ```
 
 **Docker Compose** (see `docker/` directory for complete configurations):
@@ -1400,17 +1400,17 @@ docker run -d \
 version: '3.8'
 
 services:
-  atlasclaw:
+  xuanwu:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
       - "8000:8000"
     environment:
-      - ATLASCLAW_ENCRYPTION_KEY=${ATLASCLAW_ENCRYPTION_KEY:-change-me-in-production}
+      - XUANWU_ENCRYPTION_KEY=${XUANWU_ENCRYPTION_KEY:-change-me-in-production}
     volumes:
-      - ../atlasclaw.json:/app/atlasclaw.json:ro
-      - atlasclaw-data:/app/data
+      - ../xuanwu.json:/app/xuanwu.json:ro
+      - xuanwu-data:/app/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
@@ -1420,7 +1420,7 @@ services:
       start_period: 20s
 
 volumes:
-  atlasclaw-data:
+  xuanwu-data:
 ```
 
 **MySQL mode** (`docker/docker-compose.yml`):
@@ -1428,25 +1428,25 @@ volumes:
 version: '3.8'
 
 services:
-  atlasclaw:
+  xuanwu:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     ports:
       - "8000:8000"
     environment:
-      - ATLASCLAW_ENCRYPTION_KEY=${ATLASCLAW_ENCRYPTION_KEY:-change-me-in-production}
+      - XUANWU_ENCRYPTION_KEY=${XUANWU_ENCRYPTION_KEY:-change-me-in-production}
       - DB_HOST=mysql
       - DB_PORT=3306
-      - DB_NAME=atlasclaw
-      - DB_USER=${DB_USER:-atlasclaw}
-      - DB_PASSWORD=${DB_PASSWORD:-atlasclaw_secret}
+      - DB_NAME=xuanwu
+      - DB_USER=${DB_USER:-xuanwu}
+      - DB_PASSWORD=${DB_PASSWORD:-xuanwu_secret}
     depends_on:
       mysql:
         condition: service_healthy
     volumes:
-      - ../atlasclaw.json:/app/atlasclaw.json:ro
-      - atlasclaw-data:/app/data
+      - ../xuanwu.json:/app/xuanwu.json:ro
+      - xuanwu-data:/app/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
@@ -1459,9 +1459,9 @@ services:
     image: mysql:8.0
     environment:
       - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD:-root_secret}
-      - MYSQL_DATABASE=atlasclaw
-      - MYSQL_USER=${DB_USER:-atlasclaw}
-      - MYSQL_PASSWORD=${DB_PASSWORD:-atlasclaw_secret}
+      - MYSQL_DATABASE=xuanwu
+      - MYSQL_USER=${DB_USER:-xuanwu}
+      - MYSQL_PASSWORD=${DB_PASSWORD:-xuanwu_secret}
     ports:
       - "3306:3306"
     volumes:
@@ -1477,7 +1477,7 @@ services:
 
 volumes:
   mysql-data:
-  atlasclaw-data:
+  xuanwu-data:
 ```
 
 ### 12.6 Database Migrations (MySQL Mode)
@@ -1487,15 +1487,15 @@ For enterprise deployments using MySQL, run migrations before starting the servi
 ```bash
 # Set database environment variables
 export MYSQL_HOST=localhost
-export MYSQL_DATABASE=atlasclaw
-export MYSQL_USER=atlasclaw
+export MYSQL_DATABASE=xuanwu
+export MYSQL_USER=xuanwu
 export MYSQL_PASSWORD=your-password
 
 # Run Alembic migrations
 alembic upgrade head
 
 # Start service
-uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000
+uvicorn app.xuanwu.main:app --host 0.0.0.0 --port 8000
 ```
 
 **Migration Files**:
@@ -1542,20 +1542,20 @@ sudo certbot --nginx -d your-domain.com
 
 **Systemd service**:
 ```ini
-# /etc/systemd/system/atlasclaw.service
+# /etc/systemd/system/xuanwu.service
 [Unit]
-Description=AtlasClaw Core Service
+Description=Xuanwu Core Service
 After=network.target
 
 [Service]
 Type=simple
-User=atlasclaw
-Group=atlasclaw
-WorkingDirectory=/opt/atlasclaw/AtlasClaw-Core
-Environment="PATH=/opt/atlasclaw/venv/bin"
+User=xuanwu
+Group=xuanwu
+WorkingDirectory=/opt/xuanwu/Xuanwu-Core
+Environment="PATH=/opt/xuanwu/venv/bin"
 Environment="NO_PROXY=*"
-Environment="ATLASCLAW_CONFIG=/opt/atlasclaw/AtlasClaw-Core/atlasclaw.json"
-ExecStart=/opt/atlasclaw/venv/bin/uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000 --workers 4
+Environment="XUANWU_CONFIG=/opt/xuanwu/Xuanwu-Core/xuanwu.json"
+ExecStart=/opt/xuanwu/venv/bin/uvicorn app.xuanwu.main:app --host 0.0.0.0 --port 8000 --workers 4
 Restart=always
 RestartSec=5
 
@@ -1565,21 +1565,21 @@ WantedBy=multi-user.target
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable atlasclaw
-sudo systemctl start atlasclaw
+sudo systemctl enable xuanwu
+sudo systemctl start xuanwu
 ```
 
 **Log rotation**:
 ```bash
-# /etc/logrotate.d/atlasclaw
-/opt/atlasclaw/logs/*.log {
+# /etc/logrotate.d/xuanwu
+/opt/xuanwu/logs/*.log {
     daily
     rotate 14
     compress
     delaycompress
     missingok
     notifempty
-    create 0644 atlasclaw atlasclaw
+    create 0644 xuanwu xuanwu
 }
 ```
 
@@ -1589,7 +1589,7 @@ sudo systemctl start atlasclaw
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ATLASCLAW_CONFIG` | Path to configuration file | `atlasclaw.json` |
+| `XUANWU_CONFIG` | Path to configuration file | `xuanwu.json` |
 | `NO_PROXY` | Proxy bypass | `*` |
 | `LOG_LEVEL` | Logging level | `INFO` |
 
@@ -1605,11 +1605,11 @@ sudo systemctl start atlasclaw
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ATLASCLAW_ENCRYPTION_KEY` | Encryption key for sensitive data | Required in Docker |
+| `XUANWU_ENCRYPTION_KEY` | Encryption key for sensitive data | Required in Docker |
 | `DB_HOST` | Database host | `mysql` |
 | `DB_PORT` | Database port | `3306` |
-| `DB_NAME` | Database name | `atlasclaw` |
-| `DB_USER` | Database user | `atlasclaw` |
+| `DB_NAME` | Database name | `xuanwu` |
+| `DB_USER` | Database user | `xuanwu` |
 | `DB_PASSWORD` | Database password | Required |
 | `MYSQL_ROOT_PASSWORD` | MySQL root password (compose only) | `root_secret` |
 
@@ -1628,13 +1628,13 @@ sudo systemctl start atlasclaw
 lsof -i :8000       # Find process
 kill -9 <PID>        # Kill it
 # Or use a different port:
-uvicorn app.atlasclaw.main:app --port 8080
+uvicorn app.xuanwu.main:app --port 8080
 ```
 
 **Configuration not loading**:
 ```bash
-echo $ATLASCLAW_CONFIG
-python -c "import json; json.load(open('atlasclaw.json'))"
+echo $XUANWU_CONFIG
+python -c "import json; json.load(open('xuanwu.json'))"
 ```
 
 **LLM API errors**:
@@ -1646,7 +1646,7 @@ curl -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
 **Debug mode**:
 ```bash
 export LOG_LEVEL=DEBUG
-uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn app.xuanwu.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### 12.9 Monitoring & Backup
@@ -1659,14 +1659,14 @@ curl http://localhost:8000/api/health?detailed=true
 
 **Backup**:
 ```bash
-tar -czf atlasclaw-backup-$(date +%Y%m%d).tar.gz \
-  ~/.atlasclaw \
-  atlasclaw.json
+tar -czf xuanwu-backup-$(date +%Y%m%d).tar.gz \
+  ~/.xuanwu \
+  xuanwu.json
 ```
 
 **Restore**:
 ```bash
-tar -xzf atlasclaw-backup-20240310.tar.gz -C /
+tar -xzf xuanwu-backup-20240310.tar.gz -C /
 ```
 
 ---
@@ -1729,7 +1729,7 @@ Before approving any change, verify:
 
 ### Testing
 - [ ] Tests added for new functionality
-- [ ] Existing tests pass (`pytest tests/atlasclaw -q`)
+- [ ] Existing tests pass (`pytest tests/xuanwu -q`)
 - [ ] Async tests use `@pytest.mark.asyncio`
 - [ ] Appropriate test markers applied (`slow`, `integration`, `e2e`, `llm`)
 

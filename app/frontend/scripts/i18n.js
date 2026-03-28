@@ -3,7 +3,8 @@
  * Provides multi-language support
  */
 
-const LOCALE_STORAGE_KEY = 'atlasclaw_locale';
+const LOCALE_STORAGE_KEY = 'xuanwu_locale';
+const LEGACY_LOCALE_STORAGE_KEY = 'atlasclaw_locale';
 const SUPPORTED_LOCALES = ['zh-CN', 'en-US'];
 const DEFAULT_LOCALE = 'en-US';
 
@@ -38,7 +39,18 @@ export function detectBrowserLocale() {
  */
 export function getSavedLocale() {
     try {
-        return localStorage.getItem(LOCALE_STORAGE_KEY);
+        const locale = localStorage.getItem(LOCALE_STORAGE_KEY);
+        if (locale) {
+            return locale;
+        }
+
+        const legacyLocale = localStorage.getItem(LEGACY_LOCALE_STORAGE_KEY);
+        if (legacyLocale) {
+            localStorage.setItem(LOCALE_STORAGE_KEY, legacyLocale);
+            localStorage.removeItem(LEGACY_LOCALE_STORAGE_KEY);
+        }
+
+        return legacyLocale;
     } catch (e) {
         console.warn('[i18n] Cannot access localStorage:', e.message);
         return null;
@@ -52,6 +64,7 @@ export function getSavedLocale() {
 export function saveLocale(locale) {
     try {
         localStorage.setItem(LOCALE_STORAGE_KEY, locale);
+        localStorage.removeItem(LEGACY_LOCALE_STORAGE_KEY);
     } catch (e) {
         console.warn('[i18n] Cannot save to localStorage:', e.message);
     }
@@ -98,8 +111,7 @@ export async function loadLocale(locale) {
  * @returns {Promise<string>} Current locale code
  */
 export async function initI18n() {
-    // Always use browser language
-    const locale = detectBrowserLocale();
+    const locale = getSavedLocale() || detectBrowserLocale();
     
     await loadLocale(locale);
     return currentLocale;

@@ -1,4 +1,4 @@
-# AtlasClaw Skill Development Guide
+# Xuanwu Skill Development Guide
 
 ## Table of Contents
 
@@ -18,7 +18,7 @@
 
 ### What is a Skill?
 
-A **Skill** in AtlasClaw is a discrete unit of functionality that the AI Agent can execute. Skills encapsulate:
+A **Skill** in Xuanwu is a discrete unit of functionality that the AI Agent can execute. Skills encapsulate:
 
 - **Capability Definition** - What the Skill can do
 - **Input Parameters** - What data the Skill needs
@@ -260,7 +260,7 @@ Skills can be deployed to multiple locations, with different priorities:
 
 #### 2. User Skills
 
-**Location**: `~/.atlasclaw/skills/`
+**Location**: `~/.xuanwu/skills/`
 
 **Characteristics**:
 - User-specific across all workspaces
@@ -271,10 +271,10 @@ Skills can be deployed to multiple locations, with different priorities:
 
 #### 3. Built-in Skills
 
-**Location**: `app/atlasclaw/skills/built_in/`
+**Location**: `app/xuanwu/skills/built_in/`
 
 **Characteristics**:
-- Shipped with AtlasClaw Core
+- Shipped with Xuanwu Core
 - Core functionality
 - Updated with Core releases
 
@@ -282,7 +282,7 @@ Skills can be deployed to multiple locations, with different priorities:
 
 #### 4. Provider Skills
 
-**Location**: `app/atlasclaw/providers/<provider>/skills/`
+**Location**: `app/xuanwu/providers/<provider>/skills/`
 
 **Characteristics**:
 - Associated with a Provider
@@ -298,7 +298,7 @@ Skills can be deployed to multiple locations, with different priorities:
 Create the Skill directory in the desired location:
 
 ```
-~/.atlasclaw/skills/my-skill/
+~/.xuanwu/skills/my-skill/
 ├── SKILL.md
 └── scripts/
     └── handler.py
@@ -322,7 +322,7 @@ Copy the Skill directory to the target location.
 
 #### Step 6: Verify Loading
 
-Restart AtlasClaw or trigger Skill reload to verify.
+Restart Xuanwu or trigger Skill reload to verify.
 
 ### Hot Reloading
 
@@ -341,13 +341,13 @@ Skills support hot reloading in development mode:
 
 #### 1. Search Path Resolution
 
-AtlasClaw searches for Skills in the following order:
+Xuanwu searches for Skills in the following order:
 
 1. **Workspace Skills** - `{workspace}/skills/` (for development)
 2. **Skills Root** - `{skills_root}/` (third-party skills, configured via skills_root)
-3. **User Skills** - `~/.atlasclaw/skills/`
+3. **User Skills** - `~/.xuanwu/skills/`
 4. **Provider Skills** - `{providers_root}/*/skills/` (configured via providers_root)
-5. **Built-in Skills** - `app/atlasclaw/providers/*/skills/`
+5. **Built-in Skills** - `app/xuanwu/providers/*/skills/`
 
 #### 2. Skill Detection
 
@@ -700,16 +700,16 @@ curl -X POST http://localhost:8000/api/skills/execute \
 
 Check application logs:
 ```bash
-tail -f logs/atlasclaw.log
+tail -f logs/xuanwu.log
 ```
 
 ### Getting Help
 
 Resources for Skill development:
-- [AtlasClaw Documentation](./PROJECT_OVERVIEW.MD)
+- [Xuanwu Documentation](./PROJECT_OVERVIEW.MD)
 - [Provider Guide](./PROVIDER-GUIDE.MD)
-- [Example Skills](../app/atlasclaw/skills/built_in/)
-- [Community Forum](https://github.com/atlasclaw/atlasclaw/discussions)
+- [Example Skills](../app/xuanwu/skills/built_in/)
+- [Community Forum](https://github.com/xuanwu/xuanwu/discussions)
 
 ---
 
@@ -730,7 +730,7 @@ Resources for Skill development:
 2. Write SKILL.md with metadata
 3. Implement handler (if executable)
 4. Deploy to workspace or user directory
-5. Restart AtlasClaw or trigger reload
+5. Restart Xuanwu or trigger reload
 6. Verify via API
 7. Test with Agent
 
@@ -830,6 +830,6 @@ Additional information, limitations, or considerations.
 |----------|------|----------|
 | Workspace | `{workspace}/skills/` | Highest (dev) |
 | Skills Root | `{skills_root}/` | High |
-| User | `~/.atlasclaw/skills/` | Medium |
+| User | `~/.xuanwu/skills/` | Medium |
 | Provider | `{providers_root}/*/skills/` | Low |
-| Built-in | `app/atlasclaw/providers/*/skills/` | Lowest |
+| Built-in | `app/xuanwu/providers/*/skills/` | Lowest |

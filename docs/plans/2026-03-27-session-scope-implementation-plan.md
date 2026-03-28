@@ -13,9 +13,9 @@
 ### Task 1: Add session manager resolver coverage
 
 **Files:**
-- Create: `app/atlasclaw/session/router.py`
-- Modify: `app/atlasclaw/session/__init__.py`
-- Test: `tests/atlasclaw/session/test_session_manager_isolation.py`
+- Create: `app/xuanwu/session/router.py`
+- Modify: `app/xuanwu/session/__init__.py`
+- Test: `tests/xuanwu/session/test_session_manager_isolation.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -26,7 +26,7 @@ Add tests that assert:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/atlasclaw/session/test_session_manager_isolation.py -q -p no:cacheprovider`
+Run: `pytest tests/xuanwu/session/test_session_manager_isolation.py -q -p no:cacheprovider`
 Expected: FAIL because no resolver/factory exists yet.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -38,23 +38,23 @@ Create a resolver/factory that:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/atlasclaw/session/test_session_manager_isolation.py -q -p no:cacheprovider`
+Run: `pytest tests/xuanwu/session/test_session_manager_isolation.py -q -p no:cacheprovider`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/atlasclaw/session/router.py app/atlasclaw/session/__init__.py tests/atlasclaw/session/test_session_manager_isolation.py
+git add app/xuanwu/session/router.py app/xuanwu/session/__init__.py tests/xuanwu/session/test_session_manager_isolation.py
 git commit -m "test(session): add per-user session routing coverage"
 ```
 
 ### Task 2: Move runtime persistence off the global default bucket
 
 **Files:**
-- Modify: `app/atlasclaw/agent/runner.py`
-- Modify: `app/atlasclaw/api/deps_context.py`
-- Modify: `app/atlasclaw/main.py`
-- Test: `tests/atlasclaw/test_agent_run_api.py`
+- Modify: `app/xuanwu/agent/runner.py`
+- Modify: `app/xuanwu/api/deps_context.py`
+- Modify: `app/xuanwu/main.py`
+- Test: `tests/xuanwu/test_agent_run_api.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -62,7 +62,7 @@ Add a test that runs the agent with a non-default `session_key.user_id` and veri
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/atlasclaw/test_agent_run_api.py -q -p no:cacheprovider`
+Run: `pytest tests/xuanwu/test_agent_run_api.py -q -p no:cacheprovider`
 Expected: FAIL because `AgentRunner` still uses the startup-time `SessionManager(user_id="default")`.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -75,21 +75,21 @@ Update runtime persistence to resolve the correct `SessionManager` from `session
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/atlasclaw/test_agent_run_api.py -q -p no:cacheprovider`
+Run: `pytest tests/xuanwu/test_agent_run_api.py -q -p no:cacheprovider`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/atlasclaw/agent/runner.py app/atlasclaw/api/deps_context.py app/atlasclaw/main.py tests/atlasclaw/test_agent_run_api.py
+git add app/xuanwu/agent/runner.py app/xuanwu/api/deps_context.py app/xuanwu/main.py tests/xuanwu/test_agent_run_api.py
 git commit -m "fix(session): persist runtime transcripts by session user"
 ```
 
 ### Task 3: Enforce session ownership on direct session APIs
 
 **Files:**
-- Modify: `app/atlasclaw/api/routes_session.py`
-- Test: `tests/atlasclaw/test_session_api_routes.py`
+- Modify: `app/xuanwu/api/routes_session.py`
+- Test: `tests/xuanwu/test_session_api_routes.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -101,7 +101,7 @@ Add tests that verify a request from user A cannot:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/atlasclaw/test_session_api_routes.py -q -p no:cacheprovider`
+Run: `pytest tests/xuanwu/test_session_api_routes.py -q -p no:cacheprovider`
 Expected: FAIL because ownership checks do not exist today.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -115,22 +115,22 @@ Apply it to all direct session endpoints.
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/atlasclaw/test_session_api_routes.py -q -p no:cacheprovider`
+Run: `pytest tests/xuanwu/test_session_api_routes.py -q -p no:cacheprovider`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/atlasclaw/api/routes_session.py tests/atlasclaw/test_session_api_routes.py
+git add app/xuanwu/api/routes_session.py tests/xuanwu/test_session_api_routes.py
 git commit -m "fix(api): enforce session ownership on direct session routes"
 ```
 
 ### Task 4: Add explicit thread session creation and aggregated session listing
 
 **Files:**
-- Modify: `app/atlasclaw/api/schemas.py`
-- Modify: `app/atlasclaw/api/routes_session.py`
-- Test: `tests/atlasclaw/test_session_api_routes.py`
+- Modify: `app/xuanwu/api/schemas.py`
+- Modify: `app/xuanwu/api/routes_session.py`
+- Test: `tests/xuanwu/test_session_api_routes.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -141,7 +141,7 @@ Add tests for:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/atlasclaw/test_session_api_routes.py -q -p no:cacheprovider`
+Run: `pytest tests/xuanwu/test_session_api_routes.py -q -p no:cacheprovider`
 Expected: FAIL because the thread endpoint and listing semantics do not exist.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -153,13 +153,13 @@ Add:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/atlasclaw/test_session_api_routes.py -q -p no:cacheprovider`
+Run: `pytest tests/xuanwu/test_session_api_routes.py -q -p no:cacheprovider`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/atlasclaw/api/schemas.py app/atlasclaw/api/routes_session.py tests/atlasclaw/test_session_api_routes.py
+git add app/xuanwu/api/schemas.py app/xuanwu/api/routes_session.py tests/xuanwu/test_session_api_routes.py
 git commit -m "feat(session): add thread sessions and aggregated user listing"
 ```
 
@@ -209,12 +209,12 @@ git commit -m "feat(frontend): create new chat threads from sidebar"
 ### Task 6: Canonicalize channel session creation
 
 **Files:**
-- Modify: `app/atlasclaw/channels/manager.py`
-- Modify: `app/atlasclaw/channels/handlers/feishu.py`
-- Modify: `app/atlasclaw/channels/handlers/dingtalk.py`
-- Modify: `app/atlasclaw/channels/handlers/wecom.py`
-- Modify: `app/atlasclaw/api/channels.py`
-- Test: `tests/atlasclaw/test_channel_manager.py`
+- Modify: `app/xuanwu/channels/manager.py`
+- Modify: `app/xuanwu/channels/handlers/feishu.py`
+- Modify: `app/xuanwu/channels/handlers/dingtalk.py`
+- Modify: `app/xuanwu/channels/handlers/wecom.py`
+- Modify: `app/xuanwu/api/channels.py`
+- Test: `tests/xuanwu/test_channel_manager.py`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -225,7 +225,7 @@ Add tests for:
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/atlasclaw/test_channel_manager.py -q -p no:cacheprovider`
+Run: `pytest tests/xuanwu/test_channel_manager.py -q -p no:cacheprovider`
 Expected: FAIL because `ChannelManager` still creates ad-hoc channel session keys.
 
 - [ ] **Step 3: Write minimal implementation**
@@ -238,13 +238,13 @@ Update channel flow to:
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/atlasclaw/test_channel_manager.py -q -p no:cacheprovider`
+Run: `pytest tests/xuanwu/test_channel_manager.py -q -p no:cacheprovider`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add app/atlasclaw/channels/manager.py app/atlasclaw/channels/handlers/feishu.py app/atlasclaw/channels/handlers/dingtalk.py app/atlasclaw/channels/handlers/wecom.py app/atlasclaw/api/channels.py tests/atlasclaw/test_channel_manager.py
+git add app/xuanwu/channels/manager.py app/xuanwu/channels/handlers/feishu.py app/xuanwu/channels/handlers/dingtalk.py app/xuanwu/channels/handlers/wecom.py app/xuanwu/api/channels.py tests/xuanwu/test_channel_manager.py
 git commit -m "fix(channel): unify channel sessions under SessionKey"
 ```
 
@@ -300,24 +300,24 @@ git commit -m "docs(session): document threading and cross-channel isolation"
 - [ ] **Step 1: Run focused UT suites**
 
 Run:
-- `pytest tests/atlasclaw/test_session_api_routes.py -q -p no:cacheprovider`
-- `pytest tests/atlasclaw/test_agent_run_api.py -q -p no:cacheprovider`
-- `pytest tests/atlasclaw/test_channel_manager.py -q -p no:cacheprovider`
+- `pytest tests/xuanwu/test_session_api_routes.py -q -p no:cacheprovider`
+- `pytest tests/xuanwu/test_agent_run_api.py -q -p no:cacheprovider`
+- `pytest tests/xuanwu/test_channel_manager.py -q -p no:cacheprovider`
 
 - [ ] **Step 2: Run full non-E2E test suite**
 
 Run:
-- `pytest tests/atlasclaw -m "not e2e" -q -p no:cacheprovider`
+- `pytest tests/xuanwu -m "not e2e" -q -p no:cacheprovider`
 
 - [ ] **Step 3: Run E2E suite**
 
 Run:
-- `pytest tests/atlasclaw -m e2e -q -p no:cacheprovider`
+- `pytest tests/xuanwu -m e2e -q -p no:cacheprovider`
 
 - [ ] **Step 4: Verify service startup**
 
 Run:
-- `python -m uvicorn app.atlasclaw.main:app --host 127.0.0.1 --port 8000`
+- `python -m uvicorn app.xuanwu.main:app --host 127.0.0.1 --port 8000`
 
 Expected:
 - service starts successfully

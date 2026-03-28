@@ -1,4 +1,4 @@
-# AtlasClaw Provider Development Guide
+# Xuanwu Provider Development Guide
 
 ## Table of Contents
 
@@ -17,7 +17,7 @@
 
 ### What is a Provider?
 
-A **Provider** in AtlasClaw is a modular integration package that connects the AI Agent to external enterprise systems. Providers encapsulate:
+A **Provider** in Xuanwu is a modular integration package that connects the AI Agent to external enterprise systems. Providers encapsulate:
 
 - **Authentication logic** - How to connect to the external system
 - **Skills** - Actions the Agent can perform on the system
@@ -64,7 +64,7 @@ Response
 
 ### Provider Lifecycle
 
-1. **Registration** - Provider configured in `atlasclaw.json`
+1. **Registration** - Provider configured in `xuanwu.json`
 2. **Discovery** - Skills auto-discovered at startup
 3. **Selection** - User or Agent selects provider instance
 4. **Execution** - Skill executes with provider credentials
@@ -107,7 +107,7 @@ providers/<provider-name>/
 
 ### Configuration Schema
 
-Providers are configured in `atlasclaw.json` under `service_providers`:
+Providers are configured in `xuanwu.json` under `service_providers`:
 
 ```json
 {
@@ -642,10 +642,10 @@ Providers can be deployed to multiple locations:
 
 #### 1. Built-in Providers
 
-**Location**: `app/atlasclaw/providers/<provider-name>/`
+**Location**: `app/xuanwu/providers/<provider-name>/`
 
 **Characteristics**:
-- Shipped with AtlasClaw Core
+- Shipped with Xuanwu Core
 - Core integrations (Jira, etc.)
 - Updated with Core releases
 - Always available
@@ -657,7 +657,7 @@ Providers can be deployed to multiple locations:
 **Location**: `<providers_root>/<provider-name>/` (default: `../providers/`)
 
 **Characteristics**:
-- External directory configured via `providers_root` in `atlasclaw.json`
+- External directory configured via `providers_root` in `xuanwu.json`
 - Enterprise integrations maintained separately from user data
 - Version controlled independently
 - Default location: sibling directory to project root
@@ -677,7 +677,7 @@ Providers can be deployed to multiple locations:
 
 #### 3. User Providers
 
-**Location**: `~/.atlasclaw/providers/<provider-name>/`
+**Location**: `~/.xuanwu/providers/<provider-name>/`
 
 **Characteristics**:
 - User-specific across all workspaces
@@ -690,7 +690,7 @@ Providers can be deployed to multiple locations:
 
 #### Discovery Process
 
-AtlasClaw discovers Providers through this process:
+Xuanwu discovers Providers through this process:
 
 1. **Search Path Resolution**
    - Scan built-in Providers directory
@@ -726,7 +726,7 @@ AtlasClaw discovers Providers through this process:
 
 #### Configuration Sources
 
-Provider configuration is loaded from `atlasclaw.json`:
+Provider configuration is loaded from `xuanwu.json`:
 
 ```json
 {
@@ -780,7 +780,7 @@ Create Skills following the [Skill Development Guide](./SKILL-GUIDE.MD).
 
 #### Step 4: Configure Instance
 
-Add to `atlasclaw.json`:
+Add to `xuanwu.json`:
 
 ```json
 {
@@ -798,14 +798,14 @@ Add to `atlasclaw.json`:
 #### Step 5: Deploy Provider
 
 Copy Provider directory to target location:
-- External (recommended): `<providers_root>/` (configured in `atlasclaw.json`, default: `../providers/`)
-- Built-in: `app/atlasclaw/providers/`
+- External (recommended): `<providers_root>/` (configured in `xuanwu.json`, default: `../providers/`)
+- Built-in: `app/xuanwu/providers/`
 - Workspace (dev): `<workspace>/providers/`
-- User: `~/.atlasclaw/providers/`
+- User: `~/.xuanwu/providers/`
 
 #### Step 6: Verify Loading
 
-1. Restart AtlasClaw (or trigger reload)
+1. Restart Xuanwu (or trigger reload)
 2. Check logs for Provider loading
 3. Query `/api/skills` endpoint
 4. Test Provider functionality
@@ -816,8 +816,8 @@ Copy Provider directory to target location:
 
 Review application logs:
 ```
-[AtlasClaw] Provider loaded: my-provider
-[AtlasClaw] Skills loaded: 3 from my-provider
+[Xuanwu] Provider loaded: my-provider
+[Xuanwu] Skills loaded: 3 from my-provider
 ```
 
 #### List Available Skills
@@ -876,7 +876,7 @@ In development mode:
 **Symptoms**: Provider loads but no instances available
 
 **Check**:
-1. `atlasclaw.json` has Provider configuration
+1. `xuanwu.json` has Provider configuration
 2. Instance name is correct
 3. Environment variables are set
 4. Configuration syntax is valid
@@ -932,7 +932,7 @@ In development mode:
 ## Provider Distribution
 
 ### Built-in Providers
-- Included in AtlasClaw Core
+- Included in Xuanwu Core
 - Auto-discovered at startup
 - Updated with Core releases
 
@@ -971,5 +971,5 @@ In development mode:
 
 - [OpenSpec Provider Guide](../openspec/PROVIDERS.md)
 - [Jira REST API Documentation](https://developer.atlassian.com/cloud/jira/platform/rest/v2/)
-- [AtlasClaw Core Documentation](./PROJECT_OVERVIEW.MD)
+- [Xuanwu Core Documentation](./PROJECT_OVERVIEW.MD)
 - [Skill Development Guide](./SKILL-GUIDE.MD)

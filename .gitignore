@@ -6,6 +6,8 @@ openspec/
 *.pyc
 *.pyo
 *.pyd
+.xuanwu-test/
+.xuanwu/
 .atlasclaw-test/
 .atlasclaw/
 users/

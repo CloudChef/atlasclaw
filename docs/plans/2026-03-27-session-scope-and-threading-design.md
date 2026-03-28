@@ -2,7 +2,7 @@
 
 ## Background
 
-AtlasClaw currently has three related problems around conversation isolation:
+Xuanwu currently has three related problems around conversation isolation:
 
 1. Web chat cannot create a truly new conversation thread. The UI can reset or switch a
    stored `session_key`, but `POST /api/sessions` still returns a stable scope-derived
@@ -45,7 +45,7 @@ These issues became more visible after:
 
 ### Finding A: Session ownership is still not enforced on direct session endpoints
 
-Current endpoints in `app/atlasclaw/api/routes_session.py` accept an arbitrary
+Current endpoints in `app/xuanwu/api/routes_session.py` accept an arbitrary
 `session_key` and operate on it without verifying that the key belongs to the
 authenticated user.
 
@@ -60,20 +60,20 @@ Affected endpoints:
 
 ### Finding B: Session persistence still uses the global `default` storage bucket
 
-`app/atlasclaw/main.py` initializes the runtime session manager as:
+`app/xuanwu/main.py` initializes the runtime session manager as:
 
 ```python
 SessionManager(workspace_path=workspace_path, user_id="default", ...)
 ```
 
-`app/atlasclaw/agent/runner.py` then persists all transcripts via `self.sessions`.
+`app/xuanwu/agent/runner.py` then persists all transcripts via `self.sessions`.
 
 This means user-specific `session_key.user_id` is currently metadata only. It does
 not determine the actual storage location of session metadata or transcripts.
 
 ### Finding C: Channel session handling still bypasses canonical `SessionKey`
 
-`app/atlasclaw/channels/manager.py` still creates session identifiers using:
+`app/xuanwu/channels/manager.py` still creates session identifiers using:
 
 ```python
 session_key = f"channel:{channel_type}:{connection_id}:{message.chat_id}"
@@ -92,7 +92,7 @@ the session-key model mismatch.
 
 ### Finding D: Channel CRUD still uses placeholder user identification
 
-`app/atlasclaw/api/channels.py` still resolves current user by:
+`app/xuanwu/api/channels.py` still resolves current user by:
 
 ```python
 return request.headers.get("X-User-Id", "default")
@@ -144,7 +144,7 @@ Use **Scheme B Enhanced**:
 
 ### Semantics
 
-- `user_id`: the authenticated principal inside AtlasClaw
+- `user_id`: the authenticated principal inside Xuanwu
 - `channel`: source channel (`web`, `feishu`, `dingtalk`, `wecom`, ...)
 - `account_id`: channel connection/account namespace
 - `chat_type`: `dm`, `group`, `channel`, or `thread`
@@ -159,18 +159,18 @@ Use **Scheme B Enhanced**:
 
 - `channel = "web"`
 - `chat_type = dm`
-- `user_id = authenticated AtlasClaw user`
-- `peer_id = authenticated AtlasClaw user`
+- `user_id = authenticated Xuanwu user`
+- `peer_id = authenticated Xuanwu user`
 - New conversation thread: generate a new `thread_id`
 
 ### Feishu
 
 - Direct message:
-  - `user_id = <atlasclaw-principal-for-feishu-user>`
+  - `user_id = <xuanwu-principal-for-feishu-user>`
   - `chat_type = dm`
   - `peer_id = sender open_id`
 - Group message:
-  - `user_id = <atlasclaw-principal-for-feishu-user>`
+  - `user_id = <xuanwu-principal-for-feishu-user>`
   - `chat_type = group`
   - `peer_id = chat_id`
 - `account_id` should be the connection/account namespace, optionally enriched by
@@ -179,11 +179,11 @@ Use **Scheme B Enhanced**:
 ### DingTalk
 
 - Direct message:
-  - `user_id = <atlasclaw-principal-for-dingtalk-user>`
+  - `user_id = <xuanwu-principal-for-dingtalk-user>`
   - `chat_type = dm`
   - `peer_id = sender_staff_id or sender_id`
 - Group message:
-  - `user_id = <atlasclaw-principal-for-dingtalk-user>`
+  - `user_id = <xuanwu-principal-for-dingtalk-user>`
   - `chat_type = group`
   - `peer_id = conversation_id`
 - `account_id` should identify the configured DingTalk connection.
@@ -321,7 +321,7 @@ If not, return `404` or `403`.
 
 ### Channel API user resolution
 
-`app/atlasclaw/api/channels.py` must stop using the placeholder
+`app/xuanwu/api/channels.py` must stop using the placeholder
 `X-User-Id/default` logic and instead read the authenticated user from request state.
 
 ## Frontend Changes

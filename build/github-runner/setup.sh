@@ -136,7 +136,7 @@ create_env_file() {
   local memory_limit
   local memory_reservation
 
-  runner_name="$(prompt_default "Runner name" "atlasclaw-runner")"
+  runner_name="$(prompt_default "Runner name" "xuanwu-runner")"
   labels="$(prompt_default "Runner labels (comma-separated)" "self-hosted,linux,x64,docker")"
   runner_group="$(prompt_default "Runner group" "Default")"
   timezone="$(prompt_default "Timezone" "Asia/Shanghai")"

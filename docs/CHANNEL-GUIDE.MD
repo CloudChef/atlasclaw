@@ -1,8 +1,8 @@
-# AtlasClaw Channel Integration Guide
+# Xuanwu Channel Integration Guide
 
 ## Overview
 
-AtlasClaw Channel system provides a unified interface to integrate with various enterprise messaging platforms. Channels enable your AI agent to communicate with users through their preferred IM platforms.
+Xuanwu Channel system provides a unified interface to integrate with various enterprise messaging platforms. Channels enable your AI agent to communicate with users through their preferred IM platforms.
 
 ### Supported Platforms
 
@@ -14,12 +14,12 @@ AtlasClaw Channel system provides a unified interface to integrate with various 
 
 ### Connection Modes
 
-AtlasClaw supports multiple connection modes for IM platform integration:
+Xuanwu supports multiple connection modes for IM platform integration:
 
 | Mode | Direction | Pros | Cons |
 |------|-----------|------|------|
-| **Long Connection** | AtlasClaw -> Platform | Real-time, no public URL needed, auto-reconnect | Requires SDK dependency |
-| **Webhook** | Platform -> AtlasClaw | Simple setup, no SDK needed | Requires public URL, callback configuration |
+| **Long Connection** | Xuanwu -> Platform | Real-time, no public URL needed, auto-reconnect | Requires SDK dependency |
+| **Webhook** | Platform -> Xuanwu | Simple setup, no SDK needed | Requires public URL, callback configuration |
 | **Application API** | Bidirectional | Full API access, supports more features | Requires callback URL configuration |
 
 **Recommendation:** Use **Long Connection** mode (WebSocket/Stream) whenever possible. It is more reliable, does not require exposing your server to the internet, and handles reconnection automatically.
@@ -84,7 +84,7 @@ The general workflow for setting up any channel:
 
 Channel traffic must build canonical `SessionKey` values instead of ad-hoc strings.
 
-- `user_id` is the AtlasClaw user who owns the channel connection
+- `user_id` is the Xuanwu user who owns the channel connection
 - `account_id` is the concrete channel connection ID
 - Direct messages use the external sender as `peer_id`
 - Group chats use the group or conversation ID as `peer_id`
@@ -120,7 +120,7 @@ This tests your configuration without fully connecting, helping you catch creden
 
 ## Web UI - Channel Management
 
-AtlasClaw provides a web-based interface for managing channel connections without using the API directly.
+Xuanwu provides a web-based interface for managing channel connections without using the API directly.
 
 ### Accessing the Web UI
 
@@ -199,7 +199,7 @@ Feishu (also known as Lark internationally) integration currently supports Long 
 
 ### Prerequisites
 
-Before configuring AtlasClaw, you need to create and configure an application on Feishu Open Platform.
+Before configuring Xuanwu, you need to create and configure an application on Feishu Open Platform.
 
 #### Step 1: Create Application
 
@@ -207,7 +207,7 @@ Before configuring AtlasClaw, you need to create and configure an application on
 2. Log in with your Feishu account
 3. Click **"Create Custom App"**
 4. Fill in:
-   - **App Name:** Your bot name (e.g., "AtlasClaw Bot")
+   - **App Name:** Your bot name (e.g., "Xuanwu Bot")
    - **App Description:** Brief description
    - **App Icon:** Upload an icon (optional)
 5. Click **"Create"**
@@ -391,7 +391,7 @@ curl -X POST "http://localhost:8000/api/channels/feishu/connections/{connection_
 
 1. In Feishu, add your bot to a group or start a direct chat with it
 2. Send a message: `@YourBot Hello`
-3. Check AtlasClaw logs for incoming message
+3. Check Xuanwu logs for incoming message
 4. The agent should respond automatically
 
 #### Verify Connection Status
@@ -409,7 +409,7 @@ curl "http://localhost:8000/api/channels/feishu/connections/{connection_id}"
 | No messages received | Missing permissions | Ensure all required permissions are granted |
 | No messages received | Bot not in chat | Add bot to the group or start DM with it |
 | Cannot send replies | Missing send permission | Add `im:message:send_as_bot` permission |
-| WebSocket disconnects | Network issues | Check firewall, AtlasClaw will auto-reconnect |
+| WebSocket disconnects | Network issues | Check firewall, Xuanwu will auto-reconnect |
 | "App not installed" error | App not installed | Install app in workspace after publishing |
 | "Multiprocessing error" | Environment restrictions | Check if running in Docker or cloud environments that restrict multiprocessing; ensure `spawn` or `fork` is available |
 | SDK process dies immediately | Python version mismatch | Ensure Python 3.9+ and compatible `lark-oapi` version |
@@ -435,7 +435,7 @@ When using Stream mode, each incoming message carries a temporary `session_webho
 
 - **Validity Period:** The session webhook is only valid for approximately **15 minutes** after the message is received
 - **One-time Use:** Designed for replying to the specific message that triggered it
-- **Automatic Fallback:** If the session webhook expires, AtlasClaw will attempt to use your configured custom webhook URL
+- **Automatic Fallback:** If the session webhook expires, Xuanwu will attempt to use your configured custom webhook URL
 
 **Recommendation:** If your agent processing may take longer than 15 minutes, configure a custom `webhook_url` as a fallback.
 
@@ -635,12 +635,12 @@ curl -X POST "http://localhost:8000/api/channels/dingtalk/connections/{connectio
 | Problem | Possible Cause | Solution |
 |---------|----------------|----------|
 | Stream connection fails | Invalid credentials | Verify AppKey and AppSecret |
-| Stream connection fails | Proxy blocking WebSocket | Set `ATLASCLAW_BYPASS_WS_PROXY=true` |
+| Stream connection fails | Proxy blocking WebSocket | Set `XUANWU_BYPASS_WS_PROXY=true` |
 | Stream connection drops immediately | Incorrect client_id/secret format | Ensure client_id starts with `ding` and is correct |
 | Messages not received | Robot not in Stream mode | Check robot settings in DingTalk console, enable Stream mode |
 | Cannot reply | Session webhook expired | Session webhooks expire after ~15 minutes; configure a custom webhook as fallback |
 | Reply not sent | Session webhook may have expired | Check if processing took >15 minutes |
-| Messages sent but no reply visible | Reply sent to wrong endpoint | Verify session_webhook in metadata; check AtlasClaw logs |
+| Messages sent but no reply visible | Reply sent to wrong endpoint | Verify session_webhook in metadata; check Xuanwu logs |
 | "Permission denied" | Missing permissions | Add required permissions in DingTalk console |
 | Robot not responding | Robot not activated | Publish app version and grant permissions |
 
@@ -648,7 +648,7 @@ curl -X POST "http://localhost:8000/api/channels/dingtalk/connections/{connectio
 
 | Variable | Description |
 |----------|-------------|
-| `ATLASCLAW_BYPASS_WS_PROXY` | Set to `true` to bypass WebSocket proxy (useful in corporate networks) |
+| `XUANWU_BYPASS_WS_PROXY` | Set to `true` to bypass WebSocket proxy (useful in corporate networks) |
 
 ---
 
@@ -880,7 +880,7 @@ curl -X POST "http://localhost:8000/api/channels/wecom/connections/{connection_i
 
 1. In WeCom, find your bot in contacts or add it to a group
 2. Send a test message
-3. Check AtlasClaw logs for incoming message
+3. Check Xuanwu logs for incoming message
 4. The agent should respond
 
 #### Test Streaming Response
@@ -892,7 +892,7 @@ WeCom WebSocket mode supports streaming replies. When enabled, long responses wi
 | Problem | Possible Cause | Solution |
 |---------|----------------|----------|
 | WebSocket connection fails | Invalid credentials | Verify Bot ID and Secret |
-| WebSocket connection fails | Proxy blocking | Set `ATLASCLAW_BYPASS_WS_PROXY=true` |
+| WebSocket connection fails | Proxy blocking | Set `XUANWU_BYPASS_WS_PROXY=true` |
 | SDK import error | Missing dependency | Run `pip install wecom-aibot-sdk>=1.0.0` |
 | Messages not received | Bot not properly configured | Check WeCom admin console settings |
 | Cannot send messages | Invalid bot status | Ensure bot is active and published |
@@ -905,7 +905,7 @@ WeCom WebSocket mode supports streaming replies. When enabled, long responses wi
 
 | Variable | Description |
 |----------|-------------|
-| `ATLASCLAW_BYPASS_WS_PROXY` | Set to `true` to bypass WebSocket proxy |
+| `XUANWU_BYPASS_WS_PROXY` | Set to `true` to bypass WebSocket proxy |
 
 ---
 
@@ -931,7 +931,7 @@ A: No, there is no automatic retry mechanism. If a send fails, the error is retu
 
 **Q: How are credentials stored?**
 
-A: All sensitive credentials (app secrets, tokens) are encrypted using AES-256-GCM before being stored in the database. The encryption key is derived from your AtlasClaw configuration.
+A: All sensitive credentials (app secrets, tokens) are encrypted using AES-256-GCM before being stored in the database. The encryption key is derived from your Xuanwu configuration.
 
 **Q: Can I switch connection modes without recreating the connection?**
 
@@ -1160,7 +1160,7 @@ curl -X DELETE "http://localhost:8000/api/channels/feishu/connections/conn_a1b2c
 
 ```
 +-----------------------------------------------------------------------------+
-|                       AtlasClaw Channel Architecture                         |
+|                       Xuanwu Channel Architecture                         |
 +-----------------------------------------------------------------------------+
 |                                                                              |
 |  +----------------+     +----------------+     +----------------------+      |
@@ -1261,7 +1261,7 @@ All channel handlers implement this interface:
 
 ## Summary
 
-AtlasClaw Channel system provides:
+Xuanwu Channel system provides:
 
 1. **Unified Interface** - All channels implement the same ChannelHandler interface
 2. **Multiple Platforms** - Support for Feishu, DingTalk, WeCom out of the box
@@ -1276,6 +1276,6 @@ For any platform integration, follow the same pattern:
 1. Create app on platform console
 2. Configure permissions
 3. Get credentials
-4. Create connection in AtlasClaw (via API or Web UI)
+4. Create connection in Xuanwu (via API or Web UI)
 5. Verify configuration
 6. Enable and test
