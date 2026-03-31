@@ -2,117 +2,116 @@
 
 ## 1. Overview
 
-AtlasClaw currently exposes many useful tools to the model, including web search, page fetch, browser automation, memory search, provider integrations, and session/context utilities. The problem is not tool scarcity. The problem is that the runtime does not explicitly decide **when** tool use is mandatory.
+AtlasClaw already has a broad tool surface, including web search, page fetch, browser automation, session context, memory recall, provider tools, and Hook Runtime integrations. The main reliability gap is not missing tools. The gap is that the runtime does not explicitly decide **when tool usage is mandatory** before the model is allowed to produce a final answer.
 
-As a result, the system may answer questions that should be grounded in current, external, or private data without actually using the relevant tools. This can produce responses that sound plausible but are operationally unsafe, misleading, or unverifiable.
+This spec defines the **Phase 1 runtime policy layer** that governs whether a request may be answered directly or must first use tools/external context.
 
-This design introduces a general-purpose runtime policy layer that sits between the incoming user request and the free-form final answer path.
-
-The design has three coordinated layers:
+This Phase 1 design includes three coordinated layers:
 
 1. **Tool Necessity Gate**
-   - Determines whether the request can be answered directly or must use tools/external context.
+   - Decides whether the request can be answered directly or requires tools/external verification.
 2. **Capability Matcher**
-   - Maps the gate decision to the currently available AtlasClaw tools, providers, and context sources.
+   - Maps the gate decision to the currently available AtlasClaw capabilities.
 3. **Mandatory Tool Enforcement**
-   - Prevents the runtime from returning an ungrounded final answer when tools are required.
+   - Prevents an ungrounded final answer when tool use is required.
 
-This is intentionally broader than a fix for weather or "latest information" prompts. It is designed to handle any question whose reliable answer depends on current data, private user context, external systems, browser interaction, or explicit verification.
+This spec also includes a **minimal context integration requirement** so that tool results become privileged context for the current turn. It does **not** attempt to define a full standalone Context Engine. That larger design is intentionally separated into its own spec.
 
 ---
 
-## 2. Problem Statement
+## 2. Scope
 
-### 2.1 Current Runtime Behavior
+### 2.1 In Scope
 
-Today, AtlasClaw:
-- injects current time into the system prompt,
-- lists available tools in the runtime prompt,
-- exposes tools such as `web_search`, `web_fetch`, browser automation, and provider tools,
-- relies on the model to decide whether to call them.
+- Runtime detection of when a request requires tool-backed or externally-grounded execution.
+- Mapping abstract capability needs to concrete tools/provider/browser capabilities.
+- Enforcement rules that block unsupported direct answers.
+- Minimal context integration so tool results are prioritized in the current turn.
+- Observability and testing for the policy path.
 
-That model-first decision path is too weak for reliability-sensitive queries.
+### 2.2 Out of Scope
 
-### 2.2 Failure Mode
+- Full context-source selection/ranking/budgeting architecture.
+- A general context graph or context pipeline rewrite.
+- Full replacement of current session/memory/history orchestration.
+- A new plugin runtime.
 
-For requests like:
-- "2026 清明节上海周边会下雨吗？"
-- "上海现在租房哪里便宜？"
-- "我在 Jira 里还有哪些待处理工单？"
-- "帮我把这篇内容发到知乎"
+Those belong to the separate **Full Context Engine** design.
 
-the current runtime can still allow the model to answer directly, even though the answer depends on:
-- current or external information,
-- private system data,
-- browser/UI interaction,
-- or grounded verification.
+---
 
-### 2.3 Design Goal
+## 3. Problem Statement
 
-AtlasClaw must move from:
-- "the model has tools available"
+Today AtlasClaw:
+- injects current time into the prompt,
+- exposes tools in the runtime prompt,
+- has browser, search, session, memory, and provider capabilities,
+- but still relies too much on the model to decide when those tools are necessary.
+
+That allows failure modes such as:
+- claiming current information without actual lookup,
+- answering time-sensitive questions from stale priors,
+- ignoring provider/browser tools even when required,
+- skipping verification for dynamic market/listing/workflow questions.
+
+The system must move from:
+- "tools are available"
 
 to:
-- "the runtime knows when a tool-backed answer is required"
-
-The system should explicitly decide when:
-- tools are optional,
-- tools are preferred,
-- tools are mandatory.
+- "the runtime knows when tools are required"
 
 ---
 
-## 3. Design Goals
+## 4. Design Goals
 
-### 3.1 Primary Goals
+### 4.1 Primary Goals
 
-- Prevent ungrounded answers when the request depends on external or changing reality.
-- Generalize across classes of questions instead of hardcoding one-off categories.
-- Reuse existing AtlasClaw capabilities instead of introducing a separate orchestration stack.
-- Preserve extensibility for future tools, provider skills, grounding-style providers, and richer context engines.
-- Make the decision process observable and testable.
+- Prevent ungrounded answers for externally-dependent or dynamically changing questions.
+- Generalize across many question types instead of building one-off weather/news patches.
+- Reuse existing AtlasClaw runner, hooks, sessions, memory, and tool surfaces.
+- Make the decision process observable and enforceable.
 
-### 3.2 Non-Goals
+### 4.2 Non-Goals
 
-This design does not:
-- implement a complete replacement for the existing agent runner,
-- replace tool execution itself,
-- create a new plugin runtime,
-- fully implement a separate semantic planner,
-- guarantee correctness when no capable tool exists.
+This spec does not:
+- define a complete Context Engine,
+- redesign session history selection,
+- redesign memory recall ranking,
+- define a full evidence provenance graph,
+- replace all prompt construction logic.
 
 ---
 
-## 4. Inspiration from OpenClaw
+## 5. OpenClaw Alignment and AtlasClaw Strengthening
 
-OpenClaw has a richer runtime toolbox, including:
-- web search tools,
+OpenClaw already exposes important primitives that reduce hallucination risk:
+- web search and fetch,
 - grounding-capable providers,
 - context-engine concepts,
-- hooks/plugins for runtime extension.
+- hooks/plugins.
 
-However, OpenClaw still depends heavily on configuration, plugins, context strategy, and model behavior to decide whether tools must be used.
+However, the decision of whether tool usage is mandatory is still more implicit and distributed across configuration, plugins, and runtime behavior.
 
-AtlasClaw should take inspiration from that richer runtime shape while making the following part more explicit:
+AtlasClaw should align with that richer runtime direction while explicitly strengthening one missing control point:
 
-- **whether the current request can safely be answered without tools**.
+- **the runtime policy that decides whether a direct answer is allowed at all**.
 
-This design therefore strengthens AtlasClaw in a way that is compatible with the OpenClaw direction but more opinionated about runtime grounding discipline.
+This makes AtlasClaw more explicit than a default OpenClaw setup while remaining compatible with a future richer context system.
 
 ---
 
-## 5. Architecture Summary
+## 6. Architecture Summary
 
 ```text
 User Request
   -> Tool Necessity Gate
   -> Capability Matcher
-  -> Enforcement Policy
-  -> Tool-first or answer-direct path
+  -> Mandatory Tool Enforcement
+  -> Tool-first or direct-answer path
   -> Final Answer
 ```
 
-### 5.1 New Runtime Policy Components
+### 6.1 Runtime Components
 
 1. `ToolNecessityGate`
 2. `CapabilityMatcher`
@@ -120,39 +119,35 @@ User Request
 4. `ResolvedToolPlan`
 5. `ToolUseAudit`
 
-### 5.2 Integration Points
+### 6.2 Integration Points
 
-These components should integrate with:
+These components integrate with:
 - `agent/runner.py`
 - `agent/prompt_builder.py`
 - `agent/runtime_events.py`
-- existing tool registry and tool catalog
-- session history and memory systems
+- current tool registry / tool catalog
+- session history and memory injection
 - Hook Runtime for observability
 
 ---
 
-## 6. Tool Necessity Gate
+## 7. Tool Necessity Gate
 
-### 6.1 Responsibility
+### 7.1 Responsibility
 
-The Tool Necessity Gate classifies whether the request requires tools or external grounding before the system may produce a final answer.
+The Tool Necessity Gate classifies whether the current request may be answered directly or requires tool-backed execution before a final answer is allowed.
 
-It must not be limited to one query category like weather. Instead, it should reason over more general dimensions.
+### 7.2 Gate Inputs
 
-### 6.2 Gate Inputs
-
-The gate should evaluate the following sources:
+The gate should evaluate:
 - current user message,
 - recent message history,
 - session/channel scope,
 - authenticated user identity and roles,
-- known agent/tool/provider availability,
-- optionally lightweight model-based classification.
+- known provider/tool availability,
+- optionally lightweight model-assisted classification.
 
-### 6.3 Decision Dimensions
-
-The gate output should include the following fields:
+### 7.3 Decision Schema
 
 ```json
 {
@@ -169,155 +164,76 @@ The gate output should include the following fields:
 }
 ```
 
-### 6.4 Decision Semantics
+### 7.4 Decision Dimensions
 
 - `needs_tool`
-  - At least one tool or external capability is required for a reliable answer.
 - `needs_live_data`
-  - The answer depends on changing current data.
 - `needs_private_context`
-  - The answer depends on private or user-scoped state.
 - `needs_external_system`
-  - The answer depends on a provider/platform/system query.
 - `needs_browser_interaction`
-  - The task requires UI automation rather than only data retrieval.
 - `needs_grounded_verification`
-  - The answer should be backed by observable evidence before final response.
 - `suggested_tool_classes`
-  - High-level capability classes, not specific function names yet.
+- `confidence`
+- `reason`
 - `policy`
-  - One of:
-    - `answer_direct`
-    - `prefer_tool`
-    - `must_use_tool`
 
-### 6.5 Classification Strategy
+### 7.5 Classification Strategy
 
 The gate should use a hybrid strategy:
 
 1. **Static signals**
-- Time-sensitive language:
-  - now, today, tomorrow, this week, latest, recent, current, forecast, available
-- Market/listing language:
-  - rent, apartment, listing, vacancy, stock, price, opening, hiring, job
-- Action-oriented workflow language:
-  - publish, submit, login, click, upload, fill, send
-- Private-system language:
-  - my Jira, my approvals, my tickets, our Confluence, current session
+- Time-sensitive language
+- Dynamic listing/market language
+- Action-oriented workflow language
+- Private-system language
 
 2. **Context-aware signals**
-- Whether the request names a known provider/system.
-- Whether the request targets the current user's resources.
-- Whether the requested output implies real-world decision risk.
+- Known provider/system names
+- User-scoped resource references
+- Real-world decision risk implied by the question
 
 3. **Lightweight model-assisted classification**
-- The model may answer an internal control question such as:
+- Internal control question only, for example:
   - "Can this request be answered reliably without using tools or current external/private information?"
-- This output is internal only.
-- The model is not given final authority; it contributes a signal.
+- This is a signal, not final authority.
 
-### 6.6 Examples
+### 7.6 Example Decisions
 
-#### Example A: Stable knowledge
-Question:
+#### Stable knowledge
 - "法国首都是哪里？"
-
-Likely decision:
-- `needs_tool = false`
 - `policy = answer_direct`
 
-#### Example B: Time-sensitive public information
-Question:
+#### Time-sensitive public information
 - "清明节上海周边会下雨吗？"
-
-Likely decision:
-- `needs_tool = true`
-- `needs_live_data = true`
-- `needs_grounded_verification = true`
 - `policy = must_use_tool`
 - `suggested_tool_classes = ["web_search", "web_fetch"]`
 
-#### Example C: Dynamic public listings
-Question:
+#### Dynamic public listing
 - "上海现在租房哪里便宜？"
-
-Likely decision:
-- `needs_tool = true`
-- `needs_live_data = true`
-- `needs_grounded_verification = true`
 - `policy = must_use_tool`
 - `suggested_tool_classes = ["web_search", "browser"]`
 
-#### Example D: Private provider state
-Question:
+#### Private provider state
 - "我在 Jira 里还有哪些待处理工单？"
-
-Likely decision:
-- `needs_tool = true`
-- `needs_private_context = true`
-- `needs_external_system = true`
 - `policy = must_use_tool`
 - `suggested_tool_classes = ["provider:jira"]`
 
-#### Example E: Browser-driven action
-Question:
+#### Browser workflow
 - "帮我把这篇内容发到知乎"
-
-Likely decision:
-- `needs_tool = true`
-- `needs_browser_interaction = true`
 - `policy = must_use_tool`
 - `suggested_tool_classes = ["browser"]`
 
 ---
 
-## 7. Capability Matcher
+## 8. Capability Matcher
 
-### 7.1 Responsibility
+### 8.1 Responsibility
 
-The Capability Matcher maps the gate's abstract requirements to concrete capabilities that exist in the current runtime.
+The Capability Matcher maps gate output to concrete capabilities available in the current AtlasClaw runtime.
 
-It answers:
-- What can this runtime actually use right now?
-- Which tools/providers best satisfy the request?
-- What should the model prefer or be forced to use?
+### 8.2 Supported Capability Classes
 
-### 7.2 Input
-
-- gate decision,
-- registered executable tools,
-- registered provider tools,
-- available browser capability,
-- current user/provider access context,
-- optional Hook-provided or memory-provided context sources.
-
-### 7.3 Output
-
-Example:
-
-```json
-{
-  "resolved_policy": "must_use_tool",
-  "tool_candidates": [
-    {
-      "name": "web_search",
-      "class": "web_search",
-      "priority": 100
-    },
-    {
-      "name": "web_fetch",
-      "class": "web_fetch",
-      "priority": 80
-    }
-  ],
-  "missing_capabilities": [],
-  "reason": "Live public information is required and web search tools are available."
-}
-```
-
-### 7.4 Supported Capability Classes
-
-Initial capability classes should include:
+Initial capability classes:
 - `web_search`
 - `web_fetch`
 - `browser`
@@ -326,128 +242,111 @@ Initial capability classes should include:
 - `session`
 - `hooks_context`
 
-### 7.5 Matching Rules
+### 8.3 Output Shape
 
-1. If a provider-specific capability exists and the request clearly targets that system, prefer the provider capability over generic web search.
-2. If the request needs browser interaction, prefer `browser` even if `web_search` is available.
-3. If the request depends on private per-user or session data, prefer session/provider/memory capabilities over public web search.
-4. If no matching capability exists:
-- keep the policy decision,
-- expose that the required capability is missing,
-- prevent fabricated completion.
+```json
+{
+  "resolved_policy": "must_use_tool",
+  "tool_candidates": [
+    {"name": "web_search", "class": "web_search", "priority": 100},
+    {"name": "web_fetch", "class": "web_fetch", "priority": 80}
+  ],
+  "missing_capabilities": [],
+  "reason": "Live public information is required and web search tools are available."
+}
+```
 
-### 7.6 Why This Layer Matters
+### 8.4 Matching Rules
 
-Without the matcher, "needs tool" is too abstract.
-
-The matcher turns runtime policy into something executable by the current tool registry.
-
----
-
-## 8. Mandatory Tool Enforcement
-
-### 8.1 Responsibility
-
-If the policy says a tool is required, AtlasClaw must not allow a normal final answer path that bypasses tool evidence.
-
-### 8.2 Enforcement Modes
-
-#### `answer_direct`
-- No enforced tool requirement.
-- The model may answer normally.
-
-#### `prefer_tool`
-- Tool usage is encouraged and raised in prompt priority.
-- Direct answering is allowed if still reasonable.
-
-#### `must_use_tool`
-- The runtime must not accept an ungrounded final answer.
-- One of the following must happen:
-  1. tool(s) are called successfully,
-  2. the runtime enters a controlled tool-first route,
-  3. the final answer explicitly states that required verification could not be completed.
-
-### 8.3 Anti-Fabrication Rule
-
-If the runtime has no recorded tool execution evidence, the model must not claim:
-- "I searched Bing"
-- "I checked online"
-- "I verified this just now"
-- or any equivalent statement implying external verification.
-
-This must be enforced in both prompt guidance and final-answer validation.
-
-### 8.4 Controlled Tool-First Path
-
-For `must_use_tool`, AtlasClaw may choose one of two strategies:
-
-1. **Model-driven but constrained**
-- give the model the resolved tool candidates,
-- reinforce that tools are required,
-- reject final completion if no evidence was produced.
-
-2. **Runtime-driven prefetch**
-- run one or more matched tools first,
-- inject the results into context,
-- then ask the model to synthesize the answer.
-
-The design should support both. Phase 1 may start with model-driven constrained execution plus final-answer validation.
-
-### 8.5 Failure Behavior
-
-If tool usage is required but fails:
-- do not silently fall back to a confident direct answer,
-- return a response that clearly states verification failed,
-- include what kind of verification was attempted or required.
-
-Example:
-- "I couldn't successfully verify current forecast data right now, so I can't reliably answer whether it will rain around Shanghai during Qingming."
+1. Prefer provider-specific tools for provider-targeted requests.
+2. Prefer browser capability for workflow/UI tasks.
+3. Prefer private/session/provider context over public web search when the request is user-scoped.
+4. If no capability exists, preserve the requirement and mark the missing capability instead of allowing fabricated completion.
 
 ---
 
-## 9. Prompt and Context Integration
+## 9. Mandatory Tool Enforcement
 
-### 9.1 Prompt Changes
+### 9.1 Responsibility
 
-Prompt guidance should be strengthened, but prompt text is not the only control.
+If the gate and matcher determine tool use is required, the runtime must prevent a normal ungrounded final answer path.
 
-The prompt must explicitly state:
-- current/live/external/private questions may require tools,
-- the model must not invent a search or lookup,
-- when the runtime marks tool usage as mandatory, the model should comply before attempting a final answer.
+### 9.2 Enforcement Modes
 
-### 9.2 AtlasClaw Context-Engine Role
+- `answer_direct`
+- `prefer_tool`
+- `must_use_tool`
 
-AtlasClaw does not yet have an explicit standalone "context engine" abstraction like OpenClaw, but it already composes context from:
-- session history,
-- memory,
-- user info,
-- provider state,
-- hooks,
-- tool results.
+### 9.3 Anti-Fabrication Rule
 
-This design treats the policy pipeline as a front-door control layer that decides whether:
-- existing context is enough,
-- new tool-generated context must be added,
-- or the answer must be blocked until grounding is attempted.
+The model must not claim:
+- that a search occurred,
+- that an online verification happened,
+- that current data was checked,
 
-### 9.3 Privileged Tool Result Context
+unless the runtime has actual tool execution evidence.
 
-When the policy requires grounding, tool outputs should be treated as privileged context for that turn.
+### 9.4 Allowed Runtime Behaviors for `must_use_tool`
+
+1. Retry with stronger tool-required instruction.
+2. Route into a controlled tool-first path.
+3. Stop with an explicit explanation that verification failed.
+
+### 9.5 Failure Behavior
+
+If tool usage is required but no successful grounding was produced:
+- do not silently fall back to a confident unsupported answer,
+- state that verification could not be completed,
+- expose the policy outcome in runtime events/logs.
+
+---
+
+## 10. Minimal Context Integration
+
+### 10.1 Why This Exists in Phase 1
+
+Tool enforcement without context prioritization is incomplete. If the runtime obtains tool results but injects them as ordinary low-priority text beside stale history, the model may still underuse them.
+
+### 10.2 Minimal Integration Requirement
+
+Phase 1 requires only a minimal context integration rule:
+- when enforcement requires tools, successful tool results must become privileged context for the current turn.
 
 That means:
-- tool results should be easier for the model to prioritize than stale memory or generic conversational priors,
-- the system should distinguish between grounded evidence and free-form assistant reasoning.
+- tool results should be injected before the final answer step,
+- tool results should be easier for the model to prioritize than stale memory/history,
+- the runtime should distinguish grounded evidence from free-form assistant reasoning.
+
+### 10.3 What Phase 1 Does Not Do
+
+Phase 1 does not yet define:
+- full context source registration,
+- context ranking across all sources,
+- generalized truncation/budgeting policy,
+- global context provenance graph.
+
+Those belong to the separate Full Context Engine spec.
 
 ---
 
-## 10. Events and Observability
+## 11. Prompt and Runtime Integration
 
-### 10.1 Why Observability Matters
+### 11.1 Prompt Guidance
 
-This policy will affect correctness and user trust. Runtime observability is required.
+Prompt updates should explicitly state:
+- some requests require tools or verification,
+- the model must not invent evidence,
+- if the runtime marks tool usage as mandatory, the model must follow that policy.
 
-### 10.2 Event Types
+### 11.2 Runtime Priority
+
+Prompt guidance is necessary but not sufficient.
+
+The runtime policy executes before unrestricted answer generation. The prompt should reinforce, not replace, the gate and enforcement logic.
+
+---
+
+## 12. Events and Observability
 
 Suggested event taxonomy:
 - `tool_gate.evaluated`
@@ -460,9 +359,7 @@ Suggested event taxonomy:
 - `tool_enforcement.prefetch_completed`
 - `tool_enforcement.prefetch_failed`
 
-### 10.3 Audit Fields
-
-Each policy decision event should include:
+Each event should carry:
 - `session_key`
 - `run_id`
 - `user_id`
@@ -473,109 +370,63 @@ Each policy decision event should include:
 - `confidence`
 - `final_outcome`
 
-### 10.4 Hook Runtime Integration
-
-Heartbeat is already being integrated as an event source. This policy should follow the same design style:
-- emit runtime events first,
-- let Hook Runtime consume them,
-- allow scripts or other future consumers to inspect policy outcomes.
+These events should integrate with the existing Hook Runtime as observable runtime outputs.
 
 ---
 
-## 11. Failure and Safety Model
+## 13. Testing Strategy
 
-### 11.1 Safety Principle
-
-The cost of saying "I could not verify this" is lower than the cost of confidently fabricating a tool-backed answer.
-
-### 11.2 When No Tool Exists
-
-If the gate decides the question requires a tool, but the matcher cannot find a suitable capability:
-- the system must not pretend the answer is reliable,
-- the answer should explain that AtlasClaw lacks the necessary connected capability for this request,
-- this should be observable in logs/events.
-
-### 11.3 When Tool Exists but Execution Fails
-
-If the capability exists but execution fails:
-- return a constrained explanation,
-- do not degrade into a confident unsupported answer.
-
-### 11.4 When the Model Ignores the Policy
-
-If the policy is `must_use_tool` and the model tries to complete directly:
-- the runtime should intercept or reject the final answer,
-- re-enter the tool path or fail explicitly.
-
----
-
-## 12. Testing Strategy
-
-### 12.1 Unit Tests
-
-Unit test areas should include:
+### 13.1 Unit Tests
 - gate classification outputs,
 - matcher resolution,
 - missing-capability behavior,
-- enforcement policy transitions,
+- enforcement behavior,
 - anti-fabrication validation.
 
-### 12.2 Integration Tests
-
-Integration tests should cover:
-- runner + gate + matcher interaction,
+### 13.2 Integration Tests
+- runner + gate + matcher path,
 - provider-targeted requests,
 - browser-required requests,
-- time-sensitive public requests,
 - failed tool execution with constrained final response.
 
-### 12.3 E2E Tests
-
-End-to-end cases should include:
-- weather/forecast style query that must use web tools,
-- dynamic listing query like rent/jobs that must use tools,
-- provider-backed private query that must use provider tools,
-- browser-action request that must use browser automation,
+### 13.3 E2E Scenarios
+- weather/forecast style query,
+- dynamic listing query such as rent/jobs,
+- provider-backed private query,
+- browser-action request,
 - stable knowledge query that should not be forced through tools.
 
 ---
 
-## 13. Phase Scope
+## 14. Phase Scope
 
 ### Phase 1
 
-Phase 1 should implement:
-- Tool Necessity Gate output schema,
+Implement:
+- Tool Necessity Gate schema and classifier,
 - Capability Matcher,
 - `must_use_tool` enforcement path,
 - anti-fabrication rule,
-- runtime events for observability,
-- prompt guidance updates,
+- minimal privileged tool-result context integration,
+- runtime events,
+- prompt updates,
 - unit and integration coverage.
 
-### Phase 2
+### Later Work
 
-Phase 2 may add:
-- more advanced learned heuristics,
-- richer capability taxonomies,
-- runtime-driven prefetch for more classes of queries,
-- explicit context-engine abstraction,
-- dashboarding and admin inspection UI.
+A richer context system is required but is intentionally separated into a different design artifact:
+- `docs/superpowers/specs/2026-03-31-full-context-engine-design.md`
 
 ---
 
-## 14. Recommended Direction
+## 15. Recommended Direction
 
-AtlasClaw should not solve this by adding more ad hoc prompt rules for special categories like weather.
+AtlasClaw should not solve this with more ad hoc query-specific prompt rules.
 
-The correct direction is to add a general-purpose runtime policy layer that answers:
-- Does this question require tools?
-- Which tools are appropriate?
-- Can the model be allowed to answer without evidence?
+The correct Phase 1 direction is:
+- determine whether tools are required,
+- match the requirement to actual capabilities,
+- prevent unsupported direct answers,
+- ensure grounded tool results receive minimal privileged context treatment.
 
-That is the role of:
-- Tool Necessity Gate
-- Capability Matcher
-- Mandatory Tool Enforcement
-
-This turns tool use from a suggestion into a governed runtime decision.
+That gives AtlasClaw a runtime policy for reliability without prematurely expanding this change into a full context-system rewrite.
