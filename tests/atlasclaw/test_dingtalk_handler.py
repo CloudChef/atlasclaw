@@ -67,9 +67,11 @@ class TestDingTalkHandler:
             "client_id": "test_client_id",
             "client_secret": "test_client_secret",
         }
-        result = await handler.validate_config(config)
+        with patch.object(handler, "_verify_credentials", AsyncMock(return_value=True)) as mock_verify:
+            result = await handler.validate_config(config)
         assert result.valid is True
         assert len(result.errors) == 0
+        mock_verify.assert_awaited_once_with(config)
 
     @pytest.mark.asyncio
     async def test_validate_config_valid_webhook(self):
@@ -79,9 +81,11 @@ class TestDingTalkHandler:
             "connection_mode": "webhook",
             "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=xxx",
         }
-        result = await handler.validate_config(config)
+        with patch.object(handler, "_verify_webhook_endpoint", AsyncMock(return_value=None)) as mock_verify:
+            result = await handler.validate_config(config)
         assert result.valid is True
         assert len(result.errors) == 0
+        mock_verify.assert_awaited_once_with(config["webhook_url"], None)
 
     @pytest.mark.asyncio
     async def test_validate_config_missing_all(self):
@@ -105,6 +109,17 @@ class TestDingTalkHandler:
         assert result.valid is False
         assert len(result.errors) > 0
         assert "client_secret" in result.errors[0].lower()
+
+    @pytest.mark.asyncio
+    async def test_verify_webhook_endpoint_rejects_insecure_url(self):
+        """Test webhook validation rejects non-HTTPS URLs."""
+        handler = DingTalkHandler()
+
+        result = await handler._verify_webhook_endpoint(
+            "http://oapi.dingtalk.com/robot/send?access_token=xxx"
+        )
+
+        assert result == "webhook_url must use HTTPS"
 
     def test_describe_schema(self):
         """Test schema description returns valid structure."""
@@ -314,12 +329,15 @@ class TestDingTalkConnectionMode:
         handler = DingTalkHandler()
         
         # Valid stream config
-        result = await handler.validate_config({
+        valid_config = {
             "connection_mode": "stream",
             "client_id": "test_id",
             "client_secret": "test_secret"
-        })
+        }
+        with patch.object(handler, "_verify_credentials", AsyncMock(return_value=True)) as mock_verify:
+            result = await handler.validate_config(valid_config)
         assert result.valid is True
+        mock_verify.assert_awaited_once_with(valid_config)
         
         # Invalid stream config (missing client_secret)
         result = await handler.validate_config({
@@ -334,11 +352,14 @@ class TestDingTalkConnectionMode:
         handler = DingTalkHandler()
         
         # Valid webhook config
-        result = await handler.validate_config({
+        valid_config = {
             "connection_mode": "webhook",
             "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=xxx"
-        })
+        }
+        with patch.object(handler, "_verify_webhook_endpoint", AsyncMock(return_value=None)) as mock_verify:
+            result = await handler.validate_config(valid_config)
         assert result.valid is True
+        mock_verify.assert_awaited_once_with(valid_config["webhook_url"], None)
         
         # Invalid webhook config (missing webhook_url)
         result = await handler.validate_config({

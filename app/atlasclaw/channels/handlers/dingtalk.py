@@ -11,6 +11,7 @@ import queue
 import threading
 import time
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -25,6 +26,7 @@ from app.atlasclaw.channels.models import (
 )
 
 logger = logging.getLogger(__name__)
+VERIFY_TIMEOUT_SECONDS = 2.6
 
 
 def _run_dingtalk_sdk_process(
@@ -205,14 +207,21 @@ class DingTalkHandler(ChannelHandler):
             self._status = ConnectionStatus.ERROR
             return False
     
-    async def _verify_credentials(self) -> bool:
+    @staticmethod
+    def _looks_like_http_url(url: str) -> bool:
+        """Check whether the webhook URL is a valid HTTP(S) address."""
+        parsed = urlparse(url)
+        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+    async def _verify_credentials(self, config: Optional[Dict[str, Any]] = None) -> bool:
         """Verify DingTalk credentials by calling the gettoken API.
         
         This validates the client_id/client_secret before starting the SDK subprocess.
         Returns True if credentials are valid, False otherwise.
         """
-        client_id = self.config.get("client_id") or self.config.get("app_key")
-        client_secret = self.config.get("client_secret") or self.config.get("app_secret")
+        verify_config = config or self.config
+        client_id = verify_config.get("client_id") or verify_config.get("app_key")
+        client_secret = verify_config.get("client_secret") or verify_config.get("app_secret")
         
         if not client_id or not client_secret:
             logger.error("[DingTalk] Missing client_id or client_secret")
@@ -221,7 +230,10 @@ class DingTalkHandler(ChannelHandler):
         try:
             url = f"{self.OAPI_BASE}/gettoken?appkey={client_id}&appsecret={client_secret}"
             async with aiohttp.ClientSession(trust_env=True) as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(
+                    url,
+                    timeout=aiohttp.ClientTimeout(total=VERIFY_TIMEOUT_SECONDS),
+                ) as resp:
                     data = await resp.json()
                     if data.get("errcode") == 0 and data.get("access_token"):
                         logger.info("[DingTalk] Credentials verified successfully")
@@ -232,6 +244,17 @@ class DingTalkHandler(ChannelHandler):
         except Exception as e:
             logger.error(f"[DingTalk] Credential verification error: {e}")
             return False
+
+    async def _verify_webhook_endpoint(self, webhook_url: str, secret: Optional[str] = None) -> Optional[str]:
+        """Perform static validation for the DingTalk webhook URL."""
+        if not self._looks_like_http_url(webhook_url):
+            return "webhook_url must be a valid HTTP/HTTPS URL"
+        parsed = urlparse(webhook_url)
+        if parsed.scheme != "https":
+            return "webhook_url must use HTTPS"
+        if parsed.username or parsed.password:
+            return "webhook_url must not include credentials"
+        return None
 
     async def _cleanup_connect_failure(self) -> None:
         """Cleanup resources after connect failure."""
@@ -539,11 +562,20 @@ class DingTalkHandler(ChannelHandler):
             errors.append("Config must be a dictionary")
             return ChannelValidationResult(valid=False, errors=errors)
         
-        connection_mode = config.get("connection_mode", "webhook")
+        connection_mode = config.get("connection_mode")
+        if not connection_mode:
+            connection_mode = "stream" if (config.get("client_id") or config.get("app_key")) else "webhook"
         
         if connection_mode == "webhook":
             if not config.get("webhook_url"):
                 errors.append("webhook_url is required for Webhook mode")
+            if not errors:
+                webhook_error = await self._verify_webhook_endpoint(
+                    str(config.get("webhook_url", "")),
+                    config.get("secret"),
+                )
+                if webhook_error:
+                    errors.append(webhook_error)
         elif connection_mode == "stream":
             client_id = config.get("client_id") or config.get("app_key")
             client_secret = config.get("client_secret") or config.get("app_secret")
@@ -551,17 +583,10 @@ class DingTalkHandler(ChannelHandler):
                 errors.append("client_id/app_key is required for Stream mode")
             if not client_secret:
                 errors.append("client_secret/app_secret is required for Stream mode")
+            if not errors and not await self._verify_credentials(config):
+                errors.append("Failed to verify DingTalk stream credentials")
         else:
-            # Fallback: legacy validation
-            webhook_url = config.get("webhook_url")
-            client_id = config.get("client_id") or config.get("app_key")
-            client_secret = config.get("client_secret") or config.get("app_secret")
-            
-            if not webhook_url and not client_id:
-                errors.append("Either webhook_url or client_id/app_key is required")
-            
-            if client_id and not client_secret:
-                errors.append("client_secret/app_secret is required when using client_id/app_key")
+            errors.append(f"Unsupported connection_mode: {connection_mode}")
         
         return ChannelValidationResult(valid=len(errors) == 0, errors=errors)
     

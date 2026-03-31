@@ -12,6 +12,27 @@ let currentLocale = DEFAULT_LOCALE;
 let translations = {};
 let localeLoaded = false;
 
+function resolveTranslationValue(key) {
+    const keys = key.split('.');
+    let value = translations;
+
+    for (const k of keys) {
+        if (value && typeof value === 'object' && k in value) {
+            value = value[k];
+        } else {
+            return null;
+        }
+    }
+
+    return typeof value === 'string' ? value : null;
+}
+
+function interpolateTranslation(value, params = {}) {
+    return value.replace(/\{\{(\w+)\}\}/g, (match, name) => {
+        return params[name] !== undefined ? params[name] : match;
+    });
+}
+
 /**
  * Detect browser language
  * @returns {string} Detected locale code
@@ -112,27 +133,24 @@ export async function initI18n() {
  * @returns {string} Translated text
  */
 export function t(key, params = {}) {
-    const keys = key.split('.');
-    let value = translations;
-    
-    for (const k of keys) {
-        if (value && typeof value === 'object' && k in value) {
-            value = value[k];
-        } else {
-            console.warn(`[i18n] Missing translation: ${key}`);
-            return key;
-        }
+    const value = resolveTranslationValue(key);
+
+    if (value === null) {
+        console.warn(`[i18n] Missing translation: ${key}`);
+        return key;
     }
-    
+
     if (typeof value !== 'string') {
         console.warn(`[i18n] Invalid translation value for: ${key}`);
         return key;
     }
-    
-    // Simple parameter interpolation {{name}}
-    return value.replace(/\{\{(\w+)\}\}/g, (match, name) => {
-        return params[name] !== undefined ? params[name] : match;
-    });
+
+    return interpolateTranslation(value, params);
+}
+
+export function translateIfExists(key, params = {}) {
+    const value = resolveTranslationValue(key);
+    return value === null ? null : interpolateTranslation(value, params);
 }
 
 /**
@@ -289,6 +307,7 @@ export function updateContainerTranslations(container) {
 export default {
     initI18n,
     t,
+    translateIfExists,
     setLocale,
     getCurrentLocale,
     getSupportedLocales,

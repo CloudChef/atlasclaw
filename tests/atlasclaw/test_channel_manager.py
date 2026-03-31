@@ -68,6 +68,7 @@ class TestChannelManager:
             # Base WebSocketHandler.connect() returns False, so initialization fails
             # This is expected - real implementations would override connect()
             assert result is False
+            assert self.manager.get_connection_runtime_status("conn-123") == "error"
 
     @pytest.mark.asyncio
     async def test_initialize_connection_not_found(self):
@@ -208,7 +209,8 @@ class TestChannelManager:
         mock_channel.is_default = False
         
         with patch("app.atlasclaw.db.get_db_manager") as mock_db_manager, \
-             patch("app.atlasclaw.channels.manager.ChannelConfigService") as mock_service:
+             patch("app.atlasclaw.channels.manager.ChannelConfigService") as mock_service, \
+             patch("app.atlasclaw.channels.manager.asyncio.create_task") as mock_create_task:
             
             mock_session_instance = AsyncMock()
             mock_db_manager.return_value.get_session.return_value.__aenter__.return_value = mock_session_instance
@@ -228,6 +230,8 @@ class TestChannelManager:
             result = await self.manager.enable_connection("user-123", "websocket", "conn-123")
             
             assert result is True
+            mock_create_task.assert_called_once()
+            assert self.manager.get_connection_runtime_status("conn-123") == "connecting"
 
     @pytest.mark.asyncio
     async def test_disable_connection(self):
@@ -251,6 +255,12 @@ class TestChannelManager:
             result = await self.manager.disable_connection("user-123", "websocket", "conn-123")
             
             assert result is True
+            assert self.manager.get_connection_runtime_status("conn-123") == "disconnected"
+
+    def test_get_connection_runtime_status_uses_cached_state_when_handler_missing(self):
+        self.manager._set_connection_runtime_status("conn-123", ConnectionStatus.CONNECTING)
+
+        assert self.manager.get_connection_runtime_status("conn-123") == "connecting"
 
     def test_build_channel_session_key_uses_sender_for_direct_messages(self):
         message = InboundMessage(

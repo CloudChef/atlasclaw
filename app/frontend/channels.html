@@ -2,107 +2,14 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta http-equiv="refresh" content="0;url=/channels">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title data-i18n="channel.title">Channel Management - AtlasClaw</title>
-    <link rel="stylesheet" href="/styles/main.css?v=10">
-    <script type="module" src="/scripts/channel-manager.js?v=10"></script>
-
+    <title>Redirecting to Channels</title>
+    <script>
+        window.location.replace('/channels')
+    </script>
 </head>
 <body>
-    <!-- Left Sidebar (same as index.html) -->
-    <aside class="sidebar">
-        <div class="sidebar-header">
-            <a href="/" class="new-chat-btn">
-                <span>←</span>
-                <span data-i18n="channel.backToChat">Back to Chat</span>
-            </a>
-        </div>
-        <div class="sidebar-content">
-            <div class="chat-history-group">
-                <div class="group-title" data-i18n="channel.available">Available Channels</div>
-                <div id="sidebarChannelList" class="sidebar-channel-list">
-                    <!-- Channel type items will be rendered here -->
-                </div>
-            </div>
-        </div>
-        <div class="sidebar-footer">
-            <a href="/admin/users" class="settings-btn">
-                <svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-                    <circle cx="9" cy="7" r="4"></circle>
-                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-                    <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-                </svg>
-                <span data-i18n="app.userManagement">User Management</span>
-            </a>
-            <a href="/channels.html" class="settings-btn active">
-                <svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <circle cx="12" cy="12" r="3"></circle>
-                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-                </svg>
-                <span data-i18n="app.channels">Channels</span>
-            </a>
-            <a href="/models.html" class="settings-btn">
-                <svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-                    <line x1="3" y1="9" x2="21" y2="9"></line>
-                    <line x1="9" y1="21" x2="9" y2="9"></line>
-                </svg>
-                <span data-i18n="app.models">Models</span>
-            </a>
-        </div>
-    </aside>
-    
-    <!-- Main Content -->
-    <main class="main-content">
-        <header class="chat-header">
-            <h1 data-i18n="channel.title">Channel Management</h1>
-            <div class="header-actions">
-                <button id="logoutBtn" class="logout-btn" type="button" data-i18n-title="logout.title" data-i18n-aria-label="logout.title" title="Logout" aria-label="Logout">
-
-
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                        <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
-                        <polyline points="16 17 21 12 16 7"></polyline>
-                        <line x1="21" y1="12" x2="9" y2="12"></line>
-                    </svg>
-                </button>
-            </div>
-        </header>
-
-        
-        <div class="channel-content">
-            <!-- Channel List View (default) -->
-            <div id="channelListView">
-                <section class="channel-section">
-                    <h2 class="section-title" data-i18n="channel.available">Available Channels</h2>
-                    <p class="section-desc" data-i18n="channel.selectToConfig">Select a channel type to configure</p>
-                    <div class="channel-types" id="channelTypes">
-                        <div class="channel-loading" data-i18n="channel.loading">Loading...</div>
-                    </div>
-                </section>
-            </div>
-            
-            <!-- Channel Detail View (shown when ?type=xxx) -->
-            <div id="channelDetailView" style="display: none;">
-                <!-- Content will be rendered dynamically -->
-            </div>
-        </div>
-    </main>
-    
-    <!-- Delete Confirm Dialog -->
-    <div id="deleteDialog" class="confirm-dialog hidden">
-        <div class="confirm-content">
-            <h3 data-i18n="channel.deleteConfirmTitle">Confirm Delete</h3>
-            <p id="deleteMessage" data-i18n="channel.deleteConfirm">Are you sure you want to delete this connection?</p>
-            <div class="confirm-buttons">
-                <button class="btn-cancel" id="btnCancelDelete" data-i18n="channel.cancel">Cancel</button>
-                <button class="btn-confirm" id="btnConfirmDelete" data-i18n="channel.delete">Delete</button>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Toast Notification -->
-    <div id="toast" class="toast hidden"></div>
+    <p>Redirecting to <a href="/channels">/channels</a>...</p>
 </body>
 </html>

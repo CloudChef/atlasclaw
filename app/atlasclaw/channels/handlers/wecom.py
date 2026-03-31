@@ -10,6 +10,7 @@ import os
 import time
 
 from typing import Any, Callable, Dict, Optional
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -24,6 +25,8 @@ from ..models import (
 )
 
 logger = logging.getLogger(__name__)
+VERIFY_TIMEOUT_SECONDS = 2.6
+WEBSOCKET_VERIFY_WAIT_SECONDS = 2.0
 
 
 class WeComHandler(ChannelHandler):
@@ -139,6 +142,47 @@ class WeComHandler(ChannelHandler):
             logger.error(f"WeCom connect failed: {e}")
             self._status = ConnectionStatus.ERROR
             return False
+
+    @staticmethod
+    def _looks_like_http_url(url: str) -> bool:
+        """Check whether the webhook URL is a valid HTTP(S) address."""
+        parsed = urlparse(url)
+        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+    async def _verify_webhook_endpoint(self, webhook_url: str) -> Optional[str]:
+        """Perform static validation for the WeCom webhook URL."""
+        if not self._looks_like_http_url(webhook_url):
+            return "webhook_url must be a valid HTTP/HTTPS URL"
+        parsed = urlparse(webhook_url)
+        if parsed.scheme != "https":
+            return "webhook_url must use HTTPS"
+        if parsed.username or parsed.password:
+            return "webhook_url must not include credentials"
+        return None
+
+    async def _verify_websocket_credentials(self, config: Dict[str, Any]) -> bool:
+        """Verify WeCom WebSocket credentials by connecting and cleaning up immediately."""
+        probe_handler = WeComHandler(dict(config))
+        started = await probe_handler.start(None)
+        if not started:
+            return False
+
+        try:
+            return await asyncio.wait_for(probe_handler.connect(), timeout=2.8)
+        except asyncio.TimeoutError:
+            logger.error("[WeCom] WebSocket credential verification timed out")
+            return False
+        finally:
+            await probe_handler.stop()
+
+    async def _verify_app_credentials(self, config: Dict[str, Any]) -> bool:
+        """Verify WeCom application credentials by requesting an access token."""
+        probe_handler = WeComHandler(dict(config))
+        try:
+            return await asyncio.wait_for(probe_handler._get_access_token(), timeout=2.8)
+        except asyncio.TimeoutError:
+            logger.error("[WeCom] Application credential verification timed out")
+            return False
     
     async def _connect_websocket(self) -> bool:
         """Connect via WebSocket long connection."""
@@ -180,8 +224,11 @@ class WeComHandler(ChannelHandler):
             self._running = True
             await self._ws_client.connect()
             
-            # Wait for connection
-            await asyncio.sleep(2)
+            deadline = time.monotonic() + WEBSOCKET_VERIFY_WAIT_SECONDS
+            while time.monotonic() < deadline:
+                if self._ws_client.is_connected or self._status == ConnectionStatus.CONNECTED:
+                    break
+                await asyncio.sleep(0.12)
             
             if self._ws_client.is_connected:
                 self._status = ConnectionStatus.CONNECTED
@@ -490,16 +537,29 @@ class WeComHandler(ChannelHandler):
             errors.append("Config must be a dictionary")
             return ChannelValidationResult(valid=False, errors=errors)
         
-        connection_mode = config.get("connection_mode", "webhook")
+        connection_mode = config.get("connection_mode")
+        if not connection_mode:
+            if config.get("bot_id"):
+                connection_mode = "websocket"
+            elif config.get("corpid"):
+                connection_mode = "app"
+            else:
+                connection_mode = "webhook"
         
         if connection_mode == "webhook":
             if not config.get("webhook_url"):
                 errors.append("webhook_url is required for Webhook mode")
+            if not errors:
+                webhook_error = await self._verify_webhook_endpoint(str(config.get("webhook_url", "")))
+                if webhook_error:
+                    errors.append(webhook_error)
         elif connection_mode == "websocket":
             if not config.get("bot_id"):
                 errors.append("bot_id is required for WebSocket mode")
             if not (config.get("bot_secret") or config.get("secret")):
                 errors.append("bot_secret is required for WebSocket mode")
+            if not errors and not await self._verify_websocket_credentials(config):
+                errors.append("Failed to verify WeCom WebSocket credentials")
         elif connection_mode == "app":
             if not config.get("corpid"):
                 errors.append("corpid is required for Application mode")
@@ -507,23 +567,10 @@ class WeComHandler(ChannelHandler):
                 errors.append("corpsecret is required for Application mode")
             if not config.get("agentid"):
                 errors.append("agentid is required for Application mode")
+            if not errors and not await self._verify_app_credentials(config):
+                errors.append("Failed to verify WeCom application credentials")
         else:
-            # Fallback: legacy validation
-            bot_id = config.get("bot_id")
-            webhook_url = config.get("webhook_url")
-            corpid = config.get("corpid")
-            
-            if not bot_id and not webhook_url and not corpid:
-                errors.append("Either bot_id (for WebSocket), webhook_url, or corpid is required")
-            
-            if bot_id and not (config.get("bot_secret") or config.get("secret")):
-                errors.append("bot_secret is required when using bot_id")
-            
-            if corpid:
-                if not config.get("corpsecret"):
-                    errors.append("corpsecret is required when using corpid")
-                if not config.get("agentid"):
-                    errors.append("agentid is required when using corpid")
+            errors.append(f"Unsupported connection_mode: {connection_mode}")
         
         return ChannelValidationResult(valid=len(errors) == 0, errors=errors)
     
@@ -573,19 +620,24 @@ class WeComHandler(ChannelHandler):
             },
         }
     
-    async def _get_access_token(self) -> bool:
+    async def _get_access_token(self, config: Optional[Dict[str, Any]] = None) -> bool:
         """Get WeCom access token."""
         try:
             if self._access_token and time.time() < self._token_expires:
                 return True
             
+            token_config = config or self.config
             params = {
-                "corpid": self.config.get("corpid"),
-                "corpsecret": self.config.get("corpsecret"),
+                "corpid": token_config.get("corpid"),
+                "corpsecret": token_config.get("corpsecret"),
             }
             
             async with aiohttp.ClientSession(trust_env=True) as session:
-                async with session.get(self.TOKEN_URL, params=params) as response:
+                async with session.get(
+                    self.TOKEN_URL,
+                    params=params,
+                    timeout=aiohttp.ClientTimeout(total=VERIFY_TIMEOUT_SECONDS),
+                ) as response:
 
                     if response.status == 200:
                         data = await response.json()

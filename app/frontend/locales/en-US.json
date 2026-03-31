@@ -69,6 +69,8 @@
     "name_feishu": "Feishu",
     "name_dingtalk": "DingTalk",
     "name_wecom": "WeCom",
+    "name_slack": "Slack",
+    "name_discord": "Discord",
     "field": {
       "app_id": {
         "title": "App ID",
@@ -154,6 +156,148 @@
         },
         "longconnection": {
           "label": "Long Connection (Enterprise App)"
+        },
+        "bot_gateway": {
+          "label": "Bot Gateway"
+        }
+      },
+      "channel_type": {
+        "title": "Channel Type",
+        "description": "Select channel type"
+      },
+      "feishu": {
+        "connection_mode": {
+          "title": "Connection Mode",
+          "description": "Select connection mode",
+          "longconnection": {
+            "label": "Long Connection (Enterprise App)"
+          },
+          "webhook": {
+            "label": "Webhook (Custom Bot)"
+          }
+        },
+        "app_id": {
+          "title": "App ID",
+          "description": "Feishu application App ID",
+          "placeholder": "cli_xxxxxxxxxx"
+        },
+        "app_secret": {
+          "title": "App Secret",
+          "description": "Feishu application App Secret",
+          "placeholder": "Your app secret"
+        },
+        "webhook_url": {
+          "title": "Webhook URL",
+          "description": "Custom bot Webhook address",
+          "placeholder": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+        }
+      },
+      "dingtalk": {
+        "connection_mode": {
+          "title": "Connection Mode",
+          "description": "Select connection mode",
+          "stream": {
+            "label": "Stream Mode (Enterprise Bot)"
+          },
+          "webhook": {
+            "label": "Webhook Robot"
+          }
+        },
+        "client_id": {
+          "title": "Client ID (AppKey)",
+          "description": "Application AppKey for Stream mode",
+          "placeholder": "dingxxxxxxxxxx"
+        },
+        "client_secret": {
+          "title": "Client Secret (AppSecret)",
+          "description": "Application AppSecret",
+          "placeholder": "Application secret"
+        },
+        "webhook_url": {
+          "title": "Webhook URL",
+          "description": "Custom bot Webhook address",
+          "placeholder": "https://oapi.dingtalk.com/robot/send?access_token=xxx"
+        },
+        "secret": {
+          "title": "Signing Secret",
+          "description": "Webhook signing secret (optional)",
+          "placeholder": "SEC..."
+        }
+      },
+      "wecom": {
+        "connection_mode": {
+          "title": "Connection Mode",
+          "description": "Select connection mode",
+          "websocket": {
+            "label": "Long Connection (Intelligent Robot)"
+          },
+          "webhook": {
+            "label": "Webhook Robot"
+          }
+        },
+        "bot_id": {
+          "title": "Bot ID",
+          "description": "Intelligent robot Bot ID",
+          "placeholder": "aib..."
+        },
+        "bot_secret": {
+          "title": "Bot Secret",
+          "description": "Intelligent robot Secret",
+          "placeholder": "Bot secret"
+        },
+        "webhook_url": {
+          "title": "Webhook URL",
+          "description": "Group bot Webhook address",
+          "placeholder": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+        }
+      },
+      "slack": {
+        "channel_type": {
+          "title": "Channel Type",
+          "description": "Select Slack integration type",
+          "slack_enterprise": {
+            "label": "Slack Enterprise"
+          },
+          "slack_connect": {
+            "label": "Slack Connect"
+          }
+        },
+        "app_id": {
+          "title": "App ID",
+          "description": "Slack application identifier",
+          "placeholder": "APP-8842-XN"
+        },
+        "app_secret": {
+          "title": "App Secret",
+          "description": "Slack application secret",
+          "placeholder": "Application secret"
+        },
+        "encrypt_key": {
+          "title": "Encrypt Key",
+          "description": "Optional AES-256 encryption key",
+          "placeholder": "Optional AES-256 Key"
+        },
+        "verification_token": {
+          "title": "Verification Token",
+          "description": "Slack provider verification token",
+          "placeholder": "Provider Token"
+        }
+      },
+      "discord": {
+        "bot_id": {
+          "title": "Bot ID",
+          "description": "Discord bot identifier",
+          "placeholder": "discord-bot-9921"
+        },
+        "bot_secret": {
+          "title": "Bot Secret",
+          "description": "Discord application secret",
+          "placeholder": "Discord application secret"
+        },
+        "verification_token": {
+          "title": "Verification Token",
+          "description": "Discord signature verification token",
+          "placeholder": "Signature token"
         }
       }
     },
@@ -171,7 +315,30 @@
     "editConnection": "Edit Connection",
     "connectionName": "Connection Name",
     "connectionNamePlaceholder": "e.g. My Feishu Bot",
+    "connectionNamePlaceholder_feishu": "e.g. My Feishu Bot",
+    "connectionNamePlaceholder_dingtalk": "e.g. DingTalk Enterprise Bot",
+    "connectionNamePlaceholder_wecom": "e.g. WeCom Gateway",
+    "connectionNamePlaceholder_slack": "e.g. Primary Slack Gateway",
+    "connectionNamePlaceholder_discord": "e.g. Community Bridge",
+    "connectionSample": {
+      "CONN_001": "Feishu Prod",
+      "CONN_002": "Feishu Dev Internal",
+      "CONN_003": "Marketing Bot",
+      "CONN_031": "DingTalk Prod",
+      "CONN_032": "DingTalk Dev",
+      "CONN_033": "Alert Bot",
+      "CONN_041": "WeCom Prod",
+      "CONN_042": "WeCom Test",
+      "CONN_043": "HR Bot",
+      "CONN_011": "Primary Slack Gateway",
+      "CONN_012": "Ops Routing Mesh",
+      "CONN_013": "Incident Relay",
+      "CONN_021": "Community Bridge",
+      "CONN_022": "Creator Updates",
+      "CONN_023": "Events Pulse"
+    },
     "edit": "Edit",
+    "settingsAction": "Settings",
     "enable": "Enable",
     "disable": "Disable",
     "delete": "Delete",
@@ -188,6 +355,8 @@
     "deleteConfirm": "Are you sure you want to delete this connection? This action cannot be undone.",
     "verifySuccess": "Configuration verified successfully",
     "verifyFailed": "Configuration verification failed",
+    "validatingConnection": "Validating...",
+    "validationTimeout": "Validation timed out. Please check network reachability and try again.",
     "createSuccess": "Created successfully",
     "updateSuccess": "Updated successfully",
     "deleteSuccess": "Deleted successfully",
@@ -204,7 +373,90 @@
     "oneOfHint": {
       "client_id_or_webhook_url": "Fill in AppKey OR Webhook URL (choose one)",
       "bot_id_or_webhook_url_or_corpid": "Fill in Bot ID, Webhook URL, or Corp ID (choose one)"
-    }
+    },
+    "ecosystem": "Channel Ecosystem",
+    "ecosystemDesc": "Integrate and manage your AI agent deployment endpoints across various enterprise platforms.",
+    "activeConnections": "Active Connections",
+    "managingEndpoints": "Managing endpoints for {{type}} integration",
+    "createNewConnection": "Create New Connection",
+    "tableConnectionName": "CONNECTION NAME",
+    "tableType": "TYPE",
+    "tableRuntimeStatus": "RUNTIME STATUS",
+    "tableSettings": "SETTINGS",
+    "tableActions": "ACTIONS",
+    "idLabel": "ID",
+    "showingConnections": "Showing {{current}} of {{total}} active connections for {{type}} type",
+    "connectionHealth": "Connection Health",
+    "averageLatency": "Average Latency",
+    "uptime24h": "Uptime (24h)",
+    "channelConnection": "Channel Connection",
+    "channelConnectionDesc": "Configure how your AI agents communicate with external platforms. Ensure credentials match your provider's developer console.",
+    "configureConnection": "Configure Connection",
+    "currentlyConnected": "Currently Connected",
+    "currentlyDisconnected": "Currently Disconnected",
+    "primaryStatus": "Primary Status",
+    "primaryStatusDesc": "Marking this as the Default will route all outgoing agent notifications through this channel unless otherwise specified in agent settings.",
+    "securityBestPractices": "Security Best Practices",
+    "securityTip1": "Rotate your App Secret every 90 days.",
+    "securityTip2": "Always use the 'Validate Connection' tool before saving changes to production.",
+    "securityTip3": "Ensure your callback URL is restricted to the Atlas IP range.",
+    "validateConnection": "Validate Connection",
+    "recentValidationTime": "4 minutes",
+    "lastValidated": "Last validated {{time}} ago",
+    "saveChanges": "Save Changes",
+    "auroraSmall": "ATLAS AURORA",
+    "auroraTitle": "Seamless Integration Engine",
+    "scrollLeft": "Scroll channels left",
+    "scrollRight": "Scroll channels right",
+    "activeMode": "ACTIVE MODE",
+    "connectionModeBadge": "CONNECTION",
+    "webhookMode": "WEBHOOK",
+    "badgeConnection": "Connection",
+    "badgeLongConnection": "Long Connection",
+    "badgeStream": "Stream",
+    "badgeWebSocket": "WebSocket",
+    "badgeWebhook": "Webhook",
+    "badgeEnterprise": "Enterprise",
+    "badgeApi": "API",
+    "badgeComingSoon": "Coming Soon",
+    "selected": "Selected",
+    "previous": "Previous",
+    "next": "Next",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "comingSoon": "Coming Soon",
+    "plannedChannelNotice": "This integration entry is reserved for upcoming native support.",
+    "plannedConnectionsEmpty": "This integration is not available yet.",
+    "cardSpecAccess": "Access",
+    "cardSpecFocus": "Focus",
+    "cardSpecStatus": "Status",
+    "cardDescription_feishu": "Enterprise app and bot messaging entry point for internal notifications and collaboration.",
+    "cardDescription_dingtalk": "Supports Stream and bot callback flows for internal alerts and automation.",
+    "cardDescription_wecom": "Covers group bot, application messaging, and WebSocket long-connection scenarios.",
+    "cardDescription_websocket": "Provides a bidirectional real-time session channel for dashboards and custom clients.",
+    "cardDescription_rest": "Standard HTTP API entry point for service integrations and task triggers.",
+    "cardDescription_sse": "One-way real-time event delivery channel for browsers and streaming clients.",
+    "cardDescription_slack": "Reserved collaboration integration entry. Native connection support will be added later.",
+    "cardDescription_discord": "Reserved community bot integration entry. Native connection support will be added later.",
+    "cardDescription_generic": "Manage this channel access configuration and connection state through Atlas.",
+    "cardValue_feishuAccess": "Long Connection / Webhook",
+    "cardValue_feishuFocus": "Enterprise App & Bot",
+    "cardValue_dingtalkAccess": "Stream / Webhook",
+    "cardValue_dingtalkFocus": "Alerts & Automation",
+    "cardValue_wecomAccess": "Webhook / App / WebSocket",
+    "cardValue_wecomFocus": "Group Bot & App Messages",
+    "cardValue_websocketAccess": "Persistent Socket",
+    "cardValue_websocketFocus": "Bidirectional Sessions",
+    "cardValue_restAccess": "HTTP Endpoint",
+    "cardValue_restFocus": "Request / Response",
+    "cardValue_sseAccess": "Event Stream",
+    "cardValue_sseFocus": "Continuous Push",
+    "cardValue_slackAccess": "Reserved Workspace Entry",
+    "cardValue_slackStatus": "Planned, creation disabled",
+    "cardValue_discordAccess": "Reserved Bot Entry",
+    "cardValue_discordStatus": "Planned, creation disabled",
+    "cardValue_genericAccess": "Managed Endpoint",
+    "cardValue_genericFocus": "Connection Control"
   },
   "model": {
     "title": "Model Configs",

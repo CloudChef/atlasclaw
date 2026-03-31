@@ -77,9 +77,12 @@ class TestFeishuHandler:
             "app_id": "test_app_id",
             "app_secret": "test_app_secret",
         }
-        result = await handler.validate_config(config)
+        with patch.object(handler, "_verify_credentials", AsyncMock(return_value=True)) as mock_verify:
+            result = await handler.validate_config(config)
+
         assert result.valid is True
         assert len(result.errors) == 0
+        mock_verify.assert_awaited_once_with(config)
 
     @pytest.mark.asyncio
     async def test_validate_config_missing_app_id(self):
@@ -111,6 +114,17 @@ class TestFeishuHandler:
         result = await handler.validate_config(config)
         assert result.valid is False
         assert len(result.errors) >= 2
+
+    @pytest.mark.asyncio
+    async def test_verify_webhook_endpoint_rejects_insecure_url(self):
+        """Test webhook validation rejects non-HTTPS URLs."""
+        handler = FeishuHandler()
+
+        result = await handler._verify_webhook_endpoint(
+            "http://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+        )
+
+        assert result == "webhook_url must use HTTPS"
 
     def test_describe_schema(self):
         """Test schema description returns valid structure."""
@@ -347,12 +361,15 @@ class TestFeishuConnectionMode:
         handler = FeishuHandler()
         
         # Valid long connection config
-        result = await handler.validate_config({
+        valid_config = {
             "connection_mode": "longconnection",
             "app_id": "cli_test",
             "app_secret": "test_secret"
-        })
+        }
+        with patch.object(handler, "_verify_credentials", AsyncMock(return_value=True)) as mock_verify:
+            result = await handler.validate_config(valid_config)
         assert result.valid is True
+        mock_verify.assert_awaited_once_with(valid_config)
         
         # Invalid long connection config (missing app_secret)
         result = await handler.validate_config({
@@ -367,11 +384,14 @@ class TestFeishuConnectionMode:
         handler = FeishuHandler()
         
         # Valid webhook config
-        result = await handler.validate_config({
+        valid_config = {
             "connection_mode": "webhook",
             "webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
-        })
+        }
+        with patch.object(handler, "_verify_webhook_endpoint", AsyncMock(return_value=None)) as mock_verify:
+            result = await handler.validate_config(valid_config)
         assert result.valid is True
+        mock_verify.assert_awaited_once_with(valid_config["webhook_url"])
         
         # Invalid webhook config (missing webhook_url)
         result = await handler.validate_config({

@@ -3,7 +3,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import sys
+from types import ModuleType
+
 import pytest
+from unittest.mock import AsyncMock, patch
 
 from app.atlasclaw.channels.models import (
     ChannelMode,
@@ -76,26 +81,32 @@ class TestDingTalkHandler:
         """Test configuration validation for webhook mode."""
         handler = DingTalkHandler()
         
-        result = await handler.validate_config({
+        config = {
             "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=xxx"
-        })
+        }
+        with patch.object(handler, "_verify_webhook_endpoint", AsyncMock(return_value=None)) as mock_verify:
+            result = await handler.validate_config(config)
         
         assert isinstance(result, ChannelValidationResult)
         assert result.valid is True
+        mock_verify.assert_awaited_once_with(config["webhook_url"], None)
 
     @pytest.mark.asyncio
     async def test_validate_config_client_id(self):
         """Test configuration validation for client_id (app_key) mode."""
         handler = DingTalkHandler()
         
-        result = await handler.validate_config({
+        config = {
             "connection_mode": "stream",
             "client_id": "dingxxxxxxxx",
             "client_secret": "secret123"
-        })
+        }
+        with patch.object(handler, "_verify_credentials", AsyncMock(return_value=True)) as mock_verify:
+            result = await handler.validate_config(config)
         
         assert isinstance(result, ChannelValidationResult)
         assert result.valid is True
+        mock_verify.assert_awaited_once_with(config)
 
     @pytest.mark.asyncio
     async def test_validate_config_empty(self):
@@ -211,26 +222,32 @@ class TestWeComHandler:
         """Test configuration validation for webhook mode."""
         handler = WeComHandler()
         
-        result = await handler.validate_config({
+        config = {
             "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
-        })
+        }
+        with patch.object(handler, "_verify_webhook_endpoint", AsyncMock(return_value=None)) as mock_verify:
+            result = await handler.validate_config(config)
         
         assert isinstance(result, ChannelValidationResult)
         assert result.valid is True
+        mock_verify.assert_awaited_once_with(config["webhook_url"])
 
     @pytest.mark.asyncio
     async def test_validate_config_websocket(self):
         """Test configuration validation for WebSocket (bot) mode."""
         handler = WeComHandler()
         
-        result = await handler.validate_config({
+        config = {
             "connection_mode": "websocket",
             "bot_id": "aibxxxxxxxx",
             "bot_secret": "secret123"
-        })
+        }
+        with patch.object(handler, "_verify_websocket_credentials", AsyncMock(return_value=True)) as mock_verify:
+            result = await handler.validate_config(config)
         
         assert isinstance(result, ChannelValidationResult)
         assert result.valid is True
+        mock_verify.assert_awaited_once_with(config)
 
     @pytest.mark.asyncio
     async def test_validate_config_empty(self):
@@ -242,6 +259,56 @@ class TestWeComHandler:
         assert isinstance(result, ChannelValidationResult)
         assert result.valid is False
         assert len(result.errors) > 0
+
+    @pytest.mark.asyncio
+    async def test_verify_webhook_endpoint_rejects_insecure_url(self):
+        """Test webhook validation rejects non-HTTPS URLs."""
+        handler = WeComHandler()
+
+        result = await handler._verify_webhook_endpoint(
+            "http://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+        )
+
+        assert result == "webhook_url must use HTTPS"
+
+    @pytest.mark.asyncio
+    async def test_connect_websocket_waits_for_async_handshake(self):
+        """Test WebSocket connect tolerates async SDK handshake delay."""
+
+        class SlowConnectWSClient:
+            def __init__(self, bot_id, secret):
+                self.bot_id = bot_id
+                self.secret = secret
+                self.is_connected = False
+
+            def on(self, event_name, callback):
+                return None
+
+            async def connect(self):
+                async def mark_connected():
+                    await asyncio.sleep(1.3)
+                    self.is_connected = True
+
+                asyncio.create_task(mark_connected())
+
+            async def disconnect(self):
+                self.is_connected = False
+
+        fake_sdk = ModuleType("wecom_aibot_sdk")
+        fake_sdk.WSClient = SlowConnectWSClient
+
+        handler = WeComHandler({
+            "connection_mode": "websocket",
+            "bot_id": "aibxxxxxxxx",
+            "bot_secret": "secret123",
+        })
+
+        with patch.dict(sys.modules, {"wecom_aibot_sdk": fake_sdk}):
+            result = await handler._connect_websocket()
+
+        assert result is True
+        assert handler.get_status() == ConnectionStatus.CONNECTED
+        await handler.stop()
 
     def test_describe_schema(self):
         """Test schema description."""

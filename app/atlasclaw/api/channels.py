@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +24,7 @@ router = APIRouter(prefix="/api/channels", tags=["channels"])
 
 # Global channel manager instance (will be set during app startup)
 _channel_manager: Optional[ChannelManager] = None
+VALIDATION_TIMEOUT_SECONDS = 3.2
 
 
 def get_channel_manager() -> ChannelManager:
@@ -353,8 +355,17 @@ async def validate_config(
     
     try:
         handler = handler_class(data.config)
-        result = await handler.validate_config(data.config)
+        result = await asyncio.wait_for(
+            handler.validate_config(data.config),
+            timeout=VALIDATION_TIMEOUT_SECONDS,
+        )
         return ValidationResponse(valid=result.valid, errors=result.errors)
+    except asyncio.TimeoutError:
+        logger.warning("Config validation timed out for %s", channel_type)
+        return ValidationResponse(
+            valid=False,
+            errors=[f"Validation timed out after {int(VALIDATION_TIMEOUT_SECONDS)} seconds"],
+        )
     except Exception as e:
         logger.error(f"Config validation failed for {channel_type}: {e}")
         return ValidationResponse(valid=False, errors=[str(e)])
@@ -390,8 +401,17 @@ async def verify_connection(
     try:
         config = _decrypt_config(channel.config)
         handler = handler_class(config)
-        result = await handler.validate_config(config)
+        result = await asyncio.wait_for(
+            handler.validate_config(config),
+            timeout=VALIDATION_TIMEOUT_SECONDS,
+        )
         return ValidationResponse(valid=result.valid, errors=result.errors)
+    except asyncio.TimeoutError:
+        logger.warning("Connection verification timed out for %s", connection_id)
+        return ValidationResponse(
+            valid=False,
+            errors=[f"Validation timed out after {int(VALIDATION_TIMEOUT_SECONDS)} seconds"],
+        )
     except Exception as e:
         logger.error(f"Validation failed for {connection_id}: {e}")
         return ValidationResponse(valid=False, errors=[str(e)])

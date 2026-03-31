@@ -69,6 +69,8 @@
     "name_feishu": "飞书",
     "name_dingtalk": "钉钉",
     "name_wecom": "企业微信",
+    "name_slack": "Slack",
+    "name_discord": "Discord",
     "field": {
       "app_id": {
         "title": "App ID",
@@ -154,6 +156,148 @@
         },
         "longconnection": {
           "label": "长连接（企业自建应用）"
+        },
+        "bot_gateway": {
+          "label": "机器人网关"
+        }
+      },
+      "channel_type": {
+        "title": "渠道类型",
+        "description": "选择渠道类型"
+      },
+      "feishu": {
+        "connection_mode": {
+          "title": "对接方式",
+          "description": "选择对接方式",
+          "longconnection": {
+            "label": "长连接（企业自建应用）"
+          },
+          "webhook": {
+            "label": "Webhook（自定义机器人）"
+          }
+        },
+        "app_id": {
+          "title": "App ID",
+          "description": "飞书应用 App ID",
+          "placeholder": "cli_xxxxxxxxxx"
+        },
+        "app_secret": {
+          "title": "App Secret",
+          "description": "飞书应用 App Secret",
+          "placeholder": "应用密钥"
+        },
+        "webhook_url": {
+          "title": "Webhook 地址",
+          "description": "自定义机器人 Webhook 地址",
+          "placeholder": "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+        }
+      },
+      "dingtalk": {
+        "connection_mode": {
+          "title": "对接方式",
+          "description": "选择对接方式",
+          "stream": {
+            "label": "Stream 模式（企业内部应用）"
+          },
+          "webhook": {
+            "label": "Webhook 机器人"
+          }
+        },
+        "client_id": {
+          "title": "应用 AppKey",
+          "description": "Stream 模式的应用 AppKey",
+          "placeholder": "dingxxxxxxxxxx"
+        },
+        "client_secret": {
+          "title": "应用 AppSecret",
+          "description": "应用 AppSecret",
+          "placeholder": "应用密钥"
+        },
+        "webhook_url": {
+          "title": "Webhook 地址",
+          "description": "自定义机器人 Webhook 地址",
+          "placeholder": "https://oapi.dingtalk.com/robot/send?access_token=xxx"
+        },
+        "secret": {
+          "title": "签名密钥",
+          "description": "Webhook 签名密钥（可选）",
+          "placeholder": "SEC..."
+        }
+      },
+      "wecom": {
+        "connection_mode": {
+          "title": "对接方式",
+          "description": "选择对接方式",
+          "websocket": {
+            "label": "长连接（智能机器人）"
+          },
+          "webhook": {
+            "label": "Webhook 机器人"
+          }
+        },
+        "bot_id": {
+          "title": "Bot ID",
+          "description": "智能机器人 Bot ID",
+          "placeholder": "aib..."
+        },
+        "bot_secret": {
+          "title": "Bot Secret",
+          "description": "智能机器人 Secret",
+          "placeholder": "机器人密钥"
+        },
+        "webhook_url": {
+          "title": "Webhook 地址",
+          "description": "群机器人 Webhook 地址",
+          "placeholder": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+        }
+      },
+      "slack": {
+        "channel_type": {
+          "title": "渠道类型",
+          "description": "选择 Slack 集成类型",
+          "slack_enterprise": {
+            "label": "Slack Enterprise"
+          },
+          "slack_connect": {
+            "label": "Slack Connect"
+          }
+        },
+        "app_id": {
+          "title": "App ID",
+          "description": "Slack 应用标识",
+          "placeholder": "APP-8842-XN"
+        },
+        "app_secret": {
+          "title": "App Secret",
+          "description": "Slack 应用密钥",
+          "placeholder": "应用密钥"
+        },
+        "encrypt_key": {
+          "title": "加密密钥",
+          "description": "可选的 AES-256 加密密钥",
+          "placeholder": "可选 AES-256 密钥"
+        },
+        "verification_token": {
+          "title": "验证 Token",
+          "description": "Slack 提供方验证令牌",
+          "placeholder": "提供方令牌"
+        }
+      },
+      "discord": {
+        "bot_id": {
+          "title": "Bot ID",
+          "description": "Discord 机器人标识",
+          "placeholder": "discord-bot-9921"
+        },
+        "bot_secret": {
+          "title": "Bot Secret",
+          "description": "Discord 应用密钥",
+          "placeholder": "Discord 应用密钥"
+        },
+        "verification_token": {
+          "title": "验证 Token",
+          "description": "Discord 签名校验令牌",
+          "placeholder": "签名令牌"
         }
       }
     },
@@ -171,7 +315,30 @@
     "editConnection": "编辑连接",
     "connectionName": "连接名称",
     "connectionNamePlaceholder": "例如：我的飞书机器人",
+    "connectionNamePlaceholder_feishu": "例如：我的飞书机器人",
+    "connectionNamePlaceholder_dingtalk": "例如：钉钉企业机器人",
+    "connectionNamePlaceholder_wecom": "例如：企业微信网关",
+    "connectionNamePlaceholder_slack": "例如：Slack 主网关",
+    "connectionNamePlaceholder_discord": "例如：社区桥接器",
+    "connectionSample": {
+      "CONN_001": "飞书生产环境",
+      "CONN_002": "飞书开发环境",
+      "CONN_003": "营销机器人",
+      "CONN_031": "钉钉生产环境",
+      "CONN_032": "钉钉开发环境",
+      "CONN_033": "告警机器人",
+      "CONN_041": "企微生产环境",
+      "CONN_042": "企微测试环境",
+      "CONN_043": "人事机器人",
+      "CONN_011": "Slack 主网关",
+      "CONN_012": "运维路由网格",
+      "CONN_013": "事件中继",
+      "CONN_021": "社区桥接器",
+      "CONN_022": "创作者更新",
+      "CONN_023": "活动脉冲"
+    },
     "edit": "编辑",
+    "settingsAction": "设置",
     "enable": "启用",
     "disable": "禁用",
     "delete": "删除",
@@ -188,6 +355,8 @@
     "deleteConfirm": "确定要删除这个连接吗？此操作不可恢复。",
     "verifySuccess": "配置验证通过",
     "verifyFailed": "配置验证失败",
+    "validatingConnection": "验证中...",
+    "validationTimeout": "验证超时，请检查网络连通性后重试。",
     "createSuccess": "创建成功",
     "updateSuccess": "更新成功",
     "deleteSuccess": "删除成功",
@@ -204,7 +373,90 @@
     "oneOfHint": {
       "client_id_or_webhook_url": "填写 AppKey 或 Webhook 地址（二选一）",
       "bot_id_or_webhook_url_or_corpid": "填写 Bot ID、Webhook 地址或企业 ID（三选一）"
-    }
+    },
+    "ecosystem": "频道生态系统",
+    "ecosystemDesc": "集成和管理您的 AI Agent 在各类企业平台上的部署端点。",
+    "activeConnections": "活跃连接",
+    "managingEndpoints": "管理 {{type}} 集成的端点",
+    "createNewConnection": "创建新连接",
+    "tableConnectionName": "连接名称",
+    "tableType": "类型",
+    "tableRuntimeStatus": "运行状态",
+    "tableSettings": "设置",
+    "tableActions": "操作",
+    "idLabel": "ID",
+    "showingConnections": "显示 {{type}} 类型的 {{current}}/{{total}} 个活跃连接",
+    "connectionHealth": "连接健康",
+    "averageLatency": "平均延迟",
+    "uptime24h": "运行时间 (24h)",
+    "channelConnection": "频道连接",
+    "channelConnectionDesc": "配置您的 AI Agent 与外部平台的通信方式。确保凭据与供应商的开发者控制台一致。",
+    "configureConnection": "配置连接",
+    "currentlyConnected": "当前已连接",
+    "currentlyDisconnected": "当前未连接",
+    "primaryStatus": "主连接状态",
+    "primaryStatusDesc": "将此标记为默认会将所有 Agent 通知通过此频道发送，除非在 Agent 设置中另行指定。",
+    "securityBestPractices": "安全最佳实践",
+    "securityTip1": "每 90 天轮换一次 App Secret。",
+    "securityTip2": "保存到生产环境前始终使用「验证连接」工具。",
+    "securityTip3": "确保回调 URL 限制在 Atlas IP 范围内。",
+    "validateConnection": "验证连接",
+    "recentValidationTime": "4 分钟",
+    "lastValidated": "上次验证于 {{time}} 前",
+    "saveChanges": "保存更改",
+    "auroraSmall": "ATLAS AURORA",
+    "auroraTitle": "无缝集成引擎",
+    "scrollLeft": "向左滚动渠道列表",
+    "scrollRight": "向右滚动渠道列表",
+    "activeMode": "活跃模式",
+    "connectionModeBadge": "连接",
+    "webhookMode": "Webhook",
+    "badgeConnection": "连接",
+    "badgeLongConnection": "长连接",
+    "badgeStream": "Stream",
+    "badgeWebSocket": "WebSocket",
+    "badgeWebhook": "Webhook",
+    "badgeEnterprise": "企业版",
+    "badgeApi": "API",
+    "badgeComingSoon": "即将支持",
+    "selected": "已选择",
+    "previous": "上一页",
+    "next": "下一页",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "comingSoon": "即将支持",
+    "plannedChannelNotice": "该集成入口已保留，后续会补充原生支持。",
+    "plannedConnectionsEmpty": "该集成暂未开放。",
+    "cardSpecAccess": "接入方式",
+    "cardSpecFocus": "能力焦点",
+    "cardSpecStatus": "当前状态",
+    "cardDescription_feishu": "企业应用与机器人消息接入，适合组织内通知与协同交互。",
+    "cardDescription_dingtalk": "支持 Stream 与机器人回调，适合企业内部告警与自动化消息。",
+    "cardDescription_wecom": "覆盖群机器人、应用消息与 WebSocket 长连场景。",
+    "cardDescription_websocket": "为前端面板或自定义客户端提供双向实时会话通道。",
+    "cardDescription_rest": "提供标准 HTTP API 入口，适合服务集成与任务触发。",
+    "cardDescription_sse": "面向浏览器和客户端的单向实时事件推送通道。",
+    "cardDescription_slack": "预留企业协作集成入口，后续会补充原生连接能力。",
+    "cardDescription_discord": "预留社区机器人集成入口，后续会补充原生连接能力。",
+    "cardDescription_generic": "通过 Atlas 管理该渠道的接入配置与连接状态。",
+    "cardValue_feishuAccess": "长连接 / Webhook",
+    "cardValue_feishuFocus": "企业应用与机器人",
+    "cardValue_dingtalkAccess": "Stream / Webhook",
+    "cardValue_dingtalkFocus": "内部告警与自动化",
+    "cardValue_wecomAccess": "Webhook / 应用 / WebSocket",
+    "cardValue_wecomFocus": "群机器人与应用消息",
+    "cardValue_websocketAccess": "持久 Socket",
+    "cardValue_websocketFocus": "双向实时会话",
+    "cardValue_restAccess": "HTTP Endpoint",
+    "cardValue_restFocus": "请求响应与触发",
+    "cardValue_sseAccess": "Event Stream",
+    "cardValue_sseFocus": "单向连续推送",
+    "cardValue_slackAccess": "预留 Workspace 入口",
+    "cardValue_slackStatus": "规划中，暂不可创建",
+    "cardValue_discordAccess": "预留 Bot 入口",
+    "cardValue_discordStatus": "规划中，暂不可创建",
+    "cardValue_genericAccess": "可配置接入",
+    "cardValue_genericFocus": "统一连接管理"
   },
   "model": {
     "title": "模型配置",
