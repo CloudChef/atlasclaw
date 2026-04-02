@@ -58,12 +58,35 @@ const routes = [
 let currentAuthInfo = null
 let currentAgentInfo = null
 
+const EMBED_MODE_VALUES = new Set(['1', 'true', 'embed', 'chat-only'])
+
 /**
  * Get current authenticated user info
  * @returns {Object|null}
  */
 export function getAuthInfo() {
   return currentAuthInfo
+}
+
+function isEmbedMode() {
+  const params = new URLSearchParams(window.location.search)
+  const embedValue = (
+    params.get('embed') ||
+    params.get('layout') ||
+    params.get('mode') ||
+    ''
+  ).toLowerCase()
+  return EMBED_MODE_VALUES.has(embedValue)
+}
+
+function applyLayoutMode() {
+  const embedMode = isEmbedMode()
+  document.documentElement.classList.toggle('embed-mode', embedMode)
+  if (document.body) {
+    document.body.classList.toggle('embed-mode', embedMode)
+    document.body.dataset.layoutMode = embedMode ? 'embed' : 'default'
+  }
+  return embedMode
 }
 
 /**
@@ -73,6 +96,8 @@ export async function initApp() {
   console.log('[App] Initializing SPA...')
 
   try {
+    const embedMode = applyLayoutMode()
+
     // 1. Install auth fetch interceptor
     installAuthFetchInterceptor()
 
@@ -115,14 +140,21 @@ export async function initApp() {
     const sidebarContainer = document.getElementById('sidebar')
     const headerContainer = document.getElementById('app-header')
 
-    if (sidebarContainer) {
+    if (!embedMode && sidebarContainer) {
       renderSidebar(sidebarContainer, { authInfo })
+    } else if (sidebarContainer) {
+      sidebarContainer.innerHTML = ''
     }
 
-    if (headerContainer) {
+    if (!embedMode && headerContainer) {
       renderHeader(headerContainer, { authInfo })
       if (currentAgentInfo?.name) {
         updateHeaderTitleText(currentAgentInfo.name)
+      }
+    } else if (headerContainer) {
+      headerContainer.innerHTML = ''
+      if (currentAgentInfo?.name) {
+        document.title = currentAgentInfo.name
       }
     }
 
@@ -136,10 +168,12 @@ export async function initApp() {
       contentContainer: document.getElementById('page-content'),
       onBeforeRoute: (path, route) => {
         // Update header title
-        if (path === '/' && currentAgentInfo?.name) {
-          updateHeaderTitleText(currentAgentInfo.name)
-        } else if (route && route.title) {
-          updateHeaderTitle(route.title)
+        if (!embedMode) {
+          if (path === '/' && currentAgentInfo?.name) {
+            updateHeaderTitleText(currentAgentInfo.name)
+          } else if (route && route.title) {
+            updateHeaderTitle(route.title)
+          }
         }
       },
       onAfterRoute: () => {

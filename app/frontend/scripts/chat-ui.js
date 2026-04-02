@@ -394,6 +394,26 @@ async function handleStreamWithSignals(runId, signals, context) {
   let thinkingTimerInterval = null
   let thinkingFinalized = false
   let hasThinkingContent = false
+  let settled = false
+  let statusPollTimer = null
+
+  async function fetchRunStatus() {
+    const response = await fetch(buildApiUrl(`/api/agent/runs/${runId}`), {
+      method: 'GET',
+      credentials: 'include'
+    })
+    if (!response.ok) {
+      throw new Error(`Run status request failed: ${response.status}`)
+    }
+    return response.json()
+  }
+
+  function cleanupStatusPoll() {
+    if (statusPollTimer) {
+      clearInterval(statusPollTimer)
+      statusPollTimer = null
+    }
+  }
 
   function updateUI() {
     try {
@@ -410,6 +430,33 @@ async function handleStreamWithSignals(runId, signals, context) {
       scrollToBottom()
     } catch (e) {
       console.warn('[ChatUI] Failed to update UI:', e)
+    }
+  }
+
+  async function settleRun({ isError = false, errorMessage = '' } = {}) {
+    if (settled) return
+    settled = true
+    cleanupStatusPoll()
+    assistantUpdatePending = false
+    thinkingFinalized = true
+    stopThinkingTimer()
+
+    if (isError) {
+      try {
+        signals.onResponse({
+          html: `<p style="color: #d32f2f;">Error: ${escapeHtml(errorMessage || 'Unknown error')}</p>`,
+          overwrite: true
+        })
+      } catch (_error) {}
+    } else if (hasRenderedDelta || hasThinkingContent) {
+      updateUI()
+    }
+
+    await notifyRunCompleted(context.sessionKey)
+    signals.onClose()
+    if (currentStreamHandler) {
+      currentStreamHandler.abort()
+      currentStreamHandler = null
     }
   }
 
@@ -436,6 +483,27 @@ async function handleStreamWithSignals(runId, signals, context) {
   }
 
   return new Promise((resolve) => {
+    statusPollTimer = setInterval(async () => {
+      if (settled) return
+      try {
+        const status = await fetchRunStatus()
+        if (status.status === 'completed') {
+          await settleRun()
+          resolve()
+          return
+        }
+        if (status.status === 'error' || status.status === 'timeout' || status.status === 'aborted') {
+          await settleRun({
+            isError: true,
+            errorMessage: status.error || status.status
+          })
+          resolve()
+        }
+      } catch (error) {
+        console.warn('[ChatUI] Failed to poll run status:', error)
+      }
+    }, 1500)
+
     currentStreamHandler = createStreamHandler(runId, {
       onStart: () => {},
       onDelta: (data) => {
@@ -526,15 +594,7 @@ async function handleStreamWithSignals(runId, signals, context) {
       },
       onEnd: () => {
         const doFinalRender = async () => {
-          assistantUpdatePending = false
-          thinkingFinalized = true
-          stopThinkingTimer()
-          if (hasRenderedDelta || hasThinkingContent) {
-            updateUI()
-          }
-          await notifyRunCompleted(context.sessionKey)
-          signals.onClose()
-          currentStreamHandler = null
+          await settleRun()
           resolve()
         }
         setTimeout(() => {
@@ -542,18 +602,30 @@ async function handleStreamWithSignals(runId, signals, context) {
         }, 200)
       },
       onError: async (error) => {
-        thinkingFinalized = true
-        stopThinkingTimer()
         try {
-          signals.onResponse({
-            html: `<p style="color: #d32f2f;">Error: ${escapeHtml(error?.message || 'Unknown error')}</p>`,
-            overwrite: true
+          const status = await fetchRunStatus()
+          if (status.status === 'completed') {
+            await settleRun()
+            resolve()
+            return
+          }
+          if (status.status === 'error' || status.status === 'timeout' || status.status === 'aborted') {
+            await settleRun({
+              isError: true,
+              errorMessage: status.error || error?.message || status.status
+            })
+            resolve()
+            return
+          }
+          console.warn('[ChatUI] Stream error while run is still active, waiting for poll fallback:', error)
+          return
+        } catch (_statusError) {
+          await settleRun({
+            isError: true,
+            errorMessage: error?.message || 'Unknown error'
           })
-        } catch (e) {}
-        await notifyRunCompleted(context.sessionKey)
-        signals.onClose()
-        currentStreamHandler = null
-        resolve()
+          resolve()
+        }
       }
     })
 

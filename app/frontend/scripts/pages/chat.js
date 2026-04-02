@@ -16,6 +16,16 @@ let searchQuery = ''
 let pageContainer = null
 let currentAgentName = 'AtlasClaw'
 
+function getSidebarContentContainer() {
+  return document.getElementById('sidebar-dynamic-content')
+}
+
+function refreshSidebarContent() {
+  const sidebarContent = getSidebarContentContainer()
+  if (!sidebarContent) return
+  renderSidebarContent(sidebarContent)
+}
+
 export async function mount(container) {
   pageContainer = container
 
@@ -73,7 +83,7 @@ export async function mount(container) {
 
 export async function unmount() {
   abortCurrentStream()
-  const sidebarContent = document.getElementById('sidebar-dynamic-content')
+  const sidebarContent = getSidebarContentContainer()
   if (sidebarContent) sidebarContent.innerHTML = ''
   pageContainer = null
   chatElement = null
@@ -84,7 +94,7 @@ export async function unmount() {
 }
 
 async function loadSessions() {
-  const sidebarContent = document.getElementById('sidebar-dynamic-content')
+  const sidebarContent = getSidebarContentContainer()
   if (!sidebarContent) return
 
   try {
@@ -112,6 +122,8 @@ function ensureActiveSessionEntry() {
 }
 
 function renderSidebarContent(container) {
+  if (!container) return
+
   const filtered = getFilteredSessions()
   const itemsHtml = filtered.map((session) => {
     const isActive = session.session_key === currentSessionKey
@@ -167,7 +179,7 @@ async function handleSessionClick(event) {
   setSessionKey(nextKey)
   currentSessionKey = nextKey
   await activateSession(nextKey)
-  renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
+  refreshSidebarContent()
   syncHeaderTitle()
 }
 
@@ -180,7 +192,7 @@ function handleUserTurnStarted({ sessionKey, messageText }) {
     emptyState.classList.add('hidden')
   }
   pageContainer?.classList.remove('chat-empty-mode')
-  renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
+  refreshSidebarContent()
   syncHeaderTitle()
 }
 
@@ -276,7 +288,7 @@ async function deleteCurrentSession(sessionKey) {
       setSessionKey(currentSessionKey)
       await activateSession(currentSessionKey)
     }
-    renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
+    refreshSidebarContent()
     syncHeaderTitle()
   } catch (error) {
     console.error('[ChatPage] Failed to delete session:', error)

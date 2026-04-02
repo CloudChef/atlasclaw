@@ -4,6 +4,26 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="app.title">AtlasClaw</title>
+    <script>
+      (function () {
+        const params = new URLSearchParams(window.location.search)
+        const embedValue = (
+          params.get('embed') ||
+          params.get('layout') ||
+          params.get('mode') ||
+          ''
+        ).toLowerCase()
+        const isEmbed =
+          embedValue === '1' ||
+          embedValue === 'true' ||
+          embedValue === 'embed' ||
+          embedValue === 'chat-only'
+
+        if (isEmbed) {
+          document.documentElement.classList.add('embed-mode')
+        }
+      })()
+    </script>
     <!-- Deep Chat - loaded globally for chat page -->
     <script type="module" src="/static/deepChat.bundle.js"></script>
     <!-- Styles -->

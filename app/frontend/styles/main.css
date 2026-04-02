@@ -38,6 +38,17 @@ body {
     background: var(--color-neutral);
 }
 
+html.embed-mode,
+html.embed-mode body {
+    height: 100%;
+}
+
+html.embed-mode body {
+    display: block;
+    overflow: hidden;
+    background: linear-gradient(180deg, #f8f9fc 0%, #ffffff 100%);
+}
+
 /* Left Sidebar */
 .sidebar {
     width: var(--sidebar-width);
@@ -45,6 +56,11 @@ body {
     display: flex;
     flex-direction: column;
     border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+html.embed-mode .sidebar,
+html.embed-mode .chat-header {
+    display: none !important;
 }
 
 .sidebar-header {
@@ -185,6 +201,12 @@ body {
     overflow: hidden;
 }
 
+html.embed-mode .main-content {
+    width: 100vw;
+    height: 100vh;
+    min-height: 100vh;
+}
+
 /* SPA Page Content Container */
 #page-content {
     flex: 1;
@@ -192,6 +214,11 @@ body {
     flex-direction: column;
     overflow-y: auto;
     min-height: 0;
+}
+
+html.embed-mode #page-content {
+    height: 100%;
+    overflow: hidden;
 }
 
 .chat-header {
@@ -297,6 +324,10 @@ body {
         linear-gradient(180deg, #f8f9fc 0%, #ffffff 100%);
 }
 
+html.embed-mode .chat-canvas-shell {
+    padding: 12px 16px 16px;
+}
+
 .chat-canvas-frame {
     position: relative;
     height: 100%;
@@ -313,6 +344,10 @@ body {
     justify-content: center;
     text-align: center;
     padding: 0 24px 180px;
+}
+
+html.embed-mode .chat-empty-state {
+    padding: 0 24px 156px;
 }
 
 .chat-empty-state.hidden {
