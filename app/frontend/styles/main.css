@@ -38,6 +38,17 @@ body {
     background: var(--color-neutral);
 }
 
+html.embed-mode,
+html.embed-mode body {
+    height: 100%;
+}
+
+html.embed-mode body {
+    display: block;
+    overflow: hidden;
+    background: #ffffff;
+}
+
 /* Left Sidebar */
 .sidebar {
     width: var(--sidebar-width);
@@ -45,6 +56,10 @@ body {
     display: flex;
     flex-direction: column;
     border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+html.embed-mode .sidebar {
+    display: none !important;
 }
 
 .sidebar-header {
@@ -185,6 +200,13 @@ body {
     overflow: hidden;
 }
 
+html.embed-mode .main-content {
+    width: 100vw;
+    height: 100vh;
+    min-height: 100vh;
+    background: #ffffff;
+}
+
 /* SPA Page Content Container */
 #page-content {
     flex: 1;
@@ -192,6 +214,12 @@ body {
     flex-direction: column;
     overflow-y: auto;
     min-height: 0;
+}
+
+html.embed-mode #page-content {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
 }
 
 .chat-header {
@@ -203,6 +231,11 @@ body {
     align-items: center;
     position: relative;
     z-index: 50;
+}
+
+html.embed-mode .chat-header {
+    background: #ffffff;
+    backdrop-filter: none;
 }
 
 .chat-header-title,
@@ -217,6 +250,10 @@ body {
     display: flex;
     align-items: center;
     justify-self: end;
+}
+
+html.embed-mode .header-actions {
+    display: none;
 }
 
 .user-pill {
@@ -280,6 +317,7 @@ body {
 
 .chat-page-shell,
 .chat-wrapper {
+    height: 100%;
     flex: 1;
     overflow: hidden;
     display: flex;
@@ -290,6 +328,8 @@ body {
 .chat-canvas-shell {
     position: relative;
     flex: 1;
+    display: flex;
+    flex-direction: column;
     min-height: 0;
     padding: 18px 24px 26px;
     background:
@@ -297,9 +337,15 @@ body {
         linear-gradient(180deg, #f8f9fc 0%, #ffffff 100%);
 }
 
+html.embed-mode .chat-canvas-shell {
+    padding: 12px 16px 16px;
+    background: #ffffff;
+}
+
 .chat-canvas-frame {
     position: relative;
-    height: 100%;
+    flex: 1;
+    display: flex;
     min-height: 0;
 }
 
@@ -313,6 +359,10 @@ body {
     justify-content: center;
     text-align: center;
     padding: 0 24px 180px;
+}
+
+html.embed-mode .chat-empty-state {
+    padding: 0 24px 120px;
 }
 
 .chat-empty-state.hidden {
@@ -342,6 +392,8 @@ body {
 deep-chat {
     width: 100%;
     height: 100%;
+    flex: 1;
+    min-height: 0;
     border: none;
     background: transparent !important;
 }
@@ -349,6 +401,10 @@ deep-chat {
 deep-chat::part(container) {
     max-width: 100% !important;
     width: 100% !important;
+    height: 100% !important;
+    min-height: 0 !important;
+    display: flex !important;
+    flex-direction: column !important;
     border: none !important;
     background: transparent !important;
     box-shadow: none !important;
@@ -366,6 +422,7 @@ deep-chat::part(chat) {
     display: flex !important;
     flex-direction: column !important;
     height: 100% !important;
+    min-height: 0 !important;
     background: transparent !important;
 }
 

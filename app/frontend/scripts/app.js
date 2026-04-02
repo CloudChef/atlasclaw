@@ -12,6 +12,7 @@ import { initI18n, updatePageTranslations, updateContainerTranslations } from '.
 import { renderSidebar } from './components/sidebar.js'
 import { renderHeader, updateHeaderTitle, updateHeaderTitleText } from './components/header.js'
 import { getAgentInfo } from './api-client.js'
+import { applyEmbedModeClass } from './embed-mode.js'
 
 /**
  * Route table - lazy loaded page modules
@@ -73,6 +74,8 @@ export async function initApp() {
   console.log('[App] Initializing SPA...')
 
   try {
+    const embedMode = applyEmbedModeClass()
+
     // 1. Install auth fetch interceptor
     installAuthFetchInterceptor()
 
@@ -115,8 +118,10 @@ export async function initApp() {
     const sidebarContainer = document.getElementById('sidebar')
     const headerContainer = document.getElementById('app-header')
 
-    if (sidebarContainer) {
+    if (!embedMode && sidebarContainer) {
       renderSidebar(sidebarContainer, { authInfo })
+    } else if (sidebarContainer) {
+      sidebarContainer.innerHTML = ''
     }
 
     if (headerContainer) {

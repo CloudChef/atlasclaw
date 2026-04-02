@@ -2,11 +2,12 @@
  * chat.js - Chat Page Module
  */
 
-import { initSession, getSessionKey, setSessionKey } from '../session-manager.js'
+import { initSession, getSessionKey, setSessionKey, startNewSession } from '../session-manager.js'
 import { initChat, activateSession, abortCurrentStream, getCurrentAgentInfo } from '../chat-ui.js'
 import { listSessions, deleteSession } from '../api-client.js'
 import { t } from '../i18n.js'
 import { updateHeaderTitleText } from '../components/header.js'
+import { destroyEmbedBridge, initEmbedBridge, publishEmbedState } from '../embed-bridge.js'
 
 let chatElement = null
 let mounted = false
@@ -15,6 +16,8 @@ let sessionsCache = []
 let searchQuery = ''
 let pageContainer = null
 let currentAgentName = 'AtlasClaw'
+let hasConversationMessages = false
+let cleanupEmbedBridge = null
 
 export async function mount(container) {
   pageContainer = container
@@ -67,26 +70,30 @@ export async function mount(container) {
 
   currentAgentName = getCurrentAgentInfo()?.name || currentAgentName
   await loadSessions()
+  setupEmbedBridge()
   bindDialogEvents(container)
   mounted = true
 }
 
 export async function unmount() {
   abortCurrentStream()
-  const sidebarContent = document.getElementById('sidebar-dynamic-content')
-  if (sidebarContent) sidebarContent.innerHTML = ''
+  const sidebarContent = getSidebarContentContainer()
+  if (sidebarContent) {
+    sidebarContent.innerHTML = ''
+  }
+  cleanupEmbedBridge?.()
+  cleanupEmbedBridge = null
+  destroyEmbedBridge()
   pageContainer = null
   chatElement = null
   currentSessionKey = null
   sessionsCache = []
   searchQuery = ''
+  hasConversationMessages = false
   mounted = false
 }
 
 async function loadSessions() {
-  const sidebarContent = document.getElementById('sidebar-dynamic-content')
-  if (!sidebarContent) return
-
   try {
     sessionsCache = await listSessions()
   } catch (error) {
@@ -95,12 +102,13 @@ async function loadSessions() {
   }
 
   ensureActiveSessionEntry()
-  renderSidebarContent(sidebarContent)
-  syncHeaderTitle()
+  refreshSidebarContent()
+  syncHeaderTitle(hasConversationMessages)
 }
 
 function ensureActiveSessionEntry() {
   if (!currentSessionKey) return
+
   const exists = sessionsCache.some((session) => session.session_key === currentSessionKey)
   if (!exists) {
     sessionsCache.unshift({
@@ -119,7 +127,7 @@ function renderSidebarContent(container) {
     return `
       <div class="session-list-row${isActive ? ' active' : ''}">
         <button class="session-list-item" type="button" data-session-key="${escapeHtml(session.session_key)}">${escapeHtml(title)}</button>
-        <button class="session-delete-btn" type="button" data-delete-session="${escapeHtml(session.session_key)}" aria-label="Delete">×</button>
+        <button class="session-delete-btn" type="button" data-delete-session="${escapeHtml(session.session_key)}" aria-label="Delete">&times;</button>
       </div>
     `
   }).join('')
@@ -161,14 +169,7 @@ function getSessionTitle(session) {
 
 async function handleSessionClick(event) {
   const nextKey = event.currentTarget.getAttribute('data-session-key')
-  if (!nextKey || nextKey === currentSessionKey) return
-
-  abortCurrentStream()
-  setSessionKey(nextKey)
-  currentSessionKey = nextKey
-  await activateSession(nextKey)
-  renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
-  syncHeaderTitle()
+  await selectSession(nextKey)
 }
 
 function handleUserTurnStarted({ sessionKey, messageText }) {
@@ -180,7 +181,7 @@ function handleUserTurnStarted({ sessionKey, messageText }) {
     emptyState.classList.add('hidden')
   }
   pageContainer?.classList.remove('chat-empty-mode')
-  renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
+  refreshSidebarContent()
   syncHeaderTitle()
 }
 
@@ -192,6 +193,7 @@ function handleConversationStateChange({ hasMessages, agentInfo }) {
   const emptyState = pageContainer?.querySelector('#chat-empty-state')
   if (!emptyState) return
 
+  hasConversationMessages = hasMessages
   currentAgentName = agentInfo?.name || currentAgentName
   const emptyTitle = emptyState.querySelector('.chat-empty-title')
   const emptyCopy = emptyState.querySelector('.chat-empty-copy')
@@ -205,6 +207,7 @@ function handleConversationStateChange({ hasMessages, agentInfo }) {
   emptyState.classList.toggle('hidden', hasMessages)
   pageContainer.classList.toggle('chat-empty-mode', !hasMessages)
   syncHeaderTitle(hasMessages)
+  emitEmbedState()
 }
 
 function syncHeaderTitle(hasMessages = true) {
@@ -223,9 +226,12 @@ function upsertSession(nextSession) {
 }
 
 function buildDraftTitle(messageText) {
-  const cleaned = String(messageText || '').replace(/\s+/g, ' ').trim().replace(/[,.!?，。！？；：]+$/g, '')
+  const cleaned = String(messageText || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.,!?;:，。！？；：]+$/g, '')
   if (!cleaned) return 'New Chat'
-  return cleaned.length > 24 ? `${cleaned.slice(0, 23).trim()}…` : cleaned
+  return cleaned.length > 24 ? `${cleaned.slice(0, 23).trim()}...` : cleaned
 }
 
 function bindDialogEvents(container) {
@@ -276,13 +282,80 @@ async function deleteCurrentSession(sessionKey) {
       setSessionKey(currentSessionKey)
       await activateSession(currentSessionKey)
     }
-    renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
-    syncHeaderTitle()
+    await loadSessions()
+    syncHeaderTitle(hasConversationMessages)
   } catch (error) {
     console.error('[ChatPage] Failed to delete session:', error)
   } finally {
     hideConfirmDialog()
   }
+}
+
+function getSidebarContentContainer() {
+  return document.getElementById('sidebar-dynamic-content')
+}
+
+function refreshSidebarContent() {
+  const container = getSidebarContentContainer()
+  if (container) {
+    renderSidebarContent(container)
+  }
+  emitEmbedState()
+}
+
+async function selectSession(nextKey) {
+  if (!nextKey || nextKey === currentSessionKey) {
+    emitEmbedState()
+    return
+  }
+
+  abortCurrentStream()
+  setSessionKey(nextKey)
+  currentSessionKey = nextKey
+  const hasHistory = await activateSession(nextKey)
+  refreshSidebarContent()
+  syncHeaderTitle(hasHistory)
+}
+
+async function handleExternalNewSession() {
+  abortCurrentStream()
+  const nextKey = await startNewSession(true, { channel: 'web', chatType: 'dm' })
+  currentSessionKey = nextKey
+  setSessionKey(nextKey)
+  await activateSession(nextKey)
+  await loadSessions()
+}
+
+function setupEmbedBridge() {
+  if (cleanupEmbedBridge) {
+    return
+  }
+
+  cleanupEmbedBridge = initEmbedBridge({
+    getState: buildEmbedState,
+    nextHandlers: {
+      startNewSession: handleExternalNewSession,
+      activateSession: selectSession,
+      deleteSession: deleteCurrentSession
+    }
+  })
+}
+
+function buildEmbedState() {
+  return {
+    agentName: currentAgentName,
+    activeSessionKey: currentSessionKey,
+    hasMessages: hasConversationMessages,
+    sessions: sessionsCache.map((session) => ({
+      sessionKey: session.session_key,
+      title: getSessionTitle(session),
+      titleStatus: session.title_status || 'empty'
+    }))
+  }
+}
+
+function emitEmbedState() {
+  publishEmbedState(buildEmbedState())
 }
 
 function escapeHtml(text) {
