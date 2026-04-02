@@ -35,6 +35,12 @@ const routes = [
     title: 'channel.title'
   },
   {
+    path: '/account',
+    loader: () => import('./pages/account-settings.js'),
+    auth: true,
+    title: 'account.title'
+  },
+  {
     path: '/models',
     loader: () => import('./pages/models.js'),
     auth: true,
@@ -76,6 +82,15 @@ export async function initApp() {
       return
     }
     currentAuthInfo = authInfo
+    if (!window.__atlasclawProfileSyncBound) {
+      document.addEventListener('atlasclaw:user-profile-updated', (event) => {
+        currentAuthInfo = {
+          ...(currentAuthInfo || {}),
+          ...(event.detail || {})
+        }
+      })
+      window.__atlasclawProfileSyncBound = true
+    }
 
     // 3. Load runtime config
     await loadConfig()

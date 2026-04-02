@@ -13,11 +13,15 @@ Note: Channel configuration is managed via /api/channels routes.
 
 from __future__ import annotations
 
+import re
+from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.atlasclaw.core.config import get_config
 from app.atlasclaw.db import get_db_session_dependency as get_db_session
 from app.atlasclaw.db.schemas import (
     AgentCreate,
@@ -46,8 +50,21 @@ from app.atlasclaw.db.orm.service_provider_config import ServiceProviderConfigSe
 from app.atlasclaw.db.orm.user import UserService, verify_password
 from app.atlasclaw.auth.guards import get_current_user, require_admin
 from app.atlasclaw.auth.models import UserInfo
+from .services.auth_service import load_profile_snapshot
 from .model_config_routes import router as model_config_router
 from .provider_info_routes import router as provider_info_router
+
+ALLOWED_AVATAR_CONTENT_TYPES = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "image/gif": ".gif",
+}
+MAX_AVATAR_BYTES = 2 * 1024 * 1024
+
+
+def _is_local_auth_type(auth_type: str) -> bool:
+    return str(auth_type or "").strip().lower() == "local"
 
 
 router = APIRouter(prefix="/api", tags=["Database API"])
@@ -380,14 +397,16 @@ async def list_users(
 @router.get("/users/me/profile", response_model=UserResponse, status_code=200)
 async def get_my_profile(
     current_user: UserInfo = Depends(get_current_user),
-    session: AsyncSession = Depends(get_db_session),
 ) -> UserResponse:
     """Get the authenticated user's own profile."""
-    # current_user.user_id is the username from JWT, not database UUID
-    user = await UserService.get_by_username(session, current_user.user_id)
-    if not user:
+    profile = await load_profile_snapshot(
+        user_id=current_user.user_id,
+        auth_type=current_user.auth_type,
+        workspace_path=str(Path(get_config().workspace.path).resolve()),
+    )
+    if not profile:
         raise HTTPException(status_code=404, detail="User not found")
-    return UserResponse.model_validate(user)
+    return UserResponse.model_validate(profile)
 
 
 @router.put("/users/me/profile", response_model=UserResponse, status_code=200)
@@ -405,6 +424,11 @@ async def update_my_profile(
     # Get user by username first to get the database ID
     user = await UserService.get_by_username(session, current_user.user_id)
     if not user:
+        if not _is_local_auth_type(current_user.auth_type):
+            raise HTTPException(
+                status_code=400,
+                detail="Profile editing is not available for federated accounts",
+            )
         raise HTTPException(status_code=404, detail="User not found")
 
     # If email is being changed, check uniqueness
@@ -420,6 +444,55 @@ async def update_my_profile(
     return UserResponse.model_validate(updated)
 
 
+@router.post("/users/me/avatar", response_model=UserResponse, status_code=200)
+async def upload_my_avatar(
+    avatar: UploadFile = File(...),
+    current_user: UserInfo = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> UserResponse:
+    """Upload avatar image for the authenticated user."""
+    user = await UserService.get_by_username(session, current_user.user_id)
+    if not user:
+        if not _is_local_auth_type(current_user.auth_type):
+            raise HTTPException(
+                status_code=400,
+                detail="Avatar upload is not available for federated accounts",
+            )
+        raise HTTPException(status_code=404, detail="User not found")
+
+    content_type = (avatar.content_type or "").lower()
+    extension = ALLOWED_AVATAR_CONTENT_TYPES.get(content_type)
+    if not extension:
+        raise HTTPException(status_code=400, detail="Only JPG, PNG, WEBP, and GIF avatars are supported")
+
+    avatar_bytes = await avatar.read()
+    if not avatar_bytes:
+        raise HTTPException(status_code=400, detail="Avatar file is empty")
+
+    if len(avatar_bytes) > MAX_AVATAR_BYTES:
+        raise HTTPException(status_code=400, detail="Avatar image must be 2 MB or smaller")
+
+    workspace_path = Path(get_config().workspace.path).resolve()
+    avatar_dir = workspace_path / "public" / "avatars"
+    avatar_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_username = re.sub(r"[^a-zA-Z0-9_-]", "_", user.username or user.id)
+    for existing_file in avatar_dir.glob(f"{safe_username}-*"):
+        if existing_file.is_file():
+            existing_file.unlink(missing_ok=True)
+
+    filename = f"{safe_username}-{datetime.utcnow().strftime('%Y%m%d%H%M%S')}{extension}"
+    avatar_path = avatar_dir / filename
+    avatar_path.write_bytes(avatar_bytes)
+
+    avatar_url = f"/user-content/avatars/{filename}"
+    updated = await UserService.update(session, user.id, UserUpdate(avatar_url=avatar_url))
+    if not updated:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return UserResponse.model_validate(updated)
+
+
 @router.put("/users/me/password", status_code=200)
 async def change_my_password(
     password_data: PasswordChange,
@@ -430,6 +503,11 @@ async def change_my_password(
     # Get user record first by username
     user = await UserService.get_by_username(session, current_user.user_id)
     if not user:
+        if not _is_local_auth_type(current_user.auth_type):
+            raise HTTPException(
+                status_code=400,
+                detail="Password authentication not available for this account",
+            )
         raise HTTPException(status_code=404, detail="User not found")
 
     # Verify current password

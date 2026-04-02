@@ -11,6 +11,28 @@
     <link rel="stylesheet" href="/styles/channels.css">
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="/static/mention.css">
+    <script>
+        (() => {
+            const routeStyles = [
+                { match: /^\/admin\/users\/?$/, id: 'admin-users-page-css', href: '/styles/admin-users.css' },
+                { match: /^\/account\/?$/, id: 'account-settings-page-css', href: '/styles/account-settings.css' },
+                { match: /^\/models\/?$/, id: 'models-page-css', href: '/styles/models.css' }
+            ]
+
+            const pathname = window.location.pathname
+            const target = routeStyles.find(({ match }) => match.test(pathname))
+
+            if (!target || document.getElementById(target.id)) {
+                return
+            }
+
+            const cssLink = document.createElement('link')
+            cssLink.rel = 'stylesheet'
+            cssLink.href = target.href
+            cssLink.id = target.id
+            document.head.appendChild(cssLink)
+        })()
+    </script>
 </head>
 <body>
     <!-- SPA Layout Shell -->

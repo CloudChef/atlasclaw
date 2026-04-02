@@ -252,6 +252,7 @@ async def complete_sso_login(
     )
     session_key_str = key.to_string(scope=SessionScope.MAIN)
     session = await ctx.session_manager.get_or_create(session_key_str)
+    session.display_name = auth_result.display_name or shadow_user.display_name or user_id
 
     roles = auth_result.roles if isinstance(auth_result.roles, list) else []
     auth_type = auth_result.extra.get("auth_type", "oidc")
@@ -307,6 +308,71 @@ async def complete_sso_login(
     response.delete_cookie("sso_state")
     response.delete_cookie("pkce_verifier")
     return response
+
+
+async def load_profile_snapshot(
+    *,
+    user_id: str,
+    auth_type: str = "",
+    workspace_path: str = "",
+) -> dict[str, Any]:
+    from ...auth.shadow_store import ShadowUserStore
+    from ...db.database import get_db_manager
+    from ...db.orm.user import UserService
+
+    try:
+        db_manager = get_db_manager()
+        async with db_manager.get_session() as db_session:
+            user = await UserService.get_by_username(db_session, user_id)
+            if user:
+                return {
+                    "id": user.id,
+                    "username": user.username,
+                    "email": user.email,
+                    "display_name": user.display_name or user.username,
+                    "avatar_url": user.avatar_url,
+                    "roles": user.roles or {},
+                    "auth_type": user.auth_type,
+                    "is_active": user.is_active,
+                    "is_admin": user.is_admin,
+                    "created_at": user.created_at,
+                    "last_login_at": user.last_login_at,
+                    "updated_at": user.updated_at,
+                }
+    except Exception:
+        pass
+
+    normalized_auth_type = str(auth_type or "").strip().lower()
+    if not workspace_path or normalized_auth_type == "local":
+        return {}
+
+    try:
+        shadow_store = ShadowUserStore(workspace_path=workspace_path)
+        shadow_user = await shadow_store.get_by_id(user_id)
+        if not shadow_user:
+            return {}
+
+        roles = {str(role): True for role in shadow_user.roles}
+        is_admin = any(str(role).lower() == "admin" for role in shadow_user.roles)
+        display_name = shadow_user.display_name or shadow_user.subject or shadow_user.user_id
+        username = shadow_user.subject or shadow_user.user_id
+
+        return {
+            "id": shadow_user.user_id,
+            "username": username,
+            "email": None,
+            "display_name": display_name,
+            "avatar_url": None,
+            "roles": roles,
+            "auth_type": shadow_user.auth_type or auth_type,
+            "is_active": True,
+            "is_admin": is_admin,
+            "created_at": shadow_user.created_at,
+            "last_login_at": shadow_user.last_seen_at,
+            "updated_at": shadow_user.last_seen_at,
+        }
+    except Exception:
+        return {}
 
 
 async def get_current_user_payload(request: Request) -> dict[str, Any]:
@@ -379,12 +445,24 @@ async def get_current_user_payload(request: Request) -> dict[str, Any]:
     if not isinstance(roles, list):
         roles = []
 
+    profile_overrides = await load_profile_snapshot(
+        user_id=jwt_user_id,
+        auth_type=str(jwt_payload.get("auth_type", "")),
+        workspace_path=resolve_workspace_path(request, ctx=ctx),
+    )
+
     return {
         "user_id": jwt_user_id,
+        "username": profile_overrides.get("username", jwt_user_id),
         "session_key": session.session_key,
         "auth_type": str(jwt_payload.get("auth_type", "")),
         "roles": roles,
-        "display_name": session.display_name or jwt_user_id,
+        "display_name": profile_overrides.get("display_name", session.display_name or jwt_user_id),
+        "email": profile_overrides.get("email"),
+        "avatar_url": profile_overrides.get("avatar_url"),
+        "is_active": profile_overrides.get("is_active", True),
+        "created_at": profile_overrides.get("created_at"),
+        "last_login_at": profile_overrides.get("last_login_at"),
         "is_admin": bool(jwt_payload.get("is_admin", jwt_payload.get("admin", False))),
         "login_time": jwt_payload.get("login_time", ""),
         "metadata": session.to_dict(),

@@ -34,6 +34,7 @@ _STATIC_PREFIXES = (
     "/styles/",
     "/scripts/",
     "/locales/",
+    "/user-content/",
     "/config.json",
     "/index.html",
     "/login.html",

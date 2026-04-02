@@ -18,7 +18,16 @@ class StaticFileCacheMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
         path = request.url.path
-        if path.startswith(("/static/", "/scripts/", "/styles/", "/locales/")):
+        if path.startswith(("/static/", "/scripts/", "/styles/", "/locales/", "/user-content/")) or path in {
+            "/",
+            "/account",
+            "/admin/users",
+            "/channels",
+            "/models",
+            "/login.html",
+            "/channels.html",
+            "/models.html",
+        } or path.endswith(".html"):
             response.headers["Cache-Control"] = "no-cache"
         return response
 
@@ -28,9 +37,24 @@ def mount_frontend(app: FastAPI, frontend_dir: Path) -> None:
     if not frontend_dir.exists():
         return
 
+    def _serve_spa_index():
+        index_path = frontend_dir / "index.html"
+        if index_path.exists():
+            return FileResponse(str(index_path))
+        return {"error": "Frontend not found"}
+
     static_dir = frontend_dir / "static"
     if static_dir.exists():
         app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+
+    try:
+        from app.atlasclaw.core.config import get_config
+
+        workspace_public_dir = Path(get_config().workspace.path).resolve() / "public"
+        workspace_public_dir.mkdir(parents=True, exist_ok=True)
+        app.mount("/user-content", StaticFiles(directory=str(workspace_public_dir)), name="user-content")
+    except Exception:
+        pass
 
     scripts_dir = frontend_dir / "scripts"
     if scripts_dir.exists():
@@ -46,10 +70,7 @@ def mount_frontend(app: FastAPI, frontend_dir: Path) -> None:
 
     @app.get("/", include_in_schema=False)
     async def serve_index():
-        index_path = frontend_dir / "index.html"
-        if index_path.exists():
-            return FileResponse(str(index_path))
-        return {"error": "Frontend not found"}
+        return _serve_spa_index()
 
     @app.get("/channels.html", include_in_schema=False)
     async def serve_channels():
@@ -67,10 +88,7 @@ def mount_frontend(app: FastAPI, frontend_dir: Path) -> None:
 
     @app.get("/admin/users", include_in_schema=False)
     async def serve_admin_users():
-        admin_users_path = frontend_dir / "admin-users.html"
-        if admin_users_path.exists():
-            return FileResponse(str(admin_users_path))
-        return {"error": "Admin users page not found"}
+        return _serve_spa_index()
 
     @app.get("/models.html", include_in_schema=False)
     async def serve_models():

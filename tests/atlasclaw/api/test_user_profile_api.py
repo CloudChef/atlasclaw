@@ -10,9 +10,11 @@ Tests:
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import AsyncGenerator
+from unittest.mock import patch
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -20,6 +22,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.atlasclaw.api.api_routes import router as api_router
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
+from app.atlasclaw.auth.guards import get_current_user
+from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.auth.config import AuthConfig
 from app.atlasclaw.auth.middleware import setup_auth_middleware
 from app.atlasclaw.db import get_db_session
@@ -290,6 +294,126 @@ class TestUserProfileAPI:
 
         assert resp.status_code == 400
         assert "incorrect" in resp.json()["detail"].lower()
+
+        _cleanup_manager(manager)
+
+    def test_upload_avatar_success(self, tmp_path):
+        """User can upload avatar image and receives stored avatar URL."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "testuser", "testpass123")
+        workspace_path = tmp_path / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+
+        with patch(
+            "app.atlasclaw.api.api_routes.get_config",
+            return_value=SimpleNamespace(workspace=SimpleNamespace(path=str(workspace_path))),
+        ):
+            resp = client.post(
+                "/api/users/me/avatar",
+                files={"avatar": ("avatar.png", b"fake-png-data", "image/png")},
+                headers={"AtlasClaw-Authenticate": token},
+            )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["avatar_url"].startswith("/user-content/avatars/testuser-")
+
+        avatar_files = list((workspace_path / "public" / "avatars").glob("testuser-*.png"))
+        assert len(avatar_files) == 1
+
+        _cleanup_manager(manager)
+
+    def test_upload_avatar_rejects_invalid_file_type(self, tmp_path):
+        """Avatar upload rejects non-image files."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "testuser", "testpass123")
+        workspace_path = tmp_path / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+
+        with patch(
+            "app.atlasclaw.api.api_routes.get_config",
+            return_value=SimpleNamespace(workspace=SimpleNamespace(path=str(workspace_path))),
+        ):
+            resp = client.post(
+                "/api/users/me/avatar",
+                files={"avatar": ("avatar.txt", b"not-an-image", "text/plain")},
+                headers={"AtlasClaw-Authenticate": token},
+            )
+
+        assert resp.status_code == 400
+        assert "supported" in resp.json()["detail"].lower()
+
+        _cleanup_manager(manager)
+
+    def test_get_shadow_user_profile(self, tmp_path):
+        """Shadow users can load a synthetic read-only profile."""
+        workspace_path = tmp_path / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        (workspace_path / "users.json").write_text(
+            json.dumps(
+                {
+                    "users": [
+                        {
+                            "user_id": "shadow-user-1",
+                            "provider": "oidc",
+                            "subject": "sso-user@example.com",
+                            "display_name": "SSO User",
+                            "tenant_id": "default",
+                            "roles": ["user"],
+                            "auth_type": "oidc:test",
+                            "created_at": "2026-01-01T09:00:00+00:00",
+                            "last_seen_at": "2026-03-30T15:30:00+00:00",
+                        }
+                    ]
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        app = FastAPI()
+        app.include_router(api_router)
+        app.dependency_overrides[get_current_user] = lambda: UserInfo(
+            user_id="shadow-user-1",
+            display_name="SSO User",
+            auth_type="oidc:test",
+            roles=["user"],
+        )
+
+        client = TestClient(app)
+
+        with patch(
+            "app.atlasclaw.api.api_routes.get_config",
+            return_value=SimpleNamespace(workspace=SimpleNamespace(path=str(workspace_path))),
+        ):
+            resp = client.get("/api/users/me/profile")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == "shadow-user-1"
+        assert data["username"] == "sso-user@example.com"
+        assert data["display_name"] == "SSO User"
+        assert data["auth_type"] == "oidc:test"
+
+    def test_update_profile_unavailable_for_federated_account(self, tmp_path):
+        """Federated accounts cannot use local-only profile mutation endpoints."""
+        manager = _init_database_sync(tmp_path)
+        app = FastAPI()
+        app.include_router(api_router)
+        app.dependency_overrides[get_current_user] = lambda: UserInfo(
+            user_id="shadow-user-1",
+            display_name="SSO User",
+            auth_type="oidc:test",
+            roles=["user"],
+        )
+        app.dependency_overrides[get_db_session] = _test_get_db_session
+
+        client = TestClient(app)
+        resp = client.put("/api/users/me/profile", json={"display_name": "Updated"})
+
+        assert resp.status_code == 400
+        assert "federated" in resp.json()["detail"].lower()
 
         _cleanup_manager(manager)
 

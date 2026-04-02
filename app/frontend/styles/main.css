@@ -1460,15 +1460,29 @@ details.thinking-block .thinking-body {
   cursor: pointer;
   padding: 0;
   transition: border-color 0.2s;
+  overflow: hidden;
 }
 .user-avatar-btn:hover {
   border-color: rgba(255, 255, 255, 0.5);
 }
 .user-avatar {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.user-avatar-text {
   color: #fff;
   font-size: 14px;
   font-weight: 600;
   line-height: 1;
+}
+.user-avatar-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .user-dropdown {

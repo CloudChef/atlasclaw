@@ -83,12 +83,12 @@ describe('Admin Users API', () => {
       // Simulate the API call that loadUsers would make
       const params = new URLSearchParams({
         page: '1',
-        page_size: '20'
+        page_size: '5'
       })
 
       await fetch(`/api/users?${params}`)
 
-      expect(global.fetch).toHaveBeenCalledWith('/api/users?page=1&page_size=20')
+      expect(global.fetch).toHaveBeenCalledWith('/api/users?page=1&page_size=5')
     })
 
     test('constructs correct URL with search parameter', async () => {
@@ -99,13 +99,13 @@ describe('Admin Users API', () => {
 
       const params = new URLSearchParams({
         page: '1',
-        page_size: '20'
+        page_size: '5'
       })
       params.append('search', 'testuser')
 
       await fetch(`/api/users?${params}`)
 
-      expect(global.fetch).toHaveBeenCalledWith('/api/users?page=1&page_size=20&search=testuser')
+      expect(global.fetch).toHaveBeenCalledWith('/api/users?page=1&page_size=5&search=testuser')
     })
 
     test('constructs correct URL with custom page', async () => {
@@ -116,12 +116,12 @@ describe('Admin Users API', () => {
 
       const params = new URLSearchParams({
         page: '3',
-        page_size: '20'
+        page_size: '5'
       })
 
       await fetch(`/api/users?${params}`)
 
-      expect(global.fetch).toHaveBeenCalledWith('/api/users?page=3&page_size=20')
+      expect(global.fetch).toHaveBeenCalledWith('/api/users?page=3&page_size=5')
     })
   })
 
@@ -262,21 +262,21 @@ describe('Search Debounce Behavior', () => {
     if (searchDebounceTimer) {
       clearTimeout(searchDebounceTimer)
     }
-    searchDebounceTimer = setTimeout(() => {}, 300)
+    searchDebounceTimer = setTimeout(() => {}, 250)
     const firstTimer = searchDebounceTimer
 
     // Simulate second search input before timeout
     if (searchDebounceTimer) {
       clearTimeout(searchDebounceTimer)
     }
-    searchDebounceTimer = setTimeout(() => {}, 300)
+    searchDebounceTimer = setTimeout(() => {}, 250)
     const secondTimer = searchDebounceTimer
 
     // Timers should be different (new timer created)
     expect(firstTimer).not.toBe(secondTimer)
   })
 
-  test('debounce delay is 300ms', () => {
+  test('debounce delay is 250ms', () => {
     const callback = jest.fn()
     let searchDebounceTimer = null
 
@@ -284,13 +284,13 @@ describe('Search Debounce Behavior', () => {
     if (searchDebounceTimer) {
       clearTimeout(searchDebounceTimer)
     }
-    searchDebounceTimer = setTimeout(callback, 300)
+    searchDebounceTimer = setTimeout(callback, 250)
 
-    // Before 300ms
-    jest.advanceTimersByTime(299)
+    // Before 250ms
+    jest.advanceTimersByTime(249)
     expect(callback).not.toHaveBeenCalled()
 
-    // After 300ms
+    // After 250ms
     jest.advanceTimersByTime(1)
     expect(callback).toHaveBeenCalledTimes(1)
   })
