@@ -112,9 +112,7 @@ def create_script_wrapper(py_file: Path, provider_type: Optional[str] = None) ->
             if provider_instance:
                 print(f"[DEBUG] Using selected provider_instance: {provider_instance}")
                 for key, value in provider_instance.items():
-                    if value is not None and key not in ("password", "token", "secret"):
-                        env[key.upper()] = str(value)
-                    elif value is not None and key in ("cookie",):
+                    if value is not None and key not in ("token", "secret"):
                         env[key.upper()] = str(value)
             elif "provider_instances" in extra:
                 provider_instances = extra["provider_instances"]
@@ -128,21 +126,16 @@ def create_script_wrapper(py_file: Path, provider_type: Optional[str] = None) ->
                         default_instance = list(instances.values())[0]
                         print(f"[DEBUG] Using instance config: {list(default_instance.keys())}")
                         for key, value in default_instance.items():
-                            if value is not None and key not in ("password", "token", "secret"):
+                            if value is not None and key not in ("token", "secret"):
                                 env[key.upper()] = str(value)
-                                print(f"[DEBUG] Set env var: {key.upper()}={str(value)[:50]}...")
-                            elif value is not None and key in ("cookie",):
-                                env[key.upper()] = str(value)
-                                print(f"[DEBUG] Set env var: {key.upper()}={str(value)[:50]}...")
+                                print(f"[DEBUG] Set env var: {key.upper()}={'***' if key in ('password',) else str(value)[:50]}...")
                 else:
                     print("[DEBUG] No specific provider_type, using first available")
                     for _, instances in provider_instances.items():
                         if instances:
                             default_instance = list(instances.values())[0]
                             for key, value in default_instance.items():
-                                if value is not None and key not in ("password", "token", "secret"):
-                                    env[key.upper()] = str(value)
-                                elif value is not None and key in ("cookie",):
+                                if value is not None and key not in ("token", "secret"):
                                     env[key.upper()] = str(value)
                             break
 
