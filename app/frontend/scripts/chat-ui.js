@@ -421,8 +421,16 @@ function buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs = null, is
   const hasThinkingText = !!(thinkingContent && thinkingContent.trim())
   let visibleEntries = entries
   if (!hasThinkingText) {
+    const firstEntry = entries[0] || null
+    const warningEntries = entries.filter((entry) => entry.state === 'warning')
     const terminalEntry = [...entries].reverse().find((entry) => entry.state === 'answered' || entry.state === 'failed')
-    visibleEntries = terminalEntry ? [terminalEntry] : []
+    const compact = []
+    if (firstEntry) compact.push(firstEntry)
+    for (const entry of warningEntries) {
+      if (!compact.includes(entry)) compact.push(entry)
+    }
+    if (terminalEntry && !compact.includes(terminalEntry)) compact.push(terminalEntry)
+    visibleEntries = compact
   }
   if (!visibleEntries.length && !hasThinkingText) {
     return ''

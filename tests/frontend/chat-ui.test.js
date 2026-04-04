@@ -200,8 +200,13 @@ describe('chat-ui.js handler mode', () => {
         expect(MockEventSource.instances).toHaveLength(1);
         expect(MockEventSource.instances[0].url).toMatch(/\/api\/agent\/runs\/run-123\/stream$/);
 
-        // Runtime panel should stay hidden until there is model thinking text or a terminal state.
-        expect(signals.onResponse).not.toHaveBeenCalled();
+        // Runtime panel should show initial runtime receipt/analysis status.
+        expect(signals.onResponse).toHaveBeenCalled();
+        expect(signals.onResponse).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                html: expect.stringContaining('Starting response analysis.')
+            })
+        );
 
         // Simulate stream end to complete handler
         MockEventSource.instances[0].simulateEvent('lifecycle', { phase: 'end' });
