@@ -7,6 +7,12 @@ from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, AsyncIterator, Optional
 
+from app.atlasclaw.agent.context_pruning import prune_context_messages
+from app.atlasclaw.agent.context_window_guard import (
+    ContextWindowInfo,
+    evaluate_context_window_guard,
+    resolve_context_window_info,
+)
 from app.atlasclaw.agent.runner_prompt_context import build_system_prompt, collect_tools_snapshot
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.agent.thinking_stream import ThinkingStreamEmitter
@@ -96,7 +102,56 @@ class RunnerExecutionMixin:
             )
 
             runtime_agent, selected_token_id, release_slot = await self._resolve_runtime_agent(session_key, deps)
-            runtime_context_window = self._resolve_runtime_context_window(selected_token_id, deps)
+            runtime_context_window_info = self._resolve_runtime_context_window_info(selected_token_id, deps)
+            runtime_context_guard = evaluate_context_window_guard(
+                tokens=runtime_context_window_info.tokens,
+                source=runtime_context_window_info.source,
+            )
+            runtime_context_window = runtime_context_guard.tokens
+            if runtime_context_guard.should_warn:
+                yield StreamEvent.runtime_update(
+                    "warning",
+                    (
+                        "Model context window is below the warning threshold. "
+                        f"tokens={runtime_context_guard.tokens}, source={runtime_context_guard.source}"
+                    ),
+                    metadata={
+                        "phase": "context_guard",
+                        "tokens": runtime_context_guard.tokens,
+                        "source": runtime_context_guard.source,
+                        "guard": "warn",
+                        "elapsed": round(time.monotonic() - start_time, 1),
+                    },
+                )
+            if runtime_context_guard.should_block:
+                failure_message = (
+                    "Model context window is below the minimum safety threshold. "
+                    f"tokens={runtime_context_guard.tokens}, source={runtime_context_guard.source}"
+                )
+                run_failed = True
+                await self.runtime_events.trigger_llm_failed(
+                    session_key=session_key,
+                    run_id=run_id,
+                    error=failure_message,
+                )
+                await self.runtime_events.trigger_run_failed(
+                    session_key=session_key,
+                    run_id=run_id,
+                    error=failure_message,
+                )
+                yield StreamEvent.runtime_update(
+                    "failed",
+                    failure_message,
+                    metadata={
+                        "phase": "context_guard",
+                        "tokens": runtime_context_guard.tokens,
+                        "source": runtime_context_guard.source,
+                        "guard": "block",
+                        "elapsed": round(time.monotonic() - start_time, 1),
+                    },
+                )
+                yield StreamEvent.error_event(failure_message)
+                return
             session_manager = self._resolve_session_manager(session_key, deps)
 
             # --:session + build prompt --
@@ -105,6 +160,11 @@ class RunnerExecutionMixin:
             transcript = await session_manager.load_transcript(session_key)
             message_history = self.history.build_message_history(transcript)
             message_history = self.history.prune_summary_messages(message_history)
+            message_history = prune_context_messages(
+                messages=message_history,
+                settings=self.context_pruning_settings,
+                context_window_tokens=runtime_context_window,
+            )
             context_history_for_hooks = list(message_history)
             session_title = str(getattr(session, "title", "") or "")
             await self.runtime_events.trigger_message_received(
@@ -306,6 +366,11 @@ class RunnerExecutionMixin:
                             # -- checkpoint 3:context -> trigger --
                             current_messages = self.history.normalize_messages(agent_run.all_messages())
                             current_messages = self.history.prune_summary_messages(current_messages)
+                            current_messages = prune_context_messages(
+                                messages=current_messages,
+                                settings=self.context_pruning_settings,
+                                context_window_tokens=runtime_context_window,
+                            )
                             context_history_for_hooks = list(current_messages)
                             if self.compaction.should_memory_flush(
                                 current_messages,
@@ -1057,27 +1122,42 @@ class RunnerExecutionMixin:
                 return {str(k): str(v) for k, v in candidate.items()}
         return {}
 
+    def _resolve_runtime_context_window_info(
+        self,
+        selected_token_id: Optional[str],
+        deps: SkillDeps,
+    ) -> ContextWindowInfo:
+        """Resolve context window info with source tags for runtime guard checks."""
+        selected_token_window: Optional[int] = None
+        if selected_token_id and self.token_policy is not None:
+            token = self.token_policy.token_pool.tokens.get(selected_token_id)
+            context_window = getattr(token, "context_window", None) if token else None
+            if isinstance(context_window, int) and context_window > 0:
+                selected_token_window = context_window
+
+        extra = deps.extra if isinstance(deps.extra, dict) else {}
+        runtime_override = extra.get("context_window") or extra.get("model_context_window")
+        models_config_window = (
+            extra.get("models_config_context_window")
+            or extra.get("configured_context_window")
+            or extra.get("provider_config_context_window")
+        )
+        default_window = self.compaction.config.context_window
+
+        return resolve_context_window_info(
+            selected_token_window=selected_token_window,
+            models_config_window=models_config_window if isinstance(models_config_window, int) else None,
+            runtime_override_window=runtime_override if isinstance(runtime_override, int) else None,
+            default_window=default_window,
+        )
+
     def _resolve_runtime_context_window(
         self,
         selected_token_id: Optional[str],
         deps: SkillDeps,
     ) -> Optional[int]:
-        """Resolve context window from current runtime model/token settings."""
-        # 1) Current selected token metadata (best source).
-        if selected_token_id and self.token_policy is not None:
-            token = self.token_policy.token_pool.tokens.get(selected_token_id)
-            context_window = getattr(token, "context_window", None) if token else None
-            if isinstance(context_window, int) and context_window > 0:
-                return context_window
-
-        # 2) Request-scoped overrides from deps.extra.
-        extra = deps.extra if isinstance(deps.extra, dict) else {}
-        extra_window = extra.get("context_window") or extra.get("model_context_window")
-        if isinstance(extra_window, int) and extra_window > 0:
-            return extra_window
-
-        # 3) Fall back to configured compaction context window.
-        return self.compaction.config.context_window
+        """Backward-compatible helper returning only resolved token count."""
+        return self._resolve_runtime_context_window_info(selected_token_id, deps).tokens
 
     def _resolve_session_manager(self, session_key: str, deps: SkillDeps) -> Any:
         """Resolve the correct per-user session manager for the active session."""

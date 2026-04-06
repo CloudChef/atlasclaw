@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Optional
 
 from app.atlasclaw.agent.compaction import CompactionConfig, CompactionPipeline
+from app.atlasclaw.agent.context_pruning import ContextPruningSettings
 from app.atlasclaw.agent.history_memory import HistoryMemoryCoordinator
 from app.atlasclaw.agent.prompt_builder import PromptBuilder, PromptBuilderConfig
 from app.atlasclaw.agent.runner_execution import RunnerExecutionMixin
@@ -64,6 +65,7 @@ class AgentRunner(RunnerExecutionMixin, RunnerToolGateMixin, RunnerToolEvidenceM
         token_interceptor: Optional["TokenHealthInterceptor"] = None,
         agent_factory: Optional[Any] = None,
         tool_gate_model_classifier_enabled: bool = True,
+        context_pruning_settings: Optional[ContextPruningSettings] = None,
     ):
         """Initialize the agent runner.
 
@@ -88,6 +90,7 @@ class AgentRunner(RunnerExecutionMixin, RunnerToolGateMixin, RunnerToolEvidenceM
         self.token_interceptor = token_interceptor
         self.agent_factory = agent_factory
         self.tool_gate_model_classifier_enabled = tool_gate_model_classifier_enabled
+        self.context_pruning_settings = context_pruning_settings or ContextPruningSettings()
         self.history = HistoryMemoryCoordinator(session_manager_router or self.sessions, self.compaction)
         self.runtime_events = RuntimeEventDispatcher(self.hooks, self.queue, hook_runtime)
         self.title_generator = SessionTitleGenerator()

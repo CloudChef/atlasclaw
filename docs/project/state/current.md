@@ -4,6 +4,7 @@
 - Implement Phase 1 of the staged reliability architecture for AtlasClaw so the runtime can decide when answers must be grounded through tools or external systems.
 - Define the next-stage provider-driven web search and grounding runtime that can support enterprise-grade retrieval beyond the current HTML-scrape search implementation.
 - Keep Full Context Engine work as a separate future track.
+- Align AtlasClaw context management architecture with OpenClaw's extension-oriented context runtime, including context-window guard, pruning, compaction safeguards, bootstrap injection, and memory citation behavior.
 
 ## Completed
 - Reviewed canonical architecture, module, and development docs.
@@ -48,9 +49,29 @@
 - Wrote a design-tracking task file for the provider-driven search track.
 - Completed a document-alignment review for the provider-driven search `state`, `task`, and `spec`.
 - Wrote the provider-driven web search implementation plan.
+- Completed AtlasClaw vs OpenClaw context-management baseline comparison and identified guard/pruning/compaction/prompt/memory/session governance gaps.
+- Confirmed parity direction as pragmatic alignment (behavior parity first, not 1:1 internal clone).
+- Wrote full context-management alignment spec at `docs/superpowers/specs/2026-04-04-context-management-alignment-design.md`.
+- Completed state/task/spec alignment review for the context-management track.
+- Executed the context-management alignment implementation plan:
+  - Task 1: context-window guard integrated into runner (`warn` + hard `block`).
+  - Task 2: prompt context resolver integrated with per-file and total bootstrap budgets.
+  - Task 3: runtime context pruning integrated into runner and compaction safeguard integrated into compaction summary generation.
+  - Task 4: memory search/get tools upgraded with structured citation output (`path/start_line/end_line/citation`).
+  - Task 5: session governance upgraded with transcript cache, transient read retry, and archive budget cleanup.
+- Verified targeted context-alignment tests:
+  - `tests/atlasclaw/test_context_window_guard.py`
+  - `tests/atlasclaw/test_prompt_context_resolver.py`
+  - `tests/atlasclaw/test_context_pruning.py`
+  - `tests/atlasclaw/test_memory_tool_citations.py`
+  - `tests/atlasclaw/session/test_session_manager_governance.py`
+  - Result: all pass.
 
 ## In Progress
-- Waiting for the user's execution choice for the provider-driven web search implementation plan.
+- Task 6 closeout for context-management alignment:
+  - final documentation reconciliation,
+  - full-suite regression note capture,
+  - commit packaging.
 
 ## Risks / Decisions
 - Phase 1 must stay narrow and avoid expanding into a full Context Engine rewrite.
@@ -61,6 +82,9 @@
 - Frontend users must be able to observe runtime state progression instead of waiting through silent retries.
 - The current HTML-based `web_search` implementation is not sufficient as the long-term enterprise search architecture.
 - AtlasClaw search should align with OpenClaw's provider-driven model, but strengthen it with explicit source governance, query recovery, and runtime-policy integration.
+- Context alignment should prioritize runtime stability and observability first (guard/pruning/compaction), then move to optional capability parity.
+- Avoid coupling context management with hard-coded business heuristics; context policy should remain model- and runtime-driven.
+- Current full backend suite still contains pre-existing failures outside this task scope (e2e connectivity assumptions and existing search-provider/default assertions). Keep them tracked separately from context-management implementation correctness.
 
 ## Next Step
-- Choose execution mode for the provider-driven web search implementation plan, then implement task-by-task.
+- Complete Task 6 closeout and package implementation changes for user confirmation before push.

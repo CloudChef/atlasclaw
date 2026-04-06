@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import shutil
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -35,6 +36,15 @@ from app.atlasclaw.session.context import (
     SessionScope,
 )
 from app.atlasclaw.core.config_schema import ResetMode
+
+
+@dataclass
+class TranscriptCacheEntry:
+    """Cached transcript payload keyed by session key."""
+
+    mtime_ns: int
+    size_bytes: int
+    entries: list[TranscriptEntry]
 
 
 class SessionManager:
@@ -97,7 +107,11 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
 
         # In-memory metadata cache and per-session locks.
         self._metadata_cache: dict[str, SessionMetadata] = {}
+        self._transcript_cache: dict[str, TranscriptCacheEntry] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._io_retry_attempts = 3
+        self._io_retry_backoff_seconds = 0.05
+        self._archive_budget_bytes = 200 * 1024 * 1024
         self._loaded = False
     
     async def _ensure_dir(self) -> None:
@@ -135,6 +149,77 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
         if session_key not in self._locks:
             self._locks[session_key] = asyncio.Lock()
         return self._locks[session_key]
+
+    @staticmethod
+    def _clone_entries(entries: list[TranscriptEntry]) -> list[TranscriptEntry]:
+        """Return a deep-ish clone of transcript entries for cache safety."""
+        return [TranscriptEntry.from_dict(entry.to_dict()) for entry in entries]
+
+    def _invalidate_transcript_cache(self, session_key: str) -> None:
+        """Invalidate cached transcript entries for a session key."""
+        self._transcript_cache.pop(session_key, None)
+
+    async def _read_text_with_retry(self, path: Path, *, mode: str = "r") -> str:
+        """Read a UTF-8 text file with bounded retry for transient I/O failures."""
+        max_attempts = max(1, int(self._io_retry_attempts))
+        for attempt in range(max_attempts):
+            try:
+                async with aiofiles.open(path, mode, encoding="utf-8") as f:
+                    return await f.read()
+            except Exception:
+                if attempt + 1 >= max_attempts:
+                    raise
+                await asyncio.sleep(self._io_retry_backoff_seconds * (attempt + 1))
+        return ""
+
+    async def _read_transcript_entries_with_retry(self, transcript_path: Path) -> list[TranscriptEntry]:
+        """Read transcript JSONL content with retry and parse into entries."""
+        max_attempts = max(1, int(self._io_retry_attempts))
+        for attempt in range(max_attempts):
+            try:
+                entries: list[TranscriptEntry] = []
+                async with aiofiles.open(transcript_path, "r", encoding="utf-8") as f:
+                    async for line in f:
+                        normalized = line.strip()
+                        if not normalized:
+                            continue
+                        data = json.loads(normalized)
+                        entries.append(TranscriptEntry.from_dict(data))
+                return entries
+            except Exception:
+                if attempt + 1 >= max_attempts:
+                    raise
+                await asyncio.sleep(self._io_retry_backoff_seconds * (attempt + 1))
+        return []
+
+    async def _enforce_archive_budget(self) -> None:
+        """Ensure archived transcript size stays within configured byte budget."""
+        budget = int(self._archive_budget_bytes or 0)
+        if budget <= 0:
+            return
+
+        archive_dir = self.sessions_dir / self.ARCHIVE_DIR
+        if not archive_dir.exists():
+            return
+
+        archive_files = [path for path in archive_dir.glob("*.jsonl") if path.is_file()]
+        if not archive_files:
+            return
+
+        total_bytes = sum(path.stat().st_size for path in archive_files)
+        if total_bytes <= budget:
+            return
+
+        archive_files.sort(key=lambda item: item.stat().st_mtime)
+        for file_path in archive_files:
+            if total_bytes <= budget:
+                break
+            try:
+                file_size = file_path.stat().st_size
+                file_path.unlink()
+                total_bytes -= file_size
+            except Exception:
+                continue
     
     async def _load_metadata(self) -> None:
         """Load session metadata from disk into the in-memory cache."""
@@ -146,14 +231,13 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
         
         if metadata_path.exists():
             try:
-                async with aiofiles.open(metadata_path, "r", encoding="utf-8") as f:
-                    content = await f.read()
-                    if not content.strip():
-                        self._loaded = True
-                        return
-                    data = json.loads(content)
-                    for key, value in data.items():
-                        self._metadata_cache[key] = SessionMetadata.from_dict(value)
+                content = await self._read_text_with_retry(metadata_path)
+                if not content.strip():
+                    self._loaded = True
+                    return
+                data = json.loads(content)
+                for key, value in data.items():
+                    self._metadata_cache[key] = SessionMetadata.from_dict(value)
             except Exception as e:
                 print(f"[SessionManager] Failed to load metadata: {e}")
         
@@ -266,6 +350,8 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
             archive_dir = self.sessions_dir / self.ARCHIVE_DIR
             archive_name = f"{session.session_id}-{datetime.now().strftime('%Y%m%d%H%M%S')}.jsonl"
             shutil.move(str(transcript_path), str(archive_dir / archive_name))
+            self._invalidate_transcript_cache(session.session_key)
+            await self._enforce_archive_budget()
     
     async def load_transcript(self, session_key: str) -> list[TranscriptEntry]:
         """Load the transcript entries for a session.
@@ -285,20 +371,29 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
         transcript_path = self._get_transcript_path(session)
         
         if not transcript_path.exists():
+            self._invalidate_transcript_cache(session_key)
             return []
-        
-        entries = []
+
         try:
-            async with aiofiles.open(transcript_path, "r", encoding="utf-8") as f:
-                async for line in f:
-                    line = line.strip()
-                    if line:
-                        data = json.loads(line)
-                        entries.append(TranscriptEntry.from_dict(data))
+            stat_result = transcript_path.stat()
+            cache_entry = self._transcript_cache.get(session_key)
+            if (
+                cache_entry is not None
+                and cache_entry.mtime_ns == stat_result.st_mtime_ns
+                and cache_entry.size_bytes == stat_result.st_size
+            ):
+                return self._clone_entries(cache_entry.entries)
+
+            entries = await self._read_transcript_entries_with_retry(transcript_path)
+            self._transcript_cache[session_key] = TranscriptCacheEntry(
+                mtime_ns=stat_result.st_mtime_ns,
+                size_bytes=stat_result.st_size,
+                entries=self._clone_entries(entries),
+            )
+            return entries
         except Exception as e:
             print(f"[SessionManager] Failed to load transcript: {e}")
-        
-        return entries
+            return []
     
     async def append_transcript(
         self,
@@ -330,6 +425,7 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
         )
         async with aiofiles.open(transcript_path, "a", encoding="utf-8") as f:
             await f.write(json.dumps(sanitized.to_dict(), ensure_ascii=False) + "\n")
+        self._invalidate_transcript_cache(session_key)
         
         # Update the session timestamp after appending.
         session.updated_at = datetime.now()
@@ -365,6 +461,7 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
                     if encoded:
                         entry.metadata["encoded_input"] = True
                 await f.write(json.dumps(entry.to_dict(), ensure_ascii=False) + "\n")
+        self._invalidate_transcript_cache(session_key)
         
         session.updated_at = datetime.now()
         await self._save_metadata()
@@ -395,6 +492,7 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
             # Create a new session
             new_session = self._create_new_session(session_key)
             self._metadata_cache[session_key] = new_session
+            self._invalidate_transcript_cache(session_key)
             await self._save_metadata()
             return new_session
     
@@ -423,6 +521,7 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
 
             # Remove the session from the metadata cache.
             del self._metadata_cache[session_key]
+            self._invalidate_transcript_cache(session_key)
             await self._save_metadata()
             return True
     

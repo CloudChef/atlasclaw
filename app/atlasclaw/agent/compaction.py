@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional, Any, Callable, Awaitable
 
+from app.atlasclaw.agent.compaction_safeguard import build_safeguarded_summary
+
 
 @dataclass
 class CompactionConfig:
@@ -44,6 +46,7 @@ class CompactionConfig:
     keep_last_assistants: int = 3
     soft_trim_enabled: bool = True
     hard_clear_threshold: int = 10000
+    safeguard_enabled: bool = True
 
 
 class CompactionPipeline:
@@ -203,7 +206,10 @@ class CompactionPipeline:
     async def _generate_summary(self, messages: list[dict]) -> str:
         """Generate a summary for the provided message batch."""
         if self._summarizer:
-            return await self._summarizer(messages)
+            summary = await self._summarizer(messages)
+            if self.config.safeguard_enabled:
+                return build_safeguarded_summary(messages=messages, base_summary=summary)
+            return summary
         
         # Build a simple textual summary when no external summarizer is provided.
         summary_parts = []
@@ -215,7 +221,10 @@ class CompactionPipeline:
                 preview = content[:100] + "..." if len(content) > 100 else content
                 summary_parts.append(f"- [{role}]: {preview}")
         
-        return "\n".join(summary_parts) if summary_parts else "(No content)"
+        summary = "\n".join(summary_parts) if summary_parts else "(No content)"
+        if self.config.safeguard_enabled:
+            return build_safeguarded_summary(messages=messages, base_summary=summary)
+        return summary
     
     def prune_tool_results(
         self,
