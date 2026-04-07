@@ -35,7 +35,7 @@ export function renderSidebar(container, { authInfo } = {}) {
   // Navigation buttons moved to Header user dropdown (Task 19)
   container.innerHTML = `
     <div class="sidebar-header">
-      <a href="/" class="new-chat-btn" data-nav-path="/">
+      <a href="/" class="new-chat-btn" data-nav-path="/" data-new-chat>
         ${ICONS.chat}
         <span data-i18n="app.newChat">New Chat</span>
       </a>

@@ -4,10 +4,52 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="app.title">AtlasClaw</title>
+    <script>
+        (() => {
+            const params = new URLSearchParams(window.location.search)
+            const explicitMode = params.get('embedded') || params.get('embed') || params.get('iframe')
+            const normalizedMode = String(explicitMode || '').trim().toLowerCase()
+            let embeddedMode = false
+
+            if (['1', 'true', 'yes'].includes(normalizedMode)) {
+                embeddedMode = true
+            } else if (['0', 'false', 'no'].includes(normalizedMode)) {
+                embeddedMode = false
+            } else {
+                try {
+                    embeddedMode = window.self !== window.top
+                } catch (error) {
+                    embeddedMode = true
+                }
+            }
+
+            const pageName = window.location.pathname.replace(/\/$/, '').split('/').pop()
+            const configEmbeddedMode = embeddedMode && ['models', 'channels'].includes(pageName)
+            window.__atlasclawEmbeddedMode = embeddedMode
+            window.__atlasclawConfigEmbeddedMode = configEmbeddedMode
+            document.documentElement.classList.toggle('atlas-embedded-mode', embeddedMode)
+            document.documentElement.classList.toggle('atlas-config-embedded-mode', configEmbeddedMode)
+        })()
+    </script>
+    <style>
+        html.atlas-embedded-mode .sidebar,
+        html.atlas-embedded-mode .header-actions {
+            display: none;
+        }
+
+        html.atlas-embedded-mode .chat-header {
+            padding: 12px 18px;
+        }
+
+        html.atlas-config-embedded-mode .sidebar,
+        html.atlas-config-embedded-mode .chat-header {
+            display: none;
+        }
+    </style>
     <!-- Deep Chat - loaded globally for chat page -->
     <script type="module" src="/static/deepChat.bundle.js"></script>
     <!-- Styles -->
-    <link rel="stylesheet" href="/styles/main.css?v=11">
+    <link rel="stylesheet" href="/styles/main.css?v=13">
     <link rel="stylesheet" href="/styles/channels.css">
     <link rel="stylesheet" href="/static/style.css">
     <link rel="stylesheet" href="/static/mention.css">

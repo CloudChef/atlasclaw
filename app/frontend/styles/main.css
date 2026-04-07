@@ -196,13 +196,41 @@ body {
 
 .chat-header {
     padding: 14px 28px;
-    background: rgba(255, 255, 255, 0.85);
+    background: white;
     backdrop-filter: blur(18px);
     display: grid;
     grid-template-columns: 1fr auto 1fr;
     align-items: center;
     position: relative;
     z-index: 50;
+}
+
+.chat-header-leading {
+    display: flex;
+    align-items: center;
+    justify-self: start;
+}
+
+.embedded-new-chat-btn {
+    width: 38px;
+    height: 38px;
+    border-radius: 14px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #1f2937;
+    background:
+        linear-gradient(135deg, rgba(255, 255, 255, 0.98), rgba(239, 243, 255, 0.92));
+    border: 1px solid rgba(124, 131, 253, 0.22);
+    box-shadow: 0 10px 24px rgba(49, 56, 96, 0.12);
+    text-decoration: none;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.embedded-new-chat-btn:hover {
+    transform: translateY(-1px);
+    border-color: rgba(124, 131, 253, 0.5);
+    box-shadow: 0 14px 30px rgba(49, 56, 96, 0.16);
 }
 
 .chat-header-title,
@@ -217,6 +245,25 @@ body {
     display: flex;
     align-items: center;
     justify-self: end;
+}
+
+html.atlas-embedded-mode .sidebar,
+html.atlas-embedded-mode .header-actions,
+body.atlas-embedded-mode .sidebar,
+body.atlas-embedded-mode .header-actions {
+    display: none;
+}
+
+html.atlas-embedded-mode .chat-header,
+body.atlas-embedded-mode .chat-header {
+    padding: 12px 18px;
+}
+
+html.atlas-config-embedded-mode .sidebar,
+html.atlas-config-embedded-mode .chat-header,
+body.atlas-config-embedded-mode .sidebar,
+body.atlas-config-embedded-mode .chat-header {
+    display: none;
 }
 
 .user-pill {
@@ -292,9 +339,7 @@ body {
     flex: 1;
     min-height: 0;
     padding: 18px 24px 26px;
-    background:
-        radial-gradient(circle at top, rgba(92, 106, 250, 0.08), transparent 40%),
-        linear-gradient(180deg, #f8f9fc 0%, #ffffff 100%);
+    background: white;
 }
 
 .chat-canvas-frame {

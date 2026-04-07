@@ -73,6 +73,8 @@ export async function initApp() {
   console.log('[App] Initializing SPA...')
 
   try {
+    const embeddedMode = applyEmbeddedMode()
+
     // 1. Install auth fetch interceptor
     installAuthFetchInterceptor()
 
@@ -120,7 +122,7 @@ export async function initApp() {
     }
 
     if (headerContainer) {
-      renderHeader(headerContainer, { authInfo })
+      renderHeader(headerContainer, { authInfo, embeddedMode })
       if (currentAgentInfo?.name) {
         updateHeaderTitleText(currentAgentInfo.name)
       }
@@ -135,6 +137,8 @@ export async function initApp() {
     const router = createRouter(routes, {
       contentContainer: document.getElementById('page-content'),
       onBeforeRoute: (path, route) => {
+        applyEmbeddedRouteMode(path, embeddedMode)
+
         // Update header title
         if (path === '/' && currentAgentInfo?.name) {
           updateHeaderTitleText(currentAgentInfo.name)
@@ -173,7 +177,7 @@ function setupLinkInterception() {
 
     const href = link.getAttribute('href')
 
-    if (link.classList.contains('new-chat-btn')) {
+    if (link.matches('[data-new-chat], .new-chat-btn')) {
       e.preventDefault()
       handleNewChatClick()
       return
@@ -210,6 +214,48 @@ async function handleNewChatClick() {
     window.__spaRouter?.navigate('/', { replace: window.location.pathname === '/' })
   } catch (error) {
     console.error('[App] Failed to start new chat:', error)
+  }
+}
+
+function applyEmbeddedMode() {
+  const embeddedMode = isEmbeddedMode()
+  window.__atlasclawEmbeddedMode = embeddedMode
+  document.documentElement.classList.toggle('atlas-embedded-mode', embeddedMode)
+  document.body.classList.toggle('atlas-embedded-mode', embeddedMode)
+  applyEmbeddedRouteMode(window.location.pathname, embeddedMode)
+  return embeddedMode
+}
+
+function applyEmbeddedRouteMode(path, embeddedMode = isEmbeddedMode()) {
+  const configEmbeddedMode = embeddedMode && isConfigEmbeddedPath(path)
+
+  window.__atlasclawConfigEmbeddedMode = configEmbeddedMode
+  document.documentElement.classList.toggle('atlas-config-embedded-mode', configEmbeddedMode)
+  document.body.classList.toggle('atlas-config-embedded-mode', configEmbeddedMode)
+}
+
+function isConfigEmbeddedPath(path) {
+  const cleanPath = String(path || window.location.pathname || '').replace(/\/$/, '')
+  const pageName = cleanPath.split('/').pop()
+  return pageName === 'models' || pageName === 'channels'
+}
+
+function isEmbeddedMode() {
+  const params = new URLSearchParams(window.location.search)
+  const explicitMode = params.get('embedded') || params.get('embed') || params.get('iframe')
+  const normalizedMode = String(explicitMode || '').trim().toLowerCase()
+
+  if (['1', 'true', 'yes'].includes(normalizedMode)) {
+    return true
+  }
+  if (['0', 'false', 'no'].includes(normalizedMode)) {
+    return false
+  }
+
+  try {
+    return window.self !== window.top
+  } catch (error) {
+    return true
   }
 }
 
