@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from fastapi import FastAPI
 
 from app.atlasclaw.api.channels import router, set_channel_manager
+from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.channels import ChannelRegistry
 from app.atlasclaw.channels.handlers import WebSocketHandler
 from app.atlasclaw.channels.manager import ChannelManager
@@ -23,6 +24,21 @@ from app.atlasclaw.db.database import DatabaseConfig
 def app():
     """Create test FastAPI application."""
     app = FastAPI()
+
+    @app.middleware("http")
+    async def inject_user_info(request, call_next):
+        raw_is_admin = request.headers.get("X-Test-Is-Admin", "true").strip().lower()
+        is_admin = raw_is_admin in {"1", "true", "yes", "on"}
+        user_id = request.headers.get("X-Test-User-Id", "admin-user" if is_admin else "regular-user")
+        request.state.user_info = UserInfo(
+            user_id=user_id,
+            display_name=user_id,
+            roles=["admin"] if is_admin else ["user"],
+            extra={"is_admin": is_admin},
+            auth_type="test",
+        )
+        return await call_next(request)
+
     app.include_router(router)
     return app
 
@@ -107,6 +123,12 @@ class TestChannelTypesAPI:
         assert ws_channel is not None
         assert ws_channel["connection_count"] == 1
 
+    def test_list_channel_types_allows_non_admin(self, client, channel_manager):
+        """Test listing channel types is available to authenticated non-admin users."""
+        response = client.get("/api/channels", headers={"X-Test-Is-Admin": "false"})
+
+        assert response.status_code == 200
+
 
 class TestChannelSchemaAPI:
     """Test channel schema API."""
@@ -166,6 +188,28 @@ class TestConnectionsAPI:
         )
         
         assert response.status_code == 404
+
+    def test_create_connection_allows_non_admin(self, client, channel_manager):
+        """Test creating a connection is available to authenticated non-admin users."""
+        response = client.post(
+            "/api/channels/websocket/connections",
+            headers={"X-Test-Is-Admin": "false"},
+            json={"name": "Test Connection", "config": {}}
+        )
+
+        assert response.status_code == 200
+
+    def test_channel_routes_require_authenticated_user(self, client, channel_manager):
+        """Test channel routes return 401 for anonymous users."""
+        response = client.get(
+            "/api/channels",
+            headers={
+                "X-Test-Is-Admin": "false",
+                "X-Test-User-Id": "anonymous",
+            },
+        )
+
+        assert response.status_code == 401
 
     def test_list_connections_after_create(self, client, channel_manager):
         """Test listing connections after creating one."""

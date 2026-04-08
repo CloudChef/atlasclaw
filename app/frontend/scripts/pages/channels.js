@@ -11,6 +11,7 @@
 
 import { t, translateIfExists, updatePageTranslations } from '../i18n.js'
 import { showToast } from '../components/toast.js'
+import { buildAssetUrl } from '../config.js'
 
 // ========== Module State ==========
 let mounted = false
@@ -35,9 +36,9 @@ const VALIDATION_REQUEST_TIMEOUT_MS = 3600
 
 // ========== Channel Type SVG Icons ==========
 const CHANNEL_ICONS = {
-  feishu: '<img src="/static/channel-icons/feishu.png" alt="Feishu logo" width="30" height="30" decoding="async">',
-  dingtalk: '<img src="/static/channel-icons/dingtalk.png" alt="DingTalk logo" width="30" height="30" decoding="async">',
-  wecom: '<img src="/static/channel-icons/wecom.png" alt="WeCom logo" width="30" height="30" decoding="async">',
+  feishu: `<img src="${buildAssetUrl('/static/channel-icons/feishu.png')}" alt="Feishu logo" width="30" height="30" decoding="async">`,
+  dingtalk: `<img src="${buildAssetUrl('/static/channel-icons/dingtalk.png')}" alt="DingTalk logo" width="30" height="30" decoding="async">`,
+  wecom: `<img src="${buildAssetUrl('/static/channel-icons/wecom.png')}" alt="WeCom logo" width="30" height="30" decoding="async">`,
   slack: `<svg viewBox="0 0 24 24" fill="none" width="22" height="22" aria-hidden="true">
     <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52z" fill="#E01E5A"/>
     <path d="M6.313 15.165a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z" fill="#E01E5A"/>

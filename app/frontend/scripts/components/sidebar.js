@@ -6,6 +6,8 @@
  * - updateSidebarActive(path) - No-op (kept for backward compatibility)
  */
 
+import { buildAppUrl } from '../config.js'
+
 // SVG icons for sidebar
 const ICONS = {
   chat: `<svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -35,7 +37,7 @@ export function renderSidebar(container, { authInfo } = {}) {
   // Navigation buttons moved to Header user dropdown (Task 19)
   container.innerHTML = `
     <div class="sidebar-header">
-      <a href="/" class="new-chat-btn" data-nav-path="/" data-new-chat>
+      <a href="${buildAppUrl('/')}" class="new-chat-btn" data-nav-path="/" data-new-chat>
         ${ICONS.chat}
         <span data-i18n="app.newChat">New Chat</span>
       </a>

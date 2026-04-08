@@ -3,13 +3,45 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
+
+from app.atlasclaw.core.base_path import build_base_path_url, normalize_base_path, strip_base_path
+
+
+_BASE_PATH_TOKEN = "__ATLASCLAW_BASE_PATH__"
+_BASE_PATH_JSON_TOKEN = "__ATLASCLAW_BASE_PATH_JSON__"
+
+
+def _resolve_base_path() -> str:
+    try:
+        from app.atlasclaw.core.config import get_config
+
+        return normalize_base_path(get_config().base_path)
+    except Exception:
+        return ""
+
+
+def _resolve_app_base_path(app: FastAPI) -> str:
+    config = getattr(app.state, "config", None)
+    return normalize_base_path(getattr(config, "base_path", "")) or _resolve_base_path()
+
+
+def render_frontend_html(frontend_path: Path) -> HTMLResponse | dict[str, str]:
+    if not frontend_path.exists():
+        return {"error": "Frontend not found"}
+
+    content = frontend_path.read_text(encoding="utf-8")
+    base_path = _resolve_base_path()
+    content = content.replace(_BASE_PATH_TOKEN, base_path)
+    content = content.replace(_BASE_PATH_JSON_TOKEN, json.dumps(base_path))
+    return HTMLResponse(content=content)
 
 
 class StaticFileCacheMiddleware(BaseHTTPMiddleware):
@@ -32,41 +64,66 @@ class StaticFileCacheMiddleware(BaseHTTPMiddleware):
         return response
 
 
+class ExternalBasePathMiddleware(BaseHTTPMiddleware):
+    """Accept proxied requests with the external base_path still attached."""
+
+    async def dispatch(self, request: Request, call_next):
+        base_path = _resolve_app_base_path(request.app)
+        original_path = request.scope.get("path", "")
+        normalized_path = strip_base_path(base_path, original_path)
+
+        if base_path and normalized_path != original_path:
+            request.scope["atlasclaw_external_path"] = original_path
+            request.scope["path"] = normalized_path
+            raw_path = request.scope.get("raw_path")
+            if raw_path is not None:
+                request.scope["raw_path"] = normalized_path.encode("utf-8")
+
+        return await call_next(request)
+
+
 def mount_frontend(app: FastAPI, frontend_dir: Path) -> None:
     """Mount frontend static folders and HTML entry routes."""
     if not frontend_dir.exists():
         return
 
+    external_base_path = _resolve_base_path()
+
     def _serve_spa_index():
         index_path = frontend_dir / "index.html"
-        if index_path.exists():
-            return FileResponse(str(index_path))
-        return {"error": "Frontend not found"}
+        return render_frontend_html(index_path)
+
+    def _mount_static_alias(url_path: str, directory: Path, name: str) -> None:
+        if not directory.exists():
+            return
+        app.mount(url_path, StaticFiles(directory=str(directory)), name=name)
+        if external_base_path:
+            app.mount(
+                f"{external_base_path}{url_path}",
+                StaticFiles(directory=str(directory)),
+                name=f"{name}-external-base",
+            )
 
     static_dir = frontend_dir / "static"
-    if static_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+    _mount_static_alias("/static", static_dir, "static")
 
     try:
         from app.atlasclaw.core.config import get_config
 
         workspace_public_dir = Path(get_config().workspace.path).resolve() / "public"
         workspace_public_dir.mkdir(parents=True, exist_ok=True)
-        app.mount("/user-content", StaticFiles(directory=str(workspace_public_dir)), name="user-content")
+        _mount_static_alias("/user-content", workspace_public_dir, "user-content")
     except Exception:
         pass
 
     scripts_dir = frontend_dir / "scripts"
-    if scripts_dir.exists():
-        app.mount("/scripts", StaticFiles(directory=str(scripts_dir)), name="scripts")
+    _mount_static_alias("/scripts", scripts_dir, "scripts")
 
     styles_dir = frontend_dir / "styles"
-    if styles_dir.exists():
-        app.mount("/styles", StaticFiles(directory=str(styles_dir)), name="styles")
+    _mount_static_alias("/styles", styles_dir, "styles")
 
     locales_dir = frontend_dir / "locales"
-    if locales_dir.exists():
-        app.mount("/locales", StaticFiles(directory=str(locales_dir)), name="locales")
+    _mount_static_alias("/locales", locales_dir, "locales")
 
     @app.get("/", include_in_schema=False)
     async def serve_index():
@@ -74,16 +131,16 @@ def mount_frontend(app: FastAPI, frontend_dir: Path) -> None:
 
     @app.get("/channels.html", include_in_schema=False)
     async def serve_channels():
-        channels_path = frontend_dir / "channels.html"
-        if channels_path.exists():
-            return FileResponse(str(channels_path))
-        return {"error": "Channels page not found"}
+        return RedirectResponse(
+            url=build_base_path_url(_resolve_base_path(), "/channels"),
+            status_code=302,
+        )
 
     @app.get("/login.html", include_in_schema=False)
     async def serve_login():
         login_path = frontend_dir / "login.html"
         if login_path.exists():
-            return FileResponse(str(login_path))
+            return render_frontend_html(login_path)
         return {"error": "Login page not found"}
 
     @app.get("/admin/users", include_in_schema=False)
@@ -92,17 +149,26 @@ def mount_frontend(app: FastAPI, frontend_dir: Path) -> None:
 
     @app.get("/models.html", include_in_schema=False)
     async def serve_models():
-        models_path = frontend_dir / "models.html"
-        if models_path.exists():
-            return FileResponse(str(models_path))
-        return {"error": "Models page not found"}
+        return RedirectResponse(
+            url=build_base_path_url(_resolve_base_path(), "/models"),
+            status_code=302,
+        )
 
     @app.get("/config.json", include_in_schema=False)
     async def serve_config():
         config_path = frontend_dir / "config.json"
+        payload: dict[str, object] = {}
         if config_path.exists():
-            return FileResponse(str(config_path))
-        return {"apiBaseUrl": ""}
+            try:
+                payload = json.loads(config_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                payload = {}
+
+        base_path = _resolve_base_path()
+        payload["basePath"] = base_path
+        if not str(payload.get("apiBaseUrl", "")).strip():
+            payload["apiBaseUrl"] = base_path
+        return JSONResponse(payload)
 
 
 def register_core_routers(

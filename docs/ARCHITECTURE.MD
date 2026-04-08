@@ -539,6 +539,8 @@ WebSocket Connection
 | 5 | Project config file | `atlasclaw.json` / `atlasclaw.yaml` in project root |
 | 6 | Schema defaults | Defined in `config_schema.py` Pydantic models |
 
+For reverse-proxied UI deployments, `AtlasClawConfig.base_path` defines the browser-visible mount path such as `/atlasclaw`. Frontend asset URLs, SPA routes, auth redirects, and cookie scope must all resolve through this configured base path.
+
 ### 7.2 Environment Variable Format
 
 Pattern: `ATLASCLAW_<SECTION>__<KEY>` (double underscore for nesting)

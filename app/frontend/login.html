@@ -4,7 +4,22 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title data-i18n="login.title">AtlasClaw Login</title>
-  <link rel="stylesheet" href="/styles/login.css">
+  <script>
+    window.__atlasclawBasePath = __ATLASCLAW_BASE_PATH_JSON__
+    window.__atlasclawBuildUrl = function (path) {
+      const basePath = String(window.__atlasclawBasePath || '').replace(/\/$/, '')
+      const cleanPath = String(path || '/')
+      if (!cleanPath || cleanPath === '/') {
+        return basePath ? `${basePath}/` : '/'
+      }
+      if (cleanPath.startsWith('http://') || cleanPath.startsWith('https://') || cleanPath.startsWith('//')) {
+        return cleanPath
+      }
+      const normalized = cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`
+      return `${basePath}${normalized}` || normalized
+    }
+  </script>
+  <link rel="stylesheet" href="__ATLASCLAW_BASE_PATH__/styles/login.css">
 </head>
 <body>
   <main class="login-page">
@@ -58,8 +73,8 @@
   </main>
 
   <script type="module">
-    import { checkAuth, login } from '/scripts/auth.js'
-    import { initI18n, t, updatePageTranslations } from '/scripts/i18n.js'
+    import { checkAuth, login } from '__ATLASCLAW_BASE_PATH__/scripts/auth.js'
+    import { initI18n, t, updatePageTranslations } from '__ATLASCLAW_BASE_PATH__/scripts/i18n.js'
 
     // Initialize i18n first (non-blocking)
     try {
@@ -102,7 +117,8 @@
       eyeOff.style.display = isPassword ? '' : 'none'
     })
     const params = new URLSearchParams(window.location.search)
-    const redirect = params.get('redirect') || '/'
+    const fallbackRedirect = window.__atlasclawBuildUrl('/')
+    const redirect = normalizeRedirectTarget(params.get('redirect') || fallbackRedirect)
 
     const already = await checkAuth({ redirect: false })
     if (already) {
@@ -140,6 +156,24 @@
         submitBtn.textContent = t('login.submit')
       }
     })
+
+    function normalizeRedirectTarget(target) {
+      const value = String(target || '').trim()
+      const basePath = String(window.__atlasclawBasePath || '').replace(/\/$/, '')
+      if (!value) {
+        return fallbackRedirect
+      }
+      if (value.startsWith('http://') || value.startsWith('https://') || value.startsWith('//')) {
+        return fallbackRedirect
+      }
+      if (!basePath || value === basePath || value.startsWith(`${basePath}/`)) {
+        return value
+      }
+      if (value.startsWith('/')) {
+        return window.__atlasclawBuildUrl(value)
+      }
+      return window.__atlasclawBuildUrl(`/${value}`)
+    }
   </script>
 </body>
 </html>

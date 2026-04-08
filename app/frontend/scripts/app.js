@@ -7,10 +7,11 @@
 
 import { createRouter } from './router.js'
 import { installAuthFetchInterceptor, checkAuth } from './auth.js'
-import { loadConfig } from './config.js'
+import { loadConfig, stripBasePath, buildAppUrl } from './config.js'
 import { initI18n, updatePageTranslations, updateContainerTranslations } from './i18n.js'
 import { renderSidebar } from './components/sidebar.js'
 import { renderHeader, updateHeaderTitle, updateHeaderTitleText } from './components/header.js'
+import { showToast } from './components/toast.js'
 import { getAgentInfo } from './api-client.js'
 
 /**
@@ -19,6 +20,7 @@ import { getAgentInfo } from './api-client.js'
  * - path: URL path pattern
  * - loader: Dynamic import function for page module
  * - auth: Whether auth is required (always true for non-login pages)
+ * - admin: Whether admin privileges are required
  * - title: i18n key for page title
  */
 const routes = [
@@ -44,12 +46,14 @@ const routes = [
     path: '/models',
     loader: () => import('./pages/models.js'),
     auth: true,
+    admin: true,
     title: 'model.pageTitle'
   },
   {
     path: '/admin/users',
     loader: () => import('./pages/admin-users.js'),
     auth: true,
+    admin: true,
     title: 'admin.title'
   }
 ]
@@ -64,6 +68,28 @@ let currentAgentInfo = null
  */
 export function getAuthInfo() {
   return currentAuthInfo
+}
+
+function enforceRouteAccess(route) {
+  if (!route?.admin) {
+    return true
+  }
+
+  if (currentAuthInfo?.is_admin === true) {
+    return true
+  }
+
+  showToast('Access denied. Admin privileges required.', 'error')
+
+  if (window.__spaRouter) {
+    setTimeout(() => {
+      window.__spaRouter?.navigate('/', { replace: true })
+    }, 0)
+  } else {
+    window.location.replace(buildAppUrl('/'))
+  }
+
+  return false
 }
 
 /**
@@ -137,6 +163,10 @@ export async function initApp() {
     const router = createRouter(routes, {
       contentContainer: document.getElementById('page-content'),
       onBeforeRoute: (path, route) => {
+        if (!enforceRouteAccess(route)) {
+          return false
+        }
+
         applyEmbeddedRouteMode(path, embeddedMode)
 
         // Update header title
@@ -211,7 +241,7 @@ async function handleNewChatClick() {
   try {
     const { startNewSession } = await import('./session-manager.js')
     await startNewSession(true, { channel: 'web', chatType: 'dm' })
-    window.__spaRouter?.navigate('/', { replace: window.location.pathname === '/' })
+    window.__spaRouter?.navigate('/', { replace: stripBasePath(window.location.pathname) === '/' })
   } catch (error) {
     console.error('[App] Failed to start new chat:', error)
   }
@@ -227,16 +257,32 @@ function applyEmbeddedMode() {
 }
 
 function applyEmbeddedRouteMode(path, embeddedMode = isEmbeddedMode()) {
+  const chatEmbeddedMode = embeddedMode && isChatEmbeddedPath(path)
   const configEmbeddedMode = embeddedMode && isConfigEmbeddedPath(path)
 
+  window.__atlasclawChatEmbeddedMode = chatEmbeddedMode
   window.__atlasclawConfigEmbeddedMode = configEmbeddedMode
+  document.documentElement.classList.toggle('atlas-chat-embedded-mode', chatEmbeddedMode)
+  document.body.classList.toggle('atlas-chat-embedded-mode', chatEmbeddedMode)
   document.documentElement.classList.toggle('atlas-config-embedded-mode', configEmbeddedMode)
   document.body.classList.toggle('atlas-config-embedded-mode', configEmbeddedMode)
 }
 
+function getLogicalPath(path) {
+  const strippedPath = stripBasePath(String(path || window.location.pathname || '').split(/[?#]/, 1)[0] || '/')
+  if (!strippedPath || strippedPath === '') {
+    return '/'
+  }
+  return strippedPath === '/' ? '/' : strippedPath.replace(/\/$/, '')
+}
+
+function isChatEmbeddedPath(path) {
+  return getLogicalPath(path) === '/'
+}
+
 function isConfigEmbeddedPath(path) {
-  const cleanPath = String(path || window.location.pathname || '').replace(/\/$/, '')
-  const pageName = cleanPath.split('/').pop()
+  const logicalPath = getLogicalPath(path)
+  const pageName = logicalPath === '/' ? '' : logicalPath.split('/').pop()
   return pageName === 'models' || pageName === 'channels'
 }
 

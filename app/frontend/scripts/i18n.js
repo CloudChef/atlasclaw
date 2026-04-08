@@ -3,6 +3,8 @@
  * Provides multi-language support
  */
 
+import { buildAssetUrl } from './config.js'
+
 const LOCALE_STORAGE_KEY = 'atlasclaw_locale';
 const SUPPORTED_LOCALES = ['zh-CN', 'en-US'];
 const DEFAULT_LOCALE = 'en-US';
@@ -90,7 +92,7 @@ export async function loadLocale(locale) {
     }
     
     try {
-        const response = await fetch(`/locales/${locale}.json`);
+        const response = await fetch(buildAssetUrl(`/locales/${locale}.json`));
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }

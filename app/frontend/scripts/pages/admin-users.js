@@ -1,6 +1,7 @@
 import { t, updateContainerTranslations } from '../i18n.js'
 import { showToast } from '../components/toast.js'
-import { checkAuth } from '../auth.js'
+import { checkAuth, redirectToLogin } from '../auth.js'
+import { buildAssetUrl, buildAppUrl } from '../config.js'
 
 let container = null
 let currentPage = 1
@@ -314,7 +315,7 @@ async function handleApiError(response) {
   const status = response.status
   if (status === 401) {
     showToast(translateOrFallback('admin.sessionExpired', 'Session expired. Please login again.'), 'error')
-    setTimeout(() => { window.location.href = '/login.html' }, 1200)
+    setTimeout(() => { redirectToLogin() }, 1200)
     return
   }
   if (status === 403) {
@@ -800,14 +801,14 @@ export async function mount(containerEl, { params, route } = {}) {
   if (!user) return
   if (!user.is_admin) {
     showToast(translateOrFallback('admin.accessDenied', 'Access denied. Admin privileges required.'), 'error')
-    window.location.href = '/'
+    window.location.href = buildAppUrl('/')
     return
   }
 
   if (!document.getElementById('admin-users-page-css')) {
     const cssLink = document.createElement('link')
     cssLink.rel = 'stylesheet'
-    cssLink.href = '/styles/admin-users.css'
+    cssLink.href = buildAssetUrl('/styles/admin-users.css')
     cssLink.id = 'admin-users-page-css'
     document.head.appendChild(cssLink)
   }

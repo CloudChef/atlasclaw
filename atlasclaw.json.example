@@ -1,5 +1,7 @@
 {
   "_comment": "Example AtlasClaw configuration. This file stays valid JSON by using _comment fields instead of // comments.",
+  "_comment_base_path": "Optional reverse-proxy mount path for browser-visible URLs, e.g. /atlasclaw when Nginx publishes AtlasClaw under https://host/atlasclaw",
+  "base_path": "",
   "workspace": {
     "_comment": "Workspace configuration for runtime data and user sessions",
     "path": "./.atlasclaw"

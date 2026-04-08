@@ -2,6 +2,7 @@ node_modules/
 dist/
 openspec/
 .qoder/
+.idea/
 .sisyphus/
 *.pyc
 *.pyo
@@ -29,5 +30,4 @@ ssh_dingtalk_config.py
 paramiko.log
 
 # Screenshots (keep repo clean)
-*.png
 *.json.bak

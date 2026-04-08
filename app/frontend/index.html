@@ -5,6 +5,38 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title data-i18n="app.title">AtlasClaw</title>
     <script>
+        window.__atlasclawBasePath = __ATLASCLAW_BASE_PATH_JSON__
+        window.__atlasclawBuildUrl = function (path) {
+            const basePath = String(window.__atlasclawBasePath || '').replace(/\/$/, '')
+            const cleanPath = String(path || '/')
+            if (!cleanPath) {
+                return basePath ? `${basePath}/` : '/'
+            }
+            if (cleanPath === '/') {
+                return basePath ? `${basePath}/` : '/'
+            }
+            if (cleanPath.startsWith('http://') || cleanPath.startsWith('https://') || cleanPath.startsWith('//')) {
+                return cleanPath
+            }
+            const normalized = cleanPath.startsWith('/') ? cleanPath : `/${cleanPath}`
+            return `${basePath}${normalized}` || normalized
+        }
+        window.__atlasclawStripBasePath = function (path) {
+            const basePath = String(window.__atlasclawBasePath || '').replace(/\/$/, '')
+            const pathname = String(path || '/')
+            if (!basePath) {
+                return pathname || '/'
+            }
+            if (pathname === basePath) {
+                return '/'
+            }
+            if (pathname.startsWith(`${basePath}/`)) {
+                return pathname.slice(basePath.length) || '/'
+            }
+            return pathname || '/'
+        }
+    </script>
+    <script>
         (() => {
             const params = new URLSearchParams(window.location.search)
             const explicitMode = params.get('embedded') || params.get('embed') || params.get('iframe')
@@ -23,11 +55,15 @@
                 }
             }
 
-            const pageName = window.location.pathname.replace(/\/$/, '').split('/').pop()
+            const logicalPath = window.__atlasclawStripBasePath(window.location.pathname)
+            const chatEmbeddedMode = embeddedMode && logicalPath === '/'
+            const pageName = logicalPath.replace(/\/$/, '').split('/').pop()
             const configEmbeddedMode = embeddedMode && ['models', 'channels'].includes(pageName)
             window.__atlasclawEmbeddedMode = embeddedMode
+            window.__atlasclawChatEmbeddedMode = chatEmbeddedMode
             window.__atlasclawConfigEmbeddedMode = configEmbeddedMode
             document.documentElement.classList.toggle('atlas-embedded-mode', embeddedMode)
+            document.documentElement.classList.toggle('atlas-chat-embedded-mode', chatEmbeddedMode)
             document.documentElement.classList.toggle('atlas-config-embedded-mode', configEmbeddedMode)
         })()
     </script>
@@ -47,21 +83,21 @@
         }
     </style>
     <!-- Deep Chat - loaded globally for chat page -->
-    <script type="module" src="/static/deepChat.bundle.js"></script>
+    <script type="module" src="__ATLASCLAW_BASE_PATH__/static/deepChat.bundle.js"></script>
     <!-- Styles -->
-    <link rel="stylesheet" href="/styles/main.css?v=13">
-    <link rel="stylesheet" href="/styles/channels.css">
-    <link rel="stylesheet" href="/static/style.css">
-    <link rel="stylesheet" href="/static/mention.css">
+    <link rel="stylesheet" href="__ATLASCLAW_BASE_PATH__/styles/main.css?v=13">
+    <link rel="stylesheet" href="__ATLASCLAW_BASE_PATH__/styles/channels.css">
+    <link rel="stylesheet" href="__ATLASCLAW_BASE_PATH__/static/style.css">
+    <link rel="stylesheet" href="__ATLASCLAW_BASE_PATH__/static/mention.css">
     <script>
         (() => {
             const routeStyles = [
-                { match: /^\/admin\/users\/?$/, id: 'admin-users-page-css', href: '/styles/admin-users.css' },
-                { match: /^\/account\/?$/, id: 'account-settings-page-css', href: '/styles/account-settings.css' },
-                { match: /^\/models\/?$/, id: 'models-page-css', href: '/styles/models.css' }
+                { match: /^\/admin\/users\/?$/, id: 'admin-users-page-css', href: window.__atlasclawBuildUrl('/styles/admin-users.css') },
+                { match: /^\/account\/?$/, id: 'account-settings-page-css', href: window.__atlasclawBuildUrl('/styles/account-settings.css') },
+                { match: /^\/models\/?$/, id: 'models-page-css', href: window.__atlasclawBuildUrl('/styles/models.css') }
             ]
 
-            const pathname = window.location.pathname
+            const pathname = window.__atlasclawStripBasePath(window.location.pathname)
             const target = routeStyles.find(({ match }) => match.test(pathname))
 
             if (!target || document.getElementById(target.id)) {
@@ -86,6 +122,6 @@
     <div id="toast-container" class="toast-container"></div>
 
     <!-- SPA Entry Point -->
-    <script type="module" src="/scripts/main.js"></script>
+    <script type="module" src="__ATLASCLAW_BASE_PATH__/scripts/main.js"></script>
 </body>
 </html>

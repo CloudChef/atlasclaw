@@ -15,6 +15,8 @@
  * - Page module lifecycle: mount(container) / unmount()
  */
 
+import { buildAppUrl, stripBasePath } from './config.js'
+
 /**
  * Parse route path pattern to regex and extract param names
  * @param {string} pattern - Route pattern (e.g., '/users/:id')
@@ -61,7 +63,7 @@ function matchRoute(path, pattern) {
  * @param {Array<{path: string, loader: Function, auth?: boolean, title?: string}>} routes - Route definitions
  * @param {Object} options - Router options
  * @param {HTMLElement} options.contentContainer - Container for page content
- * @param {Function} [options.onBeforeRoute] - Called before route change with (path, route)
+ * @param {Function} [options.onBeforeRoute] - Called before route change with (path, route); return false to cancel
  * @param {Function} [options.onAfterRoute] - Called after route change with (path, route)
  * @returns {{ navigate: Function, start: Function, getCurrentPath: Function }}
  */
@@ -71,6 +73,14 @@ export function createRouter(routes, options = {}) {
   // Current mounted page module (with unmount method)
   let currentPage = null
   let currentPath = ''
+
+  function normalizeRoutePath(path) {
+    const strippedPath = stripBasePath(String(path || '/').split(/[?#]/, 1)[0] || '/')
+    if (!strippedPath || strippedPath === '') {
+      return '/'
+    }
+    return strippedPath.startsWith('/') ? strippedPath : `/${strippedPath}`
+  }
 
   /**
    * Find matching route for given path
@@ -96,10 +106,11 @@ export function createRouter(routes, options = {}) {
    * @param {boolean} [addHistory=true] - Whether to push to history
    */
   async function loadRoute(path, addHistory = true) {
-    const { route, params } = findRoute(path)
+    const normalizedPath = normalizeRoutePath(path)
+    const { route, params } = findRoute(normalizedPath)
 
     if (!route) {
-      console.warn(`[Router] No route found for: ${path}`)
+      console.warn(`[Router] No route found for: ${normalizedPath}`)
       // Could render 404 page here
       return
     }
@@ -107,7 +118,10 @@ export function createRouter(routes, options = {}) {
     // Call before route hook
     if (onBeforeRoute) {
       try {
-        onBeforeRoute(path, route)
+        const beforeResult = await onBeforeRoute(normalizedPath, route)
+        if (beforeResult === false) {
+          return
+        }
       } catch (err) {
         console.error('[Router] onBeforeRoute error:', err)
       }
@@ -123,7 +137,7 @@ export function createRouter(routes, options = {}) {
     }
 
     currentPage = null
-    currentPath = path
+    currentPath = normalizedPath
 
     // Clear container
     if (contentContainer) {
@@ -139,7 +153,7 @@ export function createRouter(routes, options = {}) {
         currentPage = pageModule
         await pageModule.mount(contentContainer, { params, route })
       } else {
-        console.warn('[Router] Page module missing mount function:', path)
+        console.warn('[Router] Page module missing mount function:', normalizedPath)
       }
     } catch (err) {
       console.error('[Router] Failed to load page module:', err)
@@ -149,14 +163,15 @@ export function createRouter(routes, options = {}) {
     }
 
     // Update browser history
-    if (addHistory && window.location.pathname !== path) {
-      window.history.pushState({ path }, '', path)
+    const browserPath = buildAppUrl(normalizedPath)
+    if (addHistory && window.location.pathname !== browserPath) {
+      window.history.pushState({ path: normalizedPath }, '', browserPath)
     }
 
     // Call after route hook
     if (onAfterRoute) {
       try {
-        onAfterRoute(path, route)
+        onAfterRoute(normalizedPath, route)
       } catch (err) {
         console.error('[Router] onAfterRoute error:', err)
       }
@@ -169,10 +184,11 @@ export function createRouter(routes, options = {}) {
    * @param {{ replace?: boolean }} [options] - Navigation options
    */
   function navigate(path, { replace = false } = {}) {
+    const normalizedPath = normalizeRoutePath(path)
     if (replace) {
-      window.history.replaceState({ path }, '', path)
+      window.history.replaceState({ path: normalizedPath }, '', buildAppUrl(normalizedPath))
     }
-    loadRoute(path, !replace)
+    loadRoute(normalizedPath, !replace)
   }
 
   /**
@@ -180,7 +196,7 @@ export function createRouter(routes, options = {}) {
    * @param {PopStateEvent} event
    */
   function handlePopState(event) {
-    const path = window.location.pathname
+    const path = normalizeRoutePath(window.location.pathname)
     loadRoute(path, false)
   }
 
@@ -192,7 +208,7 @@ export function createRouter(routes, options = {}) {
     window.addEventListener('popstate', handlePopState)
 
     // Handle current URL on initial load
-    const initialPath = window.location.pathname
+    const initialPath = normalizeRoutePath(window.location.pathname)
     loadRoute(initialPath, false)
   }
 

@@ -82,6 +82,27 @@ def test_local_login_failure(tmp_path):
     manager_cleanup(manager)
 
 
+def test_local_login_sets_cookie_path_for_base_path(tmp_path):
+    manager = init_database_sync(tmp_path)
+    client = _build_client(tmp_path)
+    client.app.state.config.base_path = "/atlasclaw"
+
+    resp = client.post(
+        "/api/auth/local/login",
+        json={"username": "admin", "password": "adminpass1"},
+    )
+
+    assert resp.status_code == 200
+    set_cookie_headers = resp.headers.get_list("set-cookie")
+    assert any("atlasclaw_session=" in header and "Path=/atlasclaw" in header for header in set_cookie_headers)
+    assert any(
+        "AtlasClaw-Authenticate=" in header and "Path=/atlasclaw" in header
+        for header in set_cookie_headers
+    )
+
+    manager_cleanup(manager)
+
+
 def test_auth_me_requires_valid_jwt(tmp_path):
     manager = init_database_sync(tmp_path)
     client = _build_client(tmp_path)

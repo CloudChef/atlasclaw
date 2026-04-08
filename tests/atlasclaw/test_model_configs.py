@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.db.database import DatabaseConfig, DatabaseManager, init_database
 from app.atlasclaw.db.models import ModelConfigModel
 from app.atlasclaw.db.orm.model_config import ModelConfigService
@@ -101,6 +102,21 @@ def app(api_db_manager: DatabaseManager):
     and get_db_session() uses get_db_manager() which returns that global.
     """
     test_app = FastAPI()
+
+    @test_app.middleware("http")
+    async def inject_user_info(request, call_next):
+        raw_is_admin = request.headers.get("X-Test-Is-Admin", "true").strip().lower()
+        is_admin = raw_is_admin in {"1", "true", "yes", "on"}
+        user_id = request.headers.get("X-Test-User-Id", "admin-user" if is_admin else "regular-user")
+        request.state.user_info = UserInfo(
+            user_id=user_id,
+            display_name=user_id,
+            roles=["admin"] if is_admin else ["user"],
+            extra={"is_admin": is_admin},
+            auth_type="test",
+        )
+        return await call_next(request)
+
     test_app.include_router(router)
     return test_app
 
@@ -666,6 +682,30 @@ class TestModelConfigValidation:
         response = client.delete("/api/model-configs/non-existent-uuid")
 
         assert response.status_code == 404
+
+
+class TestModelConfigAuthorization:
+    """Tests for model config authorization."""
+
+    def test_list_model_configs_requires_admin(self, client):
+        """Test GET /api/model-configs returns 403 for non-admin users."""
+        response = client.get("/api/model-configs", headers={"X-Test-Is-Admin": "false"})
+
+        assert response.status_code == 403
+
+    def test_create_model_config_requires_admin(self, client):
+        """Test POST /api/model-configs returns 403 for non-admin users."""
+        response = client.post(
+            "/api/model-configs",
+            headers={"X-Test-Is-Admin": "false"},
+            json={
+                "name": "non-admin-create",
+                "provider": "openai",
+                "model_id": "gpt-4o-mini",
+            },
+        )
+
+        assert response.status_code == 403
 
 
 # ============== Encryption Utility Tests ==============

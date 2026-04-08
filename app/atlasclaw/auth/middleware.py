@@ -16,6 +16,7 @@ from app.atlasclaw.auth.config import AuthConfig
 from app.atlasclaw.auth.jwt_token import verify_atlas_token
 from app.atlasclaw.auth.models import ANONYMOUS_USER, AuthenticationError, UserInfo
 from app.atlasclaw.auth.strategy import AuthStrategy
+from app.atlasclaw.core.base_path import build_base_path_url, normalize_base_path
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +215,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return provider.provider_name() if provider is not None else "none"
 
     def _auth_failed_response(self, request: Request):
-
+        config = getattr(request.app.state, "config", None)
+        base_path = normalize_base_path(getattr(config, "base_path", ""))
         if request.url.path == "/" or self._is_browser_request(request):
             provider_name = self._current_provider_name()
 
@@ -222,12 +224,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
             # Use reverse exclusion pattern: all providers except local/none/empty are SSO
             # This way, new SSO providers (feishu, wecom, etc.) work without code changes
             if provider_name not in ("local", "none", "cmp", ""):
-                return RedirectResponse(url="/api/auth/login", status_code=302)
+                return RedirectResponse(
+                    url=build_base_path_url(base_path, "/api/auth/login"),
+                    status_code=302,
+                )
 
-            original = f"{request.url.path}"
+            original = build_base_path_url(base_path, request.url.path)
             if request.url.query:
                 original = f"{original}?{request.url.query}"
-            redirect_url = f"/login.html?redirect={quote(original, safe='')}"
+            login_path = build_base_path_url(base_path, "/login.html")
+            redirect_url = f"{login_path}?redirect={quote(original, safe='')}"
             return RedirectResponse(url=redirect_url, status_code=302)
         return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
 

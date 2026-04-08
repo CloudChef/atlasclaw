@@ -6,6 +6,7 @@
  * - updateHeaderTitle(titleKey) - Update page title using i18n key
  */
 import { t } from '../i18n.js'
+import { buildAppUrl } from '../config.js'
 import { logout } from '../auth.js'
 
 // Store reference to header element for updates
@@ -59,7 +60,7 @@ export function renderHeader(container, { authInfo, embeddedMode = isEmbeddedMod
   container.innerHTML = `
     <div class="chat-header-leading">
       ${embeddedMode ? `
-      <a href="/" class="embedded-new-chat-btn" data-new-chat aria-label="${escapeHtml(newChatLabel)}" title="${escapeHtml(newChatLabel)}">
+      <a href="${buildAppUrl('/')}" class="embedded-new-chat-btn" data-new-chat aria-label="${escapeHtml(newChatLabel)}" title="${escapeHtml(newChatLabel)}">
         ${ICONS.newChat}
       </a>
       ` : ''}
@@ -76,19 +77,19 @@ export function renderHeader(container, { authInfo, embeddedMode = isEmbeddedMod
             <span class="dropdown-role">${escapeHtml(roleText)}</span>
           </div>
           <div class="dropdown-divider"></div>
-          <a href="/account" class="dropdown-item" data-nav-link>
+          <a href="${buildAppUrl('/account')}" class="dropdown-item" data-nav-link>
             ${ICONS.account} ${translateOrFallback('nav.account', 'Account Settings')}
+          </a>
+          <a href="${buildAppUrl('/channels')}" class="dropdown-item" data-nav-link>
+            ${ICONS.channels} ${translateOrFallback('nav.channels', 'Channel Management')}
           </a>
           ${isAdmin ? `
           <div class="dropdown-divider" data-admin-only></div>
-          <a href="/admin/users" class="dropdown-item" data-admin-only data-nav-link>
+          <a href="${buildAppUrl('/admin/users')}" class="dropdown-item" data-admin-only data-nav-link>
             ${ICONS.users} ${translateOrFallback('nav.users', 'User Management')}
           </a>
-          <a href="/models" class="dropdown-item" data-admin-only data-nav-link>
+          <a href="${buildAppUrl('/models')}" class="dropdown-item" data-admin-only data-nav-link>
             ${ICONS.models} ${translateOrFallback('nav.models', 'Model Management')}
-          </a>
-          <a href="/channels" class="dropdown-item" data-admin-only data-nav-link>
-            ${ICONS.channels} ${translateOrFallback('nav.channels', 'Channel Management')}
           </a>
           ` : ''}
           <div class="dropdown-divider"></div>

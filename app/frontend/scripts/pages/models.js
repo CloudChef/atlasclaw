@@ -11,6 +11,7 @@
 
 import { t, updateContainerTranslations } from '../i18n.js'
 import { showToast } from '../components/toast.js'
+import { buildAssetUrl } from '../config.js'
 
 // ========== Module State ==========
 let mounted = false
@@ -1359,7 +1360,7 @@ function loadPageCSS() {
 
   const cssLink = document.createElement('link')
   cssLink.rel = 'stylesheet'
-  cssLink.href = '/styles/models.css'
+  cssLink.href = buildAssetUrl('/styles/models.css')
   cssLink.id = 'models-page-css'
   document.head.appendChild(cssLink)
 }

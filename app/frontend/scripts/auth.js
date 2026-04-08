@@ -1,10 +1,12 @@
+import { buildApiUrl, buildAppUrl, rewriteManagedAppUrl } from './config.js'
+
 const AUTH_STORAGE_KEY = 'atlasclaw_auth_token'
 const AUTH_HEADER_NAME = 'AtlasClaw-Authenticate'
 
 export function redirectToLogin() {
   const current = `${window.location.pathname}${window.location.search}`
   const target = encodeURIComponent(current || '/')
-  window.location.href = `/login.html?redirect=${target}`
+  window.location.href = buildAppUrl(`/login.html?redirect=${target}`)
 }
 
 export function getAuthToken() {
@@ -46,7 +48,8 @@ export function installAuthFetchInterceptor() {
 
     let url = ''
     if (typeof input === 'string') {
-      url = input
+      url = rewriteManagedAppUrl(input)
+      input = url
     } else if (input && typeof input.url === 'string') {
       url = input.url
     }
@@ -70,7 +73,7 @@ export async function checkAuth({ redirect = true } = {}) {
     const token = getAuthToken()
     const headers = token ? { [AUTH_HEADER_NAME]: token } : {}
 
-    const response = await fetch('/api/auth/me', {
+    const response = await fetch(buildApiUrl('/api/auth/me'), {
       method: 'GET',
       headers,
       credentials: 'include'
@@ -96,7 +99,7 @@ export async function checkAuth({ redirect = true } = {}) {
 }
 
 export async function login(username, password) {
-  const response = await fetch('/api/auth/local/login', {
+  const response = await fetch(buildApiUrl('/api/auth/local/login'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json'
@@ -121,14 +124,14 @@ export async function login(username, password) {
 
 export async function logout({ redirect = true } = {}) {
   try {
-    await fetch('/api/auth/logout?redirect=false', {
+    await fetch(buildApiUrl('/api/auth/logout?redirect=false'), {
       method: 'GET',
       credentials: 'include'
     })
   } finally {
     clearAuthToken()
     if (redirect) {
-      window.location.href = '/login.html'
+      window.location.href = buildAppUrl('/login.html')
     }
   }
 }

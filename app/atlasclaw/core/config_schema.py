@@ -394,6 +394,13 @@ class UserConfig(BaseModel):
 class AtlasClawConfig(BaseModel):
     """AtlasClaw configuration"""
     log_level: LogLevel = LogLevel.INFO
+    base_path: str = Field(
+        default="",
+        description=(
+            "Optional reverse-proxy mount path such as '/atlasclaw'. "
+            "Leave empty when AtlasClaw is served from the site root."
+        ),
+    )
     workspace: WorkspaceConfig = Field(default_factory=WorkspaceConfig, description="Workspace configuration")
     database: Optional[DatabaseConfig] = Field(default=None, description="Database configuration")
     agents_dir: str = Field(default="~/.atlasclaw/agents", description="Agent directory (backward compatibility)")

@@ -9,6 +9,11 @@ from fastapi.responses import JSONResponse, RedirectResponse, Response
 
 from ...auth.jwt_token import issue_atlas_token, verify_atlas_token
 from ...auth.models import AuthenticationError
+from ...core.base_path import (
+    build_base_path_url,
+    cookie_path_for_base_path,
+    normalize_base_path,
+)
 from ...session.context import ChatType as SessionChatType
 from ...session.context import SessionKey, SessionScope
 from ..deps_context import (
@@ -19,6 +24,30 @@ from ..deps_context import (
     resolve_workspace_path,
 )
 from ..schemas import LocalLoginRequest
+
+
+def _get_base_path(request: Request) -> str:
+    config = getattr(request.app.state, "config", None)
+    return normalize_base_path(getattr(config, "base_path", ""))
+
+
+def _build_app_url(request: Request, path: str) -> str:
+    return build_base_path_url(_get_base_path(request), path)
+
+
+def _build_external_app_url(request: Request, path: str) -> str:
+    return f"{str(request.base_url).rstrip('/')}{_build_app_url(request, path)}"
+
+
+def _cookie_path(request: Request) -> str:
+    return cookie_path_for_base_path(_get_base_path(request))
+
+
+def _delete_cookie(response: Response, request: Request, key: str) -> None:
+    path = _cookie_path(request)
+    response.delete_cookie(key, path=path)
+    if path != "/":
+        response.delete_cookie(key, path="/")
 
 
 def get_auth_config_or_400(request: Request, providers: tuple[str, ...]):
@@ -148,7 +177,7 @@ async def perform_local_login(request: Request, body: LocalLoginRequest) -> Resp
     response.set_cookie(
         key="atlasclaw_session",
         value=session_key_str,
-        path="/",
+        path=_cookie_path(request),
         httponly=True,
         secure=secure_cookie,
         samesite="lax",
@@ -156,7 +185,7 @@ async def perform_local_login(request: Request, body: LocalLoginRequest) -> Resp
     response.set_cookie(
         key=jwt_cfg.cookie_name,
         value=atlas_token,
-        path="/",
+        path=_cookie_path(request),
         httponly=True,
         secure=secure_cookie,
         samesite="lax",
@@ -176,6 +205,7 @@ async def begin_sso_login(request: Request) -> Response:
     response.set_cookie(
         key="sso_state",
         value=state,
+        path=_cookie_path(request),
         httponly=True,
         secure=secure_cookie,
         samesite="lax",
@@ -184,6 +214,7 @@ async def begin_sso_login(request: Request) -> Response:
     response.set_cookie(
         key="pkce_verifier",
         value=code_verifier,
+        path=_cookie_path(request),
         httponly=True,
         secure=secure_cookie,
         samesite="lax",
@@ -273,10 +304,11 @@ async def complete_sso_login(
         issuer=jwt_cfg.issuer,
     )
 
-    response = RedirectResponse(url="/", status_code=302)
+    response = RedirectResponse(url=_build_app_url(request, "/"), status_code=302)
     response.set_cookie(
         key="atlasclaw_session",
         value=session_key_str,
+        path=_cookie_path(request),
         httponly=True,
         secure=secure_cookie,
         samesite="lax",
@@ -284,6 +316,7 @@ async def complete_sso_login(
     response.set_cookie(
         key=jwt_cfg.cookie_name,
         value=atlas_token,
+        path=_cookie_path(request),
         httponly=True,
         secure=secure_cookie,
         samesite="lax",
@@ -292,6 +325,7 @@ async def complete_sso_login(
         response.set_cookie(
             key="CloudChef-Authenticate",
             value=auth_result.raw_token,
+            path=_cookie_path(request),
             httponly=True,
             secure=secure_cookie,
             samesite="lax",
@@ -300,13 +334,14 @@ async def complete_sso_login(
         response.set_cookie(
             key="oidc_id_token",
             value=auth_result.id_token,
+            path=_cookie_path(request),
             httponly=True,
             secure=secure_cookie,
             samesite="lax",
         )
 
-    response.delete_cookie("sso_state")
-    response.delete_cookie("pkce_verifier")
+    _delete_cookie(response, request, "sso_state")
+    _delete_cookie(response, request, "pkce_verifier")
     return response
 
 
@@ -498,7 +533,7 @@ async def logout_user(request: Request, redirect: bool = True) -> Response:
     if auth_config and auth_config.provider == "oidc" and redirect:
         oidc_config = auth_config.oidc.expanded()
         if oidc_config.end_session_endpoint:
-            post_logout_uri = str(request.base_url).rstrip("/") + "/api/auth/login"
+            post_logout_uri = _build_external_app_url(request, "/api/auth/login")
             id_token_hint = request.cookies.get("oidc_id_token", "")
             logout_params = (
                 f"?post_logout_redirect_uri={post_logout_uri}"
@@ -513,12 +548,12 @@ async def logout_user(request: Request, redirect: bool = True) -> Response:
     else:
         response = JSONResponse(content={"status": "logged_out"})
 
-    response.delete_cookie("atlasclaw_session")
+    _delete_cookie(response, request, "atlasclaw_session")
     if auth_config and getattr(auth_config, "jwt", None):
-        response.delete_cookie(auth_config.jwt.expanded().cookie_name)
-    response.delete_cookie("AtlasClaw-Authenticate")
-    response.delete_cookie("CloudChef-Authenticate")
-    response.delete_cookie("oidc_id_token")
-    response.delete_cookie("sso_state")
-    response.delete_cookie("pkce_verifier")
+        _delete_cookie(response, request, auth_config.jwt.expanded().cookie_name)
+    _delete_cookie(response, request, "AtlasClaw-Authenticate")
+    _delete_cookie(response, request, "CloudChef-Authenticate")
+    _delete_cookie(response, request, "oidc_id_token")
+    _delete_cookie(response, request, "sso_state")
+    _delete_cookie(response, request, "pkce_verifier")
     return response

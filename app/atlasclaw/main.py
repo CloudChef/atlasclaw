@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 load_dotenv(dotenv_path=Path(__file__).parent.parent.parent / ".env", override=False)
 
 from fastapi import FastAPI
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.atlasclaw.api.routes import create_router, APIContext, install_request_validation_logging, set_api_context
@@ -81,9 +81,11 @@ from app.atlasclaw.db.database import DatabaseConfig, init_database, get_db_mana
 from app.atlasclaw.db.orm.user import UserService
 from app.atlasclaw.db.orm.model_config import ModelConfigService
 from app.atlasclaw.bootstrap.app_factory_helpers import (
+    ExternalBasePathMiddleware,
     StaticFileCacheMiddleware,
     mount_frontend,
     register_core_routers,
+    render_frontend_html,
     setup_auth_middleware_from_config,
 )
 from app.atlasclaw.bootstrap.startup_helpers import (
@@ -854,10 +856,11 @@ def create_app() -> FastAPI:
                 return JSONResponse(status_code=404, content={"detail": "API endpoint not found"})
             index_file = frontend_dir / "index.html"
             if index_file.exists():
-                return FileResponse(str(index_file))
+                return render_frontend_html(index_file)
             return {"error": "Frontend index.html not found"}
 
     setup_auth_middleware_from_config(app)
+    app.add_middleware(ExternalBasePathMiddleware)
     return app
 
 

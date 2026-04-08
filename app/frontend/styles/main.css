@@ -259,6 +259,19 @@ body.atlas-embedded-mode .chat-header {
     padding: 12px 18px;
 }
 
+html.atlas-chat-embedded-mode .chat-header-title,
+html.atlas-chat-embedded-mode .chat-header h1,
+body.atlas-chat-embedded-mode .chat-header-title,
+body.atlas-chat-embedded-mode .chat-header h1 {
+    display: none;
+}
+
+html.atlas-chat-embedded-mode .chat-header-leading,
+body.atlas-chat-embedded-mode .chat-header-leading {
+    grid-column: 3;
+    justify-self: end;
+}
+
 html.atlas-config-embedded-mode .sidebar,
 html.atlas-config-embedded-mode .chat-header,
 body.atlas-config-embedded-mode .sidebar,

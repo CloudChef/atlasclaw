@@ -117,7 +117,7 @@ Pydantic models defining all configuration sections.
 
 | Model | Key Fields (with defaults) |
 |---|---|
-| `AtlasClawConfig` | `log_level=INFO`, `workspace`, `agents_dir`, `providers_root`, `agent_defaults`, `messages`, `compaction`, `block_chunker`, `model`, `retry`, `memory`, `sandbox`, `security`, `skills`, `reset`, `webhook`, `tool_gate`, `auth`, `service_providers` |
+| `AtlasClawConfig` | `log_level=INFO`, `base_path=""`, `workspace`, `agents_dir`, `providers_root`, `agent_defaults`, `messages`, `compaction`, `block_chunker`, `model`, `retry`, `memory`, `sandbox`, `security`, `skills`, `reset`, `webhook`, `tool_gate`, `auth`, `service_providers` |
 | `QueueConfig` | `mode=COLLECT`, `debounce_ms=1000`, `cap=20`, `drop=OLD` |
 | `ResetConfig` | `mode=DAILY`, `daily_hour=4`, `idle_minutes=60` |
 | `CompactionConfig` | `reserve_tokens_floor=20000`, `soft_threshold_tokens=4000`, `context_window=128000`, `memory_flush_enabled=True` |

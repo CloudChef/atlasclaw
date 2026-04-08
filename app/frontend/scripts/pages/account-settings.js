@@ -7,6 +7,7 @@
 import { getCurrentLocale, t, updateContainerTranslations } from '../i18n.js'
 import { showToast } from '../components/toast.js'
 import { checkAuth } from '../auth.js'
+import { buildAssetUrl } from '../config.js'
 
 const ACCOUNT_UI_PREFS_KEY = 'atlasclaw_account_ui_preferences'
 
@@ -802,7 +803,7 @@ export async function mount(container, { params, route } = {}) {
   if (!document.getElementById('account-settings-page-css')) {
     const cssLink = document.createElement('link')
     cssLink.rel = 'stylesheet'
-    cssLink.href = '/styles/account-settings.css'
+    cssLink.href = buildAssetUrl('/styles/account-settings.css')
     cssLink.id = 'account-settings-page-css'
     document.head.appendChild(cssLink)
   }

@@ -11,7 +11,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-def _create_local_auth_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[FastAPI, object, object]:
+def _create_local_auth_app(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    base_path: str = "",
+) -> tuple[FastAPI, object, object]:
     db_path = tmp_path / "local-auth-redirect-e2e.db"
     config_path = tmp_path / "atlasclaw.local-auth.e2e.json"
 
@@ -19,6 +24,7 @@ def _create_local_auth_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> t
         "workspace": {
             "path": str((tmp_path / ".atlasclaw-e2e").resolve()),
         },
+        "base_path": base_path,
         "providers_root": "./app/atlasclaw/providers",
         "skills_root": "./app/atlasclaw/skills",
         "channels_root": "./app/atlasclaw/channels",
@@ -91,6 +97,124 @@ def test_root_redirects_to_login_when_local_auth_enabled(
             location = resp.headers.get("location", "")
             assert location.startswith("/login.html?redirect=")
             assert "redirect=%2F" in location
+    finally:
+        config_module._config_manager = old_config_manager
+
+
+@pytest.mark.e2e
+def test_root_redirects_to_base_path_login_when_enabled(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, config_module, old_config_manager = _create_local_auth_app(
+        tmp_path,
+        monkeypatch,
+        base_path="/atlasclaw",
+    )
+
+    try:
+        with TestClient(app) as client:
+            resp = client.get("/", follow_redirects=False, headers={"Accept": "text/html"})
+
+            assert resp.status_code == 302
+            location = resp.headers.get("location", "")
+            assert location.startswith("/atlasclaw/login.html?redirect=")
+            assert "redirect=%2Fatlasclaw%2F" in location
+    finally:
+        config_module._config_manager = old_config_manager
+
+
+@pytest.mark.e2e
+def test_config_json_exposes_base_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, config_module, old_config_manager = _create_local_auth_app(
+        tmp_path,
+        monkeypatch,
+        base_path="/atlasclaw",
+    )
+
+    try:
+        with TestClient(app) as client:
+            resp = client.get("/config.json")
+
+            assert resp.status_code == 200
+            body = resp.json()
+            assert body["basePath"] == "/atlasclaw"
+            assert body["apiBaseUrl"] == "/atlasclaw"
+    finally:
+        config_module._config_manager = old_config_manager
+
+
+@pytest.mark.e2e
+def test_prefixed_login_page_is_served_without_redirect_loop(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, config_module, old_config_manager = _create_local_auth_app(
+        tmp_path,
+        monkeypatch,
+        base_path="/atlasclaw",
+    )
+
+    try:
+        with TestClient(app) as client:
+            resp = client.get("/atlasclaw/login.html", headers={"Accept": "text/html"})
+
+            assert resp.status_code == 200
+            assert "window.__atlasclawBasePath = \"/atlasclaw\"" in resp.text
+    finally:
+        config_module._config_manager = old_config_manager
+
+
+@pytest.mark.e2e
+def test_prefixed_static_assets_are_served(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, config_module, old_config_manager = _create_local_auth_app(
+        tmp_path,
+        monkeypatch,
+        base_path="/atlasclaw",
+    )
+
+    try:
+        with TestClient(app) as client:
+            css_resp = client.get("/atlasclaw/styles/login.css")
+            auth_resp = client.get("/atlasclaw/scripts/auth.js")
+            i18n_resp = client.get("/atlasclaw/scripts/i18n.js")
+
+            assert css_resp.status_code == 200
+            assert "text/css" in css_resp.headers.get("content-type", "")
+            assert auth_resp.status_code == 200
+            assert "javascript" in auth_resp.headers.get("content-type", "")
+            assert i18n_resp.status_code == 200
+            assert "javascript" in i18n_resp.headers.get("content-type", "")
+    finally:
+        config_module._config_manager = old_config_manager
+
+
+@pytest.mark.e2e
+def test_prefixed_local_login_api_is_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app, config_module, old_config_manager = _create_local_auth_app(
+        tmp_path,
+        monkeypatch,
+        base_path="/atlasclaw",
+    )
+
+    try:
+        with TestClient(app) as client:
+            resp = client.post(
+                "/atlasclaw/api/auth/local/login",
+                json={"username": "admin", "password": "Admin@123"},
+            )
+
+            assert resp.status_code == 200
+            assert resp.json().get("success") is True
     finally:
         config_module._config_manager = old_config_manager
 
