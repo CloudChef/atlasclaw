@@ -397,7 +397,7 @@ async function notifyRunCompleted(sessionKey) {
 }
 
 const RUNTIME_STATE_LABELS = {
-  reasoning: 'Runtime',
+  reasoning: 'Thinking',
   retrying: 'Retrying',
   waiting_for_tool: 'Waiting for tool',
   tool_running: 'Running tool',
