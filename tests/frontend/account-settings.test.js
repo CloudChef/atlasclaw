@@ -26,6 +26,7 @@ describe('account settings page', () => {
             display_name: 'Atlas Admin',
             email: 'admin@example.com',
             avatar_url: '',
+            roles: { admin: true },
             auth_type: 'local',
             is_active: true,
             is_admin: true,
@@ -45,6 +46,7 @@ describe('account settings page', () => {
             display_name: body.display_name,
             email: body.email,
             avatar_url: body.avatar_url,
+            roles: { admin: true },
             auth_type: 'local',
             is_active: true,
             is_admin: true,
@@ -70,6 +72,7 @@ describe('account settings page', () => {
             display_name: 'Atlas Admin',
             email: 'admin@example.com',
             avatar_url: '/user-content/avatars/atlas-admin-20260401010101.png',
+            roles: { admin: true },
             auth_type: 'local',
             is_active: true,
             is_admin: true,
@@ -178,6 +181,7 @@ describe('account settings page', () => {
             display_name: 'SSO User',
             email: null,
             avatar_url: '',
+            roles: { viewer: true },
             auth_type: 'oidc:test',
             is_active: true,
             is_admin: false,
@@ -198,9 +202,48 @@ describe('account settings page', () => {
 
     await page.mount(container)
 
+    expect(document.getElementById('accountSummaryRole').textContent).toBe('Viewer')
+    expect(document.getElementById('accountRoleValue').textContent).toBe('Viewer')
     expect(document.getElementById('accountEditPublicBtn').disabled).toBe(true)
     expect(document.getElementById('accountAvatarEditBtn').disabled).toBe(true)
     expect(document.getElementById('accountOpenPasswordBtn').disabled).toBe(true)
     expect(document.getElementById('accountMainActions').classList.contains('is-hidden')).toBe(true)
+  })
+
+  test('profiles without explicit roles render the empty role summary', async () => {
+    global.fetch = jest.fn((url, options = {}) => {
+      const target = String(url)
+      if (target === '/api/users/me/profile' && (!options.method || options.method === 'GET')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            id: 'user-2',
+            username: 'plain-user',
+            display_name: 'Plain User',
+            email: 'plain@example.com',
+            avatar_url: '',
+            roles: {},
+            auth_type: 'local',
+            is_active: true,
+            is_admin: false,
+            created_at: '2026-01-01T09:00:00Z',
+            last_login_at: '2026-03-30T15:30:00Z'
+          })
+        })
+      }
+
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({})
+      })
+    })
+
+    const page = await import('../../app/frontend/scripts/pages/account-settings.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+
+    expect(document.getElementById('accountSummaryRole').textContent).toBe('No explicit roles')
+    expect(document.getElementById('accountRoleValue').textContent).toBe('No explicit roles')
   })
 })

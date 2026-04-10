@@ -12,7 +12,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.atlasclaw.auth.guards import get_current_user
+from app.atlasclaw.auth.guards import (
+    AuthorizationContext,
+    ensure_any_permission,
+    ensure_permission,
+    get_authorization_context,
+)
 from app.atlasclaw.channels.manager import ChannelManager
 from app.atlasclaw.channels.registry import ChannelRegistry
 from app.atlasclaw.db import get_db_session_dependency as get_db_session
@@ -21,11 +26,7 @@ from app.atlasclaw.db.schemas import ChannelCreate, ChannelUpdate
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(
-    prefix="/api/channels",
-    tags=["channels"],
-    dependencies=[Depends(get_current_user)],
-)
+router = APIRouter(prefix="/api/channels", tags=["channels"])
 
 # Global channel manager instance (will be set during app startup)
 _channel_manager: Optional[ChannelManager] = None
@@ -111,14 +112,16 @@ class ConfigValidationRequest(BaseModel):
 @router.get("")
 async def list_channel_types(
     request: Request,
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> List[ChannelTypeResponse]:
     """List all available channel types with connection counts.
     
     Returns:
         List of channel types with their info
     """
-    user_id = get_current_user_id(request)
+    ensure_permission(authz, "channels.view", detail="Missing permission: channels.view")
+    user_id = authz.user.user_id
     channels = ChannelRegistry.list_channels()
     
     result = []
@@ -140,7 +143,10 @@ async def list_channel_types(
 
 
 @router.get("/{channel_type}/schema")
-async def get_channel_schema(channel_type: str) -> Dict[str, Any]:
+async def get_channel_schema(
+    channel_type: str,
+    authz: AuthorizationContext = Depends(get_authorization_context),
+) -> Dict[str, Any]:
     """Get configuration schema for a channel type.
     
     Args:
@@ -149,6 +155,7 @@ async def get_channel_schema(channel_type: str) -> Dict[str, Any]:
     Returns:
         JSON Schema for channel configuration
     """
+    ensure_permission(authz, "channels.view", detail="Missing permission: channels.view")
     handler_class = ChannelRegistry.get(channel_type)
     if not handler_class:
         raise HTTPException(status_code=404, detail=f"Channel type not found: {channel_type}")
@@ -171,7 +178,8 @@ async def list_connections(
     channel_type: str,
     request: Request,
     manager: ChannelManager = Depends(get_channel_manager),
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> Dict[str, Any]:
     """List all connections for a channel type.
     
@@ -181,7 +189,8 @@ async def list_connections(
     Returns:
         List of connections with runtime status
     """
-    user_id = get_current_user_id(request)
+    ensure_permission(authz, "channels.view", detail="Missing permission: channels.view")
+    user_id = authz.user.user_id
     
     handler_class = ChannelRegistry.get(channel_type)
     if not handler_class:
@@ -211,7 +220,8 @@ async def create_connection(
     channel_type: str,
     data: ConnectionCreateRequest,
     request: Request,
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> ConnectionResponse:
     """Create a new channel connection.
     
@@ -222,7 +232,8 @@ async def create_connection(
     Returns:
         Created connection
     """
-    user_id = get_current_user_id(request)
+    ensure_permission(authz, "channels.create", detail="Missing permission: channels.create")
+    user_id = authz.user.user_id
     
     handler_class = ChannelRegistry.get(channel_type)
     if not handler_class:
@@ -259,7 +270,8 @@ async def update_connection(
     connection_id: str,
     data: ConnectionUpdateRequest,
     request: Request,
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> ConnectionResponse:
     """Update an existing channel connection.
     
@@ -271,7 +283,8 @@ async def update_connection(
     Returns:
         Updated connection
     """
-    user_id = get_current_user_id(request)
+    ensure_permission(authz, "channels.edit", detail="Missing permission: channels.edit")
+    user_id = authz.user.user_id
     
     channel = await ChannelConfigService.get_by_id(session, connection_id)
     if not channel or channel.user_id != user_id or channel.type != channel_type:
@@ -309,7 +322,8 @@ async def delete_connection(
     connection_id: str,
     request: Request,
     manager: ChannelManager = Depends(get_channel_manager),
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> JSONResponse:
     """Delete a channel connection.
     
@@ -320,7 +334,8 @@ async def delete_connection(
     Returns:
         Success response
     """
-    user_id = get_current_user_id(request)
+    ensure_permission(authz, "channels.delete", detail="Missing permission: channels.delete")
+    user_id = authz.user.user_id
     
     # Verify ownership
     channel = await ChannelConfigService.get_by_id(session, connection_id)
@@ -341,7 +356,8 @@ async def delete_connection(
 async def validate_config(
     channel_type: str,
     data: ConfigValidationRequest,
-    request: Request
+    request: Request,
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> ValidationResponse:
     """Validate channel configuration without saving to database.
     
@@ -352,7 +368,11 @@ async def validate_config(
     Returns:
         Validation result
     """
-    get_current_user_id(request)  # Still require authentication
+    ensure_any_permission(
+        authz,
+        ("channels.create", "channels.edit"),
+        detail="Missing permission: channels.create or channels.edit",
+    )
     
     handler_class = ChannelRegistry.get(channel_type)
     if not handler_class:
@@ -381,7 +401,8 @@ async def verify_connection(
     channel_type: str,
     connection_id: str,
     request: Request,
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> ValidationResponse:
     """Verify a connection's configuration.
     
@@ -392,7 +413,8 @@ async def verify_connection(
     Returns:
         Validation result
     """
-    user_id = get_current_user_id(request)
+    ensure_permission(authz, "channels.edit", detail="Missing permission: channels.edit")
+    user_id = authz.user.user_id
     
     channel = await ChannelConfigService.get_by_id(session, connection_id)
     if not channel or channel.user_id != user_id or channel.type != channel_type:
@@ -427,7 +449,8 @@ async def enable_connection(
     channel_type: str,
     connection_id: str,
     request: Request,
-    manager: ChannelManager = Depends(get_channel_manager)
+    manager: ChannelManager = Depends(get_channel_manager),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> JSONResponse:
     """Enable a channel connection.
     
@@ -438,7 +461,8 @@ async def enable_connection(
     Returns:
         Success response
     """
-    user_id = get_current_user_id(request)
+    ensure_permission(authz, "channels.edit", detail="Missing permission: channels.edit")
+    user_id = authz.user.user_id
     
     if not await manager.enable_connection(user_id, channel_type, connection_id):
         raise HTTPException(status_code=500, detail="Failed to enable connection")
@@ -451,7 +475,8 @@ async def disable_connection(
     channel_type: str,
     connection_id: str,
     request: Request,
-    manager: ChannelManager = Depends(get_channel_manager)
+    manager: ChannelManager = Depends(get_channel_manager),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> JSONResponse:
     """Disable a channel connection.
     
@@ -462,7 +487,8 @@ async def disable_connection(
     Returns:
         Success response
     """
-    user_id = get_current_user_id(request)
+    ensure_permission(authz, "channels.edit", detail="Missing permission: channels.edit")
+    user_id = authz.user.user_id
     
     if not await manager.disable_connection(user_id, channel_type, connection_id):
         raise HTTPException(status_code=500, detail="Failed to disable connection")

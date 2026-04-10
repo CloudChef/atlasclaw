@@ -712,14 +712,14 @@ deps.abort()
 
 ### 6.1 Permission Inheritance
 
-**Rule**: The agent NEVER creates its own authorization layer. Every operation inherits the authenticated user's permissions from the upstream system.
+**Rule**: AtlasClaw may enforce workspace-local RBAC for management APIs, but runtime agent actions MUST still inherit the authenticated user's permissions from the upstream system.
 
 ```python
 # Correct: Pass user's token to upstream API
 headers = {"Authorization": f"Bearer {deps.user_token}"}
 resp = await client.get("/api/resource", headers=headers)
 
-# Wrong: Check permissions internally
+# Wrong: bypass upstream permissions for runtime actions
 if user.has_role("admin"):  # Never do this
     ...
 ```

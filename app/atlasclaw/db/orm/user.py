@@ -45,6 +45,27 @@ def verify_password(password: str, password_digest: str) -> bool:
         return False
 
 
+def _has_role_assignment(raw_roles: Any, role_identifier: str) -> bool:
+    """Return whether a role identifier is assigned in either dict or legacy list storage."""
+    normalized_role_identifier = str(role_identifier or "").strip().lower()
+    if not normalized_role_identifier:
+        return False
+
+    if isinstance(raw_roles, dict):
+        return any(
+            bool(enabled) and str(identifier or "").strip().lower() == normalized_role_identifier
+            for identifier, enabled in raw_roles.items()
+        )
+
+    if isinstance(raw_roles, list):
+        return any(
+            str(identifier or "").strip().lower() == normalized_role_identifier
+            for identifier in raw_roles
+        )
+
+    return False
+
+
 
 class UserService:
     """Service operations for User configuration."""
@@ -73,7 +94,6 @@ class UserService:
             display_name=user_data.display_name,
             roles=user_data.roles,
             is_active=user_data.is_active,
-            is_admin=user_data.is_admin,
         )
 
         session.add(user)
@@ -231,6 +251,7 @@ class UserService:
             return None
 
         update_data = user_data.model_dump(exclude_unset=True)
+        update_data.pop("is_admin", None)
 
         # Hash new password if provided
         if "password" in update_data and update_data["password"]:
@@ -286,6 +307,13 @@ class UserService:
         user.last_login_at = datetime.utcnow()
         await session.flush()
         return user
+
+    @staticmethod
+    async def count_users_with_role(session: AsyncSession, role_identifier: str) -> int:
+        """Count users currently assigned to a role identifier."""
+        result = await session.execute(select(UserModel))
+        users = result.scalars().all()
+        return sum(1 for user in users if _has_role_assignment(user.roles, role_identifier))
 
     @staticmethod
     def to_user_info(user: UserModel) -> Dict[str, Any]:

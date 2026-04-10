@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.atlasclaw.api.api_routes import router as api_router
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
 from app.atlasclaw.auth.config import AuthConfig
+from app.atlasclaw.auth.jwt_token import issue_atlas_token
 from app.atlasclaw.auth.middleware import setup_auth_middleware
 from app.atlasclaw.db import get_db_session
 from app.atlasclaw.db.database import DatabaseConfig, DatabaseManager, init_database
@@ -89,7 +90,6 @@ def _init_database_sync(tmp_path: Path):
                     email="admin@test.com",
                     roles={"admin": True},
                     auth_type="local",
-                    is_admin=True,
                     is_active=True,
                 ),
             )
@@ -103,7 +103,6 @@ def _init_database_sync(tmp_path: Path):
                     email="user@test.com",
                     roles={},
                     auth_type="local",
-                    is_admin=False,
                     is_active=True,
                 ),
             )
@@ -161,7 +160,6 @@ class TestUserCRUDAPI:
                 "email": "newuser@test.com",
                 "roles": {},
                 "is_active": True,
-                "is_admin": False,
             },
             headers={"AtlasClaw-Authenticate": token},
         )
@@ -173,6 +171,31 @@ class TestUserCRUDAPI:
         assert data["email"] == "newuser@test.com"
         assert data["is_admin"] is False
         assert "id" in data
+
+        _cleanup_manager(manager)
+
+    def test_create_user_with_unknown_role_returns_400(self, tmp_path):
+        """User creation rejects role assignments that reference unknown identifiers."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "admin", "adminpass123")
+
+        resp = client.post(
+            "/api/users",
+            json={
+                "username": "newuser",
+                "password": "newuserpass123",
+                "display_name": "New User",
+                "email": "newuser@test.com",
+                "roles": {"future_admin_like": True},
+                "is_active": True,
+            },
+            headers={"AtlasClaw-Authenticate": token},
+        )
+
+        assert resp.status_code == 400
+        assert "unknown role" in resp.json()["detail"].lower()
+        assert "future_admin_like" in resp.json()["detail"]
 
         _cleanup_manager(manager)
 
@@ -291,6 +314,29 @@ class TestUserCRUDAPI:
 
         _cleanup_manager(manager)
 
+    def test_update_user_duplicate_email_returns_409(self, tmp_path):
+        """Admin update returns 409 when the target email is already in use."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "admin", "adminpass123")
+
+        list_resp = client.get(
+            "/api/users?search=regularuser",
+            headers={"AtlasClaw-Authenticate": token},
+        )
+        user_id = list_resp.json()["users"][0]["id"]
+
+        resp = client.put(
+            f"/api/users/{user_id}",
+            json={"email": "admin@test.com"},
+            headers={"AtlasClaw-Authenticate": token},
+        )
+
+        assert resp.status_code == 409
+        assert "email already in use" in resp.json()["detail"].lower()
+
+        _cleanup_manager(manager)
+
     def test_delete_user(self, tmp_path):
         """Admin can delete a user via DELETE /api/users/{id}."""
         manager = _init_database_sync(tmp_path)
@@ -344,7 +390,7 @@ class TestUserCRUDAPI:
         )
 
         assert resp.status_code == 403
-        assert "admin" in resp.json()["detail"].lower()
+        assert "users.create" in resp.json()["detail"].lower()
 
         _cleanup_manager(manager)
 
@@ -384,6 +430,401 @@ class TestUserCRUDAPI:
         )
 
         assert resp.status_code == 403
+
+        _cleanup_manager(manager)
+
+    def test_user_with_assign_roles_can_manage_role_assignments_only(self, tmp_path):
+        """Role assigners can update roles without broader user-edit privileges."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        admin_token = _login_as(client, "admin", "adminpass123")
+        admin_headers = {"AtlasClaw-Authenticate": admin_token}
+
+        create_assigner_resp = client.post(
+            "/api/users",
+            json={
+                "username": "assigner",
+                "password": "assignerpass123",
+                "display_name": "Assigner",
+                "email": "assigner@test.com",
+                "roles": {},
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_assigner_resp.status_code == 201
+        assigner_id = create_assigner_resp.json()["id"]
+
+        create_role_resp = client.post(
+            "/api/roles",
+            json={
+                "name": "Role Assigner",
+                "identifier": "role_assigner",
+                "description": "Can view users and assign roles.",
+                "permissions": {
+                    "users": {
+                        "view": True,
+                        "assign_roles": True,
+                    },
+                },
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_role_resp.status_code == 201
+
+        assign_role_resp = client.put(
+            f"/api/users/{assigner_id}",
+            json={"roles": {"role_assigner": True}},
+            headers=admin_headers,
+        )
+        assert assign_role_resp.status_code == 200
+
+        assigner_token = _login_as(client, "assigner", "assignerpass123")
+        assigner_headers = {"AtlasClaw-Authenticate": assigner_token}
+
+        role_catalog_resp = client.get("/api/roles?page=1&page_size=100", headers=assigner_headers)
+        assert role_catalog_resp.status_code == 200
+        assert any(role["identifier"] == "viewer" for role in role_catalog_resp.json()["roles"])
+
+        list_users_resp = client.get("/api/users?search=regularuser", headers=assigner_headers)
+        assert list_users_resp.status_code == 200
+        regular_user_id = list_users_resp.json()["users"][0]["id"]
+
+        assign_viewer_resp = client.put(
+            f"/api/users/{regular_user_id}",
+            json={"roles": {"viewer": True}},
+            headers=assigner_headers,
+        )
+        assert assign_viewer_resp.status_code == 200
+        assert assign_viewer_resp.json()["roles"]["viewer"] is True
+
+        edit_profile_resp = client.put(
+            f"/api/users/{regular_user_id}",
+            json={"display_name": "Should Not Work"},
+            headers=assigner_headers,
+        )
+        assert edit_profile_resp.status_code == 403
+        assert "users.edit" in edit_profile_resp.json()["detail"].lower()
+
+        _cleanup_manager(manager)
+
+    def test_user_with_assign_roles_cannot_self_assign_admin_role(self, tmp_path):
+        """Role assigners cannot promote themselves to the built-in admin role."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        admin_token = _login_as(client, "admin", "adminpass123")
+        admin_headers = {"AtlasClaw-Authenticate": admin_token}
+
+        create_assigner_resp = client.post(
+            "/api/users",
+            json={
+                "username": "assigner",
+                "password": "assignerpass123",
+                "display_name": "Assigner",
+                "email": "assigner@test.com",
+                "roles": {},
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_assigner_resp.status_code == 201
+        assigner_id = create_assigner_resp.json()["id"]
+
+        create_role_resp = client.post(
+            "/api/roles",
+            json={
+                "name": "Role Assigner",
+                "identifier": "role_assigner",
+                "description": "Can view users and assign roles.",
+                "permissions": {
+                    "users": {
+                        "view": True,
+                        "assign_roles": True,
+                    },
+                },
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_role_resp.status_code == 201
+
+        assign_role_resp = client.put(
+            f"/api/users/{assigner_id}",
+            json={"roles": {"role_assigner": True}},
+            headers=admin_headers,
+        )
+        assert assign_role_resp.status_code == 200
+
+        assigner_token = _login_as(client, "assigner", "assignerpass123")
+        assigner_headers = {"AtlasClaw-Authenticate": assigner_token}
+
+        elevate_resp = client.put(
+            f"/api/users/{assigner_id}",
+            json={"roles": {"role_assigner": True, "admin": True}},
+            headers=assigner_headers,
+        )
+        assert elevate_resp.status_code == 403
+        assert "administrator" in elevate_resp.json()["detail"].lower()
+
+        _cleanup_manager(manager)
+
+    def test_user_with_assign_roles_cannot_create_admin_user(self, tmp_path):
+        """Role assigners cannot grant the built-in admin role during user creation."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        admin_token = _login_as(client, "admin", "adminpass123")
+        admin_headers = {"AtlasClaw-Authenticate": admin_token}
+
+        create_assigner_resp = client.post(
+            "/api/users",
+            json={
+                "username": "assigner",
+                "password": "assignerpass123",
+                "display_name": "Assigner",
+                "email": "assigner@test.com",
+                "roles": {},
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_assigner_resp.status_code == 201
+        assigner_id = create_assigner_resp.json()["id"]
+
+        create_role_resp = client.post(
+            "/api/roles",
+            json={
+                "name": "Role Assigner",
+                "identifier": "role_assigner",
+                "description": "Can view users and assign roles.",
+                "permissions": {
+                    "users": {
+                        "view": True,
+                        "create": True,
+                        "assign_roles": True,
+                    },
+                },
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_role_resp.status_code == 201
+
+        assign_role_resp = client.put(
+            f"/api/users/{assigner_id}",
+            json={"roles": {"role_assigner": True}},
+            headers=admin_headers,
+        )
+        assert assign_role_resp.status_code == 200
+
+        assigner_token = _login_as(client, "assigner", "assignerpass123")
+        assigner_headers = {"AtlasClaw-Authenticate": assigner_token}
+
+        create_admin_resp = client.post(
+            "/api/users",
+            json={
+                "username": "shadowadmin",
+                "password": "shadowadminpass123",
+                "display_name": "Shadow Admin",
+                "email": "shadowadmin@test.com",
+                "roles": {"admin": True},
+                "is_active": True,
+            },
+            headers=assigner_headers,
+        )
+        assert create_admin_resp.status_code == 403
+        assert "administrator" in create_admin_resp.json()["detail"].lower()
+
+        _cleanup_manager(manager)
+
+    def test_user_with_assign_roles_cannot_self_assign_unknown_role(self, tmp_path):
+        """Role assigners cannot store future role identifiers on their own account."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        admin_token = _login_as(client, "admin", "adminpass123")
+        admin_headers = {"AtlasClaw-Authenticate": admin_token}
+
+        create_assigner_resp = client.post(
+            "/api/users",
+            json={
+                "username": "assigner",
+                "password": "assignerpass123",
+                "display_name": "Assigner",
+                "email": "assigner@test.com",
+                "roles": {},
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_assigner_resp.status_code == 201
+        assigner_id = create_assigner_resp.json()["id"]
+
+        create_role_resp = client.post(
+            "/api/roles",
+            json={
+                "name": "Role Assigner",
+                "identifier": "role_assigner",
+                "description": "Can view users and assign roles.",
+                "permissions": {
+                    "users": {
+                        "view": True,
+                        "assign_roles": True,
+                    },
+                },
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_role_resp.status_code == 201
+
+        assign_role_resp = client.put(
+            f"/api/users/{assigner_id}",
+            json={"roles": {"role_assigner": True}},
+            headers=admin_headers,
+        )
+        assert assign_role_resp.status_code == 200
+
+        assigner_token = _login_as(client, "assigner", "assignerpass123")
+        assigner_headers = {"AtlasClaw-Authenticate": assigner_token}
+
+        elevate_resp = client.put(
+            f"/api/users/{assigner_id}",
+            json={"roles": {"role_assigner": True, "future_admin_like": True}},
+            headers=assigner_headers,
+        )
+        assert elevate_resp.status_code == 400
+        assert "unknown role" in elevate_resp.json()["detail"].lower()
+        assert "future_admin_like" in elevate_resp.json()["detail"]
+
+        _cleanup_manager(manager)
+
+    def test_user_with_assign_roles_cannot_grant_protected_custom_role(self, tmp_path):
+        """Role assigners cannot grant custom roles with high-risk permissions."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        admin_token = _login_as(client, "admin", "adminpass123")
+        admin_headers = {"AtlasClaw-Authenticate": admin_token}
+
+        create_assigner_resp = client.post(
+            "/api/users",
+            json={
+                "username": "assigner",
+                "password": "assignerpass123",
+                "display_name": "Assigner",
+                "email": "assigner@test.com",
+                "roles": {},
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_assigner_resp.status_code == 201
+        assigner_id = create_assigner_resp.json()["id"]
+
+        create_assigner_role_resp = client.post(
+            "/api/roles",
+            json={
+                "name": "Role Assigner",
+                "identifier": "role_assigner",
+                "description": "Can view users and assign low-risk roles.",
+                "permissions": {
+                    "users": {
+                        "view": True,
+                        "assign_roles": True,
+                    },
+                },
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_assigner_role_resp.status_code == 201
+
+        create_protected_role_resp = client.post(
+            "/api/roles",
+            json={
+                "name": "Catalog Manager",
+                "identifier": "catalog_manager",
+                "description": "Can edit provider configurations.",
+                "permissions": {
+                    "provider_configs": {
+                        "view": True,
+                        "edit": True,
+                    },
+                },
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_protected_role_resp.status_code == 201
+
+        assign_role_resp = client.put(
+            f"/api/users/{assigner_id}",
+            json={"roles": {"role_assigner": True}},
+            headers=admin_headers,
+        )
+        assert assign_role_resp.status_code == 200
+
+        assigner_token = _login_as(client, "assigner", "assignerpass123")
+        assigner_headers = {"AtlasClaw-Authenticate": assigner_token}
+
+        elevate_resp = client.put(
+            f"/api/users/{assigner_id}",
+            json={"roles": {"role_assigner": True, "catalog_manager": True}},
+            headers=assigner_headers,
+        )
+        assert elevate_resp.status_code == 403
+        assert "protected role" in elevate_resp.json()["detail"].lower()
+
+        _cleanup_manager(manager)
+
+    def test_federated_admin_cannot_delete_own_workspace_user(self, tmp_path):
+        """Federated admins are protected from deleting their own workspace user record."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+
+        async def _create_federated_user():
+            async with _test_db_manager.get_session() as session:
+                user = await UserService.create(
+                    session,
+                    UserCreate(
+                        username="sso-admin@example.com",
+                        password=None,
+                        display_name="SSO Admin",
+                        email="sso-admin@example.com",
+                        roles={"admin": True},
+                        auth_type="oidc:test",
+                        is_active=True,
+                    ),
+                )
+                return user.id
+
+        federated_user_id = asyncio.run(_create_federated_user())
+        token = issue_atlas_token(
+            subject="shadow-user-1",
+            is_admin=False,
+            roles=[],
+            auth_type="oidc:test",
+            secret_key="test-secret-key-for-testing",
+            expires_minutes=60,
+            issuer="atlasclaw-test",
+            additional_claims={
+                "external_subject": "sso-admin@example.com",
+                "provider_subject": "oidc:sso-admin@example.com",
+            },
+        )
+
+        delete_resp = client.delete(
+            f"/api/users/{federated_user_id}",
+            headers={"AtlasClaw-Authenticate": token},
+        )
+
+        assert delete_resp.status_code == 400
+        assert "cannot delete your own account" in delete_resp.json()["detail"].lower()
+
+        async def _fetch_user():
+            async with _test_db_manager.get_session() as session:
+                return await UserService.get_by_id(session, federated_user_id)
+
+        assert asyncio.run(_fetch_user()) is not None
 
         _cleanup_manager(manager)
 

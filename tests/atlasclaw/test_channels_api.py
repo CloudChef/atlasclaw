@@ -8,16 +8,36 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
-from fastapi.testclient import TestClient
 from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 from app.atlasclaw.api.channels import router, set_channel_manager
+from app.atlasclaw.auth.guards import AuthorizationContext
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.channels import ChannelRegistry
 from app.atlasclaw.channels.handlers import WebSocketHandler
 from app.atlasclaw.channels.manager import ChannelManager
 from app.atlasclaw.db import init_database
 from app.atlasclaw.db.database import DatabaseConfig
+from app.atlasclaw.db.orm.role import build_default_permissions
+
+
+def _build_channel_authz(user_info: UserInfo, *, is_admin: bool) -> AuthorizationContext:
+    permissions = build_default_permissions()
+    permissions["channels"].update(
+        {
+            "view": True,
+            "create": True,
+            "edit": True,
+            "delete": True,
+        }
+    )
+    return AuthorizationContext(
+        user=user_info,
+        role_identifiers=["admin"] if is_admin else ["channel_operator"],
+        permissions=permissions,
+        is_admin=is_admin,
+    )
 
 
 @pytest.fixture
@@ -29,14 +49,23 @@ def app():
     async def inject_user_info(request, call_next):
         raw_is_admin = request.headers.get("X-Test-Is-Admin", "true").strip().lower()
         is_admin = raw_is_admin in {"1", "true", "yes", "on"}
-        user_id = request.headers.get("X-Test-User-Id", "admin-user" if is_admin else "regular-user")
-        request.state.user_info = UserInfo(
+        user_id = request.headers.get(
+            "X-Test-User-Id",
+            "channel-admin" if is_admin else "channel-operator",
+        )
+        user_info = UserInfo(
             user_id=user_id,
             display_name=user_id,
-            roles=["admin"] if is_admin else ["user"],
+            roles=["admin"] if is_admin else ["channel_operator"],
             extra={"is_admin": is_admin},
             auth_type="test",
         )
+        request.state.user_info = user_info
+        if user_id != "anonymous":
+            request.state.authorization_context = _build_channel_authz(
+                user_info,
+                is_admin=is_admin,
+            )
         return await call_next(request)
 
     app.include_router(router)

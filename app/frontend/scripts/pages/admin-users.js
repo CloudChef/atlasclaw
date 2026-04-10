@@ -1,7 +1,9 @@
-import { t, updateContainerTranslations } from '../i18n.js'
+import { t, translateIfExists, updateContainerTranslations } from '../i18n.js'
 import { showToast } from '../components/toast.js'
 import { checkAuth, redirectToLogin } from '../auth.js'
 import { buildAssetUrl, buildAppUrl } from '../config.js'
+import { getAuthInfo } from '../app.js'
+import { canAccessUserManagement, hasPermission } from '../permissions.js'
 
 let container = null
 let currentPage = 1
@@ -11,7 +13,9 @@ let totalUsers = 0
 let currentRoleFilter = 'all'
 let currentStatusFilter = 'all'
 let currentFetchedUsers = []
+let availableRoles = []
 let searchDebounceTimer = null
+let currentViewerAuthInfo = null
 
 let usersTableBody = null
 let paginationInfo = null
@@ -26,6 +30,16 @@ let eventCleanupFns = []
 let documentClickHandler = null
 let documentKeydownHandler = null
 const ROLE_FILTER_FETCH_PAGE_SIZE = 100
+const NON_ADMIN_ASSIGNABLE_PERMISSION_PATHS = new Set([
+  'skills.module_permissions.view',
+  'channels.view',
+  'tokens.view',
+  'agent_configs.view',
+  'provider_configs.view',
+  'model_configs.view',
+  'users.view',
+  'roles.view'
+])
 
 const PAGE_HTML = `
 <div class="user-management-page">
@@ -52,12 +66,7 @@ const PAGE_HTML = `
       <div class="user-toolbar-filters">
         <label class="user-filter-pill">
           <span data-i18n="admin.roleFilter">Role</span>
-          <select id="roleFilterSelect">
-            <option value="all" data-i18n="admin.roleAll">All</option>
-            <option value="admin" data-i18n="admin.roleAdmin">Admin</option>
-            <option value="user" data-i18n="admin.roleUser">User</option>
-            <option value="viewer" data-i18n="admin.roleViewer">Viewer</option>
-          </select>
+          <select id="roleFilterSelect"></select>
         </label>
 
         <label class="user-filter-pill">
@@ -140,17 +149,12 @@ const PAGE_HTML = `
                 <span class="multi-select-text placeholder" data-i18n="admin.rolesPlaceholder">Select roles...</span>
                 <span class="multi-select-arrow">&#9662;</span>
               </div>
-              <div class="multi-select-dropdown hidden">
-                <label class="multi-select-option"><input type="checkbox" name="role" value="admin"><span data-i18n="admin.roleAdmin">Admin</span></label>
-                <label class="multi-select-option"><input type="checkbox" name="role" value="user"><span data-i18n="admin.roleUser">User</span></label>
-                <label class="multi-select-option"><input type="checkbox" name="role" value="viewer"><span data-i18n="admin.roleViewer">Viewer</span></label>
-              </div>
+              <div class="multi-select-dropdown hidden" id="rolesMultiSelectDropdown"></div>
             </div>
           </div>
         </div>
         <div class="user-form-switches">
           <label class="user-switch-row" for="formIsActive"><div><strong data-i18n="admin.activeStatus">Active</strong><span data-i18n="admin.activeStatusHint">Allows this user to sign in and receive access.</span></div><input type="checkbox" id="formIsActive" name="is_active" checked></label>
-          <label class="user-switch-row" for="formIsAdmin"><div><strong data-i18n="admin.administrator">Administrator</strong><span data-i18n="admin.administratorHint">Admins can manage users, channels, and model settings.</span></div><input type="checkbox" id="formIsAdmin" name="is_admin"></label>
         </div>
       </form>
     </div>
@@ -205,6 +209,177 @@ function rolesArrayToDict(arr) {
   return result
 }
 
+function buildFallbackRolePermissions(identifier) {
+  if (identifier === 'viewer') {
+    return {
+      skills: { module_permissions: { view: true }, skill_permissions: [] },
+      channels: { view: true },
+      tokens: { view: true },
+      users: { view: true },
+      roles: { view: true }
+    }
+  }
+
+  if (identifier === 'user') {
+    return {
+      skills: { module_permissions: { view: true }, skill_permissions: [] }
+    }
+  }
+
+  if (identifier === 'admin') {
+    return {
+      rbac: { manage_permissions: true },
+      skills: { module_permissions: { view: true, enable_disable: true, manage_permissions: true }, skill_permissions: [] },
+      channels: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
+      tokens: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
+      agent_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
+      provider_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
+      model_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
+      users: { view: true, create: true, edit: true, delete: true, reset_password: true, assign_roles: true, manage_permissions: true },
+      roles: { view: true, create: true, edit: true, delete: true }
+    }
+  }
+
+  return {}
+}
+
+function getFallbackRoles() {
+  return [
+    {
+      identifier: 'admin',
+      name: getBuiltinRoleDisplayName('admin', translateOrFallback('admin.roleAdmin', 'Admin')),
+      is_builtin: true,
+      permissions: buildFallbackRolePermissions('admin')
+    },
+    {
+      identifier: 'user',
+      name: getBuiltinRoleDisplayName('user', translateOrFallback('admin.roleUser', 'User')),
+      is_builtin: true,
+      permissions: buildFallbackRolePermissions('user')
+    },
+    {
+      identifier: 'viewer',
+      name: getBuiltinRoleDisplayName('viewer', translateOrFallback('admin.roleViewer', 'Viewer')),
+      is_builtin: true,
+      permissions: buildFallbackRolePermissions('viewer')
+    }
+  ]
+}
+
+function getBuiltinRoleDisplayName(identifier, fallback = '') {
+  if (!identifier) return fallback
+
+  return (
+    translateIfExists(`roles.builtinRoleCatalog.${identifier}.name`)
+    || (identifier === 'admin' ? translateOrFallback('admin.roleAdmin', 'Admin') : '')
+    || (identifier === 'viewer' ? translateOrFallback('admin.roleViewer', 'Viewer') : '')
+    || (identifier === 'user' ? translateOrFallback('admin.roleUser', 'User') : '')
+    || fallback
+  )
+}
+
+function getRoleDisplayName(role) {
+  if (!role) return ''
+  if (role.is_builtin || ['admin', 'user', 'viewer'].includes(role.identifier)) {
+    return getBuiltinRoleDisplayName(role.identifier, role.name || role.identifier)
+  }
+  return role.name || role.identifier || ''
+}
+
+function getRoleLabel(identifier) {
+  const role = availableRoles.find(entry => entry.identifier === identifier)
+  if (role) return getRoleDisplayName(role)
+  if (identifier === 'admin') return getBuiltinRoleDisplayName('admin', 'Admin')
+  if (identifier === 'viewer') return getBuiltinRoleDisplayName('viewer', 'Viewer')
+  if (identifier === 'user') return getBuiltinRoleDisplayName('user', 'User')
+  return identifier
+}
+
+function collectEnabledPermissionPaths(value, prefix = '') {
+  if (value === true) {
+    return prefix ? [prefix] : []
+  }
+
+  if (Array.isArray(value)) {
+    if (
+      prefix === 'skills.skill_permissions'
+      && value.some(entry => entry && typeof entry === 'object' && (entry.authorized === true || entry.enabled === true))
+    ) {
+      return [prefix]
+    }
+    return []
+  }
+
+  if (!value || typeof value !== 'object') {
+    return []
+  }
+
+  return Object.entries(value).flatMap(([key, child]) => {
+    const childPrefix = prefix ? `${prefix}.${key}` : key
+    return collectEnabledPermissionPaths(child, childPrefix)
+  })
+}
+
+function isNonAdminAssignableRole(role = {}) {
+  const normalizedIdentifier = String(role?.identifier || '').trim().toLowerCase()
+  if (normalizedIdentifier === 'admin') {
+    return false
+  }
+
+  const enabledPaths = new Set(collectEnabledPermissionPaths(role?.permissions || {}))
+  return [...enabledPaths].every(path => NON_ADMIN_ASSIGNABLE_PERMISSION_PATHS.has(path))
+}
+
+function renderRoleFilterOptions() {
+  if (!roleFilterSelect) return
+  const options = [
+    `<option value="all" data-i18n="admin.roleAll">${translateOrFallback('admin.roleAll', 'All')}</option>`,
+    ...availableRoles.map(role => `<option value="${escapeHtml(role.identifier)}">${escapeHtml(getRoleDisplayName(role))}</option>`)
+  ]
+  roleFilterSelect.innerHTML = options.join('')
+  if (![ 'all', ...availableRoles.map(role => role.identifier) ].includes(currentRoleFilter)) {
+    currentRoleFilter = 'all'
+  }
+  roleFilterSelect.value = currentRoleFilter
+}
+
+function renderRolesMultiSelectOptions() {
+  const dropdown = container?.querySelector('#rolesMultiSelectDropdown')
+  if (!dropdown) return
+  dropdown.innerHTML = availableRoles.map(role => `
+    <label class="multi-select-option">
+      <input type="checkbox" name="role" value="${escapeHtml(role.identifier)}">
+      <span>${escapeHtml(getRoleDisplayName(role))}</span>
+    </label>
+  `).join('')
+}
+
+async function loadAvailableRoles() {
+  try {
+    const response = await fetch('/api/roles?page=1&page_size=100')
+    if (!response.ok) {
+      await handleApiError(response)
+      availableRoles = getFallbackRoles()
+    } else {
+      const data = await response.json()
+      availableRoles = Array.isArray(data.roles) && data.roles.length
+        ? data.roles.map(role => ({
+          identifier: role.identifier,
+          name: role.name,
+          is_builtin: role.is_builtin === true,
+          permissions: role.permissions || {}
+        }))
+        : getFallbackRoles()
+    }
+  } catch (error) {
+    console.warn('[AdminUsers] Failed to load roles:', error)
+    availableRoles = getFallbackRoles()
+  }
+
+  renderRoleFilterOptions()
+  renderRolesMultiSelectOptions()
+}
+
 function escapeHtml(str) {
   if (!str) return ''
   const div = document.createElement('div')
@@ -222,13 +397,32 @@ function formatStatusText(isActive) {
     : translateOrFallback('admin.statusDisabledLabel', 'Disabled')
 }
 
-function getPrimaryRole(user) {
-  if (user.is_admin) return translateOrFallback('admin.roleAdmin', 'Admin')
-  const roles = rolesDictToArray(user.roles)
-  if (roles.includes('viewer')) return translateOrFallback('admin.roleViewer', 'Viewer')
-  if (roles.includes('user')) return translateOrFallback('admin.roleUser', 'User')
-  if (roles.includes('admin')) return translateOrFallback('admin.roleAdmin', 'Admin')
-  return translateOrFallback('admin.roleUser', 'User')
+function resolvePrimaryRoleIdentifier(roleIdentifiers = []) {
+  const priorities = ['admin', 'viewer', 'user']
+  return priorities.find(identifier => roleIdentifiers.includes(identifier)) || roleIdentifiers[0] || ''
+}
+
+export function getRoleDisplayStateForUser(user = {}) {
+  const roleIdentifiers = getAssignableRoleIdentifiersForUser(user)
+  if (!roleIdentifiers.length) {
+    return {
+      label: translateOrFallback('admin.noRoles', 'No explicit roles'),
+      variant: 'none'
+    }
+  }
+
+  const primaryIdentifier = resolvePrimaryRoleIdentifier(roleIdentifiers)
+  return {
+    label: getRoleLabel(primaryIdentifier),
+    variant: getRoleVariantFromIdentifier(primaryIdentifier)
+  }
+}
+
+function getRoleVariantFromIdentifier(identifier) {
+  if (identifier === 'admin') return 'admin'
+  if (identifier === 'viewer') return 'viewer'
+  if (identifier === 'user') return 'user'
+  return 'custom'
 }
 
 function getUserCardId(user) {
@@ -253,12 +447,7 @@ function renderUserAvatar(user) {
 
 function applyRoleFilter(users) {
   if (currentRoleFilter === 'all') return users
-  return users.filter(user => {
-    if (currentRoleFilter === 'admin') {
-      return user.is_admin === true || rolesDictToArray(user.roles).includes('admin')
-    }
-    return rolesDictToArray(user.roles).includes(currentRoleFilter)
-  })
+  return users.filter(user => getAssignableRoleIdentifiersForUser(user).includes(currentRoleFilter))
 }
 
 function updateRolesDisplay() {
@@ -281,14 +470,19 @@ function initRolesMultiSelect() {
   if (!multiSelect) return
   const display = multiSelect.querySelector('.multi-select-display')
   const dropdown = multiSelect.querySelector('.multi-select-dropdown')
-  const checkboxes = multiSelect.querySelectorAll('input[type="checkbox"]')
 
   addTrackedListener(display, 'click', event => {
+    if (!canAssignUserRoles()) {
+      dropdown.classList.add('hidden')
+      return
+    }
     event.stopPropagation()
     dropdown.classList.toggle('hidden')
   })
 
-  checkboxes.forEach(checkbox => addTrackedListener(checkbox, 'change', updateRolesDisplay))
+  addTrackedListener(dropdown, 'change', event => {
+    if (event.target.matches('input[type="checkbox"]')) updateRolesDisplay()
+  })
 
   documentClickHandler = event => {
     if (!multiSelect.contains(event.target)) dropdown.classList.add('hidden')
@@ -319,7 +513,7 @@ async function handleApiError(response) {
     return
   }
   if (status === 403) {
-    showToast(translateOrFallback('admin.accessDenied', 'Access denied. Admin privileges required.'), 'error')
+    showToast(translateOrFallback('admin.accessDenied', 'Access denied. You do not have permission to manage users.'), 'error')
     return
   }
 
@@ -461,16 +655,183 @@ function renderStatusBadge(isActive) {
 }
 
 function getRoleVariant(user) {
-  const roles = rolesDictToArray(user.roles)
-  if (user.is_admin || roles.includes('admin')) return 'admin'
-  if (roles.includes('viewer')) return 'viewer'
-  return 'user'
+  return getRoleDisplayStateForUser(user).variant
 }
 
 function renderRoleBadge(user) {
-  const role = getPrimaryRole(user)
-  const roleClass = getRoleVariant(user)
-  return `<span class="user-role-pill ${roleClass}">${escapeHtml(role)}</span>`
+  const { label, variant } = getRoleDisplayStateForUser(user)
+  return `<span class="user-role-pill ${variant}">${escapeHtml(label)}</span>`
+}
+
+export function canCreateUsersForAuthInfo(authInfo) {
+  return hasPermission(authInfo, 'users.create')
+}
+
+export function canAssignRolesForUserForm(authInfo) {
+  return hasPermission(authInfo, 'users.assign_roles')
+}
+
+function canAssignProtectedRole(authInfo, roleIdentifier, roleCatalog = availableRoles) {
+  const normalizedIdentifier = String(roleIdentifier || '').trim().toLowerCase()
+  if (!normalizedIdentifier) return true
+  if (authInfo?.is_admin === true) return true
+  if (normalizedIdentifier === 'admin') return false
+
+  const role = (Array.isArray(roleCatalog) ? roleCatalog : []).find(entry => entry.identifier === normalizedIdentifier)
+  if (!role) return true
+  return isNonAdminAssignableRole(role)
+}
+
+export function getAssignableRoleIdentifiersForUser(user = {}) {
+  const roleIdentifiers = new Set(rolesDictToArray(user.roles))
+  if (user.is_admin) {
+    roleIdentifiers.add('admin')
+  }
+  return Array.from(roleIdentifiers)
+}
+
+function sanitizeSubmittedRoles(roles = {}, authInfo = null, existingRoles = null, roleCatalog = availableRoles) {
+  const nextRoles = { ...(roles || {}) }
+  const requestedIdentifiers = Object.keys(nextRoles)
+
+  const existingIdentifiers = new Set(getAssignableRoleIdentifiersForUser({
+    roles: existingRoles || {},
+    is_admin: Boolean(existingRoles?.admin)
+  }))
+
+  requestedIdentifiers.forEach(identifier => {
+    if (canAssignProtectedRole(authInfo, identifier, roleCatalog)) {
+      return
+    }
+
+    if (existingIdentifiers.has(identifier)) {
+      nextRoles[identifier] = true
+      return
+    }
+
+    delete nextRoles[identifier]
+  })
+
+  existingIdentifiers.forEach(identifier => {
+    if (!canAssignProtectedRole(authInfo, identifier, roleCatalog) && nextRoles[identifier] !== true) {
+      nextRoles[identifier] = true
+    }
+  })
+
+  if (!canAssignProtectedRole(authInfo, 'admin', roleCatalog) && !existingIdentifiers.has('admin')) {
+    delete nextRoles.admin
+  }
+
+  return nextRoles
+}
+
+export function buildUserPayloadForSubmission({
+  isEdit = false,
+  authInfo = null,
+  values = {},
+  existingRoles = null,
+  availableRoles: roleCatalog = availableRoles
+} = {}) {
+  const formData = {}
+  const canEditProfileFields = hasPermission(authInfo, 'users.edit')
+  const canAssignRoles = canAssignRolesForUserForm(authInfo)
+
+  if (!isEdit || canEditProfileFields) {
+    formData.email = values.email ?? null
+    formData.display_name = values.display_name ?? null
+    formData.auth_type = values.auth_type || 'local'
+    formData.is_active = values.is_active === true
+  }
+
+  if (canAssignRoles) {
+    formData.roles = sanitizeSubmittedRoles(
+      values.roles || {},
+      authInfo,
+      existingRoles,
+      Array.isArray(roleCatalog) ? roleCatalog : availableRoles
+    )
+  }
+
+  if (!isEdit) {
+    formData.username = values.username || ''
+  }
+
+  if (values.password) {
+    formData.password = values.password
+  }
+
+  return formData
+}
+
+function canCreateUsers() {
+  return canCreateUsersForAuthInfo(currentViewerAuthInfo)
+}
+
+function canEditUsers() {
+  return (
+    hasPermission(currentViewerAuthInfo, 'users.edit')
+    || hasPermission(currentViewerAuthInfo, 'users.reset_password')
+    || hasPermission(currentViewerAuthInfo, 'users.assign_roles')
+  )
+}
+
+function canToggleUserStates() {
+  return hasPermission(currentViewerAuthInfo, 'users.edit')
+}
+
+function canDeleteUsers() {
+  return hasPermission(currentViewerAuthInfo, 'users.delete')
+}
+
+function canEditUserProfileFields() {
+  return hasPermission(currentViewerAuthInfo, 'users.edit')
+}
+
+function canResetUserPasswords() {
+  return hasPermission(currentViewerAuthInfo, 'users.reset_password')
+}
+
+function canAssignUserRoles() {
+  return canAssignRolesForUserForm(currentViewerAuthInfo)
+}
+
+function applyEditModalPermissions(isEdit) {
+  const displayNameInput = container.querySelector('#formDisplayName')
+  const emailInput = container.querySelector('#formEmail')
+  const authTypeSelect = container.querySelector('#formAuthType')
+  const activeToggle = container.querySelector('#formIsActive')
+  const passwordInput = container.querySelector('#formPassword')
+  const togglePasswordBtn = container.querySelector('#togglePassword')
+  const submitBtn = container.querySelector('#modalSubmit')
+  const rolesMultiSelectDisplay = container.querySelector('#rolesMultiSelect .multi-select-display')
+
+  if (displayNameInput) displayNameInput.disabled = isEdit && !canEditUserProfileFields()
+  if (emailInput) emailInput.disabled = isEdit && !canEditUserProfileFields()
+  if (authTypeSelect) authTypeSelect.disabled = isEdit && !canEditUserProfileFields()
+  if (activeToggle) activeToggle.disabled = isEdit && !canEditUserProfileFields()
+  if (passwordInput) passwordInput.disabled = isEdit && !canResetUserPasswords()
+  if (togglePasswordBtn) togglePasswordBtn.disabled = isEdit && !canResetUserPasswords()
+  container.querySelectorAll('#rolesMultiSelect input[type="checkbox"]').forEach(checkbox => {
+    checkbox.disabled = (
+      !canAssignUserRoles()
+      || !canAssignProtectedRole(currentViewerAuthInfo, checkbox.value)
+    )
+  })
+  if (rolesMultiSelectDisplay) {
+    rolesMultiSelectDisplay.setAttribute('aria-disabled', canAssignUserRoles() ? 'false' : 'true')
+  }
+
+  if (!submitBtn) return
+  if (!isEdit) {
+    submitBtn.disabled = !canCreateUsers()
+    return
+  }
+
+  submitBtn.disabled = !(
+    canEditUserProfileFields()
+    || canResetUserPasswords()
+    || canAssignUserRoles()
+  )
 }
 
 function renderUserList(users) {
@@ -513,19 +874,19 @@ function renderUserList(users) {
       <div class="user-row-status-block">${renderStatusBadge(user.is_active)}</div>
 
       <div class="user-row-actions">
-        <button class="user-icon-btn btn-toggle-status" title="${user.is_active ? translateOrFallback('admin.disable', 'Disable') : translateOrFallback('admin.enable', 'Enable')}" data-user='${JSON.stringify(user).replace(/'/g, '&#39;')}'>
+        <button class="user-icon-btn btn-toggle-status" title="${user.is_active ? translateOrFallback('admin.disable', 'Disable') : translateOrFallback('admin.enable', 'Enable')}" data-user='${JSON.stringify(user).replace(/'/g, '&#39;')}' ${canToggleUserStates() ? '' : 'disabled'}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M12 2v10"></path>
             <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
           </svg>
         </button>
-        <button class="user-icon-btn btn-edit" title="${translateOrFallback('admin.edit', 'Edit')}" data-user='${JSON.stringify(user).replace(/'/g, '&#39;')}'>
+        <button class="user-icon-btn btn-edit" title="${translateOrFallback('admin.edit', 'Edit')}" data-user='${JSON.stringify(user).replace(/'/g, '&#39;')}' ${canEditUsers() ? '' : 'disabled'}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
             <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
           </svg>
         </button>
-        <button class="user-icon-btn btn-delete" title="${translateOrFallback('admin.delete', 'Delete')}" data-user-id="${escapeHtml(user.id)}" data-username="${escapeHtml(user.display_name || user.username)}">
+        <button class="user-icon-btn btn-delete" title="${translateOrFallback('admin.delete', 'Delete')}" data-user-id="${escapeHtml(user.id)}" data-username="${escapeHtml(user.display_name || user.username)}" ${canDeleteUsers() ? '' : 'disabled'}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="3 6 5 6 21 6"></polyline>
             <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
@@ -585,6 +946,10 @@ function renderPagination(page, totalPages) {
 }
 
 function showCreateModal() {
+  if (!canCreateUsers()) {
+    showToast(translateOrFallback('admin.accessDenied', 'Access denied. You do not have permission to manage users.'), 'error')
+    return
+  }
   configureModalMode('create')
   container.querySelector('#modalTitle').setAttribute('data-i18n', 'admin.createTitle')
   container.querySelector('#modalDescription').setAttribute('data-i18n', 'admin.modalCreateDescription')
@@ -593,7 +958,6 @@ function showCreateModal() {
   container.querySelector('#editUserId').value = ''
   container.querySelector('#userForm').reset()
   container.querySelector('#formIsActive').checked = true
-  container.querySelector('#formIsAdmin').checked = false
   container.querySelector('#formUsername').disabled = false
   container.querySelector('#passwordRequired').style.display = 'inline'
   container.querySelector('#passwordHint').style.display = 'none'
@@ -601,11 +965,16 @@ function showCreateModal() {
   container.querySelectorAll('#rolesMultiSelect input[type="checkbox"]').forEach(checkbox => { checkbox.checked = false })
   updateRolesDisplay()
   container.querySelector('#rolesMultiSelect .multi-select-dropdown')?.classList.add('hidden')
+  applyEditModalPermissions(false)
   userModal.classList.remove('hidden')
   container.querySelector('#formUsername').focus()
 }
 
 function showEditModal(user) {
+  if (!canEditUsers()) {
+    showToast(translateOrFallback('admin.accessDenied', 'Access denied. You do not have permission to manage users.'), 'error')
+    return
+  }
   configureModalMode('edit')
   container.querySelector('#modalTitle').setAttribute('data-i18n', 'admin.editTitle')
   container.querySelector('#modalDescription').setAttribute('data-i18n', 'admin.modalEditDescription')
@@ -618,15 +987,15 @@ function showEditModal(user) {
   container.querySelector('#formPassword').value = ''
   container.querySelector('#formAuthType').value = user.auth_type || 'local'
   container.querySelector('#formIsActive').checked = user.is_active !== false
-  container.querySelector('#formIsAdmin').checked = user.is_admin === true
   container.querySelector('#formUsername').disabled = true
   container.querySelector('#passwordRequired').style.display = 'none'
   container.querySelector('#passwordHint').style.display = 'block'
   container.querySelector('#formPassword').required = false
-  const rolesList = rolesDictToArray(user.roles)
+  const rolesList = getAssignableRoleIdentifiersForUser(user)
   container.querySelectorAll('#rolesMultiSelect input[type="checkbox"]').forEach(checkbox => { checkbox.checked = rolesList.includes(checkbox.value) })
   updateRolesDisplay()
   container.querySelector('#rolesMultiSelect .multi-select-dropdown')?.classList.add('hidden')
+  applyEditModalPermissions(true)
   userModal.classList.remove('hidden')
   container.querySelector('#formDisplayName').focus()
 }
@@ -639,6 +1008,10 @@ function closeModal() {
 }
 
 function showDeleteConfirm(userId, username) {
+  if (!canDeleteUsers()) {
+    showToast(translateOrFallback('admin.accessDenied', 'Access denied. You do not have permission to manage users.'), 'error')
+    return
+  }
   container.querySelector('#deleteUserId').value = userId
   container.querySelector('#deleteUserName').textContent = username || ''
   deleteModal.classList.remove('hidden')
@@ -694,29 +1067,39 @@ async function handleFormSubmit(event) {
   const submitBtn = container.querySelector('#modalSubmit')
   const editUserId = container.querySelector('#editUserId').value
   const isEdit = Boolean(editUserId)
-  const formData = {
-    email: container.querySelector('#formEmail').value.trim() || null,
-    display_name: container.querySelector('#formDisplayName').value.trim() || null,
-    auth_type: container.querySelector('#formAuthType').value,
-    roles: rolesArrayToDict(Array.from(container.querySelectorAll('#rolesMultiSelect input[type="checkbox"]:checked')).map(cb => cb.value)),
-    is_active: container.querySelector('#formIsActive').checked,
-    is_admin: container.querySelector('#formIsAdmin').checked
-  }
-
-  if (!isEdit) formData.username = container.querySelector('#formUsername').value.trim()
-
+  const username = container.querySelector('#formUsername').value.trim()
   const password = container.querySelector('#formPassword').value
   if (password) {
-    formData.password = password
+    if (isEdit && !canResetUserPasswords()) {
+      showToast(translateOrFallback('admin.accessDenied', 'Access denied. You do not have permission to manage users.'), 'error')
+      return
+    }
   } else if (!isEdit) {
     showToast(translateOrFallback('admin.passwordRequired', 'Password is required for new users'), 'error')
     return
   }
 
-  if (!isEdit && !formData.username) {
+  if (!isEdit && !username) {
     showToast(translateOrFallback('admin.usernameRequired', 'Username is required'), 'error')
     return
   }
+
+  const formData = buildUserPayloadForSubmission({
+    isEdit,
+    authInfo: currentViewerAuthInfo,
+    existingRoles: isEdit
+      ? (currentFetchedUsers.find(user => user.id === editUserId)?.roles || {})
+      : null,
+    values: {
+      username,
+      password,
+      email: container.querySelector('#formEmail').value.trim() || null,
+      display_name: container.querySelector('#formDisplayName').value.trim() || null,
+      auth_type: container.querySelector('#formAuthType').value,
+      roles: rolesArrayToDict(Array.from(container.querySelectorAll('#rolesMultiSelect input[type="checkbox"]:checked')).map(cb => cb.value)),
+      is_active: container.querySelector('#formIsActive').checked
+    }
+  })
 
   submitBtn.disabled = true
   submitBtn.textContent = isEdit
@@ -797,10 +1180,11 @@ export async function mount(containerEl, { params, route } = {}) {
   console.log('[AdminUsersPage] Mounting...')
   container = containerEl
 
-  const user = await checkAuth({ redirect: true })
+  const user = getAuthInfo() || await checkAuth({ redirect: true })
   if (!user) return
-  if (!user.is_admin) {
-    showToast(translateOrFallback('admin.accessDenied', 'Access denied. Admin privileges required.'), 'error')
+  currentViewerAuthInfo = user
+  if (!canAccessUserManagement(user)) {
+    showToast(translateOrFallback('admin.accessDenied', 'Access denied. You do not have permission to manage users.'), 'error')
     window.location.href = buildAppUrl('/')
     return
   }
@@ -821,7 +1205,12 @@ export async function mount(containerEl, { params, route } = {}) {
   deleteModal = container.querySelector('#deleteModal')
 
   setupEventListeners()
+  await loadAvailableRoles()
   updateContainerTranslations(container)
+  const createButton = container.querySelector('#createUserBtn')
+  if (createButton) {
+    createButton.disabled = !canCreateUsers()
+  }
   await loadUsers(currentPage, currentSearch)
   console.log('[AdminUsersPage] Mounted')
 }
@@ -843,7 +1232,6 @@ export async function unmount() {
 
   eventCleanupFns.forEach(fn => fn())
   eventCleanupFns = []
-  document.getElementById('admin-users-page-css')?.remove()
 
   currentPage = 1
   currentSearch = ''
@@ -851,6 +1239,7 @@ export async function unmount() {
   currentRoleFilter = 'all'
   currentStatusFilter = 'all'
   currentFetchedUsers = []
+  availableRoles = []
   usersTableBody = null
   paginationInfo = null
   paginationBtns = null
@@ -860,6 +1249,7 @@ export async function unmount() {
   userModal = null
   deleteModal = null
   container = null
+  currentViewerAuthInfo = null
   console.log('[AdminUsersPage] Unmounted')
 }
 

@@ -7,6 +7,12 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.atlasclaw.auth.guards import (
+    AuthorizationContext,
+    ensure_any_permission,
+    ensure_skill_access,
+    get_authorization_context,
+)
 from .deps_context import APIContext, get_api_context
 from .schemas import (
     MemorySearchRequest,
@@ -20,7 +26,14 @@ def register_skills_memory_routes(router: APIRouter) -> None:
     @router.get("/skills")
     async def list_skills(
         ctx: APIContext = Depends(get_api_context),
+        authz: AuthorizationContext = Depends(get_authorization_context),
     ) -> dict[str, Any]:
+        ensure_any_permission(
+            authz,
+            ("skills.view", "skills.manage_permissions", "rbac.manage_permissions"),
+            detail="Missing permission: skills.view or skills.manage_permissions",
+        )
+
         executable_skills = ctx.skill_registry.snapshot_builtins()
         md_skills = ctx.skill_registry.md_snapshot()
 
@@ -50,7 +63,14 @@ def register_skills_memory_routes(router: APIRouter) -> None:
     async def execute_skill(
         request: SkillExecuteRequest,
         ctx: APIContext = Depends(get_api_context),
+        authz: AuthorizationContext = Depends(get_authorization_context),
     ) -> SkillExecuteResponse:
+        ensure_skill_access(
+            authz,
+            request.skill_name,
+            detail=f"Missing permission to execute skill: {request.skill_name}",
+        )
+
         import time
 
         start = time.monotonic()

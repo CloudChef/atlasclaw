@@ -2,8 +2,9 @@
   "nav": {
     "account": "账户设置",
     "models": "模型管理",
-    "channels": "频道管理",
-    "users": "用户管理"
+    "channels": "渠道管理",
+    "users": "用户管理",
+    "roles": "角色管理"
   },
   "auth": {
     "logout": "退出登录"
@@ -15,6 +16,9 @@
   "app": {
     "title": "AtlasClaw 智能助手",
     "newChat": "新建对话",
+    "chatTools": "对话工具",
+    "collapseSidebar": "收起侧边栏",
+    "expandSidebar": "展开侧边栏",
     "today": "今天",
     "currentChat": "当前对话",
     "accountSettings": "账户设置",
@@ -97,6 +101,267 @@
     "dangerDescription": "停用账户后，访问权限会被收回，直到管理员再次恢复。",
     "deactivateAccount": "停用账户",
     "deactivateUnavailable": "暂不支持自助停用账户，请联系管理员处理。"
+  },
+  "roles": {
+    "title": "角色管理",
+    "eyebrow": "权限设计",
+    "description": "在一个编辑器中统一设计渠道、用户、令牌和技能的角色权限组合。",
+    "createButton": "新建角色",
+    "createTitle": "新建角色",
+    "editTitle": "编辑角色",
+    "saveButton": "保存角色",
+    "cancel": "取消",
+    "deleteTitle": "删除角色",
+    "deleteDescription": "只有当该角色未分配给任何用户时，才可以被永久删除。",
+    "deleteConfirm": "确定要删除这个角色吗？",
+    "deleteButton": "删除角色",
+    "searchPlaceholder": "搜索角色...",
+    "skillSearchPlaceholder": "搜索技能...",
+    "roleName": "角色名称",
+    "roleNamePlaceholder": "请输入角色名称",
+    "roleDescription": "角色说明",
+    "roleDescriptionPlaceholder": "说明这个角色适合分配给哪些人。",
+    "roleIdentifier": "角色标识",
+    "identifierPlaceholder": "role-identifier",
+    "identifierPrefix": "标识：",
+    "roleStatus": "状态",
+    "statusActive": "启用中",
+    "statusInactive": "已停用",
+    "builtinBadge": "内置",
+    "draftBadge": "草稿",
+    "newRole": "新角色",
+    "untitledRole": "未命名角色",
+    "unsavedIdentifier": "未保存角色",
+    "defaultRoleDescription": "用于工作区访问控制的权限组合。",
+    "enabledShort": "已启用",
+    "enabled": "已启用",
+    "disabled": "未启用",
+    "authorized": "已授权",
+    "notAuthorized": "未授权",
+    "authorizeToggle": "授权",
+    "enableToggle": "启用",
+    "permissionBadge": "权限",
+    "permissions": {
+      "view": "查看",
+      "create": "创建",
+      "edit": "编辑",
+      "delete": "删除",
+      "assignRoles": "分配角色",
+      "managePermissions": "管理权限"
+    },
+    "skillPermissions": {
+      "manage": "管理权限",
+      "manageDescription": "管理这个角色可启用和使用的技能。",
+      "managePermissionsDescription": "管理技能模块的权限模型，包括哪些角色可以配置和启用技能。"
+    },
+    "rbacPermissions": {
+      "managePermissionsDescription": "管理整套角色权限模型，包括各模块的权限配置边界。"
+    },
+    "userPermissions": {
+      "viewDescription": "查看用户、状态以及他们当前被分配的角色。",
+      "createDescription": "在管理后台中邀请或创建新用户。",
+      "editDescription": "修改资料、角色分配和认证方式。",
+      "deleteDescription": "移除不再需要访问工作区的用户账号。",
+      "resetPassword": "重置密码",
+      "resetPasswordDescription": "在支持和入职场景中重置本地账号密码。",
+      "assignRolesDescription": "将角色分配给用户，或回收用户已有的角色。",
+      "managePermissionsDescription": "管理用户模块的权限模型，但不直接授予这些权限。"
+    },
+    "channelPermissions": {
+      "viewDescription": "查看已连接渠道、负责人和健康状态。",
+      "createDescription": "为支持的平台创建新的渠道连接。",
+      "editDescription": "更新凭证、回调地址和运行配置。",
+      "deleteDescription": "删除已废弃或存在风险的渠道连接。",
+      "managePermissionsDescription": "管理渠道模块的权限模型，但不直接管理渠道实例。"
+    },
+    "tokenPermissions": {
+      "viewDescription": "查看令牌名称、提供商和当前健康状态。",
+      "createDescription": "登记新的提供商端点或 API Key。",
+      "editDescription": "轮换 API Key 并更新模型路由信息。",
+      "deleteDescription": "停用不再应该被工作区使用的令牌。",
+      "managePermissionsDescription": "管理令牌模块的权限模型，但不直接维护令牌内容。"
+    },
+    "agentConfigPermissions": {
+      "viewDescription": "查看可复用的 Agent 模板、人格区块和启用状态。",
+      "createDescription": "为助手和流程专家创建新的 Agent 模板。",
+      "editDescription": "更新 Agent 的身份设定、记忆预设和运行默认值。",
+      "deleteDescription": "移除不再需要提供给工作区的 Agent 模板。",
+      "managePermissionsDescription": "管理 Agent 模板模块的权限模型，但不直接操作 Agent 记录。"
+    },
+    "providerConfigPermissions": {
+      "viewDescription": "查看已注册的 Provider 实例、归属关系和启用状态。",
+      "createDescription": "注册新的 Provider 实例并填写基础连接配置。",
+      "editDescription": "更新 Provider 凭证、实例元数据和运行参数。",
+      "deleteDescription": "移除不再需要提供给工作区的 Provider 实例。",
+      "managePermissionsDescription": "管理 Provider 实例模块的权限模型，但不直接操作 Provider 记录。"
+    },
+    "modelConfigPermissions": {
+      "viewDescription": "查看模型目录条目、提供商绑定和路由默认值。",
+      "createDescription": "为受支持的提供商注册新的模型定义。",
+      "editDescription": "调整模型元数据、路由行为和能力配置。",
+      "deleteDescription": "回收不再应该被选择的模型定义。",
+      "managePermissionsDescription": "管理模型配置模块的权限模型，但不直接操作模型记录。"
+    },
+    "rolePermissions": {
+      "viewDescription": "查看现有角色、摘要和已保存的权限集。",
+      "createDescription": "为团队和项目创建新的自定义角色。",
+      "editDescription": "调整权限组合和模块默认值。",
+      "deleteDescription": "回收已不再被任何人使用的角色。"
+    },
+    "modules": {
+      "rbac": "权限治理",
+      "rbacDescription": "控制谁可以编辑各模块的权限模型与角色权限边界。",
+      "skills": "技能",
+      "skillsDescription": "管理这个角色可启用和使用的技能。",
+      "channels": "渠道",
+      "channelsDescription": "管理渠道配置和生命周期操作的访问权限。",
+      "tokens": "令牌",
+      "tokensDescription": "控制对提供商凭证的可见性和维护权限。",
+      "agentConfigs": "Agent 模板",
+      "agentConfigsDescription": "管理可复用的 Agent 定义、人格区块和运行默认值。",
+      "providerConfigs": "Provider 实例",
+      "providerConfigsDescription": "管理服务提供方实例及其配置生命周期。",
+      "modelConfigs": "模型配置",
+      "modelConfigsDescription": "控制模型目录的可见性和维护权限。",
+      "users": "用户",
+      "usersDescription": "定义这个角色如何查看和管理工作区用户。",
+      "roles": "角色",
+      "rolesDescription": "决定这个角色是否可以创建、编辑或回收其他角色。"
+    },
+    "builtinRoleCatalog": {
+      "admin": {
+        "name": "管理员",
+        "description": "拥有管理工作区配置、访问控制和角色授权的完整权限。"
+      },
+      "user": {
+        "name": "标准用户",
+        "description": "默认协作角色，可使用已经启用的工作区技能。"
+      },
+      "viewer": {
+        "name": "访客",
+        "description": "用于审计和监督场景的只读角色。"
+      }
+    },
+    "skillCatalog": {
+      "browser": {
+        "name": "浏览器",
+        "description": "浏览器自动化"
+      },
+      "sessions_list": {
+        "name": "会话列表",
+        "description": "查看当前可访问的会话列表"
+      },
+      "sessions_history": {
+        "name": "会话历史",
+        "description": "获取指定会话的对话历史"
+      },
+      "sessions_send": {
+        "name": "发送到会话",
+        "description": "向其他会话发送消息"
+      },
+      "sessions_spawn": {
+        "name": "启动子代理",
+        "description": "启动隔离的子代理会话"
+      },
+      "subagents": {
+        "name": "子代理管理",
+        "description": "管理正在运行的子代理"
+      },
+      "session_status": {
+        "name": "会话状态",
+        "description": "查看当前会话状态"
+      },
+      "memory_search": {
+        "name": "记忆搜索",
+        "description": "语义搜索长期记忆"
+      },
+      "memory_get": {
+        "name": "读取记忆",
+        "description": "按偏移读取记忆文件"
+      },
+      "web_search": {
+        "name": "网页搜索",
+        "description": "进行网页搜索"
+      },
+      "web_fetch": {
+        "name": "网页抓取",
+        "description": "抓取网页内容"
+      },
+      "list_provider_instances": {
+        "name": "服务实例列表",
+        "description": "列出当前可用的服务提供方实例"
+      },
+      "select_provider_instance": {
+        "name": "选择服务实例",
+        "description": "选择当前要使用的服务提供方实例"
+      },
+      "approval-create": {
+        "name": "发起审批",
+        "description": "发起钉钉审批实例，如报销、请假、采购等。"
+      },
+      "approval-query": {
+        "name": "审批查询",
+        "description": "查询审批实例的状态与详情。"
+      },
+      "approval-todo": {
+        "name": "审批待办",
+        "description": "查询当前用户的待审批任务数量。"
+      },
+      "jira-issue": {
+        "name": "Jira 事项",
+        "description": "用于创建、查询、更新和删除 Jira Issue。"
+      },
+      "approval": {
+        "name": "审批管理",
+        "description": "SmartCMP 审批管理，可查看待审批项、审批请求或拒绝请求。"
+      },
+      "datasource": {
+        "name": "基础数据",
+        "description": "查询 SmartCMP 参考数据，如目录、业务组、资源池和应用信息。"
+      },
+      "preapproval-agent": {
+        "name": "预审批代理",
+        "description": "在正式提交流程前辅助整理、校验并预审审批请求。"
+      },
+      "request": {
+        "name": "资源请求",
+        "description": "SmartCMP 资源开通与工单请求。可用于创建虚拟机、开通云资源、部署应用或提交工单。"
+      },
+      "request-decomposition-agent": {
+        "name": "请求拆解代理",
+        "description": "将描述式基础设施需求拆解为结构化 CMP 请求，并生成子请求草稿。"
+      },
+      "create-provider": {
+        "name": "创建 Provider",
+        "description": "创建新的 AtlasClaw Provider，适用于 API、ITSM、CRM 或自定义服务集成。"
+      },
+      "create-atlasclaw-skill": {
+        "name": "创建 AtlasClaw 技能",
+        "description": "创建新的 AtlasClaw 技能，适用于可执行技能、Markdown 技能或 Provider 技能。"
+      }
+    },
+    "skillsListTitle": "技能管理",
+    "skillsListDescription": "搜索当前技能目录，并决定这个角色可以启用哪些技能。",
+    "skillBehaviorTitle": "新技能行为",
+    "skillBehaviorDescription": "使用右侧总开关可以一键启用或关闭下方所有可见技能。",
+    "enableAllToggle": "全部启用",
+    "defaultSkillDescription": "AtlasClaw Agent 可用的工作区技能。",
+    "noRolesTitle": "没有找到角色",
+    "noRolesDescription": "试试其他搜索词，或者新建一个自定义角色。",
+    "noSkillsTitle": "没有匹配的技能",
+    "noSkillsDescription": "调整搜索词后再查看更多技能。",
+    "emptyTitle": "先选择一个角色",
+    "emptyDescription": "请选择内置角色或新建角色，然后在右侧编辑器中配置权限。",
+    "selectAll": "全部选中",
+    "restoreDefaults": "恢复默认",
+    "validationRequired": "角色名称和角色标识不能为空。",
+    "loadFailed": "加载角色管理数据失败",
+    "saveSuccess": "角色保存成功",
+    "createSuccess": "角色创建成功",
+    "saveFailed": "角色保存失败",
+    "deleteSuccess": "角色删除成功",
+    "deleteFailed": "角色删除失败",
+    "accessDenied": "访问被拒绝，需要管理员权限。"
   },
   "login": {
     "title": "AtlasClaw 登录",

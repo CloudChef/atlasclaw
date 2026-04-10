@@ -3,7 +3,8 @@
     "account": "Account Settings",
     "models": "Model Management",
     "channels": "Channel Management",
-    "users": "User Management"
+    "users": "User Management",
+    "roles": "Role Management"
   },
   "auth": {
     "logout": "Sign Out"
@@ -15,6 +16,9 @@
   "app": {
     "title": "AtlasClaw AI Assistant",
     "newChat": "New Chat",
+    "chatTools": "Chat tools",
+    "collapseSidebar": "Collapse sidebar",
+    "expandSidebar": "Expand sidebar",
     "today": "Today",
     "currentChat": "Current Chat",
     "accountSettings": "Account Settings",
@@ -97,6 +101,267 @@
     "dangerDescription": "Once you deactivate your account, access is revoked until an administrator restores it.",
     "deactivateAccount": "Deactivate Account",
     "deactivateUnavailable": "Self-service account deactivation is not available yet. Please contact an administrator."
+  },
+  "roles": {
+    "title": "Role Management",
+    "eyebrow": "Access Design",
+    "description": "Design reusable permission bundles for channels, users, tokens, and skills from one editor.",
+    "createButton": "Create Role",
+    "createTitle": "Create Role",
+    "editTitle": "Edit Role",
+    "saveButton": "Save Role",
+    "cancel": "Cancel",
+    "deleteTitle": "Delete Role",
+    "deleteDescription": "This role will be removed permanently if it is no longer assigned to any user.",
+    "deleteConfirm": "Are you sure you want to delete this role?",
+    "deleteButton": "Delete Role",
+    "searchPlaceholder": "Search roles...",
+    "skillSearchPlaceholder": "Search skills...",
+    "roleName": "Role Name",
+    "roleNamePlaceholder": "Role name",
+    "roleDescription": "Description",
+    "roleDescriptionPlaceholder": "Describe when this role should be assigned.",
+    "roleIdentifier": "Role Identifier",
+    "identifierPlaceholder": "role-identifier",
+    "identifierPrefix": "Identifier:",
+    "roleStatus": "Status",
+    "statusActive": "Active",
+    "statusInactive": "Inactive",
+    "builtinBadge": "Built-in",
+    "draftBadge": "Draft",
+    "newRole": "New Role",
+    "untitledRole": "Untitled Role",
+    "unsavedIdentifier": "unsaved-role",
+    "defaultRoleDescription": "Permission bundle for workspace access control.",
+    "enabledShort": "enabled",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "authorized": "Authorized",
+    "notAuthorized": "Not Authorized",
+    "authorizeToggle": "Authorize",
+    "enableToggle": "Enable",
+    "permissionBadge": "Permission",
+    "permissions": {
+      "view": "View",
+      "create": "Create",
+      "edit": "Edit",
+      "delete": "Delete",
+      "assignRoles": "Assign Roles",
+      "managePermissions": "Manage Permissions"
+    },
+    "skillPermissions": {
+      "manage": "Manage Permission",
+      "manageDescription": "Manage which skills this role can enable and use.",
+      "managePermissionsDescription": "Edit the skill permission model, including which roles may configure and enable skills."
+    },
+    "rbacPermissions": {
+      "managePermissionsDescription": "Edit the global role permission model and module governance boundaries."
+    },
+    "userPermissions": {
+      "viewDescription": "Browse users, status, and the roles currently assigned to them.",
+      "createDescription": "Invite or create new users directly from the admin workspace.",
+      "editDescription": "Change profiles, assigned roles, and authentication options.",
+      "deleteDescription": "Remove user accounts that no longer need workspace access.",
+      "resetPassword": "Reset Password",
+      "resetPasswordDescription": "Reset local account passwords during support and onboarding.",
+      "assignRolesDescription": "Assign roles to users or revoke roles they currently hold.",
+      "managePermissionsDescription": "Edit the user permission model without directly granting those permissions."
+    },
+    "channelPermissions": {
+      "viewDescription": "Review connected channels, owners, and health status.",
+      "createDescription": "Create new channel connections for supported platforms.",
+      "editDescription": "Update credentials, callback URLs, and runtime settings.",
+      "deleteDescription": "Remove obsolete or compromised channel connections.",
+      "managePermissionsDescription": "Edit the channel permission model without directly operating channel instances."
+    },
+    "tokenPermissions": {
+      "viewDescription": "Inspect token names, providers, and current health status.",
+      "createDescription": "Register new provider endpoints or API key entries.",
+      "editDescription": "Rotate API keys and update model routing metadata.",
+      "deleteDescription": "Retire tokens that should no longer be used by the workspace.",
+      "managePermissionsDescription": "Edit the token permission model without directly maintaining token records."
+    },
+    "agentConfigPermissions": {
+      "viewDescription": "Inspect reusable agent templates, persona blocks, and activation status.",
+      "createDescription": "Create new agent templates for assistants and workflow specialists.",
+      "editDescription": "Update agent identity, memory presets, and runtime defaults.",
+      "deleteDescription": "Remove agent templates that should no longer be available.",
+      "managePermissionsDescription": "Edit the agent-template permission model without directly operating agent records."
+    },
+    "providerConfigPermissions": {
+      "viewDescription": "Inspect registered provider instances, ownership, and active status.",
+      "createDescription": "Register new provider instances with baseline connection settings.",
+      "editDescription": "Update provider credentials, instance metadata, and runtime options.",
+      "deleteDescription": "Remove provider instances that should no longer be available.",
+      "managePermissionsDescription": "Edit the provider-instance permission model without directly operating provider records."
+    },
+    "modelConfigPermissions": {
+      "viewDescription": "Inspect model catalog entries, provider bindings, and routing defaults.",
+      "createDescription": "Register new model definitions for supported providers.",
+      "editDescription": "Adjust model metadata, routing behavior, and capability settings.",
+      "deleteDescription": "Retire model definitions that should no longer be selectable.",
+      "managePermissionsDescription": "Edit the model-configuration permission model without directly operating model records."
+    },
+    "rolePermissions": {
+      "viewDescription": "Inspect existing roles, summaries, and saved permission sets.",
+      "createDescription": "Create new custom roles for teams and projects.",
+      "editDescription": "Adjust permission bundles and module defaults.",
+      "deleteDescription": "Retire roles that are no longer assigned anywhere."
+    },
+    "modules": {
+      "rbac": "Permission Governance",
+      "rbacDescription": "Control who may edit permission models and role governance boundaries across modules.",
+      "skills": "Skills",
+      "skillsDescription": "Manage which skills this role can enable and use.",
+      "channels": "Channels",
+      "channelsDescription": "Manage access to connection configuration and lifecycle actions.",
+      "tokens": "Tokens",
+      "tokensDescription": "Control visibility and maintenance rights for provider credentials.",
+      "agentConfigs": "Agent Templates",
+      "agentConfigsDescription": "Manage reusable agent definitions, persona blocks, and runtime defaults.",
+      "providerConfigs": "Provider Instances",
+      "providerConfigsDescription": "Manage service provider instances and their configuration lifecycle.",
+      "modelConfigs": "Model Configs",
+      "modelConfigsDescription": "Control model catalog visibility and maintenance rights.",
+      "users": "Users",
+      "usersDescription": "Define how this role may browse and administer workspace users.",
+      "roles": "Roles",
+      "rolesDescription": "Set whether this role can create, edit, and retire other roles."
+    },
+    "builtinRoleCatalog": {
+      "admin": {
+        "name": "Administrator",
+        "description": "Full administrative access to manage workspace configuration and access control."
+      },
+      "user": {
+        "name": "Standard User",
+        "description": "Default collaborator role with access to enabled workspace skills."
+      },
+      "viewer": {
+        "name": "Viewer",
+        "description": "Read-only role for audit and oversight workflows."
+      }
+    },
+    "skillCatalog": {
+      "browser": {
+        "name": "Browser",
+        "description": "Browser automation"
+      },
+      "sessions_list": {
+        "name": "Sessions",
+        "description": "List sessions"
+      },
+      "sessions_history": {
+        "name": "Session History",
+        "description": "Get session conversation history"
+      },
+      "sessions_send": {
+        "name": "Send to Session",
+        "description": "Send message to other sessions"
+      },
+      "sessions_spawn": {
+        "name": "Spawn Session",
+        "description": "Spawn isolated sub-agent"
+      },
+      "subagents": {
+        "name": "Sub-agents",
+        "description": "Manage running sub-agents"
+      },
+      "session_status": {
+        "name": "Session Status",
+        "description": "Current session status"
+      },
+      "memory_search": {
+        "name": "Memory Search",
+        "description": "Semantic search long-term memory"
+      },
+      "memory_get": {
+        "name": "Memory Get",
+        "description": "Read memory file by offset"
+      },
+      "web_search": {
+        "name": "Web Search",
+        "description": "Web search"
+      },
+      "web_fetch": {
+        "name": "Web Fetch",
+        "description": "Fetch webpage content"
+      },
+      "list_provider_instances": {
+        "name": "Provider Instances",
+        "description": "List provider service instances"
+      },
+      "select_provider_instance": {
+        "name": "Select Provider Instance",
+        "description": "Select provider service instance"
+      },
+      "approval-create": {
+        "name": "Create Approval",
+        "description": "Create a DingTalk approval instance for reimbursement, leave, purchase, and similar requests."
+      },
+      "approval-query": {
+        "name": "Approval Query",
+        "description": "Query approval instance status and details."
+      },
+      "approval-todo": {
+        "name": "Approval To-do",
+        "description": "Check the current user's pending approval task count."
+      },
+      "jira-issue": {
+        "name": "Jira Issue",
+        "description": "Create, query, update, and delete Jira issues."
+      },
+      "approval": {
+        "name": "Approval Management",
+        "description": "SmartCMP approval management for viewing pending approvals, approving requests, and rejecting requests."
+      },
+      "datasource": {
+        "name": "Reference Data",
+        "description": "Query SmartCMP reference data such as catalogs, business groups, resource pools, and applications."
+      },
+      "preapproval-agent": {
+        "name": "Pre-approval Agent",
+        "description": "Prepare, validate, and pre-check approval requests before formal submission."
+      },
+      "request": {
+        "name": "Request",
+        "description": "SmartCMP resource provisioning and ticket requests. Create VMs, provision cloud resources, deploy applications, or submit work orders from one workflow."
+      },
+      "request-decomposition-agent": {
+        "name": "Request Decomposition Agent",
+        "description": "Transform descriptive infrastructure demands into structured CMP requests and draft sub-requests."
+      },
+      "create-provider": {
+        "name": "Create Provider",
+        "description": "Create new AtlasClaw providers for APIs, ITSM, CRM, or custom service integrations."
+      },
+      "create-atlasclaw-skill": {
+        "name": "Create AtlasClaw Skill",
+        "description": "Create new AtlasClaw skills for executable tools, markdown skills, or provider-backed skills."
+      }
+    },
+    "skillsListTitle": "Skill Management",
+    "skillsListDescription": "Search the live skill catalog and decide which skills this role can enable.",
+    "skillBehaviorTitle": "New skill behavior",
+    "skillBehaviorDescription": "Use the master switch to enable or disable all visible skills below at once.",
+    "enableAllToggle": "Enable all",
+    "defaultSkillDescription": "Workspace skill available to AtlasClaw agents.",
+    "noRolesTitle": "No roles found",
+    "noRolesDescription": "Try a different search term or create a new custom role.",
+    "noSkillsTitle": "No skills match",
+    "noSkillsDescription": "Adjust the search term to review more skills.",
+    "emptyTitle": "Select a role to begin",
+    "emptyDescription": "Choose a built-in role or create a new one to edit the right-side permission designer.",
+    "selectAll": "Select All",
+    "restoreDefaults": "Restore Defaults",
+    "validationRequired": "Role name and identifier are required.",
+    "loadFailed": "Failed to load role management data",
+    "saveSuccess": "Role saved successfully",
+    "createSuccess": "Role created successfully",
+    "saveFailed": "Failed to save role",
+    "deleteSuccess": "Role deleted successfully",
+    "deleteFailed": "Failed to delete role",
+    "accessDenied": "Access denied. Admin privileges required."
   },
   "login": {
     "title": "AtlasClaw Login",

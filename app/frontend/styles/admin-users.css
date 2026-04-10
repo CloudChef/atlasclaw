@@ -257,6 +257,17 @@
   color: #475569;
 }
 
+.user-role-pill.custom {
+  background: #ecfeff;
+  color: #0f766e;
+}
+
+.user-role-pill.none {
+  background: #f8fafc;
+  color: #64748b;
+  border: 1px dashed rgba(148, 163, 184, 0.45);
+}
+
 .user-status-badge.enabled {
   color: #047857;
 }

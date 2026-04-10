@@ -45,6 +45,11 @@ class ServiceProviderConfigService:
     """Service operations for service provider instance configuration."""
 
     @staticmethod
+    def get_config(item: ServiceProviderConfigModel) -> dict[str, Any]:
+        """Get decrypted config payload for API responses."""
+        return _decrypt_config(item.config)
+
+    @staticmethod
     async def create(
         session: AsyncSession,
         provider_data: ServiceProviderConfigCreate,

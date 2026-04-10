@@ -403,6 +403,29 @@ class TestUserService:
         assert verify_password("wrong_password", user.password) is False
 
     @pytest.mark.asyncio
+    async def test_admin_state_is_derived_from_roles(self, session: AsyncSession):
+        """Admin state is computed from the assigned admin role."""
+        user = await UserService.create(
+            session,
+            UserCreate(
+                username="roleadmin",
+                password="password123",
+                roles={"admin": True},
+            ),
+        )
+
+        assert user.is_admin is True
+
+        updated = await UserService.update(
+            session,
+            user.id,
+            UserUpdate(roles={"viewer": True}),
+        )
+
+        assert updated is not None
+        assert updated.is_admin is False
+
+    @pytest.mark.asyncio
     async def test_get_by_username(self, session: AsyncSession):
         """Test getting user by username."""
         await UserService.create(

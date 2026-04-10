@@ -13,6 +13,12 @@ import { renderSidebar } from './components/sidebar.js'
 import { renderHeader, updateHeaderTitle, updateHeaderTitleText } from './components/header.js'
 import { showToast } from './components/toast.js'
 import { getAgentInfo } from './api-client.js'
+import {
+  canAccessChannelManagement,
+  canAccessModelManagement,
+  canAccessRoleManagement,
+  canAccessUserManagement
+} from './permissions.js'
 
 /**
  * Route table - lazy loaded page modules
@@ -20,7 +26,7 @@ import { getAgentInfo } from './api-client.js'
  * - path: URL path pattern
  * - loader: Dynamic import function for page module
  * - auth: Whether auth is required (always true for non-login pages)
- * - admin: Whether admin privileges are required
+ * - accessCheck: Optional permission guard evaluated before navigation
  * - title: i18n key for page title
  */
 const routes = [
@@ -34,6 +40,8 @@ const routes = [
     path: '/channels',
     loader: () => import('./pages/channels.js'),
     auth: true,
+    accessCheck: canAccessChannelManagement,
+    accessDeniedMessage: 'Access denied. You do not have permission to manage channels.',
     title: 'channel.title'
   },
   {
@@ -46,15 +54,25 @@ const routes = [
     path: '/models',
     loader: () => import('./pages/models.js'),
     auth: true,
-    admin: true,
+    accessCheck: canAccessModelManagement,
+    accessDeniedMessage: 'Access denied. You do not have permission to manage models.',
     title: 'model.pageTitle'
   },
   {
     path: '/admin/users',
     loader: () => import('./pages/admin-users.js'),
     auth: true,
-    admin: true,
+    accessCheck: canAccessUserManagement,
+    accessDeniedMessage: 'Access denied. You do not have permission to manage users.',
     title: 'admin.title'
+  },
+  {
+    path: '/admin/roles',
+    loader: () => import('./pages/role-management.js'),
+    auth: true,
+    accessCheck: canAccessRoleManagement,
+    accessDeniedMessage: 'Access denied. You do not have permission to manage roles.',
+    title: 'roles.title'
   }
 ]
 
@@ -71,15 +89,15 @@ export function getAuthInfo() {
 }
 
 function enforceRouteAccess(route) {
-  if (!route?.admin) {
+  if (!route?.accessCheck) {
     return true
   }
 
-  if (currentAuthInfo?.is_admin === true) {
+  if (route.accessCheck(currentAuthInfo)) {
     return true
   }
 
-  showToast('Access denied. Admin privileges required.', 'error')
+  showToast(route.accessDeniedMessage || 'Access denied. You do not have permission to view this page.', 'error')
 
   if (window.__spaRouter) {
     setTimeout(() => {

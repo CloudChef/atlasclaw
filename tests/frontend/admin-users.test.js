@@ -64,6 +64,14 @@ jest.mock('../../app/frontend/scripts/auth.js', () => ({
   logout: jest.fn()
 }))
 
+jest.mock('../../app/frontend/scripts/app.js', () => ({
+  getAuthInfo: jest.fn(() => null)
+}))
+
+jest.mock('../../app/frontend/scripts/components/toast.js', () => ({
+  showToast: jest.fn()
+}))
+
 // Mock fetch
 global.fetch = jest.fn()
 
@@ -191,6 +199,258 @@ describe('Admin Users API', () => {
       await fetch(`/api/users/${userId}`, { method: 'DELETE' })
 
       expect(global.fetch).toHaveBeenCalledWith('/api/users/user-to-delete', { method: 'DELETE' })
+    })
+  })
+})
+
+describe('Permission-aware create flow', () => {
+  beforeEach(() => {
+    jest.resetModules()
+  })
+
+  test('create permission alone unlocks the create flow', async () => {
+    const {
+      canCreateUsersForAuthInfo,
+      canAssignRolesForUserForm
+    } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    const authInfo = {
+      is_admin: false,
+      permissions: {
+        users: {
+          create: true,
+          assign_roles: false
+        }
+      }
+    }
+
+    expect(canCreateUsersForAuthInfo(authInfo)).toBe(true)
+    expect(canAssignRolesForUserForm(authInfo)).toBe(false)
+  })
+
+  test('create payload omits roles when the viewer cannot assign them', async () => {
+    const { buildUserPayloadForSubmission } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    const payload = buildUserPayloadForSubmission({
+      isEdit: false,
+      authInfo: {
+        is_admin: false,
+        permissions: {
+          users: {
+            create: true,
+            assign_roles: false
+          }
+        }
+      },
+      values: {
+        username: 'operator-created',
+        password: 'password123',
+        email: 'operator@example.com',
+        display_name: 'Operator Created',
+        auth_type: 'local',
+        roles: { viewer: true },
+        is_active: true
+      }
+    })
+
+    expect(payload).toEqual({
+      username: 'operator-created',
+      password: 'password123',
+      email: 'operator@example.com',
+      display_name: 'Operator Created',
+      auth_type: 'local',
+      is_active: true
+    })
+    expect(payload.roles).toBeUndefined()
+  })
+
+  test('admin access is submitted through role assignments instead of is_admin', async () => {
+    const { buildUserPayloadForSubmission } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    const payload = buildUserPayloadForSubmission({
+      isEdit: false,
+      authInfo: {
+        is_admin: true,
+        permissions: {
+          users: {
+            create: true,
+            assign_roles: true
+          }
+        }
+      },
+      values: {
+        username: 'workspace-admin',
+        password: 'password123',
+        email: 'admin@example.com',
+        display_name: 'Workspace Admin',
+        auth_type: 'local',
+        roles: { admin: true },
+        is_active: true,
+        is_admin: true
+      }
+    })
+
+    expect(payload).toEqual({
+      username: 'workspace-admin',
+      password: 'password123',
+      email: 'admin@example.com',
+      display_name: 'Workspace Admin',
+      auth_type: 'local',
+      roles: { admin: true },
+      is_active: true
+    })
+    expect(payload.is_admin).toBeUndefined()
+  })
+
+  test('non-admin assigners cannot submit new admin assignments', async () => {
+    const { buildUserPayloadForSubmission } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    const payload = buildUserPayloadForSubmission({
+      isEdit: false,
+      authInfo: {
+        is_admin: false,
+        permissions: {
+          users: {
+            create: true,
+            assign_roles: true
+          }
+        }
+      },
+      values: {
+        username: 'blocked-admin',
+        password: 'password123',
+        email: 'blocked@example.com',
+        display_name: 'Blocked Admin',
+        auth_type: 'local',
+        roles: { admin: true, viewer: true },
+        is_active: true
+      }
+    })
+
+    expect(payload.roles).toEqual({ viewer: true })
+  })
+
+  test('non-admin assigners cannot submit protected custom roles', async () => {
+    const { buildUserPayloadForSubmission } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    const payload = buildUserPayloadForSubmission({
+      isEdit: false,
+      authInfo: {
+        is_admin: false,
+        permissions: {
+          users: {
+            create: true,
+            assign_roles: true
+          }
+        }
+      },
+      availableRoles: [
+        {
+          identifier: 'viewer',
+          name: 'Viewer',
+          permissions: {
+            skills: { module_permissions: { view: true }, skill_permissions: [] },
+            users: { view: true },
+            roles: { view: true }
+          }
+        },
+        {
+          identifier: 'catalog_manager',
+          name: 'Catalog Manager',
+          permissions: {
+            provider_configs: { view: true, edit: true }
+          }
+        }
+      ],
+      values: {
+        username: 'blocked-manager',
+        password: 'password123',
+        email: 'blocked-manager@example.com',
+        display_name: 'Blocked Manager',
+        auth_type: 'local',
+        roles: { viewer: true, catalog_manager: true },
+        is_active: true
+      }
+    })
+
+    expect(payload.roles).toEqual({ viewer: true })
+  })
+
+  test('non-admin edits preserve existing protected custom roles', async () => {
+    const { buildUserPayloadForSubmission } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    const payload = buildUserPayloadForSubmission({
+      isEdit: true,
+      authInfo: {
+        is_admin: false,
+        permissions: {
+          users: {
+            assign_roles: true
+          }
+        }
+      },
+      availableRoles: [
+        {
+          identifier: 'viewer',
+          name: 'Viewer',
+          permissions: {
+            skills: { module_permissions: { view: true }, skill_permissions: [] },
+            users: { view: true },
+            roles: { view: true }
+          }
+        },
+        {
+          identifier: 'catalog_manager',
+          name: 'Catalog Manager',
+          permissions: {
+            provider_configs: { view: true, edit: true }
+          }
+        }
+      ],
+      existingRoles: { catalog_manager: true },
+      values: {
+        roles: { viewer: true }
+      }
+    })
+
+    expect(payload.roles).toEqual({ viewer: true, catalog_manager: true })
+  })
+
+  test('legacy root admins are mapped to the admin role in the form model', async () => {
+    const { getAssignableRoleIdentifiersForUser } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    expect(getAssignableRoleIdentifiersForUser({
+      is_admin: true,
+      roles: {}
+    })).toEqual(['admin'])
+
+    expect(getAssignableRoleIdentifiersForUser({
+      is_admin: true,
+      roles: { admin: true, viewer: true }
+    })).toEqual(['admin', 'viewer'])
+  })
+
+  test('users without explicit roles are shown as unassigned instead of standard users', async () => {
+    const { getRoleDisplayStateForUser } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    expect(getRoleDisplayStateForUser({
+      is_admin: false,
+      roles: {}
+    })).toEqual({
+      label: 'No explicit roles',
+      variant: 'none'
+    })
+  })
+
+  test('legacy root admins are still shown as admin in the list view', async () => {
+    const { getRoleDisplayStateForUser } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    expect(getRoleDisplayStateForUser({
+      is_admin: true,
+      roles: {}
+    })).toEqual({
+      label: 'Admin',
+      variant: 'admin'
     })
   })
 })

@@ -302,6 +302,11 @@ async def complete_sso_login(
         secret_key=jwt_cfg.secret_key,
         expires_minutes=jwt_cfg.expires_minutes,
         issuer=jwt_cfg.issuer,
+        additional_claims={
+            "display_name": session.display_name,
+            "external_subject": auth_result.subject,
+            "provider_subject": f"{auth_config.provider.lower()}:{auth_result.subject}",
+        },
     )
 
     response = RedirectResponse(url=_build_app_url(request, "/"), status_code=302)
@@ -350,16 +355,46 @@ async def load_profile_snapshot(
     user_id: str,
     auth_type: str = "",
     workspace_path: str = "",
+    external_subject: str = "",
 ) -> dict[str, Any]:
     from ...auth.shadow_store import ShadowUserStore
     from ...db.database import get_db_manager
     from ...db.orm.user import UserService
 
-    try:
-        db_manager = get_db_manager()
-        async with db_manager.get_session() as db_session:
-            user = await UserService.get_by_username(db_session, user_id)
-            if user:
+    async def _resolve_federated_subject() -> str:
+        normalized_auth_type = str(auth_type or "").strip().lower()
+        if normalized_auth_type == "local":
+            return ""
+
+        normalized_external_subject = str(external_subject or "").strip()
+        if normalized_external_subject:
+            return normalized_external_subject
+
+        if not workspace_path:
+            return ""
+
+        try:
+            shadow_store = ShadowUserStore(workspace_path=workspace_path)
+            shadow_user = await shadow_store.get_by_id(user_id)
+        except Exception:
+            return ""
+
+        if not shadow_user:
+            return ""
+
+        return str(shadow_user.subject or "").strip()
+
+    async def _load_db_profile(username: str) -> dict[str, Any]:
+        normalized_username = str(username or "").strip()
+        if not normalized_username:
+            return {}
+
+        try:
+            db_manager = get_db_manager()
+            async with db_manager.get_session() as db_session:
+                user = await UserService.get_by_username(db_session, normalized_username)
+                if not user:
+                    return {}
                 return {
                     "id": user.id,
                     "username": user.username,
@@ -374,8 +409,18 @@ async def load_profile_snapshot(
                     "last_login_at": user.last_login_at,
                     "updated_at": user.updated_at,
                 }
-    except Exception:
-        pass
+        except Exception:
+            return {}
+
+    db_profile = await _load_db_profile(user_id)
+    if db_profile:
+        return db_profile
+
+    federated_subject = await _resolve_federated_subject()
+    if federated_subject and federated_subject != str(user_id or "").strip():
+        db_profile = await _load_db_profile(federated_subject)
+        if db_profile:
+            return db_profile
 
     normalized_auth_type = str(auth_type or "").strip().lower()
     if not workspace_path or normalized_auth_type == "local":
@@ -412,6 +457,9 @@ async def load_profile_snapshot(
 
 async def get_current_user_payload(request: Request) -> dict[str, Any]:
     from ...auth.config import AuthConfig
+    from ...auth.guards import resolve_authorization_context
+    from ...auth.models import UserInfo
+    from ...db.database import get_db_manager
 
     auth_config: AuthConfig = getattr(request.app.state.config, "auth", None)
     if not auth_config:
@@ -500,21 +548,52 @@ async def get_current_user_payload(request: Request) -> dict[str, Any]:
         user_id=jwt_user_id,
         auth_type=str(jwt_payload.get("auth_type", "")),
         workspace_path=resolve_workspace_path(request, ctx=ctx),
+        external_subject=str(jwt_payload.get("external_subject", "")),
     )
+
+    effective_permissions: dict[str, Any] = {}
+    effective_role_identifiers = roles
+    effective_is_admin = bool(jwt_payload.get("is_admin", jwt_payload.get("admin", False)))
+
+    try:
+        db_manager = get_db_manager()
+        async with db_manager.get_session() as db_session:
+            authz = await resolve_authorization_context(
+                db_session,
+                UserInfo(
+                    user_id=jwt_user_id,
+                    display_name=profile_overrides.get("display_name", session.display_name or jwt_user_id),
+                    roles=roles,
+                    provider_subject=str(jwt_payload.get("provider_subject", "")),
+                    auth_type=str(jwt_payload.get("auth_type", "")),
+                    extra={
+                        "is_admin": effective_is_admin,
+                        "external_subject": str(jwt_payload.get("external_subject", "")),
+                    },
+                ),
+            )
+        effective_permissions = authz.permissions
+        effective_role_identifiers = authz.role_identifiers
+        effective_is_admin = authz.is_admin
+    except Exception:
+        # Fall back to the token payload if the DB-backed RBAC snapshot cannot be resolved.
+        effective_permissions = {}
 
     return {
         "user_id": jwt_user_id,
         "username": profile_overrides.get("username", jwt_user_id),
         "session_key": session.session_key,
         "auth_type": str(jwt_payload.get("auth_type", "")),
-        "roles": roles,
+        "roles": effective_role_identifiers,
+        "role_identifiers": effective_role_identifiers,
         "display_name": profile_overrides.get("display_name", session.display_name or jwt_user_id),
         "email": profile_overrides.get("email"),
         "avatar_url": profile_overrides.get("avatar_url"),
         "is_active": profile_overrides.get("is_active", True),
         "created_at": profile_overrides.get("created_at"),
         "last_login_at": profile_overrides.get("last_login_at"),
-        "is_admin": bool(jwt_payload.get("is_admin", jwt_payload.get("admin", False))),
+        "is_admin": effective_is_admin,
+        "permissions": effective_permissions,
         "login_time": jwt_payload.get("login_time", ""),
         "metadata": session.to_dict(),
     }

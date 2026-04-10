@@ -27,6 +27,15 @@ def generate_uuid() -> str:
     return str(uuid.uuid4())
 
 
+def _extract_role_identifiers(raw_roles: Any) -> list[str]:
+    """Normalize role identifiers from JSON-backed role storage."""
+    if isinstance(raw_roles, dict):
+        return [str(identifier) for identifier, enabled in raw_roles.items() if bool(enabled)]
+    if isinstance(raw_roles, list):
+        return [str(identifier) for identifier in raw_roles if str(identifier).strip()]
+    return []
+
+
 class AgentModel(Base):
     """Agent configuration stored in database.
 
@@ -140,7 +149,6 @@ class UserModel(Base):
 
     # Status
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    is_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # Profile
     display_name: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
@@ -158,8 +166,34 @@ class UserModel(Base):
         "ChannelModel", back_populates="user", cascade="all, delete-orphan"
     )
 
+    @property
+    def is_admin(self) -> bool:
+        """Return the effective admin state derived from assigned roles."""
+        return any(identifier.lower() == "admin" for identifier in _extract_role_identifiers(self.roles))
+
     def __repr__(self) -> str:
         return f"<UserModel(id={self.id}, username={self.username})>"
+
+
+class RoleModel(Base):
+    """Role definition for permission management."""
+
+    __tablename__ = "roles"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    identifier: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    permissions: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    is_builtin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<RoleModel(id={self.id}, identifier={self.identifier})>"
 
 
 class ChannelModel(Base):

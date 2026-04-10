@@ -6,12 +6,13 @@ from __future__ import annotations
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel as PydanticBaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.atlasclaw.auth.guards import require_admin
-from app.atlasclaw.auth.models import UserInfo
+from app.atlasclaw.auth.guards import (
+    AuthorizationContext,
+    ensure_permission,
+    get_authorization_context,
+)
 from app.atlasclaw.db import get_db_session_dependency as get_db_session
 from app.atlasclaw.db.models import ModelConfigModel
 from app.atlasclaw.db.orm.model_config import ModelConfigService
@@ -54,8 +55,10 @@ def _model_config_to_response(model: ModelConfigModel) -> ModelConfigResponse:
 async def create_model_config(
     model_data: ModelConfigCreate,
     session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> ModelConfigResponse:
     """Create a new Model configuration."""
+    ensure_permission(authz, "model_configs.create", detail="Missing permission: model_configs.create")
     existing = await ModelConfigService.get_by_name(session, model_data.name)
     if existing:
         raise HTTPException(status_code=409, detail=f"Model config '{model_data.name}' already exists")
@@ -71,8 +74,10 @@ async def list_model_configs(
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> ModelConfigListResponse:
     """List all Model configurations with optional filtering."""
+    ensure_permission(authz, "model_configs.view", detail="Missing permission: model_configs.view")
     models, total = await ModelConfigService.list_all(
         session,
         provider=provider,
@@ -90,8 +95,10 @@ async def list_model_configs(
 async def get_model_config(
     config_id: str,
     session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> ModelConfigResponse:
     """Get Model configuration by ID."""
+    ensure_permission(authz, "model_configs.view", detail="Missing permission: model_configs.view")
     model = await ModelConfigService.get_by_id(session, config_id)
     if model is None:
         raise HTTPException(status_code=404, detail="Model config not found")
@@ -103,8 +110,10 @@ async def update_model_config(
     config_id: str,
     model_data: ModelConfigUpdate,
     session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> ModelConfigResponse:
     """Update a Model configuration."""
+    ensure_permission(authz, "model_configs.edit", detail="Missing permission: model_configs.edit")
     model = await ModelConfigService.update(session, config_id, model_data)
     if model is None:
         raise HTTPException(status_code=404, detail="Model config not found")
@@ -115,8 +124,10 @@ async def update_model_config(
 async def delete_model_config(
     config_id: str,
     session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> None:
     """Delete a Model configuration."""
+    ensure_permission(authz, "model_configs.delete", detail="Missing permission: model_configs.delete")
     deleted = await ModelConfigService.delete(session, config_id)
     if not deleted:
         raise HTTPException(status_code=404, detail="Model config not found")

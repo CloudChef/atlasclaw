@@ -92,7 +92,6 @@ def _init_database_sync(tmp_path: Path):
                     email="testuser@test.com",
                     roles={"user": True},
                     auth_type="local",
-                    is_admin=False,
                     is_active=True,
                 ),
             )
@@ -106,7 +105,6 @@ def _init_database_sync(tmp_path: Path):
                     email="other@test.com",
                     roles={},
                     auth_type="local",
-                    is_admin=False,
                     is_active=True,
                 ),
             )
@@ -395,6 +393,56 @@ class TestUserProfileAPI:
         assert data["username"] == "sso-user@example.com"
         assert data["display_name"] == "SSO User"
         assert data["auth_type"] == "oidc:test"
+
+    def test_get_federated_profile_prefers_db_user_by_external_subject(self, tmp_path):
+        """Federated accounts should resolve DB-managed profiles via the external subject."""
+        manager = _init_database_sync(tmp_path)
+        workspace_path = tmp_path / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+
+        async def _create_federated_user():
+            async with _test_db_manager.get_session() as session:
+                await UserService.create(
+                    session,
+                    UserCreate(
+                        username="sso-user@example.com",
+                        password=None,
+                        display_name="Workspace SSO User",
+                        email="sso-user@example.com",
+                        roles={"viewer": True},
+                        auth_type="oidc:test",
+                        is_active=True,
+                    ),
+                )
+
+        asyncio.run(_create_federated_user())
+
+        app = FastAPI()
+        app.include_router(api_router)
+        app.dependency_overrides[get_current_user] = lambda: UserInfo(
+            user_id="shadow-user-1",
+            display_name="SSO User",
+            auth_type="oidc:test",
+            roles=["user"],
+            extra={"external_subject": "sso-user@example.com"},
+        )
+
+        client = TestClient(app)
+
+        with patch(
+            "app.atlasclaw.api.api_routes.get_config",
+            return_value=SimpleNamespace(workspace=SimpleNamespace(path=str(workspace_path))),
+        ):
+            resp = client.get("/api/users/me/profile")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["username"] == "sso-user@example.com"
+        assert data["display_name"] == "Workspace SSO User"
+        assert data["email"] == "sso-user@example.com"
+        assert data["roles"]["viewer"] is True
+
+        _cleanup_manager(manager)
 
     def test_update_profile_unavailable_for_federated_account(self, tmp_path):
         """Federated accounts cannot use local-only profile mutation endpoints."""

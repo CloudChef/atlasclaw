@@ -175,7 +175,6 @@ class UserBase(BaseModel):
     roles: Optional[Dict[str, Any]] = Field(default=None, description="User roles")
     auth_type: str = Field(default="local", max_length=100, description="Auth type: local or oidc:{provider_id}")
     is_active: bool = Field(default=True, description="Whether user is active")
-    is_admin: bool = Field(default=False, description="Whether user is admin")
 
 
 
@@ -194,7 +193,6 @@ class UserUpdate(BaseModel):
     roles: Optional[Dict[str, Any]] = None
     auth_type: Optional[str] = Field(default=None, max_length=100)
     is_active: Optional[bool] = None
-    is_admin: Optional[bool] = None
     avatar_url: Optional[str] = Field(default=None, max_length=500)
 
 
@@ -203,6 +201,7 @@ class UserResponse(UserBase):
     """Schema for User API response."""
 
     id: str
+    is_admin: bool = Field(default=False, description="Effective admin state derived from roles")
     avatar_url: Optional[str] = None
     last_login_at: Optional[datetime] = None
     created_at: datetime
@@ -215,6 +214,79 @@ class UserListResponse(BaseModel):
     """Schema for User list API response."""
 
     users: List[UserResponse]
+    total: int
+
+
+# ============== Role Schemas ==============
+
+
+class RoleBase(BaseModel):
+    """Base schema for Role."""
+
+    name: str = Field(..., min_length=1, max_length=100, description="Role display name")
+    identifier: str = Field(..., min_length=1, max_length=100, description="Stable role identifier")
+    description: Optional[str] = Field(default=None, max_length=500, description="Role description")
+    permissions: Dict[str, Any] = Field(default_factory=dict, description="Role permissions payload")
+    is_active: bool = Field(default=True, description="Whether role is active")
+
+    @field_validator("identifier")
+    @classmethod
+    def validate_identifier(cls, value: str) -> str:
+        """Normalize and validate role identifiers."""
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("Identifier cannot be empty")
+        allowed = set("abcdefghijklmnopqrstuvwxyz0123456789_-")
+        if any(ch not in allowed for ch in normalized):
+            raise ValueError("Identifier may contain only lowercase letters, numbers, '-' and '_'")
+        return normalized
+
+
+class RoleCreate(RoleBase):
+    """Schema for creating a new Role."""
+
+    pass
+
+
+class RoleUpdate(BaseModel):
+    """Schema for updating an existing Role."""
+
+    name: Optional[str] = Field(default=None, max_length=100)
+    identifier: Optional[str] = Field(default=None, max_length=100)
+    description: Optional[str] = Field(default=None, max_length=500)
+    permissions: Optional[Dict[str, Any]] = None
+    is_active: Optional[bool] = None
+
+    @field_validator("identifier")
+    @classmethod
+    def validate_identifier(cls, value: Optional[str]) -> Optional[str]:
+        """Normalize and validate role identifiers when provided."""
+        if value is None:
+            return value
+        normalized = value.strip().lower()
+        if not normalized:
+            raise ValueError("Identifier cannot be empty")
+        allowed = set("abcdefghijklmnopqrstuvwxyz0123456789_-")
+        if any(ch not in allowed for ch in normalized):
+            raise ValueError("Identifier may contain only lowercase letters, numbers, '-' and '_'")
+        return normalized
+
+
+class RoleResponse(RoleBase):
+    """Schema for Role API response."""
+
+    id: str
+    is_builtin: bool = Field(default=False, description="Whether role is a built-in system role")
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class RoleListResponse(BaseModel):
+    """Schema for Role list API response."""
+
+    roles: List[RoleResponse]
     total: int
 
 

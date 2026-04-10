@@ -34,9 +34,12 @@ AtlasClaw is built on five core design principles that govern all architectural 
 
 The framework core handles routing, lifecycle, and coordination. All domain-specific logic lives in **providers** 鈥?modular packages that encapsulate authentication, skills, and configuration for external systems (ITSM, CRM, monitoring, communication platforms). The core never contains business logic for specific integrations.
 
-### 1.2 Permission Inheritance (No RBAC Bypass)
+### 1.2 Upstream Permission Inheritance With Workspace RBAC
 
-AtlasClaw never creates its own authorization layer. Every operation inherits the authenticated user's permissions from the connected enterprise system. If a user cannot perform an action in the upstream system, the agent cannot perform it on their behalf. This is enforced through `SkillDeps.user_info` propagation to every skill and tool invocation.
+AtlasClaw enforces two complementary authorization layers:
+
+- **Workspace management RBAC**: AtlasClaw maintains role definitions for workspace-scoped administration surfaces such as user management, role management, permission governance, and other configuration catalogs.
+- **Upstream permission inheritance**: Runtime agent actions still inherit the authenticated user's upstream permissions. If a user cannot perform an action in the connected enterprise system, the agent cannot perform it on their behalf. This is enforced through `SkillDeps.user_info` propagation to every skill and tool invocation.
 
 ### 1.3 Async-First
 
@@ -625,7 +628,8 @@ Credential 鈫?AuthProvider.authenticate() 鈫?AuthResult
 
 ### 8.2 Authorization Enforcement
 
-- **No internal RBAC**: The agent inherits the user's permissions from the upstream system
+- **Workspace RBAC for management APIs**: AtlasClaw roles gate access to workspace administration APIs such as user, role, and permission governance endpoints
+- **Upstream permission inheritance for runtime actions**: Skills and tools still execute under the authenticated user's upstream identity and token
 - **Token propagation**: `SkillDeps.user_info.raw_token` is available to every skill for upstream API calls
 - **Tool filtering**: `ToolPolicy` (allow/deny lists with wildcard support) restricts which tools are available per agent
 - **Tenant isolation**: `TenantIsolation` provides path-based compartmentalization 鈥?session keys, memory paths, and storage paths are prefixed with `tenant_id`
