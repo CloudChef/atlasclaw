@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 from fastapi import APIRouter
 from pydantic import BaseModel as PydanticBaseModel
@@ -103,3 +105,42 @@ async def fetch_provider_models(body: FetchModelsRequest):
             "source": "preset",
             "error": "upstream_error",
         }
+
+
+@router.get("/service-providers/available-instances")
+async def get_available_instances() -> dict[str, Any]:
+    """Return all configured service provider instances.
+
+    Returns:
+        Dictionary with all provider types and their instances
+
+    Example:
+        GET /api/service-providers/available-instances
+        Response: {"providers": [{"provider_type": "smartcmp", "instance_name": "default", "base_url": "..."}]}
+    """
+    from app.atlasclaw.core.config import get_config
+
+    config = get_config()
+    service_providers = config.service_providers or {}
+
+    providers: list[dict[str, Any]] = []
+
+    for provider_type, instances in service_providers.items():
+        if not isinstance(instances, dict):
+            continue
+
+        for instance_name, instance_config in instances.items():
+            if not isinstance(instance_config, dict):
+                continue
+
+            providers.append({
+                "provider_type": provider_type,
+                "instance_name": instance_name,
+                "base_url": instance_config.get("base_url", ""),
+            })
+
+    return {
+        "count": len(providers),
+        "providers": providers
+    }
+

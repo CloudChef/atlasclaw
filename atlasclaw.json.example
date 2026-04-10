@@ -64,6 +64,38 @@
 
   "service_providers": {
     "_comment": "Enterprise system instances used by skills. Instance names like dev/prod are referenced at runtime.",
+
+    "smartcmp": {
+      "_comment_auth_types": "Supported auth_type values: cmp | cookie | credential | user_token. Choose ONE that matches your deployment.",
+
+      "default": {
+        "_comment": "auth_type=cmp — Embedded in CMP (Nginx reverse-proxy). AtlasClaw reads CloudChef-Authenticate cookie from the browser automatically. No static credentials needed.",
+        "base_url": "https://172.16.0.81",
+        "auth_type": "cmp"
+      },
+
+      "_example_cookie": {
+        "_comment": "auth_type=cookie — Use a pre-obtained static cookie token for server-to-server or testing.",
+        "base_url": "https://cmp.example.com",
+        "auth_type": "cookie",
+        "cookie": "${CMP_COOKIE}"
+      },
+
+      "_example_credential": {
+        "_comment": "auth_type=credential — Username/password login. The system will call CMP login API to obtain a session.",
+        "base_url": "https://cmp.example.com",
+        "auth_type": "credential",
+        "username": "${CMP_USERNAME}",
+        "password": "${CMP_PASSWORD}"
+      },
+
+      "_example_user_token": {
+        "_comment": "auth_type=user_token — Each user configures their own API token via the AtlasClaw UI. Only base_url is needed here.",
+        "base_url": "${CMP_URL}",
+        "auth_type": "user_token"
+      }
+    },
+
     "jira": {
       "dev": {
         "_comment": "Jira supports either password or token. Keep only the one you actually use.",

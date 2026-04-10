@@ -50,11 +50,90 @@ your-workspace/
 pip install -r requirements.txt
 ```
 
-> If `wecom-aibot-sdk` fails to install, you can safely ignore it -- it does not affect SmartCMP functionality.
+> If `wecom-aibot-sdk` fails to install, you can safely ignore it — it does not affect SmartCMP functionality.
 
 ---
 
-## 4. Configure Environment Variables
+## 4. Configure SmartCMP Provider
+
+AtlasClaw supports 3 authentication modes for connecting to SmartCMP. The system **auto-detects** the mode based on which fields are configured — no explicit `auth_type` field is needed.
+
+### Authentication Modes Overview
+
+| Mode | Scenario | How it works | Config fields needed |
+|------|----------|--------------|----------------------|
+| **SSO** | Embedded in CMP via Nginx reverse-proxy | Browser `CloudChef-Authenticate` cookie is automatically passed through | `base_url` only |
+| **Cookie** | Have a valid CMP session cookie | Directly use a pre-obtained cookie value | `base_url` + `cookie` |
+| **Credential** | Username/password login | Auto-login to CMP API to obtain a session | `base_url` + `username` + `password` |
+
+> **Auto-detection priority**: SSO (browser cookie) > Static Cookie > Credential.
+> Only fill the fields for your chosen mode. Leave others empty.
+
+### Option A: SSO Mode (CMP Embedded)
+
+When AtlasClaw is deployed behind the same Nginx as CMP, the browser automatically sends `CloudChef-Authenticate` cookie. No static credentials are needed.
+
+**`atlasclaw.json`:**
+```json
+"service_providers": {
+  "smartcmp": {
+    "default": {
+      "base_url": "https://172.16.0.81"
+    }
+  }
+}
+```
+
+> **Important**: In SSO mode, `base_url` should be a **hardcoded URL** (not `${CMP_URL}`). Do NOT set `CMP_COOKIE`, `CMP_USERNAME`, or `CMP_PASSWORD` in `.env`.
+
+### Option B: Cookie Mode
+
+Use a pre-obtained CMP session cookie for server-to-server integrations or testing.
+
+**`atlasclaw.json`:**
+```json
+"service_providers": {
+  "smartcmp": {
+    "default": {
+      "base_url": "https://cmp.example.com",
+      "cookie": "${CMP_COOKIE}"
+    }
+  }
+}
+```
+
+**`.env`:**
+```ini
+CMP_COOKIE=eyJhbGciOiJIUzI1NiJ9...
+```
+
+### Option C: Credential Mode
+
+The system logs in to CMP using username and MD5-hashed password to obtain a session.
+
+**`atlasclaw.json`:**
+```json
+"service_providers": {
+  "smartcmp": {
+    "default": {
+      "base_url": "${CMP_URL}",
+      "username": "${CMP_USERNAME}",
+      "password": "${CMP_PASSWORD}"
+    }
+  }
+}
+```
+
+**`.env`:**
+```ini
+CMP_URL=https://console.smartcmp.cloud
+CMP_USERNAME=your-cmp-username
+CMP_PASSWORD=your-cmp-password-md5-hash
+```
+
+---
+
+## 5. Configure Environment Variables
 
 Copy `.env.example` to `.env` and update the key settings:
 
@@ -77,11 +156,17 @@ TOKEN_2_API_KEY=<your-deepseek-api-key>
 LLM_TEMPERATURE=0.2
 
 # ============================================
-# SmartCMP SaaS Configuration (Required)
+# SmartCMP Configuration (choose ONE mode)
 # ============================================
+# --- Credential Mode: fill all three ---
 CMP_URL=https://console.smartcmp.cloud
 CMP_USERNAME=your-cmp-username
-CMP_PASSWORD=your-cmp-password
+CMP_PASSWORD=your-cmp-password-md5-hash
+
+# --- Cookie Mode: fill cookie only ---
+# CMP_COOKIE=eyJhbGciOiJIUzI1NiJ9...
+
+# --- SSO Mode: no CMP env vars needed (hardcode base_url in atlasclaw.json) ---
 
 # ============================================
 # Authentication Configuration
@@ -91,17 +176,18 @@ ATLASCLAW_JWT_SECRET=change-me-to-a-secure-secret-key
 
 ### Configuration Reference
 
-| Variable | Description | Example |
-|----------|-------------|----------|
-| `TOKEN_2_MODEL` | LLM model name, **must support Function Calling** | `deepseek-chat` |
-| `TOKEN_2_API_KEY` | LLM API Key | `sk-xxx...` |
-| `CMP_URL` | SmartCMP platform URL | `https://console.smartcmp.cloud` |
-| `CMP_USERNAME` | SmartCMP login username | `user@company.com` |
-| `CMP_PASSWORD` | SmartCMP login password | `your-password` |
+| Variable | Description | Used by Mode |
+|----------|-------------|---------------|
+| `TOKEN_2_MODEL` | LLM model name, **must support Function Calling** | All |
+| `TOKEN_2_API_KEY` | LLM API Key | All |
+| `CMP_URL` | SmartCMP platform URL | Credential |
+| `CMP_USERNAME` | SmartCMP login username | Credential |
+| `CMP_PASSWORD` | SmartCMP login password (MD5 hash) | Credential |
+| `CMP_COOKIE` | Static CMP session cookie | Cookie |
 
 ---
 
-## 5. Start the Service
+## 6. Start the Service
 
 ```bash
 uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000
@@ -125,7 +211,7 @@ nohup uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000 > atlasclaw.log 
 
 ---
 
-## 6. Access the Web UI
+## 7. Access the Web UI
 
 Open your browser and navigate to:
 
@@ -143,7 +229,7 @@ Default login credentials:
 
 ---
 
-## 7. Test: View CMP Pending Approvals
+## 8. Test: View CMP Pending Approvals
 
 After logging in, enter the following message in the chat interface:
 
@@ -188,7 +274,7 @@ Show cloud resource cost optimization suggestions for this month
 
 ---
 
-## 8. Troubleshooting
+## 9. Troubleshooting
 
 ### Q: The agent searches the web instead of calling SmartCMP tools?
 
@@ -196,8 +282,8 @@ Show cloud resource cost optimization suggestions for this month
 
 **Solution**: Ensure the model in `.env` supports tool calling:
 ```ini
-TOKEN_2_MODEL=deepseek-chat    # Supports Function Calling
-# TOKEN_1_MODEL=deepseek-reasoner  # Not supported
+TOKEN_2_MODEL=deepseek-chat    # ✅ Supports Function Calling
+# TOKEN_1_MODEL=deepseek-reasoner  # ❌ Not supported
 ```
 
 Also verify that `model.primary` in `atlasclaw.json` points to the correct token:
@@ -209,10 +295,18 @@ Also verify that `model.primary` in `atlasclaw.json` points to the correct token
 
 ### Q: SmartCMP returns a 401 authentication error?
 
-**Check**:
+**Check** (depends on your authentication mode):
+
+For **Credential** mode:
 1. Verify `CMP_USERNAME` and `CMP_PASSWORD` in `.env` are correct
-2. Confirm the account can log in at https://console.smartcmp.cloud
-3. Ensure you are using the latest code (which includes the password environment variable fix)
+2. Confirm the account can log in at your CMP URL
+
+For **SSO** mode:
+1. Verify Nginx is correctly proxying cookies to AtlasClaw
+2. Check that `CloudChef-Authenticate` cookie is present in browser
+
+For **Cookie** mode:
+1. Verify the cookie value in `CMP_COOKIE` is still valid (not expired)
 
 ### Q: Installation fails with `wecom-aibot-sdk` error?
 
@@ -223,7 +317,7 @@ pip install -r requirements.txt --ignore-installed wecom-aibot-sdk || true
 
 ---
 
-## 9. Docker Deployment (Optional)
+## 10. Docker Deployment (Optional)
 
 If you prefer not to install a Python environment, you can deploy with Docker:
 
@@ -248,7 +342,7 @@ Access `http://<server-ip>:8000` to start using the application.
 
 ---
 
-## 10. Support
+## 11. Support
 
 If you encounter any issues, please provide the following information:
 - The `Skills loaded` and `Agent created with model` lines from the startup logs
