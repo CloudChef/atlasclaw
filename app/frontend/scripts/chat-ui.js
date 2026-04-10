@@ -18,6 +18,7 @@ let userHasScrolledUp = false
 let chatCallbacks = {}
 let currentSessionKey = null
 let currentAgentInfo = null
+let isComposing = false // Track IME composition state for macOS/Asian input
 
 const SCROLL_THRESHOLD = 50
 
@@ -27,6 +28,58 @@ function getMessageContainer() {
   return dc.shadowRoot.querySelector('.messages-container') ||
     dc.shadowRoot.querySelector('[class*="message-container"]') ||
     dc.shadowRoot.querySelector('#messages')
+}
+
+/**
+ * Set up IME composition event listeners for macOS/Asian input handling.
+ * This prevents Enter key from submitting during IME composition.
+ */
+function setupCompositionListeners() {
+  const dc = document.querySelector('deep-chat')
+  if (!dc?.shadowRoot) {
+    // Retry after a delay if shadow root not ready
+    setTimeout(setupCompositionListeners, 500)
+    return
+  }
+  
+  // Find the input element (textarea, input, or contenteditable)
+  const inputElement = dc.shadowRoot.querySelector('textarea') ||
+                      dc.shadowRoot.querySelector('input[type="text"]') ||
+                      dc.shadowRoot.querySelector('[contenteditable="true"]')
+  
+  if (!inputElement) {
+    console.warn('[ChatUI] No input element found for composition listeners, retrying...')
+    setTimeout(setupCompositionListeners, 500)
+    return
+  }
+  
+  // Check if already attached
+  if (inputElement._compositionListenersAttached) {
+    return
+  }
+  
+  // Track composition state
+  inputElement.addEventListener('compositionstart', () => {
+    isComposing = true
+    console.debug('[ChatUI] IME composition started')
+  })
+  
+  inputElement.addEventListener('compositionend', () => {
+    isComposing = false
+    console.debug('[ChatUI] IME composition ended')
+  })
+  
+  // Intercept Enter key during composition
+  inputElement.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && isComposing) {
+      e.preventDefault()
+      e.stopImmediatePropagation()
+      console.debug('[ChatUI] Enter key blocked during IME composition')
+    }
+  }, true) // Use capture phase to intercept before Deep Chat
+  
+  inputElement._compositionListenersAttached = true
+  console.log('[ChatUI] IME composition listeners attached to:', inputElement.tagName)
 }
 
 function getLatestRuntimePanel(container) {
@@ -138,6 +191,10 @@ export async function initChat(element, callbacks = {}) {
   currentAgentInfo = await loadAgentInfo()
   configureHandler(element)
   configureI18nAttributes(element)
+  
+  // Set up IME composition handling for macOS/Asian input
+  setupCompositionListeners()
+  
   await activateSession(getSessionKey())
 
   console.log('[ChatUI] Initialized')
