@@ -18,6 +18,7 @@ beforeEach(() => {
         ok: true,
         json: () => Promise.resolve({ messages: [] })
     }));
+    document.body.innerHTML = '';
     sessionStorageMock.clear();
     MockEventSource.instances = [];
 });
@@ -89,7 +90,61 @@ function createChatElement() {
     };
 }
 
+function createDomChatElement() {
+    const element = document.createElement('deep-chat');
+    element.handler = null;
+    element.introMessage = null;
+    element.textInput = null;
+    element.addMessage = jest.fn();
+    element.getMessages = jest.fn(() => []);
+    element.attachShadow({ mode: 'open' });
+
+    const input = document.createElement('div');
+    input.setAttribute('contenteditable', 'true');
+    element.shadowRoot.appendChild(input);
+    document.body.appendChild(element);
+
+    return { element, input };
+}
+
 describe('chat-ui.js handler mode', () => {
+    test('composition commit enter is blocked once before normal submit resumes', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, input } = createDomChatElement();
+
+        await initChat(element);
+
+        const deepChatSubmitListener = jest.fn();
+        input.addEventListener('keydown', deepChatSubmitListener);
+
+        input.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+        input.dispatchEvent(new Event('compositionend', { bubbles: true }));
+
+        const firstEnter = new KeyboardEvent('keydown', {
+            key: 'Enter',
+            bubbles: true,
+            cancelable: true
+        });
+        const firstDispatchResult = input.dispatchEvent(firstEnter);
+
+        expect(firstDispatchResult).toBe(false);
+        expect(firstEnter.defaultPrevented).toBe(true);
+        expect(deepChatSubmitListener).not.toHaveBeenCalled();
+
+        const secondEnter = new KeyboardEvent('keydown', {
+            key: 'Enter',
+            bubbles: true,
+            cancelable: true
+        });
+        const secondDispatchResult = input.dispatchEvent(secondEnter);
+
+        expect(secondDispatchResult).toBe(true);
+        expect(secondEnter.defaultPrevented).toBe(false);
+        expect(deepChatSubmitListener).toHaveBeenCalledTimes(1);
+    });
+
     test('initChat configures handler on element', async () => {
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const element = createChatElement();

@@ -18,8 +18,41 @@ let userHasScrolledUp = false
 let chatCallbacks = {}
 let currentSessionKey = null
 let currentAgentInfo = null
+let isComposing = false // Track IME composition state for macOS/Asian input
+let blockNextEnterAfterComposition = false
+let blockNextEnterStartedAt = 0
+
+const IME_ENTER_GUARD_MS = 150
 
 const SCROLL_THRESHOLD = 50
+
+function clearImeEnterGuard() {
+  blockNextEnterAfterComposition = false
+  blockNextEnterStartedAt = 0
+}
+
+function armImeEnterGuard() {
+  blockNextEnterAfterComposition = true
+  blockNextEnterStartedAt = Date.now()
+}
+
+function hasActiveImeEnterGuard() {
+  if (!blockNextEnterAfterComposition) return false
+  if ((Date.now() - blockNextEnterStartedAt) > IME_ENTER_GUARD_MS) {
+    clearImeEnterGuard()
+    return false
+  }
+  return true
+}
+
+function shouldBlockImeEnter(event) {
+  if (event?.key !== 'Enter') return false
+  return isComposing ||
+    event.isComposing === true ||
+    event.keyCode === 229 ||
+    event.which === 229 ||
+    hasActiveImeEnterGuard()
+}
 
 function getMessageContainer() {
   const dc = document.querySelector('deep-chat')
@@ -27,6 +60,70 @@ function getMessageContainer() {
   return dc.shadowRoot.querySelector('.messages-container') ||
     dc.shadowRoot.querySelector('[class*="message-container"]') ||
     dc.shadowRoot.querySelector('#messages')
+}
+
+/**
+ * Set up IME composition event listeners for macOS/Asian input handling.
+ * This prevents Enter from submitting while composing and for the first
+ * commit Enter right after composition ends on macOS browsers.
+ */
+function setupCompositionListeners() {
+  const dc = document.querySelector('deep-chat')
+  if (!dc?.shadowRoot) {
+    // Retry after a delay if shadow root not ready
+    setTimeout(setupCompositionListeners, 500)
+    return
+  }
+  
+  // Find the input element (textarea, input, or contenteditable)
+  const inputElement = dc.shadowRoot.querySelector('textarea') ||
+                      dc.shadowRoot.querySelector('input[type="text"]') ||
+                      dc.shadowRoot.querySelector('[contenteditable="true"]')
+  
+  if (!inputElement) {
+    console.warn('[ChatUI] No input element found for composition listeners, retrying...')
+    setTimeout(setupCompositionListeners, 500)
+    return
+  }
+  
+  // Check if already attached
+  if (inputElement._compositionListenersAttached) {
+    return
+  }
+  
+  // Track composition state
+  inputElement.addEventListener('compositionstart', () => {
+    isComposing = true
+    clearImeEnterGuard()
+    console.debug('[ChatUI] IME composition started')
+  })
+  
+  inputElement.addEventListener('compositionend', () => {
+    isComposing = false
+    armImeEnterGuard()
+    console.debug('[ChatUI] IME composition ended')
+  })
+  
+  // Intercept Enter both during composition and for the first macOS commit Enter
+  inputElement.addEventListener('keydown', (e) => {
+    if (!shouldBlockImeEnter(e)) {
+      return
+    }
+
+    if (hasActiveImeEnterGuard() && !isComposing && e.isComposing !== true) {
+      clearImeEnterGuard()
+    }
+
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      e.stopPropagation()
+      e.stopImmediatePropagation()
+      console.debug('[ChatUI] Enter key blocked during IME composition')
+    }
+  }, true) // Use capture phase to intercept before Deep Chat
+  
+  inputElement._compositionListenersAttached = true
+  console.log('[ChatUI] IME composition listeners attached to:', inputElement.tagName)
 }
 
 function getLatestRuntimePanel(container) {
@@ -138,6 +235,10 @@ export async function initChat(element, callbacks = {}) {
   currentAgentInfo = await loadAgentInfo()
   configureHandler(element)
   configureI18nAttributes(element)
+  
+  // Set up IME composition handling for macOS/Asian input
+  setupCompositionListeners()
+  
   await activateSession(getSessionKey())
 
   console.log('[ChatUI] Initialized')
