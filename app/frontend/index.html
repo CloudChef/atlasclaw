@@ -58,7 +58,7 @@
             const logicalPath = window.__atlasclawStripBasePath(window.location.pathname)
             const chatEmbeddedMode = embeddedMode && logicalPath === '/'
             const pageName = logicalPath.replace(/\/$/, '').split('/').pop()
-            const configEmbeddedMode = embeddedMode && ['models', 'channels'].includes(pageName)
+            const configEmbeddedMode = embeddedMode && ['models', 'channels', 'providers'].includes(pageName)
             window.__atlasclawEmbeddedMode = embeddedMode
             window.__atlasclawChatEmbeddedMode = chatEmbeddedMode
             window.__atlasclawConfigEmbeddedMode = configEmbeddedMode
@@ -94,7 +94,8 @@
             const routeStyles = [
                 { match: /^\/admin\/users\/?$/, id: 'admin-users-page-css', href: window.__atlasclawBuildUrl('/styles/admin-users.css') },
                 { match: /^\/account\/?$/, id: 'account-settings-page-css', href: window.__atlasclawBuildUrl('/styles/account-settings.css') },
-                { match: /^\/models\/?$/, id: 'models-page-css', href: window.__atlasclawBuildUrl('/styles/models.css') }
+                { match: /^\/models\/?$/, id: 'models-page-css', href: window.__atlasclawBuildUrl('/styles/models.css') },
+                { match: /^\/providers\/?$/, id: 'providers-page-css', href: window.__atlasclawBuildUrl('/styles/providers.css') }
             ]
 
             const pathname = window.__atlasclawStripBasePath(window.location.pathname)

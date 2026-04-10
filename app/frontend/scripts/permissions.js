@@ -38,6 +38,13 @@ export const MODEL_MANAGEMENT_ACCESS_PERMISSIONS = [
   'model_configs.delete'
 ]
 
+export const PROVIDER_MANAGEMENT_ACCESS_PERMISSIONS = [
+  'provider_configs.view',
+  'provider_configs.create',
+  'provider_configs.edit',
+  'provider_configs.delete'
+]
+
 function normalizePermissionPath(permissionPath) {
   const parts = String(permissionPath || '')
     .split('.')
@@ -93,4 +100,8 @@ export function canAccessChannelManagement(authInfo) {
 
 export function canAccessModelManagement(authInfo) {
   return hasAnyPermission(authInfo, MODEL_MANAGEMENT_ACCESS_PERMISSIONS)
+}
+
+export function canAccessProviderManagement(authInfo) {
+  return hasAnyPermission(authInfo, PROVIDER_MANAGEMENT_ACCESS_PERMISSIONS)
 }

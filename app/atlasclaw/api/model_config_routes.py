@@ -23,7 +23,7 @@ from app.atlasclaw.db.schemas import (
     ModelConfigUpdate,
 )
 
-router = APIRouter(tags=["Database API"], dependencies=[Depends(require_admin)])
+router = APIRouter(tags=["Database API"])
 
 
 def _model_config_to_response(model: ModelConfigModel) -> ModelConfigResponse:

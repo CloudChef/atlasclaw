@@ -16,6 +16,7 @@ import { getAgentInfo } from './api-client.js'
 import {
   canAccessChannelManagement,
   canAccessModelManagement,
+  canAccessProviderManagement,
   canAccessRoleManagement,
   canAccessUserManagement
 } from './permissions.js'
@@ -51,6 +52,14 @@ const routes = [
     title: 'account.title'
   },
   {
+    path: '/providers',
+    loader: () => import('./pages/providers.js'),
+    auth: true,
+    accessCheck: canAccessProviderManagement,
+    accessDeniedMessage: 'Access denied. You do not have permission to manage providers.',
+    title: 'provider.title'
+  },
+  {
     path: '/models',
     loader: () => import('./pages/models.js'),
     auth: true,
@@ -79,6 +88,12 @@ const routes = [
 // Store auth info globally for components that need it
 let currentAuthInfo = null
 let currentAgentInfo = null
+const ROUTE_STYLES = [
+  { match: /^\/admin\/users\/?$/, id: 'admin-users-page-css', href: '/styles/admin-users.css' },
+  { match: /^\/account\/?$/, id: 'account-settings-page-css', href: '/styles/account-settings.css' },
+  { match: /^\/models\/?$/, id: 'models-page-css', href: '/styles/models.css' },
+  { match: /^\/providers\/?$/, id: 'providers-page-css', href: '/styles/providers.css' }
+]
 
 /**
  * Get current authenticated user info
@@ -185,6 +200,7 @@ export async function initApp() {
           return false
         }
 
+        ensureRouteStyle(path)
         applyEmbeddedRouteMode(path, embeddedMode)
 
         // Update header title
@@ -301,7 +317,7 @@ function isChatEmbeddedPath(path) {
 function isConfigEmbeddedPath(path) {
   const logicalPath = getLogicalPath(path)
   const pageName = logicalPath === '/' ? '' : logicalPath.split('/').pop()
-  return pageName === 'models' || pageName === 'channels'
+  return pageName === 'models' || pageName === 'channels' || pageName === 'providers'
 }
 
 function isEmbeddedMode() {
@@ -329,6 +345,21 @@ function isEmbeddedMode() {
  */
 export function getRouter() {
   return window.__spaRouter || null
+}
+
+function ensureRouteStyle(path) {
+  const logicalPath = stripBasePath(String(path || window.location.pathname || '').split(/[?#]/, 1)[0] || '/')
+  const target = ROUTE_STYLES.find(({ match }) => match.test(logicalPath))
+
+  if (!target || document.getElementById(target.id)) {
+    return
+  }
+
+  const cssLink = document.createElement('link')
+  cssLink.rel = 'stylesheet'
+  cssLink.href = buildAppUrl(target.href)
+  cssLink.id = target.id
+  document.head.appendChild(cssLink)
 }
 
 export default { initApp, getAuthInfo, getRouter }

@@ -63,6 +63,7 @@ from app.atlasclaw.auth.guards import (
     is_same_workspace_user,
 )
 from app.atlasclaw.auth.models import UserInfo
+from app.atlasclaw.api.service_provider_schemas import normalize_provider_config
 from .services.auth_service import load_profile_snapshot
 from .model_config_routes import router as model_config_router
 from .provider_info_routes import router as provider_info_router
@@ -491,6 +492,15 @@ async def create_provider_config(
             ),
         )
 
+    try:
+        normalized_config = normalize_provider_config(
+            provider_data.provider_type,
+            provider_data.config,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    provider_data = provider_data.model_copy(update={"config": normalized_config})
     item = await ServiceProviderConfigService.create(session, provider_data)
     return _provider_config_to_response(item)
 
@@ -555,10 +565,11 @@ async def update_provider_config(
         detail="Missing permission: provider_configs.edit",
     )
     update_payload = provider_data.model_dump(exclude_unset=True)
+    current = None
 
     target_provider_type = update_payload.get("provider_type")
     target_instance_name = update_payload.get("instance_name")
-    if target_provider_type or target_instance_name:
+    if target_provider_type or target_instance_name or provider_data.config is not None:
         current = await ServiceProviderConfigService.get_by_id(session, config_id)
         if current is None:
             raise HTTPException(status_code=404, detail="Provider config not found")
@@ -577,6 +588,19 @@ async def update_provider_config(
                     f"Provider config '{check_provider_type}.{check_instance_name}' already exists"
                 ),
             )
+
+    if provider_data.config is not None:
+        effective_provider_type = target_provider_type or current.provider_type
+        try:
+            normalized_config = normalize_provider_config(
+                effective_provider_type,
+                provider_data.config,
+                existing_config=ServiceProviderConfigService.get_config(current),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        provider_data = provider_data.model_copy(update={"config": normalized_config})
 
     item = await ServiceProviderConfigService.update(session, config_id, provider_data)
     if item is None:

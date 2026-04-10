@@ -76,6 +76,24 @@ describe('header.js', () => {
     expect(container.querySelector('a[href="/channels"]')).toBeNull()
   })
 
+  test('renderHeader shows provider management link when provider permissions are granted', async () => {
+    const { renderHeader } = await import('../../app/frontend/scripts/components/header.js')
+
+    const container = document.getElementById('header')
+    renderHeader(container, {
+      authInfo: {
+        username: 'ops-admin',
+        is_admin: false,
+        permissions: {
+          provider_configs: { view: true }
+        }
+      }
+    })
+
+    expect(container.querySelector('a[href="/providers"]')).not.toBeNull()
+    expect(container.querySelector('a[href="/models"]')).toBeNull()
+  })
+
   test('header avatar updates when profile change event is dispatched', async () => {
     const { renderHeader } = await import('../../app/frontend/scripts/components/header.js')
 

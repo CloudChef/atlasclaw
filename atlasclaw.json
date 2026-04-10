@@ -94,14 +94,6 @@
         "username": "${CMP_USERNAME}",
         "password": "${CMP_PASSWORD}"
       }
-    },
-    "dingtalk": {
-      "default": {
-        "base_url": "https://oapi.dingtalk.com",
-        "app_key": "${DINGTALK_APP_KEY}",
-        "app_secret": "${DINGTALK_APP_SECRET}",
-        "agent_id": "${DINGTALK_AGENT_ID}"
-      }
     }
   },
   "auth": {

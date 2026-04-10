@@ -3,11 +3,28 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 from fastapi import APIRouter
 from pydantic import BaseModel as PydanticBaseModel
 
+from app.atlasclaw.api.service_provider_schemas import get_provider_schema_catalog
+
 router = APIRouter(tags=["Provider API"])
+
+_SENSITIVE_CONFIG_KEYS = frozenset(
+    {
+        "cookie",
+        "password",
+        "secret",
+        "app_secret",
+        "api_key",
+        "access_token",
+        "token",
+        "credential",
+    }
+)
 
 
 @router.get("/providers")
@@ -103,3 +120,102 @@ async def fetch_provider_models(body: FetchModelsRequest):
             "source": "preset",
             "error": "upstream_error",
         }
+
+
+def _visible_config_keys(instance_config: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    for key in instance_config.keys():
+        normalized = str(key or "").strip()
+        if not normalized:
+            continue
+        if normalized.lower() in _SENSITIVE_CONFIG_KEYS:
+            continue
+        if normalized in {"base_url", "auth_type"}:
+            continue
+        keys.append(normalized)
+    return sorted(keys)
+
+
+def _collect_provider_field_defaults(
+    service_providers: dict[str, Any],
+) -> dict[str, dict[str, str]]:
+    defaults: dict[str, dict[str, str]] = {}
+
+    for provider_type, instances in service_providers.items():
+        if not isinstance(instances, dict):
+            continue
+
+        for instance_config in instances.values():
+            if not isinstance(instance_config, dict):
+                continue
+
+            base_url = str(instance_config.get("base_url", "") or "").strip()
+            if base_url and "base_url" not in defaults.setdefault(provider_type, {}):
+                defaults[provider_type]["base_url"] = base_url
+            auth_type = str(instance_config.get("auth_type", "") or "").strip()
+            if auth_type and "auth_type" not in defaults.setdefault(provider_type, {}):
+                defaults[provider_type]["auth_type"] = auth_type
+
+            if (
+                "base_url" in defaults.setdefault(provider_type, {})
+                and "auth_type" in defaults.setdefault(provider_type, {})
+            ):
+                break
+
+    return defaults
+
+
+@router.get("/service-providers/available-instances")
+async def get_available_instances() -> dict[str, Any]:
+    """Return configured service provider instances from atlasclaw.json.
+
+    The response is intentionally safe for frontend display: it exposes provider
+    identity, instance names, base URL, configured auth type when present, and
+    non-sensitive config keys only.
+    """
+    from app.atlasclaw.core.config import get_config
+
+    config = get_config()
+    service_providers = config.service_providers or {}
+
+    providers: list[dict[str, Any]] = []
+
+    for provider_type, instances in service_providers.items():
+        if not isinstance(instances, dict):
+            continue
+
+        for instance_name, instance_config in instances.items():
+            if not isinstance(instance_config, dict):
+                continue
+
+            providers.append(
+                {
+                    "provider_type": provider_type,
+                    "instance_name": instance_name,
+                    "base_url": str(instance_config.get("base_url", "") or ""),
+                    "auth_type": str(instance_config.get("auth_type", "") or ""),
+                    "config_keys": _visible_config_keys(instance_config),
+                }
+            )
+
+    providers.sort(key=lambda item: (item["provider_type"], item["instance_name"]))
+    return {
+        "count": len(providers),
+        "providers": providers,
+    }
+
+
+@router.get("/service-providers/definitions")
+async def get_service_provider_definitions() -> dict[str, Any]:
+    """Return backend-managed provider definitions and form schemas."""
+    from app.atlasclaw.core.config import get_config
+
+    config = get_config()
+    service_providers = config.service_providers or {}
+    providers = get_provider_schema_catalog(
+        field_defaults=_collect_provider_field_defaults(service_providers)
+    )
+    return {
+        "count": len(providers),
+        "providers": providers,
+    }
