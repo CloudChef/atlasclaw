@@ -162,6 +162,28 @@ class RunnerExecutionPayloadMixin:
         if head_system is not None:
             return [head_system, *deduped]
         return deduped
+
+    @staticmethod
+    def _merge_runtime_messages_with_session_prefix(
+        *,
+        session_message_history: list[dict],
+        runtime_messages: list[dict],
+        runtime_base_history_len: int,
+    ) -> list[dict]:
+        """Merge trimmed runtime history back onto the persisted session prefix.
+
+        Runtime model loops may intentionally see a smaller history slice than the
+        persisted session transcript. For persistence, hooks, and final answer
+        extraction we reconstruct the full turn-visible transcript by keeping the
+        session prefix and appending only the new suffix produced in the runtime
+        loop.
+        """
+        session_prefix = list(session_message_history or [])
+        normalized_runtime = list(runtime_messages or [])
+        safe_runtime_base = max(0, min(int(runtime_base_history_len or 0), len(normalized_runtime)))
+        if safe_runtime_base <= 0:
+            return session_prefix + normalized_runtime
+        return session_prefix + normalized_runtime[safe_runtime_base:]
     async def run_single(
         self,
         user_message: str,

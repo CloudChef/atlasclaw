@@ -2,13 +2,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import inspect
-from typing import Any, Optional
 
 from app.atlasclaw.agent.tool_gate_models import (
     CapabilityMatchResult,
     ToolCandidate,
-    ToolGateDecision,
     ToolPolicyMode,
 )
 
@@ -39,68 +36,6 @@ _TOOL_PRIORITY: dict[str, int] = {
     "session": 40,
     "hooks_context": 30,
 }
-
-
-class ToolNecessityGate:
-    """Classify whether a user request can be answered directly or needs tools."""
-
-    def classify(self, user_message: str, recent_history: list[dict[str, Any]]) -> ToolGateDecision:
-        _ = (user_message, recent_history)
-        return ToolGateDecision(
-            reason="No classifier decision was provided; runtime defaults to direct-answer mode.",
-            confidence=0.0,
-            policy=ToolPolicyMode.ANSWER_DIRECT,
-        )
-
-    async def classify_async(
-        self,
-        user_message: str,
-        recent_history: list[dict[str, Any]],
-        *,
-        classifier: Optional[Any] = None,
-    ) -> ToolGateDecision:
-        """Use an explicit classifier when available, otherwise return a neutral default."""
-        classifier_decision = await self._classify_with_classifier(
-            user_message=user_message,
-            recent_history=recent_history,
-            classifier=classifier,
-        )
-        if classifier_decision is not None:
-            return classifier_decision
-        return self.classify(user_message, recent_history)
-
-    async def _classify_with_classifier(
-        self,
-        *,
-        user_message: str,
-        recent_history: list[dict[str, Any]],
-        classifier: Optional[Any],
-    ) -> Optional[ToolGateDecision]:
-        if classifier is None:
-            return None
-        if isinstance(classifier, ToolGateDecision):
-            return classifier
-        if isinstance(classifier, dict):
-            return self._normalize_classifier_decision(classifier)
-        if not hasattr(classifier, "classify"):
-            return None
-        decision = classifier.classify(user_message, recent_history)
-        if inspect.isawaitable(decision):
-            decision = await decision
-        return self._normalize_classifier_decision(decision)
-
-    @staticmethod
-    def _normalize_classifier_decision(raw: Any) -> Optional[ToolGateDecision]:
-        if raw is None:
-            return None
-        if isinstance(raw, ToolGateDecision):
-            return raw
-        if isinstance(raw, dict):
-            try:
-                return ToolGateDecision.model_validate(raw)
-            except Exception:
-                return None
-        return None
 
 
 @dataclass

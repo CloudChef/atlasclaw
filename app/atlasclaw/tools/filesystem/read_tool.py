@@ -13,7 +13,7 @@ from typing import Optional, TYPE_CHECKING
 
 from app.atlasclaw.tools.base import ToolResult
 from app.atlasclaw.tools.truncation import truncate_output, TruncationConfig
-from app.atlasclaw.tools.work_dir_guard import resolve_file_path
+from app.atlasclaw.tools.work_dir_guard import resolve_read_file_path
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
@@ -43,7 +43,7 @@ async def read_tool(
         Serialized `ToolResult` dictionary.
     """
     try:
-        path = str(resolve_file_path(ctx, file_path))
+        path = str(resolve_read_file_path(ctx, file_path))
     except ValueError as e:
         return ToolResult.error(
             str(e),

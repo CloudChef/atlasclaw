@@ -46,8 +46,12 @@ class RunnerToolGateRoutingMixin:
 
         rewritten = decision.model_copy(deep=True)
         rewritten.needs_tool = True
-        rewritten.policy = ToolPolicyMode.MUST_USE_TOOL
-        rewritten.confidence = max(rewritten.confidence, self.TOOL_GATE_SHORT_CIRCUIT_MIN_CONFIDENCE)
+        if rewritten.policy is ToolPolicyMode.ANSWER_DIRECT:
+            rewritten.policy = ToolPolicyMode.PREFER_TOOL
+        rewritten.confidence = max(
+            rewritten.confidence,
+            self.TOOL_GATE_SHORT_CIRCUIT_MIN_CONFIDENCE,
+        )
         rewritten.suggested_tool_classes = selected_classes
         rewritten.reason = (
             f"{rewritten.reason} External-system intent was mapped to provider/skill direct tools."
@@ -90,7 +94,7 @@ class RunnerToolGateRoutingMixin:
 
         if capability.startswith("provider:") or capability == "skill":
             return capability
-        if provider_type:
+        if provider_type and provider_type != "none":
             return f"provider:{provider_type}"
         if "jira" in lowered_name or "jira" in lowered_description:
             return "provider:jira"
@@ -273,6 +277,7 @@ class RunnerToolGateRoutingMixin:
     @staticmethod
     def _build_classifier_history(
         *,
+        user_message: str,
         recent_history: list[dict[str, Any]],
         used_follow_up_context: bool,
         max_messages: int = 4,
@@ -286,6 +291,11 @@ class RunnerToolGateRoutingMixin:
         """
         if not isinstance(recent_history, list) or not recent_history:
             return []
+        normalized_user_message = " ".join(str(user_message or "").split()).strip()
+        if not used_follow_up_context:
+            compact_user_len = len(re.sub(r"\s+", "", normalized_user_message))
+            if compact_user_len > 8:
+                return []
         tail_count = max(2, int(max_messages or 4))
         char_limit = max(80, int(max_chars_per_message or 240))
         selected = recent_history[-tail_count:]
@@ -306,9 +316,7 @@ class RunnerToolGateRoutingMixin:
 
         if used_follow_up_context:
             return compact
-        # Even when not an explicit follow-up, keep minimal context to reduce
-        # false answer_direct classification on short continuation turns.
-        return compact
+        return []
     def _apply_no_classifier_follow_up_fallback(
         self,
         *,
@@ -361,7 +369,8 @@ class RunnerToolGateRoutingMixin:
         rewritten = decision.model_copy(deep=True)
         rewritten.needs_tool = True
         rewritten.needs_external_system = True
-        rewritten.policy = ToolPolicyMode.MUST_USE_TOOL
+        if rewritten.policy is ToolPolicyMode.ANSWER_DIRECT:
+            rewritten.policy = ToolPolicyMode.PREFER_TOOL
         rewritten.confidence = max(
             rewritten.confidence,
             self.TOOL_GATE_SHORT_CIRCUIT_MIN_CONFIDENCE,
@@ -489,10 +498,9 @@ class RunnerToolGateRoutingMixin:
             token_bag = " ".join(
                 [
                     str(tool.get("name", "") or ""),
-                    str(tool.get("description", "") or ""),
                     str(tool.get("provider_type", "") or ""),
-                    str(tool.get("category", "") or ""),
                     str(tool.get("capability_class", "") or ""),
+                    " ".join(str(group_id or "") for group_id in (tool.get("group_ids", []) or [])),
                 ]
             ).strip()
             tool_tokens = self._tokenize_classifier_fallback_text(token_bag)
@@ -569,10 +577,9 @@ class RunnerToolGateRoutingMixin:
             metadata_text = " ".join(
                 [
                     str(tool.get("name", "") or ""),
-                    str(tool.get("description", "") or ""),
                     str(tool.get("provider_type", "") or ""),
-                    str(tool.get("category", "") or ""),
                     capability,
+                    " ".join(str(group_id or "") for group_id in (tool.get("group_ids", []) or [])),
                 ]
             ).strip()
             metadata_tokens.update(
@@ -624,11 +631,8 @@ class RunnerToolGateRoutingMixin:
             tokens.update(self._tokenize_classifier_fallback_text(str(provider_type or "")))
             parts = [
                 str(ctx.get("display_name", "") or ""),
-                str(ctx.get("description", "") or ""),
+                " ".join(str(item) for item in (ctx.get("aliases", []) or [])),
                 " ".join(str(item) for item in (ctx.get("keywords", []) or [])),
-                " ".join(str(item) for item in (ctx.get("capabilities", []) or [])),
-                " ".join(str(item) for item in (ctx.get("use_when", []) or [])),
-                " ".join(str(item) for item in (ctx.get("avoid_when", []) or [])),
             ]
             for part in parts:
                 tokens.update(self._tokenize_classifier_fallback_text(part))
@@ -660,6 +664,7 @@ class RunnerToolGateRoutingMixin:
                 payload = {
                     "display_name": str(getattr(ctx, "display_name", "") or ""),
                     "description": str(getattr(ctx, "description", "") or ""),
+                    "aliases": list(getattr(ctx, "aliases", []) or []),
                     "keywords": list(getattr(ctx, "keywords", []) or []),
                     "capabilities": list(getattr(ctx, "capabilities", []) or []),
                     "use_when": list(getattr(ctx, "use_when", []) or []),
@@ -669,6 +674,7 @@ class RunnerToolGateRoutingMixin:
                 payload = {
                     "display_name": str(ctx.get("display_name", "") or ""),
                     "description": str(ctx.get("description", "") or ""),
+                    "aliases": list(ctx.get("aliases", []) or []),
                     "keywords": list(ctx.get("keywords", []) or []),
                     "capabilities": list(ctx.get("capabilities", []) or []),
                     "use_when": list(ctx.get("use_when", []) or []),
@@ -737,6 +743,7 @@ class RunnerToolGateRoutingMixin:
             hint_text = self._build_hint_text(
                 display_name=str(ctx.get("display_name", "") or provider_type),
                 description=str(ctx.get("description", "") or ""),
+                aliases=ctx.get("aliases", []),
                 keywords=ctx.get("keywords", []),
                 capabilities=ctx.get("capabilities", []),
                 use_when=ctx.get("use_when", []),
@@ -747,6 +754,13 @@ class RunnerToolGateRoutingMixin:
                     "hint_id": f"provider:{provider_type}",
                     "hint_type": "provider",
                     "provider_type": provider_type,
+                    "display_name": str(ctx.get("display_name", "") or provider_type),
+                    "description": str(ctx.get("description", "") or ""),
+                    "aliases": list(ctx.get("aliases", []) or []),
+                    "keywords": list(ctx.get("keywords", []) or []),
+                    "capabilities": list(ctx.get("capabilities", []) or []),
+                    "use_when": list(ctx.get("use_when", []) or []),
+                    "avoid_when": list(ctx.get("avoid_when", []) or []),
                     "tool_names": tool_names,
                     "group_ids": group_ids,
                     "capability_classes": capability_classes,
@@ -824,6 +838,7 @@ class RunnerToolGateRoutingMixin:
             hint_text = self._build_hint_text(
                 display_name=skill_name,
                 description=str(entry.get("description", "") or ""),
+                aliases=[qualified_name] if qualified_name else [],
                 keywords=metadata.get("triggers", []),
                 capabilities=metadata.get("examples", []),
                 use_when=metadata.get("use_when", []),
@@ -833,10 +848,74 @@ class RunnerToolGateRoutingMixin:
                 {
                     "hint_id": f"skill:{qualified_name or skill_name}",
                     "hint_type": "skill",
+                    "skill_name": skill_name,
+                    "qualified_skill_name": qualified_name,
                     "provider_type": provider_type,
+                    "display_name": skill_name,
+                    "description": str(entry.get("description", "") or ""),
+                    "aliases": [qualified_name] if qualified_name else [],
+                    "keywords": list(metadata.get("triggers", []) or []),
+                    "capabilities": list(metadata.get("examples", []) or []),
+                    "use_when": list(metadata.get("use_when", []) or []),
+                    "avoid_when": list(metadata.get("avoid_when", []) or []),
                     "tool_names": sorted(matched_names),
                     "group_ids": group_ids,
                     "capability_classes": capability_classes,
+                    "hint_text": hint_text,
+                    "priority": priority,
+                }
+            )
+        return docs
+
+    def _build_builtin_tool_hint_docs(
+        self,
+        *,
+        available_tools: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        docs: list[dict[str, Any]] = []
+        for tool in available_tools:
+            if not isinstance(tool, dict):
+                continue
+            if str(tool.get("source", "") or "").strip().lower() != "builtin":
+                continue
+            tool_name = str(tool.get("name", "") or "").strip()
+            if not tool_name:
+                continue
+            capability_class = str(tool.get("capability_class", "") or "").strip().lower()
+            group_ids = [
+                str(item).strip()
+                for item in (tool.get("group_ids", []) or [])
+                if str(item).strip()
+            ]
+            priority = 100
+            try:
+                priority = int(tool.get("priority", 100) or 100)
+            except (TypeError, ValueError):
+                priority = 100
+            hint_text = self._build_hint_text(
+                display_name=tool_name,
+                description=str(tool.get("description", "") or ""),
+                aliases=list(tool.get("aliases", []) or []),
+                keywords=list(tool.get("keywords", []) or []),
+                capabilities=[capability_class] if capability_class else [],
+                use_when=list(tool.get("use_when", []) or []),
+                avoid_when=list(tool.get("avoid_when", []) or []),
+            )
+            docs.append(
+                {
+                    "hint_id": f"tool:{tool_name}",
+                    "hint_type": "tool",
+                    "tool_name": tool_name,
+                    "display_name": tool_name,
+                    "description": str(tool.get("description", "") or ""),
+                    "aliases": list(tool.get("aliases", []) or []),
+                    "keywords": list(tool.get("keywords", []) or []),
+                    "capabilities": [capability_class] if capability_class else [],
+                    "use_when": list(tool.get("use_when", []) or []),
+                    "avoid_when": list(tool.get("avoid_when", []) or []),
+                    "tool_names": [tool_name],
+                    "group_ids": group_ids,
+                    "capability_classes": [capability_class] if capability_class else [],
                     "hint_text": hint_text,
                     "priority": priority,
                 }
@@ -868,6 +947,7 @@ class RunnerToolGateRoutingMixin:
         *,
         display_name: str,
         description: str,
+        aliases: list[Any],
         keywords: list[Any],
         capabilities: list[Any],
         use_when: list[Any],
@@ -886,29 +966,129 @@ class RunnerToolGateRoutingMixin:
             if normalized:
                 blocks.append(f"{label}: " + "; ".join(normalized))
 
+        _append_list("aliases", aliases if isinstance(aliases, list) else [])
         _append_list("keywords", keywords if isinstance(keywords, list) else [])
         _append_list("capabilities", capabilities if isinstance(capabilities, list) else [])
         _append_list("use_when", use_when if isinstance(use_when, list) else [])
         _append_list("avoid_when", avoid_when if isinstance(avoid_when, list) else [])
         return " | ".join(blocks).strip()
+
+    @staticmethod
+    def _normalize_hint_list(values: Any) -> list[str]:
+        if not isinstance(values, list):
+            values = [values] if values else []
+        result: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized = str(value or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        return result
+
+    def _score_metadata_hint_doc(
+        self,
+        *,
+        doc: dict[str, Any],
+        request_tokens: set[str],
+        request_text_lower: str,
+        allow_weak_only: bool,
+    ) -> tuple[int, list[str], bool]:
+        matched_tokens: list[str] = []
+        score = 0
+        has_strong_anchor = False
+
+        def _record(token: str) -> None:
+            normalized = str(token or "").strip().lower()
+            if normalized:
+                matched_tokens.append(normalized)
+
+        provider_type = str(doc.get("provider_type", "") or "").strip().lower()
+        display_name = str(doc.get("display_name", "") or "").strip()
+        aliases = self._normalize_hint_list(doc.get("aliases", []))
+        keywords = self._normalize_hint_list(doc.get("keywords", []))
+        capabilities = self._normalize_hint_list(doc.get("capabilities", []))
+        use_when = self._normalize_hint_list(doc.get("use_when", []))
+        avoid_when = self._normalize_hint_list(doc.get("avoid_when", []))
+        tool_names = self._normalize_hint_list(doc.get("tool_names", []))
+        capability_classes = self._normalize_hint_list(doc.get("capability_classes", []))
+        group_ids = self._normalize_hint_list(doc.get("group_ids", []))
+
+        if provider_type and provider_type in request_text_lower:
+            score += 12
+            has_strong_anchor = True
+            _record(provider_type)
+
+        strong_lists = [aliases, keywords, tool_names, capability_classes, group_ids]
+        if display_name:
+            strong_lists.append([display_name])
+
+        for values in strong_lists:
+            overlap = sorted(
+                request_tokens.intersection(
+                    self._tokenize_classifier_fallback_text(" ".join(values))
+                )
+            )
+            if not overlap:
+                continue
+            has_strong_anchor = True
+            score += len(overlap) * 6
+            for token in overlap[:8]:
+                _record(token)
+
+        if not has_strong_anchor and not allow_weak_only:
+            return 0, [], False
+
+        weak_lists = [capabilities, use_when, avoid_when]
+        description = str(doc.get("description", "") or "").strip()
+        if description:
+            weak_lists.append([description])
+        hint_text = str(doc.get("hint_text", "") or "").strip()
+        if hint_text:
+            weak_lists.append([hint_text])
+
+        for values in weak_lists:
+            overlap = sorted(
+                request_tokens.intersection(
+                    self._tokenize_classifier_fallback_text(" ".join(values))
+                )
+            )
+            if not overlap:
+                continue
+            score += len(overlap)
+            for token in overlap[:6]:
+                _record(token)
+
+        try:
+            priority = int(doc.get("priority", 100) or 100)
+        except (TypeError, ValueError):
+            priority = 100
+        if score > 0 and priority <= 60:
+            score += 1
+        return score, self._dedupe_preserve_order(matched_tokens), has_strong_anchor
     def _recall_provider_skill_candidates_from_metadata(
         self,
         *,
         user_message: str,
         recent_history: list[dict[str, Any]],
+        used_follow_up_context: bool,
         available_tools: list[dict[str, Any]],
         provider_hint_docs: list[dict[str, Any]],
         skill_hint_docs: list[dict[str, Any]],
+        builtin_tool_hint_docs: list[dict[str, Any]],
         top_k_provider: int,
         top_k_skill: int,
     ) -> dict[str, Any]:
         top_k_provider = max(1, int(top_k_provider or 1))
         top_k_skill = max(1, int(top_k_skill or 1))
-        history_text = " ".join(
-            str(item.get("content", "") or "").strip()
-            for item in recent_history[-4:]
-            if isinstance(item, dict)
-        )
+        history_text = ""
+        if used_follow_up_context:
+            history_text = " ".join(
+                str(item.get("content", "") or "").strip()
+                for item in recent_history[-4:]
+                if isinstance(item, dict)
+            )
         request_text = " ".join([str(user_message or "").strip(), history_text]).strip()
         request_tokens = self._tokenize_classifier_fallback_text(request_text)
         if not request_tokens:
@@ -916,6 +1096,7 @@ class RunnerToolGateRoutingMixin:
                 "provider_candidates": [],
                 "skill_candidates": [],
                 "preferred_provider_types": [],
+                "preferred_group_ids": [],
                 "preferred_capability_classes": [],
                 "preferred_tool_names": [],
                 "confidence": 0.0,
@@ -929,50 +1110,16 @@ class RunnerToolGateRoutingMixin:
             if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
         }
 
-        def _score_doc(doc: dict[str, Any]) -> tuple[int, list[str]]:
-            matched_tokens: list[str] = []
-            token_bag = " ".join(
-                [
-                    str(doc.get("hint_text", "") or ""),
-                    str(doc.get("provider_type", "") or ""),
-                    " ".join(str(item) for item in (doc.get("tool_names", []) or [])),
-                    " ".join(str(item) for item in (doc.get("capability_classes", []) or [])),
-                    " ".join(str(item) for item in (doc.get("group_ids", []) or [])),
-                ]
-            ).strip()
-            token_set = self._tokenize_classifier_fallback_text(token_bag)
-            overlap = sorted(request_tokens.intersection(token_set))
-            if overlap:
-                matched_tokens.extend(overlap[:8])
-            score = len(overlap) * 4
-
-            provider_type = str(doc.get("provider_type", "") or "").strip().lower()
-            if provider_type and provider_type in request_text_lower:
-                score += 8
-                matched_tokens.append(provider_type)
-
-            for tool_name in doc.get("tool_names", []) or []:
-                normalized_name = str(tool_name or "").strip()
-                if not normalized_name:
-                    continue
-                if normalized_name.lower() in request_text_lower:
-                    score += 6
-                    matched_tokens.append(normalized_name.lower())
-
-            try:
-                priority = int(doc.get("priority", 100) or 100)
-            except (TypeError, ValueError):
-                priority = 100
-            # Priority only breaks ties when request-doc relevance already exists.
-            if score > 0 and priority <= 60:
-                score += 1
-            return score, self._dedupe_preserve_order(matched_tokens)
-
         provider_ranked: list[dict[str, Any]] = []
         for doc in provider_hint_docs:
             if not isinstance(doc, dict):
                 continue
-            score, matched_tokens = _score_doc(doc)
+            score, matched_tokens, has_strong_anchor = self._score_metadata_hint_doc(
+                doc=doc,
+                request_tokens=request_tokens,
+                request_text_lower=request_text_lower,
+                allow_weak_only=used_follow_up_context,
+            )
             if score <= 0:
                 continue
             tool_names = [
@@ -985,8 +1132,14 @@ class RunnerToolGateRoutingMixin:
                     "hint_id": str(doc.get("hint_id", "") or "").strip(),
                     "provider_type": str(doc.get("provider_type", "") or "").strip().lower(),
                     "score": score,
+                    "has_strong_anchor": has_strong_anchor,
                     "matched_tokens": matched_tokens,
                     "tool_names": tool_names,
+                    "group_ids": [
+                        str(item).strip()
+                        for item in (doc.get("group_ids", []) or [])
+                        if str(item).strip()
+                    ],
                     "capability_classes": [
                         str(item).strip().lower()
                         for item in (doc.get("capability_classes", []) or [])
@@ -1001,7 +1154,12 @@ class RunnerToolGateRoutingMixin:
         for doc in skill_hint_docs:
             if not isinstance(doc, dict):
                 continue
-            score, matched_tokens = _score_doc(doc)
+            score, matched_tokens, has_strong_anchor = self._score_metadata_hint_doc(
+                doc=doc,
+                request_tokens=request_tokens,
+                request_text_lower=request_text_lower,
+                allow_weak_only=used_follow_up_context,
+            )
             if score <= 0:
                 continue
             tool_names = [
@@ -1012,10 +1170,18 @@ class RunnerToolGateRoutingMixin:
             skill_ranked.append(
                 {
                     "hint_id": str(doc.get("hint_id", "") or "").strip(),
+                    "skill_name": str(doc.get("skill_name", "") or "").strip(),
+                    "qualified_skill_name": str(doc.get("qualified_skill_name", "") or "").strip(),
                     "provider_type": str(doc.get("provider_type", "") or "").strip().lower(),
                     "score": score,
+                    "has_strong_anchor": has_strong_anchor,
                     "matched_tokens": matched_tokens,
                     "tool_names": tool_names,
+                    "group_ids": [
+                        str(item).strip()
+                        for item in (doc.get("group_ids", []) or [])
+                        if str(item).strip()
+                    ],
                     "capability_classes": [
                         str(item).strip().lower()
                         for item in (doc.get("capability_classes", []) or [])
@@ -1026,6 +1192,44 @@ class RunnerToolGateRoutingMixin:
         skill_ranked.sort(key=lambda item: (-int(item.get("score", 0) or 0), str(item.get("hint_id", ""))))
         skill_top = skill_ranked[:top_k_skill]
 
+        builtin_ranked: list[dict[str, Any]] = []
+        for doc in builtin_tool_hint_docs:
+            if not isinstance(doc, dict):
+                continue
+            score, matched_tokens, has_strong_anchor = self._score_metadata_hint_doc(
+                doc=doc,
+                request_tokens=request_tokens,
+                request_text_lower=request_text_lower,
+                allow_weak_only=used_follow_up_context,
+            )
+            if score <= 0:
+                continue
+            tool_name = str(doc.get("tool_name", "") or "").strip()
+            if tool_name and tool_name not in tool_name_set:
+                continue
+            builtin_ranked.append(
+                {
+                    "hint_id": str(doc.get("hint_id", "") or "").strip(),
+                    "tool_name": tool_name,
+                    "score": score,
+                    "has_strong_anchor": has_strong_anchor,
+                    "matched_tokens": matched_tokens,
+                    "tool_names": [tool_name] if tool_name else [],
+                    "group_ids": [
+                        str(item).strip()
+                        for item in (doc.get("group_ids", []) or [])
+                        if str(item).strip()
+                    ],
+                    "capability_classes": [
+                        str(item).strip().lower()
+                        for item in (doc.get("capability_classes", []) or [])
+                        if str(item).strip()
+                    ],
+                }
+            )
+        builtin_ranked.sort(key=lambda item: (-int(item.get("score", 0) or 0), str(item.get("hint_id", ""))))
+        builtin_top = builtin_ranked[: max(1, min(4, top_k_skill))]
+
         preferred_provider_types = self._dedupe_preserve_order(
             [
                 str(item.get("provider_type", "") or "").strip().lower()
@@ -1033,10 +1237,18 @@ class RunnerToolGateRoutingMixin:
                 if str(item.get("provider_type", "") or "").strip()
             ]
         )
+        preferred_group_ids = self._dedupe_preserve_order(
+            [
+                str(group_id).strip()
+                for item in provider_top + skill_top + builtin_top
+                for group_id in (item.get("group_ids", []) or [])
+                if str(group_id).strip()
+            ]
+        )
         preferred_capability_classes = self._dedupe_preserve_order(
             [
                 str(capability).strip().lower()
-                for item in provider_top + skill_top
+                for item in provider_top + skill_top + builtin_top
                 for capability in (item.get("capability_classes", []) or [])
                 if str(capability).strip()
             ]
@@ -1044,20 +1256,26 @@ class RunnerToolGateRoutingMixin:
         preferred_tool_names = self._dedupe_preserve_order(
             [
                 str(name).strip()
-                for item in provider_top + skill_top
+                for item in provider_top + skill_top + builtin_top
                 for name in (item.get("tool_names", []) or [])
                 if str(name).strip() in tool_name_set
             ]
         )[:12]
 
-        total_score = sum(int(item.get("score", 0) or 0) for item in provider_top + skill_top)
+        total_score = sum(int(item.get("score", 0) or 0) for item in provider_top + skill_top + builtin_top)
         confidence_denominator = max(24, len(request_tokens) * 8)
         confidence = min(1.0, float(total_score) / float(confidence_denominator))
-        reason = "metadata_recall_matched" if (provider_top or skill_top) else "metadata_recall_no_match"
+        reason = (
+            "metadata_recall_matched"
+            if (provider_top or skill_top or builtin_top)
+            else "metadata_recall_no_match"
+        )
         return {
             "provider_candidates": provider_top,
             "skill_candidates": skill_top,
+            "builtin_tool_candidates": builtin_top,
             "preferred_provider_types": preferred_provider_types,
+            "preferred_group_ids": preferred_group_ids,
             "preferred_capability_classes": preferred_capability_classes,
             "preferred_tool_names": preferred_tool_names,
             "confidence": confidence,

@@ -8,8 +8,18 @@ import importlib.util
 import json
 import subprocess
 import sys
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+
+@dataclass(frozen=True)
+class ScriptInvocationConfig:
+    """Metadata-driven script invocation hints for markdown executable tools."""
+
+    positional_args: tuple[str, ...] = ()
+    split_args: tuple[str, ...] = ()
+    flag_name_overrides: dict[str, str] = field(default_factory=dict)
 
 
 def parse_entrypoint(entrypoint: str) -> tuple[str, str]:
@@ -32,6 +42,7 @@ def load_handler_from_file(
     provider_type: Optional[str] = None,
     *,
     allow_script_execution: bool = False,
+    invocation_config: Optional[ScriptInvocationConfig] = None,
 ) -> Callable:
     """Load callable handler from file or fallback to script wrapper."""
     scripts_dir = str(py_file.parent)
@@ -44,7 +55,11 @@ def load_handler_from_file(
         if attr_name == "handler":
             if not allow_script_execution:
                 raise RuntimeError("script-backed markdown tools are disabled")
-            return create_script_wrapper(py_file, provider_type)
+            return create_script_wrapper(
+                py_file,
+                provider_type,
+                invocation_config=invocation_config,
+            )
 
         module_hash = hashlib.sha1(str(py_file).encode("utf-8")).hexdigest()[:12]
         module_name = f"atlasclaw_md_skill_{module_hash}_{py_file.stem}"
@@ -60,7 +75,11 @@ def load_handler_from_file(
             return handler
         if not allow_script_execution:
             raise RuntimeError("script-backed markdown tools are disabled")
-        return create_script_wrapper(py_file, provider_type)
+        return create_script_wrapper(
+            py_file,
+            provider_type,
+            invocation_config=invocation_config,
+        )
     finally:
         if inserted:
             try:
@@ -69,8 +88,14 @@ def load_handler_from_file(
                 pass
 
 
-def create_script_wrapper(py_file: Path, provider_type: Optional[str] = None) -> Callable:
+def create_script_wrapper(
+    py_file: Path,
+    provider_type: Optional[str] = None,
+    *,
+    invocation_config: Optional[ScriptInvocationConfig] = None,
+) -> Callable:
     """Create a wrapper function that executes a script file."""
+    config = invocation_config or ScriptInvocationConfig()
 
     async def script_handler(ctx=None, **kwargs) -> dict:
         import os
@@ -151,6 +176,8 @@ def create_script_wrapper(py_file: Path, provider_type: Optional[str] = None) ->
             cmd = ["powershell", "-File", str(py_file)]
         else:
             cmd = [str(py_file)]
+
+        cmd.extend(_build_script_command_arguments(kwargs=kwargs, config=config))
 
         try:
             result = subprocess.run(
@@ -269,7 +296,8 @@ def _register_md_tool_entry(
         )
         return
 
-    provider_type = str(entry.metadata.get("provider_type", "")).strip() or entry.provider or None
+    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
+    provider_type = str(metadata.get("provider_type", "")).strip() or entry.provider or None
     if not allow_script_execution and attr_name == "handler":
         logger.info(
             "Skipping md tool %s from %s: script-backed markdown tools are disabled by default",
@@ -278,11 +306,13 @@ def _register_md_tool_entry(
         )
         return
     try:
+        invocation_config = _extract_script_invocation_config(metadata, tool_id=tool_id)
         handler = load_handler_from_file(
             py_file,
             attr_name,
             provider_type,
             allow_script_execution=allow_script_execution,
+            invocation_config=invocation_config,
         )
     except Exception as exc:
         logger.warning(
@@ -295,10 +325,10 @@ def _register_md_tool_entry(
         return
 
     description = tool_description if tool_description else entry.description
-    metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
     group_ids = _extract_group_ids(metadata, entry.provider, tool_id=tool_id)
     capability_class = _extract_capability_class(metadata, provider_type, tool_id=tool_id)
     priority = _extract_priority(metadata, tool_id=tool_id)
+    parameters_schema = _extract_parameters_schema(metadata, tool_id=tool_id)
     source = "provider" if provider_type else "md_skill"
     meta = skill_metadata_cls(
         name=tool_name,
@@ -311,6 +341,20 @@ def _register_md_tool_entry(
         group_ids=group_ids,
         capability_class=capability_class,
         priority=priority,
+        parameters_schema=parameters_schema,
+        aliases=_extract_string_sequence(
+            metadata.get(f"tool_{tool_id}_aliases") if tool_id else metadata.get("aliases")
+        ),
+        keywords=_extract_string_sequence(
+            metadata.get(f"tool_{tool_id}_keywords") if tool_id else metadata.get("triggers")
+        ),
+        use_when=_extract_string_sequence(
+            metadata.get(f"tool_{tool_id}_use_when") if tool_id else metadata.get("use_when")
+        ),
+        avoid_when=_extract_string_sequence(
+            metadata.get(f"tool_{tool_id}_avoid_when") if tool_id else metadata.get("avoid_when")
+        ),
+        result_mode=_extract_result_mode(metadata, tool_id=tool_id),
     )
     registry.register(meta, handler)
     registered.add(tool_name)
@@ -398,3 +442,177 @@ def _extract_priority(metadata: dict[str, Any], *, tool_id: str = "") -> int:
         return int(candidate)
     except (TypeError, ValueError):
         return 100
+
+
+def _extract_parameters_schema(metadata: dict[str, Any], *, tool_id: str = "") -> dict[str, Any]:
+    """Return the per-tool JSON schema declared in markdown metadata, if any."""
+    candidates: list[Any] = []
+    if tool_id:
+        candidates.append(metadata.get(f"tool_{tool_id}_parameters"))
+    else:
+        candidates.append(metadata.get("parameters"))
+        candidates.append(metadata.get("tool_parameters"))
+
+    for candidate in candidates:
+        schema = _coerce_parameters_schema(candidate)
+        if schema:
+            return schema
+    return {}
+
+
+def _extract_result_mode(metadata: dict[str, Any], *, tool_id: str = "") -> str:
+    candidate: Any = metadata.get("result_mode", "llm")
+    if tool_id and f"tool_{tool_id}_result_mode" in metadata:
+        candidate = metadata.get(f"tool_{tool_id}_result_mode", "llm")
+    normalized = str(candidate or "").strip().lower()
+    return normalized or "llm"
+
+
+def _extract_script_invocation_config(
+    metadata: dict[str, Any],
+    *,
+    tool_id: str = "",
+) -> ScriptInvocationConfig:
+    """Extract CLI invocation hints for script-backed markdown tools."""
+    positional_args = _extract_string_sequence(
+        metadata.get(f"tool_{tool_id}_cli_positional") if tool_id else metadata.get("cli_positional")
+    )
+    split_args = _extract_string_sequence(
+        metadata.get(f"tool_{tool_id}_cli_split") if tool_id else metadata.get("cli_split")
+    )
+    raw_flag_overrides = (
+        metadata.get(f"tool_{tool_id}_cli_flag_overrides")
+        if tool_id
+        else metadata.get("cli_flag_overrides")
+    )
+    flag_name_overrides: dict[str, str] = {}
+    if isinstance(raw_flag_overrides, dict):
+        for key, value in raw_flag_overrides.items():
+            normalized_key = str(key or "").strip()
+            normalized_value = str(value or "").strip()
+            if normalized_key and normalized_value:
+                flag_name_overrides[normalized_key] = normalized_value
+    return ScriptInvocationConfig(
+        positional_args=tuple(positional_args),
+        split_args=tuple(split_args),
+        flag_name_overrides=flag_name_overrides,
+    )
+
+
+def _extract_string_sequence(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        payload = value.strip()
+        if not payload:
+            return []
+        if payload.startswith("["):
+            try:
+                value = json.loads(payload)
+            except json.JSONDecodeError:
+                return [payload]
+        else:
+            return [payload]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _build_script_command_arguments(
+    *,
+    kwargs: dict[str, Any],
+    config: ScriptInvocationConfig,
+) -> list[str]:
+    """Serialize tool kwargs into CLI argv using metadata-driven hints."""
+    if not kwargs:
+        return []
+
+    args: list[str] = []
+    consumed: set[str] = set()
+    split_names = {name for name in config.split_args if name}
+
+    for name in config.positional_args:
+        normalized_name = str(name or "").strip()
+        if not normalized_name or normalized_name not in kwargs:
+            continue
+        consumed.add(normalized_name)
+        args.extend(
+            _serialize_cli_value(
+                value=kwargs.get(normalized_name),
+                split=normalized_name in split_names,
+            )
+        )
+
+    for name, value in kwargs.items():
+        normalized_name = str(name or "").strip()
+        if not normalized_name or normalized_name in consumed or value is None:
+            continue
+        if isinstance(value, bool):
+            if value:
+                args.append(_resolve_cli_flag_name(normalized_name, config))
+            continue
+        serialized = _serialize_cli_value(
+            value=value,
+            split=normalized_name in split_names,
+        )
+        if not serialized:
+            continue
+        args.append(_resolve_cli_flag_name(normalized_name, config))
+        args.extend(serialized)
+
+    return args
+
+
+def _resolve_cli_flag_name(name: str, config: ScriptInvocationConfig) -> str:
+    override = str(config.flag_name_overrides.get(name, "") or "").strip()
+    if override:
+        return override
+    return f"--{name.replace('_', '-')}"
+
+
+def _serialize_cli_value(*, value: Any, split: bool) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        serialized: list[str] = []
+        for item in value:
+            serialized.extend(_serialize_cli_value(value=item, split=split))
+        return serialized
+    normalized = str(value).strip()
+    if not normalized:
+        return []
+    if split:
+        tokens = [token for token in normalized.replace(",", " ").split() if token]
+        return tokens or [normalized]
+    return [normalized]
+
+
+def _coerce_parameters_schema(candidate: Any) -> dict[str, Any]:
+    """Normalize markdown-frontmatter parameter declarations into an object JSON schema."""
+    if isinstance(candidate, str):
+        payload = candidate.strip()
+        if not payload:
+            return {}
+        try:
+            candidate = json.loads(payload)
+        except json.JSONDecodeError:
+            return {}
+
+    if not isinstance(candidate, dict):
+        return {}
+
+    schema_type = str(candidate.get("type", "") or "").strip().lower()
+    if schema_type and schema_type != "object":
+        return {}
+    properties = candidate.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        return {}
+
+    normalized: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+    }
+    required = candidate.get("required")
+    if isinstance(required, list):
+        normalized["required"] = [str(item) for item in required if str(item).strip()]
+    return normalized

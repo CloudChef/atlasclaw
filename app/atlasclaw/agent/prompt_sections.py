@@ -60,7 +60,8 @@ def build_tooling(tools: list[dict]) -> str:
     for tool in tools:
         name = tool.get("name", "unknown")
         description = tool.get("description", "")
-        lines.append(f"- **{name}**: {description}")
+        signature = _format_tool_signature(tool)
+        lines.append(f"- **{signature}**: {description}")
     return "\n".join(lines)
 
 
@@ -71,50 +72,74 @@ def build_tool_policy(tool_policy: Optional[dict]) -> str:
 
     mode = str(tool_policy.get("mode", "") or "").strip()
     reason = str(tool_policy.get("reason", "") or "").strip()
-    required_tools = tool_policy.get("required_tools", [])
+    preferred_tools = tool_policy.get("preferred_tools", tool_policy.get("required_tools", []))
     execution_hint = str(tool_policy.get("execution_hint", "") or "").strip().lower()
     retry_count = int(tool_policy.get("retry_count", 0) or 0)
     retry_missing_tools = tool_policy.get("retry_missing_tools", [])
-    top_tool_hints = tool_policy.get("top_tool_hints", [])
+    max_same_tool_calls_per_turn = int(tool_policy.get("max_same_tool_calls_per_turn", 0) or 0)
+    target_provider_types = tool_policy.get("target_provider_types", [])
+    target_skill_names = tool_policy.get("target_skill_names", [])
+    target_group_ids = tool_policy.get("target_group_ids", [])
+    target_capability_classes = tool_policy.get("target_capability_classes", [])
     if not mode:
         return ""
 
     lines = ["## Tool Policy", ""]
-    lines.append(f"Policy mode: {mode}")
+    lines.append(f"Turn mode: {mode}")
     if reason:
         lines.append(f"Reason: {reason}")
-    if isinstance(required_tools, list) and required_tools:
-        lines.append(f"Preferred tools: {', '.join(str(item) for item in required_tools)}")
-    if isinstance(top_tool_hints, list) and top_tool_hints:
-        lines.append("Top tool hints:")
-        for hint in top_tool_hints[:3]:
-            normalized_hint = str(hint or "").strip()
-            if normalized_hint:
-                lines.append(f"- {normalized_hint}")
+    if isinstance(preferred_tools, list) and preferred_tools:
+        lines.append(f"Preferred tools: {', '.join(str(item) for item in preferred_tools)}")
+    if isinstance(target_provider_types, list) and target_provider_types:
+        lines.append(f"Target providers: {', '.join(str(item) for item in target_provider_types)}")
+    if isinstance(target_skill_names, list) and target_skill_names:
+        lines.append(f"Target skills: {', '.join(str(item) for item in target_skill_names)}")
+    if isinstance(target_group_ids, list) and target_group_ids:
+        lines.append(f"Target groups: {', '.join(str(item) for item in target_group_ids)}")
+    if isinstance(target_capability_classes, list) and target_capability_classes:
+        lines.append(
+            f"Target capabilities: {', '.join(str(item) for item in target_capability_classes)}"
+        )
     if retry_count > 0:
-        lines.append(f"Policy retry: {retry_count}")
+        lines.append(f"Retry attempt: {retry_count}")
         if isinstance(retry_missing_tools, list) and retry_missing_tools:
             lines.append(
-                "Previously missing evidence tools: "
+                "Previously missing tool executions: "
                 + ", ".join(str(item) for item in retry_missing_tools)
             )
+    if max_same_tool_calls_per_turn > 0:
+        lines.append(
+            "Maximum repeated calls for the same tool in this turn: "
+            f"{max_same_tool_calls_per_turn}"
+        )
     lines.extend(
         [
             "",
             "You must not claim any search, verification, lookup, or provider query happened unless tool execution evidence exists in this run.",
         ]
     )
-    if mode == "must_use_tool":
-        lines.append("A grounded tool-backed result is required before you provide a final answer.")
-        lines.append("For this turn, execute at least one required tool before any substantive assistant response.")
+    if mode == "use_tools":
+        lines.append("This turn requires real tool execution before a final answer.")
+        lines.append(
+            "Do exactly one of the following: issue a real tool call from the preferred tool set, or ask a focused clarification question if inputs are missing."
+        )
+        lines.append("Do not provide narrative analysis or pretend tool results before the first real tool call.")
         if execution_hint == "provider_tool_first":
-            lines.append("This turn is provider/skill tool-first: issue a required provider/skill tool call immediately.")
-            lines.append("Do not provide narrative analysis before the first required tool call.")
-        lines.append("If required tool execution fails or returns no evidence, explicitly state verification failed and do not fabricate results.")
-    elif mode == "prefer_tool":
-        lines.append("Prefer the listed tools or scoped context before answering.")
+            lines.append("Prefer provider/skill tools before generic web or fallback tools.")
+        lines.append(
+            "After tool results arrive, continue the same loop and answer strictly from those results."
+        )
+        if max_same_tool_calls_per_turn > 0:
+            lines.append(
+                "Do not call the same tool repeatedly without clear new narrowing input. "
+                "If the same tool has already been used enough times in this turn, answer from the "
+                "current tool evidence or ask for clarification."
+            )
+    elif mode == "ask_clarification":
+        lines.append("Ask one focused clarification question and wait for the user response.")
+        lines.append("Do not call unrelated tools and do not fabricate missing inputs.")
     else:
-        lines.append("You may answer directly when the request is stable and does not require verification.")
+        lines.append("You may answer directly when the request is stable and does not require tool execution.")
     return "\n".join(lines)
 
 
@@ -301,3 +326,29 @@ Host: {platform.node()}
 OS: {platform.system()} {platform.release()}
 Python: {platform.python_version()}
 Framework: AtlasClaw v0.1.0"""
+
+
+def _format_tool_signature(tool: dict) -> str:
+    """Render a compact tool signature from metadata JSON schema."""
+    name = str(tool.get("name", "unknown") or "unknown").strip() or "unknown"
+    parameters_schema = tool.get("parameters_schema", {})
+    if not isinstance(parameters_schema, dict):
+        return name
+    properties = parameters_schema.get("properties")
+    if not isinstance(properties, dict) or not properties:
+        return name
+    required = {
+        str(item).strip()
+        for item in (parameters_schema.get("required", []) or [])
+        if str(item).strip()
+    }
+    parts: list[str] = []
+    for param_name in properties.keys():
+        normalized_name = str(param_name or "").strip()
+        if not normalized_name:
+            continue
+        suffix = "" if normalized_name in required else "?"
+        parts.append(f"{normalized_name}{suffix}")
+    if not parts:
+        return name
+    return f"{name}({', '.join(parts)})"

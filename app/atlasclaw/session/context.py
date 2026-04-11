@@ -396,6 +396,8 @@ class TranscriptEntry:
     timestamp: datetime = field(default_factory=datetime.now)
     role: str = "user"  # user | assistant | system | tool
     content: str = ""
+    tool_name: str = ""
+    tool_call_id: str = ""
     tool_calls: list[dict] = field(default_factory=list)
     tool_results: list[dict] = field(default_factory=list)
     metadata: dict = field(default_factory=dict)
@@ -406,6 +408,8 @@ class TranscriptEntry:
             "timestamp": self.timestamp.isoformat(),
             "role": self.role,
             "content": self.content,
+            "tool_name": self.tool_name,
+            "tool_call_id": self.tool_call_id,
             "tool_calls": self.tool_calls,
             "tool_results": self.tool_results,
             "metadata": self.metadata,
@@ -418,6 +422,8 @@ class TranscriptEntry:
             timestamp=datetime.fromisoformat(data["timestamp"]) if data.get("timestamp") else datetime.now(),
             role=data.get("role", "user"),
             content=data.get("content", ""),
+            tool_name=data.get("tool_name", ""),
+            tool_call_id=data.get("tool_call_id", ""),
             tool_calls=data.get("tool_calls", []),
             tool_results=data.get("tool_results", []),
             metadata=data.get("metadata", {}),

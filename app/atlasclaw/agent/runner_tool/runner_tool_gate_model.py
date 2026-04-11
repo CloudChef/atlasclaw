@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import nullcontext
 from datetime import datetime, timezone
 import inspect
@@ -9,7 +8,13 @@ import logging
 import re
 from typing import Any, Optional
 
-from app.atlasclaw.agent.tool_gate_models import ToolGateDecision, ToolPolicyMode
+from app.atlasclaw.agent.runner_tool.runner_tool_projection import DEFAULT_COORDINATION_TOOL_NAMES
+from app.atlasclaw.agent.tool_gate_models import (
+    ToolGateDecision,
+    ToolIntentAction,
+    ToolIntentPlan,
+    ToolPolicyMode,
+)
 from app.atlasclaw.core.deps import SkillDeps
 
 
@@ -62,6 +67,508 @@ class _ModelToolGateClassifier:
         )
 
 class RunnerToolGateModelMixin:
+    async def _plan_tool_intent_with_model(
+        self,
+        *,
+        agent: Any,
+        deps: SkillDeps,
+        user_message: str,
+        recent_history: list[dict[str, Any]],
+        available_tools: list[dict[str, Any]],
+        provider_hint_docs: list[dict[str, Any]],
+        skill_hint_docs: list[dict[str, Any]],
+        builtin_tool_hint_docs: list[dict[str, Any]],
+    ) -> Optional[ToolIntentPlan]:
+        planner_prompt = self._build_tool_intent_plan_prompt(
+            available_tools=available_tools,
+            provider_hint_docs=provider_hint_docs,
+            skill_hint_docs=skill_hint_docs,
+            builtin_tool_hint_docs=builtin_tool_hint_docs,
+        )
+        planner_message = self._build_tool_intent_plan_message(
+            user_message=user_message,
+            recent_history=recent_history,
+        )
+        try:
+            raw_output = await self._run_single_with_optional_override(
+                agent=agent,
+                user_message=planner_message,
+                deps=deps,
+                system_prompt=planner_prompt,
+            )
+        except Exception:
+            return None
+        parsed = self._extract_json_object(raw_output)
+        if not parsed:
+            return None
+        try:
+            payload = json.loads(parsed)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        normalized = self._coerce_tool_intent_plan_payload(
+            payload=payload,
+            available_tools=available_tools,
+            provider_hint_docs=provider_hint_docs,
+            skill_hint_docs=skill_hint_docs,
+        )
+        try:
+            return ToolIntentPlan.model_validate(normalized)
+        except Exception:
+            return None
+    @staticmethod
+    def _build_tool_gate_decision_from_intent_plan(
+        plan: ToolIntentPlan,
+    ) -> ToolGateDecision:
+        suggested_classes: list[str] = []
+        for provider_type in plan.target_provider_types:
+            normalized = str(provider_type or "").strip().lower()
+            if normalized:
+                suggested_classes.append(f"provider:{normalized}")
+        for capability in plan.target_capability_classes:
+            normalized = str(capability or "").strip().lower()
+            if normalized and normalized not in suggested_classes:
+                suggested_classes.append(normalized)
+        needs_external_system = bool(
+            plan.target_provider_types
+            or any(
+                str(item or "").strip().lower().startswith("provider:")
+                for item in plan.target_capability_classes
+            )
+        )
+        needs_live_data = any(
+            str(item or "").strip().lower() in {"web_search", "web_fetch", "weather", "browser"}
+            for item in plan.target_capability_classes
+        )
+        if plan.action is ToolIntentAction.DIRECT_ANSWER:
+            return ToolGateDecision(
+                reason=plan.reason or "Planner selected direct answer.",
+                confidence=0.7,
+                policy=ToolPolicyMode.ANSWER_DIRECT,
+            )
+        if plan.action is ToolIntentAction.ASK_CLARIFICATION:
+            return ToolGateDecision(
+                reason=plan.reason or "Planner requested clarification before tool execution.",
+                confidence=0.7,
+                policy=ToolPolicyMode.ANSWER_DIRECT,
+            )
+        return ToolGateDecision(
+            needs_tool=True,
+            needs_live_data=needs_live_data,
+            needs_external_system=needs_external_system,
+            needs_grounded_verification=bool(needs_live_data or needs_external_system),
+            suggested_tool_classes=suggested_classes,
+            confidence=0.8,
+            reason=plan.reason or "Planner selected tool execution.",
+            policy=ToolPolicyMode.PREFER_TOOL,
+        )
+
+    def _build_metadata_fallback_tool_intent_plan(
+        self,
+        *,
+        metadata_candidates: Optional[dict[str, Any]],
+        available_tools: list[dict[str, Any]],
+    ) -> Optional[ToolIntentPlan]:
+        if not isinstance(metadata_candidates, dict):
+            return None
+
+        try:
+            confidence = float(metadata_candidates.get("confidence", 0.0) or 0.0)
+        except Exception:
+            confidence = 0.0
+        min_confidence = max(
+            0.0,
+            float(getattr(self, "TOOL_HINT_RANKER_MIN_METADATA_CONFIDENCE", 0.3) or 0.3),
+        )
+        has_provider_tool_consensus = self._metadata_candidates_have_provider_tool_consensus(
+            metadata_candidates=metadata_candidates,
+            available_tools=available_tools,
+        )
+        has_single_tool_consensus = self._metadata_candidates_have_single_tool_consensus(
+            metadata_candidates=metadata_candidates,
+            available_tools=available_tools,
+        )
+        if (
+            confidence < min_confidence
+            and not has_provider_tool_consensus
+            and not has_single_tool_consensus
+        ):
+            return None
+
+        allowed_tool_names = {
+            str(tool.get("name", "") or "").strip()
+            for tool in available_tools
+            if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+        }
+
+        target_provider_types = self._dedupe_preserve_order(
+            [
+                str(item).strip().lower()
+                for item in (metadata_candidates.get("preferred_provider_types", []) or [])
+                if str(item).strip()
+            ]
+        )
+        target_capability_classes = self._dedupe_preserve_order(
+            [
+                str(item).strip().lower()
+                for item in (metadata_candidates.get("preferred_capability_classes", []) or [])
+                if str(item).strip()
+            ]
+        )
+        target_tool_names = self._dedupe_preserve_order(
+            [
+                str(item).strip()
+                for item in (metadata_candidates.get("preferred_tool_names", []) or [])
+                if str(item).strip() in allowed_tool_names
+            ]
+        )
+        target_group_ids = self._dedupe_preserve_order(
+            [
+                str(item).strip()
+                for item in (metadata_candidates.get("preferred_group_ids", []) or [])
+                if str(item).strip()
+            ]
+        )
+
+        target_skill_names: list[str] = []
+        for item in (metadata_candidates.get("skill_candidates", []) or []):
+            if not isinstance(item, dict):
+                continue
+            qualified_skill_name = str(item.get("qualified_skill_name", "") or "").strip()
+            skill_name = str(item.get("skill_name", "") or "").strip()
+            hint_id = str(item.get("hint_id", "") or "").strip()
+            selected_name = qualified_skill_name or skill_name
+            if not selected_name and hint_id.startswith("skill:"):
+                selected_name = hint_id.split(":", 1)[1].strip()
+            if selected_name:
+                target_skill_names.append(selected_name)
+        target_skill_names = self._dedupe_preserve_order(target_skill_names)
+
+        if not any(
+            [
+                target_provider_types,
+                target_skill_names,
+                target_group_ids,
+                target_capability_classes,
+                target_tool_names,
+            ]
+        ):
+            return None
+
+        reason = str(metadata_candidates.get("reason", "") or "").strip()
+        if reason:
+            reason = f"Metadata fallback planner selected tool execution ({reason})."
+        else:
+            reason = "Metadata fallback planner selected tool execution."
+
+        return ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_types=target_provider_types,
+            target_skill_names=target_skill_names,
+            target_group_ids=target_group_ids,
+            target_capability_classes=target_capability_classes,
+            target_tool_names=target_tool_names,
+            reason=reason,
+        )
+
+    @staticmethod
+    def _build_projected_toolset_short_circuit_intent_plan(
+        *,
+        planner_available_tools: list[dict[str, Any]],
+    ) -> Optional[ToolIntentPlan]:
+        candidate_tools: list[dict[str, Any]] = []
+        for tool in planner_available_tools or []:
+            if not isinstance(tool, dict):
+                continue
+            tool_name = str(tool.get("name", "") or "").strip()
+            if not tool_name or tool_name in DEFAULT_COORDINATION_TOOL_NAMES:
+                continue
+            candidate_tools.append(tool)
+
+        if len(candidate_tools) != 1:
+            return None
+
+        tool = candidate_tools[0]
+        result_mode = str(tool.get("result_mode", "") or "").strip().lower()
+        if result_mode != "tool_only_ok":
+            return None
+
+        tool_name = str(tool.get("name", "") or "").strip()
+        provider_type = str(tool.get("provider_type", "") or "").strip().lower()
+        capability_class = str(tool.get("capability_class", "") or "").strip().lower()
+        group_ids = [
+            str(item).strip()
+            for item in (tool.get("group_ids", []) or [])
+            if str(item).strip()
+        ]
+        qualified_skill_name = str(tool.get("qualified_skill_name", "") or "").strip()
+        skill_name = str(tool.get("skill_name", "") or "").strip()
+        target_skill_names = [qualified_skill_name or skill_name] if (qualified_skill_name or skill_name) else []
+
+        reason = (
+            f"Projected planner toolset converged to a single tool-only tool: {tool_name}."
+        )
+        return ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_types=[provider_type] if provider_type else [],
+            target_skill_names=target_skill_names,
+            target_group_ids=group_ids,
+            target_capability_classes=[capability_class] if capability_class else [],
+            target_tool_names=[tool_name],
+            reason=reason,
+        )
+
+    @staticmethod
+    def _metadata_candidates_have_provider_tool_consensus(
+        *,
+        metadata_candidates: dict[str, Any],
+        available_tools: list[dict[str, Any]],
+    ) -> bool:
+        preferred_tool_names = [
+            str(item).strip()
+            for item in (metadata_candidates.get("preferred_tool_names", []) or [])
+            if str(item).strip()
+        ]
+        if not preferred_tool_names:
+            return False
+
+        tool_index: dict[str, dict[str, str]] = {}
+        for tool in available_tools:
+            if not isinstance(tool, dict):
+                continue
+            name = str(tool.get("name", "") or "").strip()
+            if not name:
+                continue
+            tool_index[name] = {
+                "provider_type": str(tool.get("provider_type", "") or "").strip().lower(),
+                "capability_class": str(tool.get("capability_class", "") or "").strip().lower(),
+            }
+
+        resolved_provider_types: set[str] = set()
+        resolved_provider_capabilities: set[str] = set()
+        resolved_tool_count = 0
+        for tool_name in preferred_tool_names:
+            record = tool_index.get(tool_name)
+            if not record:
+                continue
+            resolved_tool_count += 1
+            provider_type = record.get("provider_type", "")
+            capability_class = record.get("capability_class", "")
+            if provider_type:
+                resolved_provider_types.add(provider_type)
+            if capability_class.startswith("provider:"):
+                resolved_provider_capabilities.add(capability_class)
+
+        if resolved_tool_count <= 0:
+            return False
+        if len(resolved_provider_types) == 1:
+            return True
+        return len(resolved_provider_capabilities) == 1
+
+    @staticmethod
+    def _metadata_candidates_have_single_tool_consensus(
+        *,
+        metadata_candidates: dict[str, Any],
+        available_tools: list[dict[str, Any]],
+    ) -> bool:
+        allowed_tool_names = {
+            str(tool.get("name", "") or "").strip()
+            for tool in available_tools
+            if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+        }
+        preferred_tool_names = [
+            str(item).strip()
+            for item in (metadata_candidates.get("preferred_tool_names", []) or [])
+            if str(item).strip() in allowed_tool_names
+        ]
+        preferred_tool_names = list(dict.fromkeys(preferred_tool_names))
+        if len(preferred_tool_names) != 1:
+            return False
+
+        selected_tool_name = preferred_tool_names[0]
+        strong_candidate_tool_sets: list[set[str]] = []
+        for key in ("provider_candidates", "skill_candidates", "builtin_tool_candidates"):
+            for item in (metadata_candidates.get(key, []) or []):
+                if not isinstance(item, dict) or not bool(item.get("has_strong_anchor")):
+                    continue
+                candidate_tool_names = [
+                    str(name).strip()
+                    for name in (item.get("tool_names", []) or [])
+                    if str(name).strip() in allowed_tool_names
+                ]
+                direct_tool_name = str(item.get("tool_name", "") or "").strip()
+                if direct_tool_name and direct_tool_name in allowed_tool_names:
+                    candidate_tool_names.append(direct_tool_name)
+                candidate_tool_set = {
+                    name for name in candidate_tool_names if name
+                }
+                if not candidate_tool_set:
+                    continue
+                strong_candidate_tool_sets.append(candidate_tool_set)
+
+        if not strong_candidate_tool_sets:
+            return False
+
+        for candidate_tool_set in strong_candidate_tool_sets:
+            if selected_tool_name not in candidate_tool_set:
+                return False
+            if candidate_tool_set.difference({selected_tool_name}):
+                return False
+        return True
+
+    def _align_tool_intent_plan_with_metadata(
+        self,
+        *,
+        plan: ToolIntentPlan,
+        metadata_candidates: Optional[dict[str, Any]],
+        available_tools: list[dict[str, Any]],
+    ) -> ToolIntentPlan:
+        fallback_plan = self._build_metadata_fallback_tool_intent_plan(
+            metadata_candidates=metadata_candidates,
+            available_tools=available_tools,
+        )
+        if fallback_plan is None:
+            return plan
+
+        if plan.action is ToolIntentAction.DIRECT_ANSWER:
+            return fallback_plan
+
+        if plan.action is not ToolIntentAction.USE_TOOLS:
+            return plan
+
+        if not self._tool_intent_plans_are_compatible(
+            plan=plan,
+            fallback_plan=fallback_plan,
+            available_tools=available_tools,
+        ):
+            return plan
+
+        merged_provider_types = self._dedupe_preserve_order(
+            list(plan.target_provider_types) + list(fallback_plan.target_provider_types)
+        )
+        merged_skill_names = self._dedupe_preserve_order(
+            list(plan.target_skill_names) + list(fallback_plan.target_skill_names)
+        )
+        merged_group_ids = self._dedupe_preserve_order(
+            list(plan.target_group_ids) + list(fallback_plan.target_group_ids)
+        )
+        merged_capability_classes = self._dedupe_preserve_order(
+            list(plan.target_capability_classes) + list(fallback_plan.target_capability_classes)
+        )
+        merged_tool_names = self._dedupe_preserve_order(
+            list(plan.target_tool_names) + list(fallback_plan.target_tool_names)
+        )
+
+        if (
+            merged_provider_types == list(plan.target_provider_types)
+            and merged_skill_names == list(plan.target_skill_names)
+            and merged_group_ids == list(plan.target_group_ids)
+            and merged_capability_classes == list(plan.target_capability_classes)
+            and merged_tool_names == list(plan.target_tool_names)
+        ):
+            return plan
+
+        merged_reason = str(plan.reason or "").strip()
+        if merged_reason:
+            merged_reason = f"{merged_reason} Metadata hints were merged into the tool plan."
+        else:
+            merged_reason = str(fallback_plan.reason or "").strip()
+
+        return plan.model_copy(
+            update={
+                "target_provider_types": merged_provider_types,
+                "target_skill_names": merged_skill_names,
+                "target_group_ids": merged_group_ids,
+                "target_capability_classes": merged_capability_classes,
+                "target_tool_names": merged_tool_names,
+                "reason": merged_reason,
+            }
+        )
+
+    def _tool_intent_plans_are_compatible(
+        self,
+        *,
+        plan: ToolIntentPlan,
+        fallback_plan: ToolIntentPlan,
+        available_tools: list[dict[str, Any]],
+    ) -> bool:
+        tool_index: dict[str, dict[str, str]] = {}
+        for tool in available_tools:
+            if not isinstance(tool, dict):
+                continue
+            name = str(tool.get("name", "") or "").strip()
+            if not name:
+                continue
+            tool_index[name] = {
+                "provider_type": str(tool.get("provider_type", "") or "").strip().lower(),
+                "capability_class": str(tool.get("capability_class", "") or "").strip().lower(),
+            }
+
+        def _resolve_plan_signature(target_plan: ToolIntentPlan) -> dict[str, set[str]]:
+            provider_types: set[str] = {
+                str(item).strip().lower()
+                for item in target_plan.target_provider_types
+                if str(item).strip()
+            }
+            capability_classes: set[str] = {
+                str(item).strip().lower()
+                for item in target_plan.target_capability_classes
+                if str(item).strip()
+            }
+            tool_names: set[str] = {
+                str(item).strip()
+                for item in target_plan.target_tool_names
+                if str(item).strip()
+            }
+            skill_names: set[str] = {
+                str(item).strip().lower()
+                for item in target_plan.target_skill_names
+                if str(item).strip()
+            }
+            group_ids: set[str] = {
+                str(item).strip().lower()
+                for item in target_plan.target_group_ids
+                if str(item).strip()
+            }
+            for capability in list(capability_classes):
+                if capability.startswith("provider:"):
+                    provider_types.add(capability.split(":", 1)[1].strip().lower())
+            for tool_name in list(tool_names):
+                record = tool_index.get(tool_name)
+                if not record:
+                    continue
+                provider_type = record.get("provider_type", "")
+                capability_class = record.get("capability_class", "")
+                if provider_type:
+                    provider_types.add(provider_type)
+                if capability_class:
+                    capability_classes.add(capability_class)
+            return {
+                "provider_types": provider_types,
+                "capability_classes": capability_classes,
+                "tool_names": tool_names,
+                "skill_names": skill_names,
+                "group_ids": group_ids,
+            }
+
+        plan_signature = _resolve_plan_signature(plan)
+        fallback_signature = _resolve_plan_signature(fallback_plan)
+        if not any(plan_signature.values()) or not any(fallback_signature.values()):
+            return True
+
+        if plan_signature["tool_names"].intersection(fallback_signature["tool_names"]):
+            return True
+        if plan_signature["provider_types"].intersection(fallback_signature["provider_types"]):
+            return True
+        if plan_signature["capability_classes"].intersection(fallback_signature["capability_classes"]):
+            return True
+        if plan_signature["skill_names"].intersection(fallback_signature["skill_names"]):
+            return True
+        if plan_signature["group_ids"].intersection(fallback_signature["group_ids"]):
+            return True
+
+        return False
     def _resolve_tool_gate_classifier(
         self,
         *,
@@ -194,7 +701,7 @@ class RunnerToolGateModelMixin:
                 "Provider/skill gate short-circuited from metadata recall using "
                 "the active provider context."
             ),
-            policy=ToolPolicyMode.MUST_USE_TOOL,
+            policy=ToolPolicyMode.PREFER_TOOL,
         )
     def _select_tool_gate_classifier_token(self) -> Optional[Any]:
         if self.token_policy is None:
@@ -236,11 +743,12 @@ class RunnerToolGateModelMixin:
         if strict_provider_or_skill:
             normalized.needs_external_system = True
             normalized.needs_tool = True
-            normalized.policy = ToolPolicyMode.MUST_USE_TOOL
             normalized.confidence = max(
                 normalized.confidence,
                 self.TOOL_GATE_SHORT_CIRCUIT_MIN_CONFIDENCE,
             )
+            if normalized.policy is ToolPolicyMode.ANSWER_DIRECT:
+                normalized.policy = ToolPolicyMode.PREFER_TOOL
             if "provider/skill intent" not in normalized.reason.lower():
                 normalized.reason = (
                     f"{normalized.reason} External-system/provider-skill intent detected from tool metadata."
@@ -300,22 +808,14 @@ class RunnerToolGateModelMixin:
             metadata_candidates=metadata_candidates,
         )
         try:
-            raw_output = await asyncio.wait_for(
-                self._run_single_with_optional_override(
-                    agent=agent,
-                    user_message=classifier_message,
-                    deps=deps,
-                    system_prompt=classifier_prompt,
-                ),
-                timeout=self.TOOL_GATE_CLASSIFIER_TIMEOUT_SECONDS,
-            )
-        except asyncio.TimeoutError:
-            return self._build_classifier_timeout_fallback_decision(
+            raw_output = await self._run_single_with_optional_override(
+                agent=agent,
+                user_message=classifier_message,
                 deps=deps,
-                user_message=user_message,
-                recent_history=recent_history,
-                available_tools=available_tools,
+                system_prompt=classifier_prompt,
             )
+        except Exception:
+            return None
         parsed = self._extract_json_object(raw_output)
         if not parsed:
             return None
@@ -327,6 +827,124 @@ class RunnerToolGateModelMixin:
             return ToolGateDecision.model_validate(coerced)
         except Exception:
             return None
+    def _coerce_tool_intent_plan_payload(
+        self,
+        *,
+        payload: dict[str, Any],
+        available_tools: list[dict[str, Any]],
+        provider_hint_docs: list[dict[str, Any]],
+        skill_hint_docs: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        allowed_provider_types = {
+            str(doc.get("provider_type", "") or "").strip().lower()
+            for doc in provider_hint_docs
+            if isinstance(doc, dict) and str(doc.get("provider_type", "") or "").strip()
+        }
+        allowed_skill_names = {
+            str(doc.get("skill_name", "") or "").strip().lower()
+            for doc in skill_hint_docs
+            if isinstance(doc, dict) and str(doc.get("skill_name", "") or "").strip()
+        }
+        allowed_skill_names.update(
+            {
+                str(doc.get("qualified_skill_name", "") or "").strip().lower()
+                for doc in skill_hint_docs
+                if isinstance(doc, dict) and str(doc.get("qualified_skill_name", "") or "").strip()
+            }
+        )
+        allowed_group_ids = {
+            str(group_id or "").strip()
+            for tool in available_tools
+            if isinstance(tool, dict)
+            for group_id in (tool.get("group_ids", []) or [])
+            if str(group_id or "").strip()
+        }
+        allowed_capabilities = {
+            str(tool.get("capability_class", "") or "").strip().lower()
+            for tool in available_tools
+            if isinstance(tool, dict) and str(tool.get("capability_class", "") or "").strip()
+        }
+        allowed_tool_names = {
+            str(tool.get("name", "") or "").strip()
+            for tool in available_tools
+            if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+        }
+
+        def _normalize_list(value: Any) -> list[str]:
+            if isinstance(value, str):
+                return [part.strip() for part in re.split(r"[,;\n]", value) if part.strip()]
+            if isinstance(value, list):
+                return [str(item).strip() for item in value if str(item).strip()]
+            return []
+
+        raw_action = str(payload.get("action", "") or "").strip().lower()
+        action_aliases = {
+            "direct": ToolIntentAction.DIRECT_ANSWER.value,
+            "direct_answer": ToolIntentAction.DIRECT_ANSWER.value,
+            "answer_direct": ToolIntentAction.DIRECT_ANSWER.value,
+            "clarify": ToolIntentAction.ASK_CLARIFICATION.value,
+            "ask": ToolIntentAction.ASK_CLARIFICATION.value,
+            "ask_clarification": ToolIntentAction.ASK_CLARIFICATION.value,
+            "use_tool": ToolIntentAction.USE_TOOLS.value,
+            "use_tools": ToolIntentAction.USE_TOOLS.value,
+            "tool": ToolIntentAction.USE_TOOLS.value,
+            "tool_call": ToolIntentAction.USE_TOOLS.value,
+        }
+        action = action_aliases.get(raw_action, ToolIntentAction.DIRECT_ANSWER.value)
+
+        target_provider_types = [
+            item.lower()
+            for item in _normalize_list(payload.get("target_provider_types", []))
+            if item.lower() in allowed_provider_types
+        ]
+        target_skill_names = [
+            item.lower()
+            for item in _normalize_list(payload.get("target_skill_names", []))
+            if item.lower() in allowed_skill_names
+        ]
+        target_group_ids = []
+        for item in _normalize_list(payload.get("target_group_ids", [])):
+            normalized = item if item.startswith("group:") else f"group:{item}"
+            if normalized in allowed_group_ids:
+                target_group_ids.append(normalized)
+        target_capability_classes = [
+            item.lower()
+            for item in _normalize_list(payload.get("target_capability_classes", []))
+            if item.lower() in allowed_capabilities
+        ]
+        target_tool_names = [
+            item
+            for item in _normalize_list(payload.get("target_tool_names", []))
+            if item in allowed_tool_names
+        ]
+        missing_inputs = _normalize_list(payload.get("missing_inputs", []))
+        reason = str(payload.get("reason", "") or "").strip()
+
+        if action == ToolIntentAction.USE_TOOLS.value and not any(
+            [
+                target_provider_types,
+                target_skill_names,
+                target_group_ids,
+                target_capability_classes,
+                target_tool_names,
+            ]
+        ):
+            action = (
+                ToolIntentAction.ASK_CLARIFICATION.value
+                if missing_inputs
+                else ToolIntentAction.DIRECT_ANSWER.value
+            )
+
+        return {
+            "action": action,
+            "target_provider_types": self._dedupe_preserve_order(target_provider_types),
+            "target_skill_names": self._dedupe_preserve_order(target_skill_names),
+            "target_group_ids": self._dedupe_preserve_order(target_group_ids),
+            "target_capability_classes": self._dedupe_preserve_order(target_capability_classes),
+            "target_tool_names": self._dedupe_preserve_order(target_tool_names),
+            "missing_inputs": self._dedupe_preserve_order(missing_inputs),
+            "reason": reason or "Planner returned a partial result; runtime normalized the plan.",
+        }
     def _build_classifier_timeout_fallback_decision(
         self,
         *,
@@ -420,19 +1038,13 @@ class RunnerToolGateModelMixin:
             user_message=user_message,
             recent_history=recent_history,
         )
-        timeout_seconds = float(getattr(self, "TOOL_HINT_RANKER_TIMEOUT_SECONDS", 2.5) or 2.5)
         try:
-            raw_output = await asyncio.wait_for(
-                self._run_single_with_optional_override(
-                    agent=agent,
-                    user_message=ranker_message,
-                    deps=deps,
-                    system_prompt=ranker_prompt,
-                ),
-                timeout=timeout_seconds,
+            raw_output = await self._run_single_with_optional_override(
+                agent=agent,
+                user_message=ranker_message,
+                deps=deps,
+                system_prompt=ranker_prompt,
             )
-        except asyncio.TimeoutError:
-            return None, "hint_ranker_timeout"
         except Exception as exc:
             return None, f"hint_ranker_error:{exc.__class__.__name__}"
 
@@ -747,6 +1359,146 @@ class RunnerToolGateModelMixin:
             "reason": reason,
             "policy": policy_value,
         }
+    def _build_tool_intent_plan_prompt(
+        self,
+        *,
+        available_tools: list[dict[str, Any]],
+        provider_hint_docs: list[dict[str, Any]],
+        skill_hint_docs: list[dict[str, Any]],
+        builtin_tool_hint_docs: list[dict[str, Any]],
+    ) -> str:
+        tool_lines: list[str] = []
+        for tool in available_tools:
+            name = str(tool.get("name", "") or "").strip()
+            if not name:
+                continue
+            description = str(tool.get("description", "") or "").strip()
+            provider_type = str(tool.get("provider_type", "") or "").strip()
+            capability = str(tool.get("capability_class", "") or "").strip()
+            groups = ", ".join(
+                str(group_id).strip() for group_id in (tool.get("group_ids", []) or []) if str(group_id).strip()
+            )
+            args = self._format_tool_arguments_for_prompt(tool.get("parameters_schema", {}))
+            skill_name = str(tool.get("qualified_skill_name", "") or tool.get("skill_name", "") or "").strip()
+            tool_lines.append(
+                f"- {name} | provider={provider_type or '-'} | skill={skill_name or '-'} | "
+                f"groups={groups or '-'} | capability={capability or '-'} | args={args or '-'} | desc={description or '-'}"
+            )
+
+        provider_lines: list[str] = []
+        for doc in provider_hint_docs:
+            if not isinstance(doc, dict):
+                continue
+            provider_lines.append(
+                f"- {str(doc.get('provider_type', '') or '').strip()} | "
+                f"{str(doc.get('hint_text', '') or '').strip()}"
+            )
+        if not provider_lines:
+            provider_lines.append("- none")
+
+        skill_lines: list[str] = []
+        for doc in skill_hint_docs:
+            if not isinstance(doc, dict):
+                continue
+            skill_name = str(
+                doc.get("qualified_skill_name", "") or doc.get("skill_name", "") or doc.get("hint_id", "")
+            ).strip()
+            if not skill_name:
+                continue
+            skill_lines.append(
+                f"- {skill_name} | provider={str(doc.get('provider_type', '') or '').strip() or '-'} | "
+                f"tools={', '.join(str(item).strip() for item in (doc.get('tool_names', []) or []) if str(item).strip()) or '-'} | "
+                f"{str(doc.get('hint_text', '') or '').strip()}"
+            )
+        if not skill_lines:
+            skill_lines.append("- none")
+
+        builtin_tool_lines: list[str] = []
+        for doc in builtin_tool_hint_docs:
+            if not isinstance(doc, dict):
+                continue
+            tool_name = str(doc.get("tool_name", "") or "").strip()
+            if not tool_name:
+                continue
+            builtin_tool_lines.append(
+                f"- {tool_name} | "
+                f"capabilities={', '.join(str(item).strip() for item in (doc.get('capability_classes', []) or []) if str(item).strip()) or '-'} | "
+                f"{str(doc.get('hint_text', '') or '').strip()}"
+            )
+        if not builtin_tool_lines:
+            builtin_tool_lines.append("- none")
+
+        return (
+            "You are AtlasClaw's internal tool-intent planner.\n"
+            "Do not answer the user. Do not fabricate tool results. Return one JSON object only.\n\n"
+            "Your job is to choose the smallest correct next action for this turn.\n"
+            "Use `direct_answer` only when no tool is needed.\n"
+            "Use `ask_clarification` when required inputs are missing.\n"
+            "Use `use_tools` only when tools are actually needed, and then select the smallest relevant subset.\n"
+            "Prefer provider/skill tools over web tools when a provider/skill clearly matches.\n"
+            "Do not select tools that are not in the allowed runtime list.\n\n"
+            "Allowed runtime tools:\n"
+            f"{chr(10).join(tool_lines) if tool_lines else '- none'}\n\n"
+            "Provider metadata:\n"
+            f"{chr(10).join(provider_lines)}\n\n"
+            "Skill metadata:\n"
+            f"{chr(10).join(skill_lines)}\n\n"
+            "Built-in tool metadata:\n"
+            f"{chr(10).join(builtin_tool_lines)}\n\n"
+            "Return JSON with exactly these fields:\n"
+            "{\n"
+            '  "action": "direct_answer" | "ask_clarification" | "use_tools",\n'
+            '  "target_provider_types": string[],\n'
+            '  "target_skill_names": string[],\n'
+            '  "target_group_ids": string[],\n'
+            '  "target_capability_classes": string[],\n'
+            '  "target_tool_names": string[],\n'
+            '  "missing_inputs": string[],\n'
+            '  "reason": string\n'
+            "}\n"
+        )
+    @staticmethod
+    def _build_tool_intent_plan_message(
+        *,
+        user_message: str,
+        recent_history: list[dict[str, Any]],
+    ) -> str:
+        now_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        history_lines: list[str] = []
+        for item in recent_history[-4:]:
+            role = str(item.get("role", "") or "").strip() or "unknown"
+            content = str(item.get("content", "") or "").strip().replace("\n", " ")
+            if len(content) > 180:
+                content = content[:177] + "..."
+            history_lines.append(f"- {role}: {content}")
+        history_text = "\n".join(history_lines) if history_lines else "- none"
+        return (
+            "Plan the next AtlasClaw action.\n\n"
+            f"Runtime UTC time:\n{now_utc}\n\n"
+            f"User request:\n{user_message}\n\n"
+            f"Recent history:\n{history_text}\n"
+        )
+
+    @staticmethod
+    def _format_tool_arguments_for_prompt(parameters_schema: Any) -> str:
+        if not isinstance(parameters_schema, dict):
+            return ""
+        properties = parameters_schema.get("properties")
+        if not isinstance(properties, dict) or not properties:
+            return ""
+        required = {
+            str(item).strip()
+            for item in (parameters_schema.get("required", []) or [])
+            if str(item).strip()
+        }
+        args: list[str] = []
+        for name in properties.keys():
+            normalized_name = str(name or "").strip()
+            if not normalized_name:
+                continue
+            suffix = "" if normalized_name in required else "?"
+            args.append(f"{normalized_name}{suffix}")
+        return ", ".join(args)
     def _build_tool_gate_classifier_prompt(self, available_tools: list[dict[str, Any]]) -> str:
         capabilities: list[str] = []
         for tool in available_tools:

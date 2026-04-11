@@ -440,6 +440,8 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
             timestamp=entry.timestamp,
             role=entry.role,
             content=content,
+            tool_name=getattr(entry, "tool_name", ""),
+            tool_call_id=getattr(entry, "tool_call_id", ""),
             tool_calls=entry.tool_calls,
             tool_results=entry.tool_results,
             metadata=metadata,
@@ -474,8 +476,11 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
                 entry = TranscriptEntry(
                     role=msg.get("role", "user"),
                     content=msg.get("content", ""),
+                    tool_name=msg.get("tool_name", msg.get("name", "")),
+                    tool_call_id=msg.get("tool_call_id", msg.get("id", "")),
                     tool_calls=msg.get("tool_calls", []),
                     tool_results=msg.get("tool_results", []),
+                    metadata=msg.get("metadata", {}) if isinstance(msg.get("metadata", {}), dict) else {},
                 )
                 if str(entry.role).lower() == "user":
                     entry.content, encoded = encode_if_untrusted(entry.content)

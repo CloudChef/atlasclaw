@@ -6,7 +6,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Optional
 
-from app.atlasclaw.agent.tool_gate_models import ToolGateDecision
+from app.atlasclaw.agent.tool_gate_models import ToolIntentPlan
 
 
 class RunnerToolGateCacheMixin:
@@ -24,6 +24,7 @@ class RunnerToolGateCacheMixin:
             signatures.append(f"{name}|{capability}|{provider_type}")
         signatures.sort()
         return "\n".join(signatures)
+
     def _build_tool_gate_cache_key(
         self,
         *,
@@ -48,6 +49,7 @@ class RunnerToolGateCacheMixin:
             metadata_signature = json.dumps(
                 {
                     "providers": list(metadata_candidates.get("preferred_provider_types", []) or []),
+                    "groups": list(metadata_candidates.get("preferred_group_ids", []) or []),
                     "capabilities": list(
                         metadata_candidates.get("preferred_capability_classes", []) or []
                     ),
@@ -67,8 +69,9 @@ class RunnerToolGateCacheMixin:
             ]
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-    def _get_cached_tool_gate_decision(self, cache_key: str) -> Optional[ToolGateDecision]:
-        cache = getattr(self, "_tool_gate_decision_cache", None)
+
+    def _get_cached_tool_intent_plan(self, cache_key: str) -> Optional[ToolIntentPlan]:
+        cache = getattr(self, "_tool_intent_plan_cache", None)
         if not isinstance(cache, OrderedDict):
             return None
         entry = cache.get(cache_key)
@@ -80,30 +83,31 @@ class RunnerToolGateCacheMixin:
             return None
         cache.move_to_end(cache_key)
         try:
-            return ToolGateDecision.model_validate(dict(payload))
+            return ToolIntentPlan.model_validate(dict(payload))
         except Exception:
             cache.pop(cache_key, None)
             return None
-    def _store_tool_gate_decision_cache(
+
+    def _store_tool_intent_plan_cache(
         self,
         *,
         cache_key: str,
-        decision: ToolGateDecision,
+        plan: ToolIntentPlan,
     ) -> None:
-        cache = getattr(self, "_tool_gate_decision_cache", None)
+        cache = getattr(self, "_tool_intent_plan_cache", None)
         if not isinstance(cache, OrderedDict):
             return
         ttl_seconds = max(
             1.0,
-            float(getattr(self, "TOOL_GATE_DECISION_CACHE_TTL_SECONDS", 300.0) or 300.0),
+            float(getattr(self, "TOOL_INTENT_PLAN_CACHE_TTL_SECONDS", 300.0) or 300.0),
         )
         max_entries = max(
             32,
-            int(getattr(self, "TOOL_GATE_DECISION_CACHE_MAX_ENTRIES", 512) or 512),
+            int(getattr(self, "TOOL_INTENT_PLAN_CACHE_MAX_ENTRIES", 512) or 512),
         )
         now = time.monotonic()
         expires_at = now + ttl_seconds
-        cache[cache_key] = (expires_at, decision.model_dump(mode="python"))
+        cache[cache_key] = (expires_at, plan.model_dump(mode="python"))
         cache.move_to_end(cache_key)
         stale_keys = [key for key, (expire_ts, _) in list(cache.items()) if float(expire_ts) <= now]
         for key in stale_keys:

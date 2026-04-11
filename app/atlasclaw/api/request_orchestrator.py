@@ -94,7 +94,7 @@ class AgentFactory:
         )
 
         for meta, handler in allowed_skills:
-            agent.tool(handler, name=meta.name)
+            self.skill_registry.register_entry_to_agent(agent, meta, handler)
 
         instance = AgentInstance(
             config=config,

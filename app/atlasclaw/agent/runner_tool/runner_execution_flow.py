@@ -17,15 +17,17 @@ class RunnerExecutionFlowPhaseMixin(
         """Main model/tool streaming loop phase."""
         deps = state.get("deps")
         user_message = state.get("user_message")
-        message_history = list(state.get("message_history") or [])
+        raw_runtime_message_history = state.get("runtime_message_history")
+        if raw_runtime_message_history is None:
+            raw_runtime_message_history = state.get("message_history") or []
+        runtime_message_history = list(raw_runtime_message_history)
+        agent_run = None
 
         deps.user_message = user_message
-        state["run_output_start_index"] = len(message_history)
+        state["run_output_start_index"] = len(runtime_message_history)
 
         try:
-            model_message_history = self.history.to_model_message_history(message_history)
-            tool_gate_decision = state.get("tool_gate_decision")
-            provider_fast_path_turn = bool(getattr(tool_gate_decision, "needs_external_system", False))
+            model_message_history = self.history.to_model_message_history(runtime_message_history)
             async with self._run_iter_with_optional_override(
                 agent=state.get("runtime_agent"),
                 user_message=user_message,
@@ -37,7 +39,6 @@ class RunnerExecutionFlowPhaseMixin(
                     agent_run=agent_run,
                     state=state,
                     _log_step=_log_step,
-                    provider_fast_path_turn=provider_fast_path_turn,
                 ):
                     yield event
 
@@ -50,11 +51,23 @@ class RunnerExecutionFlowPhaseMixin(
                     agent_run=agent_run,
                     state=state,
                     _log_step=_log_step,
-                    provider_fast_path_turn=provider_fast_path_turn,
                 ):
                     yield event
 
         except Exception as error:
+            if agent_run is not None:
+                try:
+                    runtime_messages = self.history.normalize_messages(agent_run.all_messages())
+                    merged_messages = self._merge_runtime_messages_with_session_prefix(
+                        session_message_history=state.get("session_message_history") or [],
+                        runtime_messages=runtime_messages,
+                        runtime_base_history_len=int(state.get("runtime_base_history_len") or 0),
+                    )
+                    state["latest_runtime_messages"] = runtime_messages
+                    state["latest_agent_messages"] = merged_messages
+                    state["message_history"] = merged_messages
+                except Exception:
+                    pass
             async for event in self._handle_loop_phase_exception(error=error, state=state):
                 yield event
 

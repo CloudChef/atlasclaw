@@ -15,6 +15,14 @@ class ToolPolicyMode(str, Enum):
     MUST_USE_TOOL = "must_use_tool"
 
 
+class ToolIntentAction(str, Enum):
+    """High-level turn action selected before entering the tool loop."""
+
+    DIRECT_ANSWER = "direct_answer"
+    ASK_CLARIFICATION = "ask_clarification"
+    USE_TOOLS = "use_tools"
+
+
 class ToolCandidate(BaseModel):
     """Concrete tool candidate matched for a required capability."""
 
@@ -37,6 +45,19 @@ class ToolGateDecision(BaseModel):
     confidence: float = 0.0
     reason: str
     policy: ToolPolicyMode = ToolPolicyMode.ANSWER_DIRECT
+
+
+class ToolIntentPlan(BaseModel):
+    """Structured planning result used to derive the minimal toolset for a turn."""
+
+    action: ToolIntentAction = ToolIntentAction.DIRECT_ANSWER
+    target_provider_types: list[str] = Field(default_factory=list)
+    target_skill_names: list[str] = Field(default_factory=list)
+    target_group_ids: list[str] = Field(default_factory=list)
+    target_capability_classes: list[str] = Field(default_factory=list)
+    target_tool_names: list[str] = Field(default_factory=list)
+    missing_inputs: list[str] = Field(default_factory=list)
+    reason: str = ""
 
 
 class CapabilityMatchResult(BaseModel):

@@ -81,6 +81,7 @@ class ProviderContext:
     provider_type: str
     display_name: str = ""
     version: str = ""
+    aliases: list[str] = field(default_factory=list)
     keywords: list[str] = field(default_factory=list)
     capabilities: list[str] = field(default_factory=list)
     use_when: list[str] = field(default_factory=list)
@@ -199,6 +200,7 @@ class ServiceProviderRegistry:
             provider_type=str(provider_type),
             display_name=str(meta.get("display_name", "")),
             version=str(meta.get("version", "")),
+            aliases=as_list(meta.get("aliases")),
             keywords=as_list(meta.get("keywords")),
             capabilities=as_list(meta.get("capabilities")),
             use_when=as_list(meta.get("use_when")),

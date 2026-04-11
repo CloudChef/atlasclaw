@@ -65,6 +65,20 @@ def test_collect_tools_snapshot_preserves_normalized_metadata_from_deps() -> Non
                     "group_ids": ["group:cmp"],
                     "capability_class": "provider:smartcmp",
                     "priority": 150,
+                    "parameters_schema": {
+                        "type": "object",
+                        "properties": {
+                            "identifier": {"type": "string"},
+                            "days": {"type": "integer"},
+                        },
+                        "required": ["identifier"],
+                    },
+                    "planner_visibility": "always",
+                    "aliases": ["cmp", "smartcmp approvals"],
+                    "keywords": ["approval", "pending"],
+                    "use_when": ["User asks for pending approvals"],
+                    "avoid_when": ["User asks for weather"],
+                    "result_mode": "tool_only_ok",
                 }
             ]
         }
@@ -79,6 +93,20 @@ def test_collect_tools_snapshot_preserves_normalized_metadata_from_deps() -> Non
             "group_ids": ["group:cmp"],
             "capability_class": "provider:smartcmp",
             "priority": 150,
+            "parameters_schema": {
+                "type": "object",
+                "properties": {
+                    "identifier": {"type": "string"},
+                    "days": {"type": "integer"},
+                },
+                "required": ["identifier"],
+            },
+            "planner_visibility": "always",
+            "aliases": ["cmp", "smartcmp approvals"],
+            "keywords": ["approval", "pending"],
+            "use_when": ["User asks for pending approvals"],
+            "avoid_when": ["User asks for weather"],
+            "result_mode": "tool_only_ok",
         }
     ]
 
@@ -164,6 +192,7 @@ def test_collect_tools_snapshot_infers_md_skill_capability() -> None:
             "description": "Run summarize skill",
             "category": "skill",
             "source": "md_skill",
+            "skill_name": "summarize",
             "capability_class": "skill",
         }
     ]
@@ -197,3 +226,88 @@ def test_collect_tools_snapshot_falls_back_to_skills_snapshot_when_agent_has_no_
         tool["name"] == "web_search" and tool.get("capability_class") == "web_search"
         for tool in snapshot
     )
+
+
+def test_collect_tools_snapshot_preserves_runtime_tool_metadata_fields() -> None:
+    agent = SimpleNamespace(
+        tools=[
+            {
+                "name": "openmeteo_weather",
+                "description": "Get current and forecast weather via Open-Meteo APIs",
+                "source": "builtin",
+                "group_ids": ["group:web"],
+                "capability_class": "weather",
+                "planner_visibility": "contextual",
+                "aliases": ["weather", "forecast"],
+                "keywords": ["天气", "预报", "temperature"],
+                "use_when": ["User asks for a forecast by place and date"],
+                "avoid_when": ["User asks for enterprise approvals"],
+                "result_mode": "tool_only_ok",
+            }
+        ]
+    )
+    deps = SimpleNamespace(extra={"tools_snapshot": []})
+
+    snapshot = collect_tools_snapshot(agent=agent, deps=deps)
+
+    assert snapshot == [
+        {
+            "name": "openmeteo_weather",
+            "description": "Get current and forecast weather via Open-Meteo APIs",
+            "source": "builtin",
+            "group_ids": ["group:web"],
+            "capability_class": "weather",
+            "planner_visibility": "contextual",
+            "aliases": ["weather", "forecast"],
+            "keywords": ["天气", "预报", "temperature"],
+            "use_when": ["User asks for a forecast by place and date"],
+            "avoid_when": ["User asks for enterprise approvals"],
+            "result_mode": "tool_only_ok",
+        }
+    ]
+
+
+def test_collect_tools_snapshot_does_not_stringify_none_provider_metadata() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot": [
+                {
+                    "name": "web_search",
+                    "description": "Web search",
+                    "provider_type": "",
+                    "category": "builtin:web",
+                    "source": "builtin",
+                    "group_ids": ["group:web"],
+                    "capability_class": "web_search",
+                    "planner_visibility": "general",
+                }
+            ],
+            "skills_snapshot": [
+                {
+                    "name": "web_search",
+                    "description": "Web search",
+                    "provider_type": None,
+                    "category": "builtin:web",
+                    "source": "builtin",
+                    "group_ids": ["group:web"],
+                    "capability_class": "web_search",
+                    "planner_visibility": "general",
+                }
+            ],
+            "md_skills_snapshot": [],
+        }
+    )
+
+    snapshot = collect_tools_snapshot(agent=object(), deps=deps)
+
+    assert snapshot == [
+        {
+            "name": "web_search",
+            "description": "Web search",
+            "category": "builtin:web",
+            "source": "builtin",
+            "group_ids": ["group:web"],
+            "capability_class": "web_search",
+            "planner_visibility": "general",
+        }
+    ]

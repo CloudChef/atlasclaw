@@ -60,17 +60,7 @@ class RunnerExecutionToolsetMixin:
             for tool in all_tools
             if str(tool.get("name", "")).strip() in filtered_names
         ]
-        if filtered_tools:
-            payload = (filtered_tools, result.trace, False)
-            self._store_turn_toolset_cache(cache_key=cache_key, payload=payload)
-            return payload
-
-        fallback_tools = self._safe_fallback_toolset(all_tools)
-        if fallback_tools:
-            payload = (fallback_tools, result.trace, True)
-            self._store_turn_toolset_cache(cache_key=cache_key, payload=payload)
-            return payload
-        payload = (list(all_tools), result.trace, True)
+        payload = (filtered_tools, result.trace, False)
         self._store_turn_toolset_cache(cache_key=cache_key, payload=payload)
         return payload
     def _build_turn_toolset_cache_key(
@@ -181,40 +171,6 @@ class RunnerExecutionToolsetMixin:
                 if provider_type:
                     aliases.setdefault(f"group:{provider_type}", members)
         return aliases
-    @staticmethod
-    def _safe_fallback_toolset(all_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        preferred_names = {
-            "session_status",
-            "web_search",
-            "web_fetch",
-            "openmeteo_weather",
-            "list_provider_instances",
-            "select_provider_instance",
-        }
-        preferred: list[dict[str, Any]] = []
-        provider_or_skill: list[dict[str, Any]] = []
-        for tool in all_tools:
-            if not isinstance(tool, dict):
-                continue
-            name = str(tool.get("name", "")).strip()
-            if not name:
-                continue
-            capability = str(tool.get("capability_class", "")).strip()
-            if name in preferred_names:
-                preferred.append(tool)
-                continue
-            if capability.startswith("provider:") or capability == "skill":
-                provider_or_skill.append(tool)
-
-        merged: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for item in [*provider_or_skill, *preferred]:
-            name = str(item.get("name", "")).strip()
-            if not name or name in seen:
-                continue
-            seen.add(name)
-            merged.append(item)
-        return merged
     @staticmethod
     def _build_filtered_group_map(
         original_groups: dict[str, list[str]],

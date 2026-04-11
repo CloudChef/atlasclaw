@@ -4,7 +4,13 @@ import json
 from typing import Any, Optional
 
 from app.atlasclaw.agent.stream import StreamEvent
-from app.atlasclaw.agent.tool_gate_models import CapabilityMatchResult, ToolGateDecision, ToolPolicyMode
+from app.atlasclaw.agent.tool_gate_models import (
+    CapabilityMatchResult,
+    ToolGateDecision,
+    ToolIntentAction,
+    ToolIntentPlan,
+    ToolPolicyMode,
+)
 from app.atlasclaw.core.deps import SkillDeps
 
 
@@ -13,55 +19,75 @@ class RunnerToolGatePolicyMixin:
         self,
         *,
         deps: SkillDeps,
-        decision: ToolGateDecision,
-        match_result: CapabilityMatchResult,
+        intent_plan: ToolIntentPlan,
+        available_tools: list[dict[str, Any]],
     ) -> None:
-        """Inject per-run tool-policy context for prompt building."""
+        """Inject per-run turn guidance for prompt building."""
         if not isinstance(deps.extra, dict):
             deps.extra = {}
-        retry_count = int(deps.extra.get("_tool_policy_retry_count", 0) or 0)
-        retry_missing_tools = deps.extra.get("tool_policy_retry_missing_tools")
+        retry_count = int(deps.extra.get("_tool_execution_retry_count", 0) or 0)
+        retry_missing_tools = deps.extra.get("tool_execution_retry_missing_tools")
         if not isinstance(retry_missing_tools, list):
             retry_missing_tools = []
-
-        required_tools = self._required_tool_names_for_decision(
-            decision=decision,
-            match_result=match_result,
+        preferred_tools = self._preferred_tools_for_intent_plan(
+            intent_plan=intent_plan,
+            available_tools=available_tools,
         )
-        preferred_tools = self._preferred_tool_names_for_prompt(
-            decision=decision,
-            match_result=match_result,
-            required_tools=required_tools,
+        execution_hint = (
+            "provider_tool_first"
+            if (
+                intent_plan.action is ToolIntentAction.USE_TOOLS
+                and bool(intent_plan.target_provider_types or intent_plan.target_skill_names)
+            )
+            else "default"
         )
-
-        provider_skill_fast_path = bool(
-            decision.needs_external_system and self._has_provider_or_skill_candidates(match_result)
-        )
-        top_tool_hints: list[str] = []
-        if isinstance(getattr(deps, "extra", None), dict):
-            ranking_trace = deps.extra.get("tool_ranking_trace")
-            if isinstance(ranking_trace, dict):
-                hints = ranking_trace.get("top_tool_hints")
-                if isinstance(hints, list):
-                    top_tool_hints = [
-                        str(item).strip()
-                        for item in hints
-                        if str(item).strip()
-                    ][: max(1, int(getattr(self, "TOOL_HINT_TOP_K", 3) or 3))]
-
         deps.extra["tool_policy"] = {
-            "mode": decision.policy.value,
-            "reason": decision.reason,
-            "required_tools": preferred_tools,
-            "missing_capabilities": list(match_result.missing_capabilities),
-            "confidence": float(decision.confidence),
-            "execution_hint": "provider_tool_first" if provider_skill_fast_path else "default",
+            "mode": intent_plan.action.value,
+            "reason": intent_plan.reason,
+            "preferred_tools": preferred_tools,
+            "execution_hint": execution_hint,
+            "max_same_tool_calls_per_turn": int(
+                getattr(self, "MAX_IDENTICAL_TOOL_CALLS_PER_TURN", 2) or 2
+            ),
             "retry_count": retry_count,
             "retry_missing_tools": [
                 str(name).strip() for name in retry_missing_tools if str(name).strip()
             ],
-            "top_tool_hints": top_tool_hints,
+            "target_provider_types": list(intent_plan.target_provider_types),
+            "target_skill_names": list(intent_plan.target_skill_names),
+            "target_group_ids": list(intent_plan.target_group_ids),
+            "target_capability_classes": list(intent_plan.target_capability_classes),
         }
+
+    @staticmethod
+    def _preferred_tools_for_intent_plan(
+        *,
+        intent_plan: ToolIntentPlan,
+        available_tools: list[dict[str, Any]],
+    ) -> list[str]:
+        ranked: list[tuple[int, str]] = []
+        for tool in available_tools:
+            if not isinstance(tool, dict):
+                continue
+            name = str(tool.get("name", "") or "").strip()
+            if not name:
+                continue
+            try:
+                priority = int(tool.get("priority", 100) or 100)
+            except (TypeError, ValueError):
+                priority = 100
+            ranked.append((priority, name))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        names: list[str] = []
+        for _, name in ranked:
+            if name in names:
+                continue
+            names.append(name)
+            if len(names) >= 8:
+                break
+        if names:
+            return names
+        return list(intent_plan.target_tool_names)
     @staticmethod
     def _preferred_tool_names_for_prompt(
         *,
@@ -259,6 +285,17 @@ class RunnerToolGatePolicyMixin:
                 ).strip()
                 if tool_name:
                     names.add(tool_name)
+            tool_results = message.get("tool_results")
+            if not isinstance(tool_results, list):
+                continue
+            for result in tool_results:
+                if not isinstance(result, dict):
+                    continue
+                tool_name = str(
+                    result.get("name", "") or result.get("tool_name", "")
+                ).strip()
+                if tool_name:
+                    names.add(tool_name)
         return names
     def _should_enforce_web_tool_verification(
         self,
@@ -313,13 +350,19 @@ class RunnerToolGatePolicyMixin:
             if not isinstance(message, dict):
                 continue
             role = str(message.get("role", "")).strip().lower()
-            if role not in {"tool", "toolresult", "tool_result"}:
+            if role in {"tool", "toolresult", "tool_result"}:
+                tool_name = str(message.get("tool_name", "") or message.get("name", "")).strip()
+                if tool_name and self._is_tool_result_success(message):
+                    successful.add(tool_name)
+            tool_results = message.get("tool_results")
+            if not isinstance(tool_results, list):
                 continue
-            tool_name = str(message.get("tool_name", "") or message.get("name", "")).strip()
-            if not tool_name:
-                continue
-            if self._is_tool_result_success(message):
-                successful.add(tool_name)
+            for result in tool_results:
+                if not isinstance(result, dict):
+                    continue
+                tool_name = str(result.get("tool_name", "") or result.get("name", "")).strip()
+                if tool_name and self._is_tool_result_success(result):
+                    successful.add(tool_name)
         return successful
     @staticmethod
     def _is_tool_result_success(message: dict[str, Any]) -> bool:
@@ -345,6 +388,19 @@ class RunnerToolGatePolicyMixin:
         if isinstance(payload, dict):
             if bool(payload.get("is_error")):
                 return False
+            if payload.get("success") is True:
+                output_value = payload.get("output")
+                if isinstance(output_value, str) and output_value.strip():
+                    return True
+                if output_value not in (None, "", [], {}):
+                    return True
+                return True
+            if "returncode" in payload and payload.get("returncode") == 0:
+                output_value = payload.get("output")
+                if isinstance(output_value, str):
+                    return bool(output_value.strip())
+                if output_value not in (None, "", [], {}):
+                    return True
             error_value = payload.get("error")
             if isinstance(error_value, str) and error_value.strip():
                 return False
@@ -363,6 +419,8 @@ class RunnerToolGatePolicyMixin:
             if "summary" in payload and str(payload.get("summary", "")).strip():
                 return True
             if "text" in payload and str(payload.get("text", "")).strip():
+                return True
+            if "output" in payload and str(payload.get("output", "")).strip():
                 return True
             return bool(payload)
         if isinstance(payload, list):

@@ -149,7 +149,7 @@ class RunnerExecutionRetryMixin:
         if emit_lifecycle_bounds:
             yield StreamEvent.lifecycle_end()
         return
-    async def _retry_after_tool_policy_failure(
+    async def _retry_after_missing_tool_execution(
         self,
         *,
         session_key: str,
@@ -163,14 +163,14 @@ class RunnerExecutionRetryMixin:
         token_failover_attempt: int,
         emit_lifecycle_bounds: bool,
         failure_message: str,
-        missing_required_tools: list[str],
-        tool_policy_retry_count: int,
+        preferred_tools: list[str],
+        tool_execution_retry_count: int,
         allow_retry: bool,
     ) -> AsyncIterator[StreamEvent]:
-        """Retry once when must-use-tool policy produced no usable tool evidence."""
+        """Retry once when a tool-required turn ended without any real tool execution."""
         if not allow_retry:
             return
-        if tool_policy_retry_count >= self.TOOL_POLICY_MAX_RETRIES:
+        if tool_execution_retry_count >= self.TOOL_POLICY_MAX_RETRIES:
             return
 
         if release_slot is not None:
@@ -178,22 +178,22 @@ class RunnerExecutionRetryMixin:
 
         if not isinstance(deps.extra, dict):
             deps.extra = {}
-        deps.extra["_tool_policy_retry_count"] = tool_policy_retry_count + 1
-        deps.extra["tool_policy_retry_reason"] = "missing_required_tool_evidence"
-        deps.extra["tool_policy_retry_missing_tools"] = list(missing_required_tools)
+        deps.extra["_tool_execution_retry_count"] = tool_execution_retry_count + 1
+        deps.extra["tool_execution_retry_reason"] = "missing_tool_execution"
+        deps.extra["tool_execution_retry_missing_tools"] = list(preferred_tools)
 
         yield StreamEvent.runtime_update(
             "retrying",
             (
-                "Tool-backed verification did not produce usable evidence for required tools. "
-                "Retrying once with stricter tool-policy guidance."
+                "The model did not execute a real tool call in a tool-required turn. "
+                "Retrying once with stricter tool-execution guidance."
             ),
             metadata={
-                "phase": "tool_policy_retry",
+                "phase": "tool_execution_retry",
                 "elapsed": round(time.monotonic() - start_time, 1),
-                "attempt": tool_policy_retry_count + 1,
+                "attempt": tool_execution_retry_count + 1,
                 "failed_token_id": selected_token_id,
-                "missing_required_tools": list(missing_required_tools),
+                "preferred_tools": list(preferred_tools),
                 "failure_message": failure_message,
             },
         )
@@ -229,6 +229,13 @@ class RunnerExecutionRetryMixin:
             "rate-limited upstream",
             "too many requests",
             "rate limit",
+            "invalid response from openai chat completions endpoint",
+            "validation errors for chatcompletion",
+            "validation error for chatcompletion",
+            "input should be a valid string",
+            "input should be a valid list",
+            "object input should be 'chat.completion'",
+            "pydantic validation error",
         )
         return any(marker in lowered for marker in hard_markers)
 

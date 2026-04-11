@@ -1,21 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 from contextlib import asynccontextmanager, nullcontext
-from dataclasses import dataclass
 from typing import Any, AsyncIterator, Optional
 
 from app.atlasclaw.agent.context_window_guard import ContextWindowInfo, resolve_context_window_info
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.session.context import SessionKey
-
-
-@dataclass
-class _ModelNodeTimeout(RuntimeError):
-    """Raised when the model stream stalls waiting for next node."""
-
-    first_node: bool
-    timeout_seconds: float
 
 class RunnerExecutionRuntimeMixin:
     async def _resolve_runtime_agent(
@@ -217,41 +207,33 @@ class RunnerExecutionRuntimeMixin:
             ) as agent_run:
 
                 yield agent_run
-    async def _iter_agent_nodes_with_timeout(
+    async def _iter_agent_nodes(
         self,
         agent_run: Any,
-        *,
-        first_node_timeout_seconds: Optional[float] = None,
-        next_node_timeout_seconds: Optional[float] = None,
     ) -> AsyncIterator[Any]:
+        next_fn = getattr(agent_run, "next", None)
+        next_node = getattr(agent_run, "next_node", None)
+        if callable(next_fn) and next_node is not None:
+            node = next_node
+            while node is not None:
+                node_type = type(node).__name__.lower()
+                if node_type == "end":
+                    return
+                following_node = await next_fn(node)
+                try:
+                    setattr(node, "_atlas_next_node", following_node)
+                except Exception:
+                    pass
+                yield node
+                node = following_node
+            return
+
         iterator = agent_run.__aiter__()
-        waiting_for_first_node = True
-        first_timeout = (
-            float(first_node_timeout_seconds)
-            if first_node_timeout_seconds is not None
-            else float(self.MODEL_FIRST_NODE_TIMEOUT_SECONDS)
-        )
-        next_timeout = (
-            float(next_node_timeout_seconds)
-            if next_node_timeout_seconds is not None
-            else float(self.MODEL_NEXT_NODE_TIMEOUT_SECONDS)
-        )
         while True:
-            timeout_seconds = (
-                first_timeout
-                if waiting_for_first_node
-                else next_timeout
-            )
             try:
-                node = await asyncio.wait_for(iterator.__anext__(), timeout=timeout_seconds)
+                node = await iterator.__anext__()
             except StopAsyncIteration:
                 return
-            except asyncio.TimeoutError as exc:
-                raise _ModelNodeTimeout(
-                    first_node=waiting_for_first_node,
-                    timeout_seconds=float(timeout_seconds),
-                ) from exc
-            waiting_for_first_node = False
             yield node
     def _is_model_request_node(self, node: Any) -> bool:
         """Return whether a node represents a model request boundary."""

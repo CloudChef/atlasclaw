@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, AsyncIterator
 
 from app.atlasclaw.agent.stream import StreamEvent
+
+logger = logging.getLogger(__name__)
 
 
 class RunnerExecutionFinalizePhaseMixin:
@@ -27,7 +30,7 @@ class RunnerExecutionFinalizePhaseMixin:
         flushed_memory_signatures = state.get("flushed_memory_signatures")
         extra = state.get("extra")
         run_id = state.get("run_id")
-        tool_policy_retry_count = state.get("tool_policy_retry_count")
+        tool_execution_retry_count = state.get("tool_execution_retry_count")
         run_failed = state.get("run_failed")
         message_history = state.get("message_history")
         system_prompt = state.get("system_prompt")
@@ -38,6 +41,7 @@ class RunnerExecutionFinalizePhaseMixin:
         buffered_assistant_events = state.get("buffered_assistant_events")
         assistant_output_streamed = state.get("assistant_output_streamed")
         tool_request_message = state.get("tool_request_message")
+        tool_intent_plan = state.get("tool_intent_plan")
         tool_gate_decision = state.get("tool_gate_decision")
         tool_match_result = state.get("tool_match_result")
         current_model_attempt = state.get("current_model_attempt")
@@ -46,11 +50,10 @@ class RunnerExecutionFinalizePhaseMixin:
         current_attempt_has_tool = state.get("current_attempt_has_tool")
         reasoning_retry_count = state.get("reasoning_retry_count")
         run_output_start_index = state.get("run_output_start_index")
-        web_tool_verification_enforced = state.get("web_tool_verification_enforced")
+        tool_execution_required = state.get("tool_execution_required")
         reasoning_retry_limit = state.get("reasoning_retry_limit")
         model_stream_timed_out = state.get("model_stream_timed_out")
         model_timeout_error_message = state.get("model_timeout_error_message")
-        fast_path_tool_answer = state.get("fast_path_tool_answer")
         runtime_context_window_info = state.get("runtime_context_window_info")
         runtime_context_guard = state.get("runtime_context_guard")
         runtime_context_window = state.get("runtime_context_window")
@@ -61,6 +64,7 @@ class RunnerExecutionFinalizePhaseMixin:
         tool_groups_snapshot = state.get("tool_groups_snapshot")
         available_tools = state.get("available_tools")
         toolset_filter_trace = state.get("toolset_filter_trace")
+        tool_projection_trace = state.get("tool_projection_trace")
         used_toolset_fallback = state.get("used_toolset_fallback")
         provider_hint_docs = state.get("provider_hint_docs")
         skill_hint_docs = state.get("skill_hint_docs")
@@ -68,12 +72,21 @@ class RunnerExecutionFinalizePhaseMixin:
         ranking_trace = state.get("ranking_trace")
         # -- hook:agent_end --
         if not run_failed:
-            await self.runtime_events.trigger_agent_end(
-                session_key=session_key,
-                run_id=run_id,
-                tool_calls_count=tool_calls_count,
-                compaction_applied=compaction_applied,
-            )
+            try:
+                await self.runtime_events.trigger_agent_end(
+                    session_key=session_key,
+                    run_id=run_id,
+                    tool_calls_count=tool_calls_count,
+                    compaction_applied=compaction_applied,
+                )
+            except Exception as exc:
+                logger.exception("trigger_agent_end failed")
+                if bool(state.get("answer_committed")):
+                    yield StreamEvent.runtime_update(
+                        "warning",
+                        f"Post-answer side effect failed: {exc.__class__.__name__}",
+                        metadata={"phase": "post_answer_exception"},
+                    )
 
         if _emit_lifecycle_bounds:
             yield StreamEvent.lifecycle_end()
@@ -97,7 +110,7 @@ class RunnerExecutionFinalizePhaseMixin:
             "flushed_memory_signatures": flushed_memory_signatures,
             "extra": extra,
             "run_id": run_id,
-            "tool_policy_retry_count": tool_policy_retry_count,
+            "tool_execution_retry_count": tool_execution_retry_count,
             "run_failed": run_failed,
             "message_history": message_history,
             "system_prompt": system_prompt,
@@ -108,6 +121,7 @@ class RunnerExecutionFinalizePhaseMixin:
             "buffered_assistant_events": buffered_assistant_events,
             "assistant_output_streamed": assistant_output_streamed,
             "tool_request_message": tool_request_message,
+            "tool_intent_plan": tool_intent_plan,
             "tool_gate_decision": tool_gate_decision,
             "tool_match_result": tool_match_result,
             "current_model_attempt": current_model_attempt,
@@ -116,11 +130,10 @@ class RunnerExecutionFinalizePhaseMixin:
             "current_attempt_has_tool": current_attempt_has_tool,
             "reasoning_retry_count": reasoning_retry_count,
             "run_output_start_index": run_output_start_index,
-            "web_tool_verification_enforced": web_tool_verification_enforced,
+            "tool_execution_required": tool_execution_required,
             "reasoning_retry_limit": reasoning_retry_limit,
             "model_stream_timed_out": model_stream_timed_out,
             "model_timeout_error_message": model_timeout_error_message,
-            "fast_path_tool_answer": fast_path_tool_answer,
             "runtime_context_window_info": runtime_context_window_info,
             "runtime_context_guard": runtime_context_guard,
             "runtime_context_window": runtime_context_window,
@@ -131,6 +144,7 @@ class RunnerExecutionFinalizePhaseMixin:
             "tool_groups_snapshot": tool_groups_snapshot,
             "available_tools": available_tools,
             "toolset_filter_trace": toolset_filter_trace,
+            "tool_projection_trace": tool_projection_trace,
             "used_toolset_fallback": used_toolset_fallback,
             "provider_hint_docs": provider_hint_docs,
             "skill_hint_docs": skill_hint_docs,

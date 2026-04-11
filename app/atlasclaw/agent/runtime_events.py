@@ -7,6 +7,8 @@ from dataclasses import dataclass
 import logging
 from typing import Any
 
+from pydantic_ai.messages import ToolCallPart
+
 from app.atlasclaw.agent.tool_gate_models import CapabilityMatchResult, ToolEnforcementOutcome, ToolGateDecision
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.hooks.runtime import HookRuntime
@@ -390,13 +392,92 @@ class RuntimeEventDispatcher:
 
     def collect_tool_calls(self, node: Any) -> list[Any]:
         """Collect tool-call metadata from an agent node."""
+        normalized_calls: list[dict[str, Any]] = []
+
         if hasattr(node, "tool_call_metadata") and node.tool_call_metadata:
-            return list(node.tool_call_metadata)
+            for tool_call in node.tool_call_metadata:
+                normalized = self._normalize_tool_call(tool_call)
+                if normalized:
+                    normalized_calls.append(normalized)
+        if normalized_calls:
+            return normalized_calls
+
         if hasattr(node, "tool_calls") and node.tool_calls:
-            return list(node.tool_calls)
+            for tool_call in node.tool_calls:
+                normalized = self._normalize_tool_call(tool_call)
+                if normalized:
+                    normalized_calls.append(normalized)
+        if normalized_calls:
+            return normalized_calls
+
+        model_response = getattr(node, "model_response", None)
+        response_parts = getattr(model_response, "parts", None) or []
+        for part in response_parts:
+            normalized = self._normalize_tool_call(part)
+            if normalized:
+                normalized_calls.append(normalized)
+        if normalized_calls:
+            return normalized_calls
+
         if hasattr(node, "tool_name"):
             return [{"name": str(node.tool_name)}]
         return []
+
+    @staticmethod
+    def _normalize_tool_call(tool_call: Any) -> dict[str, Any] | None:
+        """Normalize runtime tool-call metadata across PydanticAI node shapes."""
+        if tool_call is None:
+            return None
+
+        if isinstance(tool_call, dict):
+            tool_name = str(tool_call.get("name", tool_call.get("tool_name", "")) or "").strip()
+            if not tool_name:
+                return None
+            normalized: dict[str, Any] = {
+                "name": tool_name,
+                "args": tool_call.get("args", tool_call.get("arguments", {})) or {},
+            }
+            tool_call_id = str(
+                tool_call.get("id", tool_call.get("tool_call_id", tool_call.get("toolCallId", ""))) or ""
+            ).strip()
+            if tool_call_id:
+                normalized["id"] = tool_call_id
+            return normalized
+
+        if isinstance(tool_call, ToolCallPart) or getattr(tool_call, "part_kind", "") in {"tool-call", "tool_call"}:
+            tool_name = str(getattr(tool_call, "tool_name", getattr(tool_call, "name", "")) or "").strip()
+            if not tool_name:
+                return None
+            normalized = {
+                "name": tool_name,
+                "args": getattr(tool_call, "args", getattr(tool_call, "arguments", {})) or {},
+            }
+            tool_call_id = str(
+                getattr(
+                    tool_call,
+                    "tool_call_id",
+                    getattr(tool_call, "toolCallId", getattr(tool_call, "id", "")),
+                )
+                or ""
+            ).strip()
+            if tool_call_id:
+                normalized["id"] = tool_call_id
+            return normalized
+
+        tool_name = str(getattr(tool_call, "tool_name", getattr(tool_call, "name", "")) or "").strip()
+        if not tool_name:
+            return None
+        normalized = {
+            "name": tool_name,
+            "args": getattr(tool_call, "args", getattr(tool_call, "arguments", {})) or {},
+        }
+        tool_call_id = str(
+            getattr(tool_call, "tool_call_id", getattr(tool_call, "toolCallId", getattr(tool_call, "id", "")))
+            or ""
+        ).strip()
+        if tool_call_id:
+            normalized["id"] = tool_call_id
+        return normalized
 
     async def dispatch_tool_calls(
         self,

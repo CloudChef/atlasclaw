@@ -7,7 +7,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-from pydantic_ai.messages import ModelRequest, ModelResponse, SystemPromptPart, TextPart, UserPromptPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    SystemPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
 from app.atlasclaw.agent.compaction import CompactionPipeline
 from app.atlasclaw.core.deps import SkillDeps
@@ -144,36 +152,314 @@ class HistoryMemoryCoordinator:
     def build_message_history(self, transcript: list[Any]) -> list[dict]:
         """Convert transcript entries into normalized messages."""
         messages = []
+        pending_tool_calls: list[dict[str, Any]] = []
         for entry in transcript:
             msg = {
                 "role": entry.role,
                 "content": entry.content,
             }
+            tool_name = str(getattr(entry, "tool_name", "") or "").strip()
+            tool_call_id = str(getattr(entry, "tool_call_id", "") or "").strip()
+            if tool_name:
+                msg["tool_name"] = tool_name
+            if tool_call_id:
+                msg["tool_call_id"] = tool_call_id
             if entry.tool_calls:
                 msg["tool_calls"] = entry.tool_calls
+                for tool_call in entry.tool_calls:
+                    normalized = self._normalize_tool_call(tool_call)
+                    if normalized is not None:
+                        pending_tool_calls.append(normalized)
+            if entry.tool_results:
+                msg["tool_results"] = entry.tool_results
+            if entry.metadata:
+                msg["metadata"] = entry.metadata
+            if str(entry.role).strip().lower() == "tool":
+                inferred_tool_name, inferred_tool_call_id = self._infer_tool_message_identity(
+                    message=msg,
+                    pending_tool_calls=pending_tool_calls,
+                )
+                if inferred_tool_name and not msg.get("tool_name"):
+                    msg["tool_name"] = inferred_tool_name
+                if inferred_tool_call_id and not msg.get("tool_call_id"):
+                    msg["tool_call_id"] = inferred_tool_call_id
+                self._consume_pending_tool_call(
+                    pending_tool_calls=pending_tool_calls,
+                    tool_name=str(msg.get("tool_name", "") or "").strip(),
+                    tool_call_id=str(msg.get("tool_call_id", "") or "").strip(),
+                )
             messages.append(msg)
-        return messages
+        return self._strip_unmatched_tool_calls(messages)
 
     def to_model_message_history(self, messages: list[dict]) -> list[Any]:
         """Convert normalized transcript messages into PydanticAI model messages."""
         model_messages: list[Any] = []
         for message in messages:
             role = str(message.get("role", "")).strip().lower()
-            content = str(message.get("content", "")).strip()
+            content = message.get("content", "")
 
             if role == "user":
-                if content:
-                    model_messages.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+                content_text = str(content).strip()
+                if content_text:
+                    model_messages.append(ModelRequest(parts=[UserPromptPart(content=content_text)]))
                 continue
 
             if role == "system":
-                if content:
-                    model_messages.append(ModelRequest(parts=[SystemPromptPart(content=content)]))
+                content_text = str(content).strip()
+                if content_text:
+                    model_messages.append(ModelRequest(parts=[SystemPromptPart(content=content_text)]))
                 continue
 
-            if role in {"assistant", "tool"} and content:
-                model_messages.append(ModelResponse(parts=[TextPart(content=content)]))
+            if role == "assistant":
+                response_parts: list[Any] = []
+                content_text = str(content).strip()
+                if content_text:
+                    response_parts.append(TextPart(content=content_text))
+                for tool_call in message.get("tool_calls", []) or []:
+                    normalized = self._normalize_tool_call(tool_call)
+                    if normalized is None:
+                        continue
+                    tool_name = str(normalized.get("name", "")).strip()
+                    tool_args = normalized.get("args", {}) or {}
+                    tool_call_id = str(normalized.get("id", "")).strip()
+                    if tool_call_id:
+                        response_parts.append(
+                            ToolCallPart(tool_name, tool_args, tool_call_id=tool_call_id)
+                        )
+                    else:
+                        response_parts.append(ToolCallPart(tool_name, tool_args))
+                if response_parts:
+                    model_messages.append(ModelResponse(parts=response_parts))
+                continue
+
+            if role == "tool":
+                request_parts = self._build_tool_return_parts(message)
+                if request_parts:
+                    model_messages.append(ModelRequest(parts=request_parts))
         return model_messages
+
+    @staticmethod
+    def _normalize_tool_call(tool_call: Any) -> dict[str, Any] | None:
+        """Normalize transcript tool-call payloads for model history replay."""
+        if tool_call is None:
+            return None
+        if isinstance(tool_call, dict):
+            tool_name = str(tool_call.get("name", tool_call.get("tool_name", "")) or "").strip()
+            if not tool_name:
+                return None
+            normalized: dict[str, Any] = {
+                "name": tool_name,
+                "args": tool_call.get("args", tool_call.get("arguments", {})) or {},
+            }
+            tool_call_id = str(
+                tool_call.get("id", tool_call.get("tool_call_id", tool_call.get("toolCallId", ""))) or ""
+            ).strip()
+            if tool_call_id:
+                normalized["id"] = tool_call_id
+            return normalized
+
+        tool_name = str(getattr(tool_call, "name", getattr(tool_call, "tool_name", "")) or "").strip()
+        if not tool_name:
+            return None
+        normalized = {
+            "name": tool_name,
+            "args": getattr(tool_call, "args", getattr(tool_call, "arguments", {})) or {},
+        }
+        tool_call_id = str(
+            getattr(tool_call, "id", getattr(tool_call, "tool_call_id", getattr(tool_call, "toolCallId", "")))
+            or ""
+        ).strip()
+        if tool_call_id:
+            normalized["id"] = tool_call_id
+        return normalized
+
+    def _build_tool_return_parts(self, message: dict[str, Any]) -> list[ToolReturnPart]:
+        """Convert persisted tool transcript messages into structured ToolReturnPart values."""
+        tool_name = str(message.get("tool_name", "") or message.get("name", "")).strip()
+        tool_call_id = str(message.get("tool_call_id", "") or message.get("id", "")).strip()
+        content = message.get("content", "")
+
+        parts: list[ToolReturnPart] = []
+        if tool_name:
+            if tool_call_id:
+                parts.append(ToolReturnPart(tool_name, content, tool_call_id=tool_call_id))
+            else:
+                parts.append(ToolReturnPart(tool_name, content))
+
+        for result in message.get("tool_results", []) or []:
+            if not isinstance(result, dict):
+                continue
+            result_tool_name = str(result.get("tool_name", "") or result.get("name", "")).strip()
+            if not result_tool_name:
+                continue
+            result_call_id = str(
+                result.get("tool_call_id", result.get("toolCallId", result.get("id", ""))) or ""
+            ).strip()
+            result_content = result.get("content", "")
+            if result_call_id:
+                parts.append(ToolReturnPart(result_tool_name, result_content, tool_call_id=result_call_id))
+            else:
+                parts.append(ToolReturnPart(result_tool_name, result_content))
+        return parts
+
+    def _infer_tool_message_identity(
+        self,
+        *,
+        message: dict[str, Any],
+        pending_tool_calls: list[dict[str, Any]],
+    ) -> tuple[str, str]:
+        """Best-effort repair for legacy transcripts that persisted tool rows without identity fields."""
+        tool_name = str(message.get("tool_name", "") or message.get("name", "")).strip()
+        tool_call_id = str(message.get("tool_call_id", "") or message.get("id", "")).strip()
+        if tool_name or tool_call_id:
+            return tool_name, tool_call_id
+
+        for result in message.get("tool_results", []) or []:
+            if not isinstance(result, dict):
+                continue
+            result_tool_name = str(result.get("tool_name", "") or result.get("name", "")).strip()
+            result_call_id = str(
+                result.get("tool_call_id", result.get("toolCallId", result.get("id", ""))) or ""
+            ).strip()
+            if result_tool_name or result_call_id:
+                return result_tool_name, result_call_id
+
+        if len(pending_tool_calls) == 1:
+            only_call = pending_tool_calls[0]
+            return (
+                str(only_call.get("name", "") or "").strip(),
+                str(only_call.get("id", "") or "").strip(),
+            )
+
+        for pending in pending_tool_calls:
+            pending_name = str(pending.get("name", "") or "").strip()
+            pending_id = str(pending.get("id", "") or "").strip()
+            if pending_name or pending_id:
+                return pending_name, pending_id
+        return "", ""
+
+    @staticmethod
+    def _consume_pending_tool_call(
+        *,
+        pending_tool_calls: list[dict[str, Any]],
+        tool_name: str,
+        tool_call_id: str,
+    ) -> None:
+        """Remove the pending tool call satisfied by the current tool transcript row."""
+        if not pending_tool_calls:
+            return
+        if tool_call_id:
+            for index, pending in enumerate(pending_tool_calls):
+                pending_id = str(pending.get("id", "") or "").strip()
+                if pending_id == tool_call_id:
+                    pending_tool_calls.pop(index)
+                    return
+        if tool_name:
+            for index, pending in enumerate(pending_tool_calls):
+                pending_name = str(pending.get("name", "") or "").strip()
+                if pending_name == tool_name:
+                    pending_tool_calls.pop(index)
+                    return
+
+    def _strip_unmatched_tool_calls(self, messages: list[dict]) -> list[dict]:
+        """Remove unresolved assistant tool calls before replaying transcript to the model."""
+        pending_tool_calls: list[dict[str, Any]] = []
+        matched_keys: set[str] = set()
+        tool_call_counter = 0
+
+        for message in messages:
+            role = str(message.get("role", "")).strip().lower()
+            if role == "assistant":
+                for tool_call in message.get("tool_calls", []) or []:
+                    normalized = self._normalize_tool_call(tool_call)
+                    if normalized is None:
+                        continue
+                    normalized["match_key"] = self._tool_call_match_key(normalized, tool_call_counter)
+                    pending_tool_calls.append(normalized)
+                    tool_call_counter += 1
+
+            if role == "tool":
+                inferred_tool_name, inferred_tool_call_id = self._infer_tool_message_identity(
+                    message=message,
+                    pending_tool_calls=pending_tool_calls,
+                )
+                if inferred_tool_name and not message.get("tool_name"):
+                    message["tool_name"] = inferred_tool_name
+                if inferred_tool_call_id and not message.get("tool_call_id"):
+                    message["tool_call_id"] = inferred_tool_call_id
+                matched_key = self._consume_pending_tool_call_with_key(
+                    pending_tool_calls=pending_tool_calls,
+                    tool_name=str(message.get("tool_name", "") or "").strip(),
+                    tool_call_id=str(message.get("tool_call_id", "") or "").strip(),
+                )
+                if matched_key:
+                    matched_keys.add(matched_key)
+
+        sanitized: list[dict] = []
+        tool_call_counter = 0
+        for message in messages:
+            if str(message.get("role", "")).strip().lower() != "assistant":
+                sanitized.append(message)
+                continue
+
+            tool_calls = message.get("tool_calls")
+            if not isinstance(tool_calls, list) or not tool_calls:
+                if str(message.get("content", "") or "").strip():
+                    sanitized.append(message)
+                continue
+
+            filtered_tool_calls: list[dict[str, Any]] = []
+            for tool_call in tool_calls:
+                normalized = self._normalize_tool_call(tool_call)
+                if normalized is None:
+                    continue
+                match_key = self._tool_call_match_key(normalized, tool_call_counter)
+                tool_call_counter += 1
+                if match_key in matched_keys:
+                    filtered_tool_calls.append(tool_call)
+
+            if filtered_tool_calls or str(message.get("content", "") or "").strip():
+                updated = dict(message)
+                if filtered_tool_calls:
+                    updated["tool_calls"] = filtered_tool_calls
+                else:
+                    updated.pop("tool_calls", None)
+                sanitized.append(updated)
+
+        return sanitized
+
+    @staticmethod
+    def _tool_call_match_key(tool_call: dict[str, Any], sequence_index: int) -> str:
+        """Build a stable matching key for tool call / tool result pairing."""
+        tool_call_id = str(tool_call.get("id", "") or "").strip()
+        tool_name = str(tool_call.get("name", "") or "").strip()
+        if tool_call_id:
+            return f"id:{tool_call_id}"
+        return f"seq:{sequence_index}:{tool_name}"
+
+    @staticmethod
+    def _consume_pending_tool_call_with_key(
+        *,
+        pending_tool_calls: list[dict[str, Any]],
+        tool_name: str,
+        tool_call_id: str,
+    ) -> str:
+        """Remove and return the pending tool-call match key satisfied by a tool row."""
+        if not pending_tool_calls:
+            return ""
+        if tool_call_id:
+            for index, pending in enumerate(pending_tool_calls):
+                pending_id = str(pending.get("id", "") or "").strip()
+                if pending_id == tool_call_id:
+                    return str(pending_tool_calls.pop(index).get("match_key", "") or "")
+        if tool_name:
+            for index, pending in enumerate(pending_tool_calls):
+                pending_name = str(pending.get("name", "") or "").strip()
+                if pending_name == tool_name:
+                    return str(pending_tool_calls.pop(index).get("match_key", "") or "")
+        if len(pending_tool_calls) == 1:
+            return str(pending_tool_calls.pop(0).get("match_key", "") or "")
+        return ""
 
     def prune_summary_messages(self, messages: list[dict]) -> list[dict]:
         """Remove previously injected summary/recall system messages from session context."""

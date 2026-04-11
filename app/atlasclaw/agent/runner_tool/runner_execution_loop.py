@@ -42,7 +42,7 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
         flushed_memory_signatures: set[str] = set()
         extra = deps.extra if isinstance(deps.extra, dict) else {}
         run_id = str(extra.get("run_id", "") or "")
-        tool_policy_retry_count = int(extra.get("_tool_policy_retry_count", 0) or 0)
+        tool_execution_retry_count = int(extra.get("_tool_execution_retry_count", 0) or 0)
         run_failed = False
         message_history: list[dict] = []
         system_prompt = ""
@@ -53,6 +53,7 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
         buffered_assistant_events: list[StreamEvent] = []
         assistant_output_streamed = False
         tool_request_message = user_message
+        tool_intent_plan = None
         tool_gate_decision = ToolGateDecision(reason="Tool gate not evaluated yet.")
         tool_match_result = CapabilityMatchResult(
             resolved_policy=ToolPolicyMode.ANSWER_DIRECT,
@@ -66,11 +67,10 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
         current_attempt_has_tool = False
         reasoning_retry_count = 0
         run_output_start_index = 0
-        web_tool_verification_enforced = False
+        tool_execution_required = False
         reasoning_retry_limit = self.REASONING_ONLY_MAX_RETRIES
         model_stream_timed_out = False
         model_timeout_error_message = ""
-        fast_path_tool_answer = ""
 
         def _log_step(step: str, **data: Any) -> None:
             payload: dict[str, Any] = {
@@ -104,7 +104,7 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             "flushed_memory_signatures": flushed_memory_signatures,
             "extra": extra,
             "run_id": run_id,
-            "tool_policy_retry_count": tool_policy_retry_count,
+            "tool_execution_retry_count": tool_execution_retry_count,
             "run_failed": run_failed,
             "message_history": message_history,
             "system_prompt": system_prompt,
@@ -115,6 +115,7 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             "buffered_assistant_events": buffered_assistant_events,
             "assistant_output_streamed": assistant_output_streamed,
             "tool_request_message": tool_request_message,
+            "tool_intent_plan": tool_intent_plan,
             "tool_gate_decision": tool_gate_decision,
             "tool_match_result": tool_match_result,
             "current_model_attempt": current_model_attempt,
@@ -123,11 +124,10 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             "current_attempt_has_tool": current_attempt_has_tool,
             "reasoning_retry_count": reasoning_retry_count,
             "run_output_start_index": run_output_start_index,
-            "web_tool_verification_enforced": web_tool_verification_enforced,
+            "tool_execution_required": tool_execution_required,
             "reasoning_retry_limit": reasoning_retry_limit,
             "model_stream_timed_out": model_stream_timed_out,
             "model_timeout_error_message": model_timeout_error_message,
-            "fast_path_tool_answer": fast_path_tool_answer,
             "runtime_context_window_info": None,
             "runtime_context_guard": None,
             "runtime_context_window": None,
@@ -138,6 +138,7 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             "tool_groups_snapshot": {},
             "available_tools": [],
             "toolset_filter_trace": [],
+            "tool_projection_trace": {},
             "used_toolset_fallback": False,
             "provider_hint_docs": [],
             "skill_hint_docs": [],
@@ -145,6 +146,8 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             "ranking_trace": {},
             "answer_committed": False,
             "should_stop": False,
+            "latest_agent_messages": [],
+            "synthetic_tool_messages": [],
         }
 
 

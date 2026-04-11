@@ -11,6 +11,8 @@ from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillRegistry
+from app.atlasclaw.tools.catalog import GROUP_ATLASCLAW, GROUP_WEB
+from app.atlasclaw.tools.registration import register_builtin_tools
 
 
 def _write_provider_skill(base: Path) -> None:
@@ -96,3 +98,18 @@ def test_build_scoped_deps_exposes_tool_group_snapshot(tmp_path) -> None:
     groups = deps.extra.get("tool_groups_snapshot", {})
     assert "group:cmp" in groups
     assert set(groups["group:cmp"]) == {"cmp_get_ticket", "cmp_list_pending"}
+
+
+def test_register_builtin_tools_exposes_explicit_runtime_metadata() -> None:
+    registry = SkillRegistry()
+    register_builtin_tools(registry)
+
+    tools = {item["name"]: item for item in registry.tools_snapshot()}
+
+    assert tools["web_search"]["source"] == "builtin"
+    assert tools["web_search"]["capability_class"] == "web_search"
+    assert set(tools["web_search"]["group_ids"]) == {GROUP_WEB, GROUP_ATLASCLAW}
+
+    assert tools["openmeteo_weather"]["source"] == "builtin"
+    assert tools["openmeteo_weather"]["capability_class"] == "weather"
+    assert set(tools["openmeteo_weather"]["group_ids"]) == {GROUP_WEB, GROUP_ATLASCLAW}
