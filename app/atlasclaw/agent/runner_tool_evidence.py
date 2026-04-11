@@ -178,6 +178,42 @@ class RunnerToolEvidenceMixin:
             lines.append(compact)
         return "\n".join(lines).strip()
 
+    def _build_structured_tool_only_markdown_answer(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        start_index: int = 0,
+        max_items: int = 3,
+    ) -> str:
+        records = self._extract_tool_result_records_from_messages(
+            messages=messages,
+            start_index=start_index,
+            max_items=max_items,
+        )
+        if not records:
+            return ""
+
+        lines: list[str] = ["## Answer", ""]
+        if len(records) == 1:
+            text = str(records[0].get("text", "") or "").strip()
+            if text:
+                lines.append(text)
+        else:
+            for index, record in enumerate(records, start=1):
+                text = str(record.get("text", "") or "").strip()
+                if not text:
+                    continue
+                lines.append(f"### Evidence {index}")
+                lines.append(text)
+                lines.append("")
+            if lines and not lines[-1].strip():
+                lines.pop()
+
+        source_lines = self._collect_tool_result_source_lines(records)
+        if source_lines:
+            lines.extend(["", "## Sources", *source_lines])
+        return "\n".join(lines).strip()
+
     def _build_tool_only_markdown_answer_from_messages(
         self,
         *,
@@ -192,9 +228,123 @@ class RunnerToolEvidenceMixin:
             max_items=max_items,
             max_chars_per_item=max_chars_per_item,
         )
+        structured_answer = self._build_structured_tool_only_markdown_answer(
+            messages=messages,
+            start_index=start_index,
+            max_items=max_items,
+        )
+        if structured_answer:
+            return structured_answer
         if not chunks:
             return ""
         return self._format_tool_chunks_as_markdown(chunks).strip()
+
+    def _extract_tool_result_records_from_messages(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        start_index: int = 0,
+        max_items: int = 3,
+    ) -> list[dict[str, Any]]:
+        safe_start = max(0, min(int(start_index), len(messages)))
+        records: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for message in messages[safe_start:]:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role", "")).strip().lower()
+            payload_items: list[tuple[str, Any]] = []
+            if role in {"tool", "toolresult", "tool_result"}:
+                payload_items.append(
+                    (
+                        str(message.get("tool_name", "") or message.get("name", "")).strip() or "tool",
+                        message.get("content"),
+                    )
+                )
+            tool_results = message.get("tool_results")
+            if isinstance(tool_results, list):
+                for result in tool_results:
+                    if not isinstance(result, dict):
+                        continue
+                    payload_items.append(
+                        (
+                            str(result.get("tool_name", "") or result.get("name", "")).strip() or "tool",
+                            result.get("content", result),
+                        )
+                    )
+            for tool_name, payload in payload_items:
+                text = self._coerce_tool_payload_to_text(payload).strip()
+                if not text:
+                    continue
+                signature = f"{tool_name}:{text[:240]}"
+                if signature in seen:
+                    continue
+                seen.add(signature)
+                records.append(
+                    {
+                        "tool_name": tool_name,
+                        "text": self._compact_tool_fallback_text(text, max_chars=1800),
+                        "sources": self._extract_sources_from_tool_payload(payload),
+                    }
+                )
+                if len(records) >= max(1, int(max_items)):
+                    return records
+        return records
+
+    def _extract_sources_from_tool_payload(self, payload: Any) -> list[dict[str, str]]:
+        if not isinstance(payload, dict):
+            return []
+        details = payload.get("details")
+        if not isinstance(details, dict):
+            return []
+
+        source_items: list[dict[str, str]] = []
+        for source in (details.get("sources", []) or []):
+            if not isinstance(source, dict):
+                continue
+            label = str(source.get("label", "") or source.get("title", "") or source.get("url", "")).strip()
+            url = str(source.get("url", "") or "").strip()
+            if url:
+                source_items.append({"label": label or url, "url": url})
+        for citation in (details.get("citations", []) or []):
+            if not isinstance(citation, dict):
+                continue
+            url = str(citation.get("url", "") or "").strip()
+            title = str(citation.get("title", "") or citation.get("label", "") or url).strip()
+            if url:
+                source_items.append({"label": title or url, "url": url})
+        for result in (details.get("results", []) or []):
+            if not isinstance(result, dict):
+                continue
+            url = str(result.get("url", "") or "").strip()
+            title = str(result.get("title", "") or result.get("label", "") or url).strip()
+            if url:
+                source_items.append({"label": title or url, "url": url})
+        deduped: list[dict[str, str]] = []
+        seen_urls: set[str] = set()
+        for item in source_items:
+            url = str(item.get("url", "") or "").strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            deduped.append({"label": str(item.get("label", "") or url).strip() or url, "url": url})
+        return deduped[:5]
+
+    @staticmethod
+    def _collect_tool_result_source_lines(records: list[dict[str, Any]]) -> list[str]:
+        lines: list[str] = []
+        seen_urls: set[str] = set()
+        for record in records:
+            for source in (record.get("sources", []) or []):
+                if not isinstance(source, dict):
+                    continue
+                url = str(source.get("url", "") or "").strip()
+                label = str(source.get("label", "") or url).strip() or url
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                lines.append(f"- [{label}]({url})")
+        return lines
 
     def _sanitize_turn_messages_for_persistence(
         self,

@@ -388,7 +388,7 @@ class RunnerToolGateModelMixin:
 
         selected_tool_name = preferred_tool_names[0]
         strong_candidate_tool_sets: list[set[str]] = []
-        for key in ("provider_candidates", "skill_candidates", "builtin_tool_candidates"):
+        for key in ("provider_candidates", "skill_candidates", "tool_candidates", "builtin_tool_candidates"):
             for item in (metadata_candidates.get(key, []) or []):
                 if not isinstance(item, dict) or not bool(item.get("has_strong_anchor")):
                     continue

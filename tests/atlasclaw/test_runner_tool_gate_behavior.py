@@ -208,6 +208,21 @@ def test_classifier_history_ignores_recent_history_for_complete_new_request() ->
     assert history == []
 
 
+def test_resolve_contextual_tool_request_reuses_previous_user_context_for_identifier_follow_up() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="我要看下TIC20260316000001的详情",
+        recent_history=[
+            {"role": "user", "content": "查下CMP 里目前所有待审批"},
+            {"role": "assistant", "content": "好的，我帮你列出来。"},
+        ],
+    )
+
+    assert resolved == "查下CMP 里目前所有待审批 我要看下TIC20260316000001的详情"
+    assert used_follow_up_context is False
+
+
 def test_metadata_recall_ignores_history_when_not_follow_up() -> None:
     runner = _GateRunner()
     available_tools = [
@@ -516,6 +531,53 @@ def test_metadata_fallback_accepts_single_builtin_tool_consensus_below_threshold
                 }
             ],
             "reason": "metadata_recall_single_builtin_tool",
+        },
+        available_tools=available_tools,
+    )
+
+    assert plan is not None
+    assert plan.action.value == "use_tools"
+    assert plan.target_capability_classes == ["weather"]
+    assert plan.target_tool_names == ["openmeteo_weather"]
+
+
+def test_metadata_fallback_accepts_single_tool_consensus_from_tool_candidates() -> None:
+    runner = _GateRunner()
+    available_tools = [
+        {
+            "name": "openmeteo_weather",
+            "description": "Get current and forecast weather via Open-Meteo APIs",
+            "source": "builtin",
+            "capability_class": "weather",
+            "group_ids": ["group:web"],
+        },
+        {
+            "name": "web_search",
+            "description": "Search the public web",
+            "source": "builtin",
+            "capability_class": "web_search",
+            "group_ids": ["group:web"],
+        },
+    ]
+
+    plan = runner._build_metadata_fallback_tool_intent_plan(
+        metadata_candidates={
+            "confidence": 0.04,
+            "preferred_provider_types": [],
+            "preferred_capability_classes": ["weather"],
+            "preferred_tool_names": ["openmeteo_weather"],
+            "tool_candidates": [
+                {
+                    "hint_id": "tool:openmeteo_weather",
+                    "tool_name": "openmeteo_weather",
+                    "score": 7,
+                    "has_strong_anchor": True,
+                    "tool_names": ["openmeteo_weather"],
+                    "group_ids": ["group:web"],
+                    "capability_classes": ["weather"],
+                }
+            ],
+            "reason": "metadata_recall_single_tool",
         },
         available_tools=available_tools,
     )

@@ -1,8 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
+import time
 
 import pytest
 from pydantic_ai.messages import ModelRequest, ToolReturnPart
@@ -95,6 +97,34 @@ class _PostRunner(
         return
 
     async def _maybe_finalize_title(self, **kwargs):
+        return None
+
+
+class _SlowRuntimeEvents(_RuntimeEvents):
+    async def trigger_llm_completed(self, **kwargs):
+        await asyncio.sleep(0.2)
+        return None
+
+    async def trigger_run_context_ready(self, **kwargs):
+        await asyncio.sleep(0.2)
+        self.context_ready_calls.append(kwargs)
+        return None
+
+
+class _SlowSessionManager(_SessionManager):
+    async def persist_transcript(self, session_key, messages):
+        await asyncio.sleep(0.2)
+        self.persisted_messages = list(messages)
+        return None
+
+
+class _SlowPostRunner(_PostRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.runtime_events = _SlowRuntimeEvents()
+
+    async def _maybe_finalize_title(self, **kwargs):
+        await asyncio.sleep(0.2)
         return None
 
 
@@ -391,6 +421,7 @@ async def test_tool_required_turn_without_final_assistant_uses_tool_only_fallbac
     assert answered_states
     assert failed_states == []
     assert any("count=3" in chunk for chunk in assistant_chunks)
+    await runner._await_background_post_success_tasks()
     assert session_manager.persisted_messages is not None
     persisted_assistants = [
         message
@@ -1148,6 +1179,7 @@ async def test_tool_required_turn_uses_synthetic_tool_messages_for_tool_only_fal
 
     assert failed_states == []
     assert any("13.8-18.6" in chunk for chunk in assistant_chunks)
+    await runner._await_background_post_success_tasks()
     assert session_manager.persisted_messages is not None
     assert any(
         str(message.get("role", "")).strip() == "tool"
@@ -1179,3 +1211,130 @@ def test_build_finalize_payload_is_minimal_for_tool_backed_answer() -> None:
     assert "bootstrap" not in payload["system_prompt"].lower()
     assert "明天上海天气如何" in payload["user_prompt"]
     assert "openmeteo_weather" in payload["user_prompt"]
+
+
+def test_build_tool_only_markdown_answer_includes_sources_for_structured_tool_result() -> None:
+    runner = _PostRunner()
+
+    answer = runner._build_tool_only_markdown_answer_from_messages(
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "openmeteo_weather",
+                "content": {
+                    "output": "明天（2026-04-12）上海：小雨，13.8°C - 18.6°C，降水概率 63%。",
+                    "details": {
+                        "sources": [
+                            {
+                                "label": "Open-Meteo Forecast API",
+                                "url": "https://api.open-meteo.com/v1/forecast",
+                            }
+                        ]
+                    },
+                },
+            }
+        ],
+        start_index=0,
+    )
+
+    assert "## Answer" in answer
+    assert "13.8°C - 18.6°C" in answer
+    assert "## Sources" in answer
+    assert "https://api.open-meteo.com/v1/forecast" in answer
+
+
+@pytest.mark.asyncio
+async def test_post_success_side_effects_do_not_block_answer_completion() -> None:
+    runner = _SlowPostRunner()
+    session_manager = _SlowSessionManager()
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-fast-return",
+        "session_manager": session_manager,
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-fast-return",
+        "user_message": "明天上海天气如何",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=True,
+            needs_live_data=True,
+            reason="weather tool required",
+            policy=ToolPolicyMode.PREFER_TOOL,
+        ),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "available_tools": [
+            {"name": "openmeteo_weather", "capability_class": "weather", "result_mode": "tool_only_ok"}
+        ],
+        "tool_execution_required": True,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 0,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [{"name": "openmeteo_weather", "args": {"location": "上海"}}],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 1,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_group_ids=["group:web"],
+            target_capability_classes=["weather"],
+            target_tool_names=["openmeteo_weather"],
+            reason="weather",
+        ),
+        "executed_tool_names": ["openmeteo_weather"],
+    }
+
+    async def _collect():
+        events = []
+        async for event in runner._process_agent_run_outcome(
+            agent_run=_AgentRun(
+                [
+                    {"role": "user", "content": "明天上海天气如何"},
+                    {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{"id": "weather-1", "name": "openmeteo_weather", "args": {"location": "上海"}}],
+                    },
+                    {
+                        "role": "tool",
+                        "tool_name": "openmeteo_weather",
+                        "content": {
+                            "output": "明天（2026-04-12）上海：小雨，13.8°C - 18.6°C，降水概率 63%。"
+                        },
+                    },
+                ]
+            ),
+            state=state,
+            _log_step=lambda *args, **kwargs: None,
+        ):
+            events.append(event)
+        return events
+
+    started_at = time.monotonic()
+    events = await asyncio.wait_for(_collect(), timeout=0.1)
+    elapsed = time.monotonic() - started_at
+
+    answered_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "answered"
+    ]
+    assert answered_states
+    assert elapsed < 0.1
+
+    await runner._await_background_post_success_tasks()
+    assert session_manager.persisted_messages is not None
+    assert runner.runtime_events.context_ready_calls

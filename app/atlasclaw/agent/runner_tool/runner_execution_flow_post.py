@@ -16,6 +16,31 @@ logger = logging.getLogger(__name__)
 
 
 class RunnerExecutionFlowPostMixin:
+    def _schedule_background_post_success_task(self, task: asyncio.Task[Any]) -> None:
+        background_tasks = getattr(self, "_background_post_success_tasks", None)
+        if background_tasks is None:
+            background_tasks = set()
+            setattr(self, "_background_post_success_tasks", background_tasks)
+        background_tasks.add(task)
+        task.add_done_callback(self._on_background_post_success_done)
+
+    def _on_background_post_success_done(self, task: asyncio.Task[Any]) -> None:
+        background_tasks = getattr(self, "_background_post_success_tasks", None)
+        if isinstance(background_tasks, set):
+            background_tasks.discard(task)
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception as exc:  # pragma: no cover - defensive logging
+            logger.warning("Background post-success side effect failed: %s", exc)
+
+    async def _await_background_post_success_tasks(self) -> None:
+        background_tasks = list(getattr(self, "_background_post_success_tasks", set()) or [])
+        if not background_tasks:
+            return
+        await asyncio.gather(*background_tasks, return_exceptions=True)
+
     async def _process_agent_run_outcome(
         self,
         *,
@@ -421,65 +446,70 @@ class RunnerExecutionFlowPostMixin:
                 )
                 state["answer_committed"] = True
 
-                _log_step("post_success_background_side_effects_start")
-                llm_completed_task = asyncio.create_task(
-                    self.runtime_events.trigger_llm_completed(
-                        session_key=session_key,
-                        run_id=run_id,
-                        assistant_message=final_assistant,
+                async def _run_post_success_side_effects() -> None:
+                    _log_step("post_success_background_side_effects_start")
+                    llm_completed_task = asyncio.create_task(
+                        self.runtime_events.trigger_llm_completed(
+                            session_key=session_key,
+                            run_id=run_id,
+                            assistant_message=final_assistant,
+                        )
                     )
-                )
-                persist_transcript_task = asyncio.create_task(
-                    session_manager.persist_transcript(session_key, persist_messages)
-                )
-                llm_completed_result, persist_result = await asyncio.gather(
-                    llm_completed_task,
-                    persist_transcript_task,
-                    return_exceptions=True,
-                )
-                if isinstance(llm_completed_result, Exception):
-                    logger.exception("post_success_llm_completed failed")
-                    _log_step("post_success_llm_completed_error", error=str(llm_completed_result))
-                else:
-                    _log_step("post_success_llm_completed_done")
-                if isinstance(persist_result, Exception):
-                    logger.exception("post_success_persist_transcript failed")
-                    _log_step("post_success_persist_transcript_error", error=str(persist_result))
-                else:
-                    _log_step("post_success_persist_transcript_done")
+                    persist_transcript_task = asyncio.create_task(
+                        session_manager.persist_transcript(session_key, persist_messages)
+                    )
+                    llm_completed_result, persist_result = await asyncio.gather(
+                        llm_completed_task,
+                        persist_transcript_task,
+                        return_exceptions=True,
+                    )
+                    if isinstance(llm_completed_result, Exception):
+                        logger.exception("post_success_llm_completed failed")
+                        _log_step("post_success_llm_completed_error", error=str(llm_completed_result))
+                    else:
+                        _log_step("post_success_llm_completed_done")
+                    if isinstance(persist_result, Exception):
+                        logger.exception("post_success_persist_transcript failed")
+                        _log_step("post_success_persist_transcript_error", error=str(persist_result))
+                    else:
+                        _log_step("post_success_persist_transcript_done")
 
-                _log_step("post_success_finalize_title_start")
-                try:
-                    await self._maybe_finalize_title(
-                        session_manager=session_manager,
-                        session_key=session_key,
-                        session=session,
-                        final_messages=final_messages,
-                        user_message=user_message,
-                    )
-                    _log_step("post_success_finalize_title_done")
-                    state["session_title"] = str(getattr(session, "title", "") or "")
-                except Exception as exc:
-                    logger.exception("post_success_finalize_title failed")
-                    _log_step("post_success_finalize_title_error", error=str(exc))
+                    _log_step("post_success_finalize_title_start")
+                    try:
+                        await self._maybe_finalize_title(
+                            session_manager=session_manager,
+                            session_key=session_key,
+                            session=session,
+                            final_messages=final_messages,
+                            user_message=user_message,
+                        )
+                        _log_step("post_success_finalize_title_done")
+                        state["session_title"] = str(getattr(session, "title", "") or "")
+                    except Exception as exc:
+                        logger.exception("post_success_finalize_title failed")
+                        _log_step("post_success_finalize_title_error", error=str(exc))
 
-                _log_step("post_success_run_context_ready_start")
-                try:
-                    await self.runtime_events.trigger_run_context_ready(
-                        session_key=session_key,
-                        run_id=run_id,
-                        user_message=user_message,
-                        system_prompt=system_prompt,
-                        message_history=state.get("context_history_for_hooks") or [],
-                        assistant_message=final_assistant,
-                        tool_calls=tool_call_summaries,
-                        run_status="completed",
-                        session_title=state.get("session_title"),
-                    )
-                    _log_step("post_success_run_context_ready_done")
-                except Exception as exc:
-                    logger.exception("post_success_run_context_ready failed")
-                    _log_step("post_success_run_context_ready_error", error=str(exc))
+                    _log_step("post_success_run_context_ready_start")
+                    try:
+                        await self.runtime_events.trigger_run_context_ready(
+                            session_key=session_key,
+                            run_id=run_id,
+                            user_message=user_message,
+                            system_prompt=system_prompt,
+                            message_history=state.get("context_history_for_hooks") or [],
+                            assistant_message=final_assistant,
+                            tool_calls=tool_call_summaries,
+                            run_status="completed",
+                            session_title=state.get("session_title"),
+                        )
+                        _log_step("post_success_run_context_ready_done")
+                    except Exception as exc:
+                        logger.exception("post_success_run_context_ready failed")
+                        _log_step("post_success_run_context_ready_error", error=str(exc))
+
+                self._schedule_background_post_success_task(
+                    asyncio.create_task(_run_post_success_side_effects())
+                )
 
         state["assistant_output_streamed"] = assistant_output_streamed
         state["final_assistant"] = final_assistant

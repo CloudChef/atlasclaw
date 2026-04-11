@@ -315,8 +315,24 @@ def _select_tools_from_metadata_candidates(
         confidence = float(metadata_candidates.get("confidence", 0.0) or 0.0)
     except Exception:
         confidence = 0.0
-    if confidence < max(0.0, float(min_metadata_confidence or 0.0)):
+    has_single_tool_consensus = _metadata_candidates_have_single_tool_consensus(
+        metadata_candidates=metadata_candidates,
+        tools=tools,
+    )
+    if confidence < max(0.0, float(min_metadata_confidence or 0.0)) and not has_single_tool_consensus:
         return []
+
+    if has_single_tool_consensus:
+        preferred_tool_name = _extract_single_preferred_tool_name(
+            metadata_candidates=metadata_candidates,
+            tools=tools,
+        )
+        if preferred_tool_name:
+            return [
+                dict(tool)
+                for tool in tools
+                if str(tool.get("name", "") or "").strip() == preferred_tool_name
+            ]
 
     target_provider_types = {
         str(item).strip().lower()
@@ -383,6 +399,72 @@ def _select_tools_from_metadata_candidates(
         if matches:
             selected.append(tool)
     return selected
+
+
+def _extract_single_preferred_tool_name(
+    *,
+    metadata_candidates: dict[str, Any],
+    tools: list[dict[str, Any]],
+) -> str:
+    allowed_tool_names = {
+        str(tool.get("name", "") or "").strip()
+        for tool in tools
+        if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+    }
+    preferred_tool_names = [
+        str(item).strip()
+        for item in (metadata_candidates.get("preferred_tool_names", []) or [])
+        if str(item).strip() in allowed_tool_names
+    ]
+    preferred_tool_names = list(dict.fromkeys(preferred_tool_names))
+    if len(preferred_tool_names) != 1:
+        return ""
+    return preferred_tool_names[0]
+
+
+def _metadata_candidates_have_single_tool_consensus(
+    *,
+    metadata_candidates: dict[str, Any],
+    tools: list[dict[str, Any]],
+) -> bool:
+    selected_tool_name = _extract_single_preferred_tool_name(
+        metadata_candidates=metadata_candidates,
+        tools=tools,
+    )
+    if not selected_tool_name:
+        return False
+
+    allowed_tool_names = {
+        str(tool.get("name", "") or "").strip()
+        for tool in tools
+        if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+    }
+    strong_candidate_tool_sets: list[set[str]] = []
+    for key in ("provider_candidates", "skill_candidates", "tool_candidates", "builtin_tool_candidates"):
+        for item in (metadata_candidates.get(key, []) or []):
+            if not isinstance(item, dict) or not bool(item.get("has_strong_anchor")):
+                continue
+            candidate_tool_names = [
+                str(name).strip()
+                for name in (item.get("tool_names", []) or [])
+                if str(name).strip() in allowed_tool_names
+            ]
+            direct_tool_name = str(item.get("tool_name", "") or "").strip()
+            if direct_tool_name and direct_tool_name in allowed_tool_names:
+                candidate_tool_names.append(direct_tool_name)
+            candidate_tool_set = {name for name in candidate_tool_names if name}
+            if candidate_tool_set:
+                strong_candidate_tool_sets.append(candidate_tool_set)
+
+    if not strong_candidate_tool_sets:
+        return False
+
+    for candidate_tool_set in strong_candidate_tool_sets:
+        if selected_tool_name not in candidate_tool_set:
+            return False
+        if candidate_tool_set.difference({selected_tool_name}):
+            return False
+    return True
 
 
 def _append_coordination_tools(

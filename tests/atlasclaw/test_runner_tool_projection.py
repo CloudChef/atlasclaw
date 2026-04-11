@@ -241,6 +241,48 @@ def test_project_planner_toolset_keeps_metadata_matched_provider_subset() -> Non
     assert trace["reason"] == "planner_metadata_subset"
 
 
+def test_project_planner_toolset_prefers_single_tool_consensus_below_threshold() -> None:
+    filtered, trace = project_planner_toolset(
+        allowed_tools=[
+            *_allowed_tools(),
+            {
+                "name": "openmeteo_weather",
+                "description": "Get weather forecast",
+                "group_ids": ["group:web"],
+                "capability_class": "weather",
+                "planner_visibility": "general",
+            },
+        ],
+        metadata_candidates={
+            "confidence": 0.08,
+            "preferred_provider_types": [],
+            "preferred_group_ids": ["group:web"],
+            "preferred_capability_classes": ["weather"],
+            "preferred_tool_names": ["openmeteo_weather"],
+            "tool_candidates": [
+                {
+                    "hint_id": "tool:openmeteo_weather",
+                    "tool_name": "openmeteo_weather",
+                    "score": 8,
+                    "has_strong_anchor": True,
+                    "tool_names": ["openmeteo_weather"],
+                    "group_ids": ["group:web"],
+                    "capability_classes": ["weather"],
+                }
+            ],
+        },
+        used_follow_up_context=False,
+        min_metadata_confidence=0.3,
+    )
+
+    assert [tool["name"] for tool in filtered] == [
+        "openmeteo_weather",
+        "list_provider_instances",
+        "select_provider_instance",
+    ]
+    assert trace["reason"] == "planner_metadata_subset"
+
+
 def test_project_planner_toolset_hides_contextual_builtin_tools_for_public_turn() -> None:
     filtered, trace = project_planner_toolset(
         allowed_tools=[

@@ -233,7 +233,8 @@ class RunnerToolGateRoutingMixin:
         normalized_user_message = " ".join((user_message or "").split()).strip()
         if not normalized_user_message:
             return user_message, False
-        if len(re.sub(r"\s+", "", normalized_user_message)) > 32:
+        identifier_follow_up = self._contains_structured_identifier(normalized_user_message)
+        if len(re.sub(r"\s+", "", normalized_user_message)) > 32 and not identifier_follow_up:
             return normalized_user_message, False
 
         last_assistant_index: Optional[int] = None
@@ -249,7 +250,9 @@ class RunnerToolGateRoutingMixin:
             last_assistant_message = content
             break
 
-        if last_assistant_index is None or not self._looks_like_follow_up_request(last_assistant_message):
+        if last_assistant_index is None:
+            return normalized_user_message, False
+        if not identifier_follow_up and not self._looks_like_follow_up_request(last_assistant_message):
             return normalized_user_message, False
 
         previous_user_message = ""
@@ -269,11 +272,24 @@ class RunnerToolGateRoutingMixin:
         current_tokens = self._tokenize_classifier_fallback_text(normalized_user_message)
         compact_current_len = len(re.sub(r"\s+", "", normalized_user_message))
         low_information_follow_up = compact_current_len <= 8 or len(current_tokens) <= 1
-        if not low_information_follow_up:
+        if not low_information_follow_up and not identifier_follow_up:
             return normalized_user_message, False
 
         combined = f"{previous_user_message} {normalized_user_message}".strip()
-        return combined, combined != normalized_user_message
+        return combined, low_information_follow_up and combined != normalized_user_message
+
+    @staticmethod
+    def _contains_structured_identifier(text: str) -> bool:
+        normalized = " ".join((text or "").split()).strip()
+        if not normalized:
+            return False
+        patterns = (
+            r"(?<![a-z0-9])[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(?![a-z0-9])",
+            r"(?<![a-z0-9])(?=[a-z0-9_-]{8,})(?=[a-z0-9_-]*[a-z])(?=[a-z0-9_-]*\d)[a-z0-9_-]+(?![a-z0-9])",
+            r"(?<!\d)\d{8,}(?!\d)",
+        )
+        lowered = normalized.lower()
+        return any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in patterns)
     @staticmethod
     def _build_classifier_history(
         *,
