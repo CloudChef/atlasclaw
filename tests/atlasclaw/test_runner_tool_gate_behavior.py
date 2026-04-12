@@ -208,7 +208,7 @@ def test_classifier_history_ignores_recent_history_for_complete_new_request() ->
     assert history == []
 
 
-def test_resolve_contextual_tool_request_reuses_previous_user_context_for_identifier_follow_up() -> None:
+def test_resolve_contextual_tool_request_keeps_rich_identifier_query_self_contained() -> None:
     runner = _GateRunner()
 
     resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
@@ -219,7 +219,7 @@ def test_resolve_contextual_tool_request_reuses_previous_user_context_for_identi
         ],
     )
 
-    assert resolved == "查下CMP 里目前所有待审批 我要看下TIC20260316000001的详情"
+    assert resolved == "我要看下TIC20260316000001的详情"
     assert used_follow_up_context is False
 
 

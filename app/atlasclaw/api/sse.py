@@ -132,7 +132,7 @@ SSE manager
     def __init__(
         self,
         *,
-        heartbeat_interval: float = 15.0,
+        heartbeat_interval: float = 5.0,
         stream_timeout: float = 3600.0,
         max_events_buffer: int = 100,
     ) -> None:

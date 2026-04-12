@@ -1,11 +1,33 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 import re
-from typing import Any
+from typing import Any, Optional
 
 
 class RunnerToolEvidenceMixin:
+    _META_LABEL_OVERRIDES = {
+        "workflowId": "Workflow ID",
+        "requestId": "Request ID",
+        "approvalId": "Approval ID",
+        "processInstanceId": "Process Instance ID",
+        "taskId": "Task ID",
+        "catalogName": "Catalog",
+        "applicant": "Applicant",
+        "email": "Email",
+        "description": "Description",
+        "createdDate": "Created At",
+        "updatedDate": "Updated At",
+        "waitHours": "Wait Time",
+        "priorityScore": "Priority Score",
+        "priorityFactors": "Priority Factors",
+        "approvalStep": "Approval Step",
+        "currentApprover": "Current Approver",
+        "costEstimate": "Cost Estimate",
+        "resourceSpecs": "Resource Specs",
+    }
+
     def _collect_tool_call_summaries_from_messages(
         self,
         *,
@@ -167,16 +189,8 @@ class RunnerToolEvidenceMixin:
             return ""
         if len(compact_chunks) == 1:
             compact = compact_chunks[0]
-            if self._looks_like_markdown(compact):
-                return compact
-            return f"## Result\n\n{compact}"
-
-        lines: list[str] = ["## Result"]
-        for index, compact in enumerate(compact_chunks, start=1):
-            lines.append("")
-            lines.append(f"### Evidence {index}")
-            lines.append(compact)
-        return "\n".join(lines).strip()
+            return compact
+        return "\n\n".join(compact_chunks).strip()
 
     def _build_structured_tool_only_markdown_answer(
         self,
@@ -193,25 +207,24 @@ class RunnerToolEvidenceMixin:
         if not records:
             return ""
 
-        lines: list[str] = ["## Answer", ""]
-        if len(records) == 1:
-            text = str(records[0].get("text", "") or "").strip()
-            if text:
-                lines.append(text)
-        else:
-            for index, record in enumerate(records, start=1):
-                text = str(record.get("text", "") or "").strip()
-                if not text:
-                    continue
-                lines.append(f"### Evidence {index}")
-                lines.append(text)
+        lines: list[str] = []
+        for index, record in enumerate(records, start=1):
+            rendered = self._render_tool_result_record_markdown(
+                record=record,
+                index=index,
+                total=len(records),
+            )
+            if not rendered:
+                continue
+            if lines:
                 lines.append("")
-            if lines and not lines[-1].strip():
-                lines.pop()
+            lines.append(rendered)
 
         source_lines = self._collect_tool_result_source_lines(records)
         if source_lines:
-            lines.extend(["", "## Sources", *source_lines])
+            if lines:
+                lines.append("")
+            lines.extend(source_lines)
         return "\n".join(lines).strip()
 
     def _build_tool_only_markdown_answer_from_messages(
@@ -283,13 +296,189 @@ class RunnerToolEvidenceMixin:
                 records.append(
                     {
                         "tool_name": tool_name,
-                        "text": self._compact_tool_fallback_text(text, max_chars=1800),
+                        "text": self._compact_tool_fallback_text(
+                            text,
+                            max_chars=5000,
+                            max_lines=80,
+                        ),
+                        "meta_blocks": self._extract_embedded_meta_payloads(text),
                         "sources": self._extract_sources_from_tool_payload(payload),
                     }
                 )
                 if len(records) >= max(1, int(max_items)):
                     return records
         return records
+
+    def _render_tool_result_record_markdown(
+        self,
+        *,
+        record: dict[str, Any],
+        index: int,
+        total: int,
+    ) -> str:
+        meta_blocks = record.get("meta_blocks") or []
+        rendered_meta_blocks: list[str] = []
+        for meta_block in meta_blocks:
+            rendered = self._render_embedded_meta_block(meta_block, index=index, total=total)
+            if rendered:
+                rendered_meta_blocks.append(rendered)
+        if rendered_meta_blocks:
+            return "\n\n".join(rendered_meta_blocks).strip()
+
+        text = str(record.get("text", "") or "").strip()
+        if not text:
+            return ""
+        return text
+
+    @staticmethod
+    def _extract_embedded_meta_payloads(text: str) -> list[dict[str, Any]]:
+        normalized = str(text or "")
+        if not normalized:
+            return []
+        payloads: list[dict[str, Any]] = []
+        for match in re.finditer(
+            r"##(?P<name>[A-Z_]+)_START##\s*(?P<payload>.*?)\s*##(?P=name)_END##",
+            normalized,
+            flags=re.DOTALL,
+        ):
+            raw_payload = str(match.group("payload") or "").strip()
+            if not raw_payload:
+                continue
+            try:
+                parsed = json.loads(raw_payload)
+            except Exception:
+                continue
+            payloads.append({"name": str(match.group("name") or "").strip(), "payload": parsed})
+        return payloads
+
+    def _render_embedded_meta_block(
+        self,
+        meta_block: dict[str, Any],
+        *,
+        index: int,
+        total: int,
+    ) -> str:
+        payload = meta_block.get("payload")
+        if isinstance(payload, list):
+            rendered_items: list[str] = []
+            for item_index, item in enumerate(payload, start=1):
+                rendered = self._render_meta_item_markdown(item, index=item_index)
+                if rendered:
+                    rendered_items.append(rendered)
+            return "\n\n".join(rendered_items).strip()
+        if isinstance(payload, dict):
+            return self._render_meta_item_markdown(payload, index=index if total > 1 else None).strip()
+        return self._compact_tool_fallback_text(str(payload or ""), max_chars=1200).strip()
+
+    def _render_meta_item_markdown(
+        self,
+        payload: Any,
+        *,
+        index: Optional[int],
+    ) -> str:
+        if isinstance(payload, dict):
+            return self._render_meta_dict_markdown(payload, index=index)
+        if isinstance(payload, list):
+            scalar_items = [self._render_meta_value(item) for item in payload]
+            scalar_items = [item for item in scalar_items if item]
+            if not scalar_items:
+                return ""
+            prefix = f"{index}. " if index is not None else ""
+            return "\n".join(f"- {prefix}{item}" if idx == 0 else f"- {item}" for idx, item in enumerate(scalar_items))
+        rendered = self._render_meta_value(payload)
+        if not rendered:
+            return ""
+        if index is None:
+            return f"- {rendered}"
+        return f"{index}. {rendered}"
+
+    def _render_meta_dict_markdown(
+        self,
+        payload: dict[str, Any],
+        *,
+        index: Optional[int],
+    ) -> str:
+        title_key = ""
+        title_value = ""
+        for candidate in ("name", "title", "workflowId", "requestId", "approvalId", "id"):
+            candidate_value = self._render_meta_value(payload.get(candidate))
+            if candidate_value:
+                title_key = candidate
+                title_value = candidate_value
+                break
+
+        lines: list[str] = []
+        if title_value:
+            prefix = f"{index}. " if index is not None else ""
+            lines.append(f"### {prefix}{title_value}")
+        elif index is not None:
+            lines.append(f"### {index}")
+
+        for key, value in payload.items():
+            if key == title_key:
+                continue
+            rendered_value = self._render_meta_value(value)
+            if not rendered_value:
+                continue
+            lines.append(f"- {self._humanize_meta_key(key)}: {rendered_value}")
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _humanize_meta_key(key: str) -> str:
+        normalized = str(key or "").strip()
+        if not normalized:
+            return ""
+        if normalized in RunnerToolEvidenceMixin._META_LABEL_OVERRIDES:
+            return RunnerToolEvidenceMixin._META_LABEL_OVERRIDES[normalized]
+        normalized = normalized.replace("_", " ")
+        normalized = re.sub(r"(?<!^)(?=[A-Z])", " ", normalized)
+        return " ".join(part.capitalize() for part in normalized.split())
+
+    def _render_meta_value(self, value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            rendered_timestamp = self._render_unix_timestamp(value)
+            if rendered_timestamp:
+                return rendered_timestamp
+            return str(value)
+        if isinstance(value, str):
+            return " ".join(value.split()).strip()
+        if isinstance(value, list):
+            rendered_items = [self._render_meta_value(item) for item in value]
+            rendered_items = [item for item in rendered_items if item]
+            if not rendered_items:
+                return ""
+            return ", ".join(rendered_items)
+        if isinstance(value, dict):
+            pairs: list[str] = []
+            for key, item in value.items():
+                rendered_item = self._render_meta_value(item)
+                if not rendered_item:
+                    continue
+                pairs.append(f"{self._humanize_meta_key(key)}={rendered_item}")
+            return "; ".join(pairs)
+        return str(value).strip()
+
+    @staticmethod
+    def _render_unix_timestamp(value: int | float) -> str:
+        numeric = float(value)
+        if numeric <= 0:
+            return ""
+        try:
+            if numeric >= 1_000_000_000_000:
+                dt = datetime.fromtimestamp(numeric / 1000.0, tz=timezone.utc)
+            elif numeric >= 1_000_000_000:
+                dt = datetime.fromtimestamp(numeric, tz=timezone.utc)
+            else:
+                return ""
+        except Exception:
+            return ""
+        if dt.year < 2000 or dt.year > 2100:
+            return ""
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M")
 
     def _extract_sources_from_tool_payload(self, payload: Any) -> list[dict[str, str]]:
         if not isinstance(payload, dict):
@@ -553,7 +742,11 @@ class RunnerToolEvidenceMixin:
         )
 
     @staticmethod
-    def _compact_tool_fallback_text(text: str, max_chars: int = 1400) -> str:
+    def _compact_tool_fallback_text(
+        text: str,
+        max_chars: int = 1400,
+        max_lines: Optional[int] = 18,
+    ) -> str:
         normalized = str(text or "").strip()
         if not normalized:
             return ""
@@ -580,7 +773,7 @@ class RunnerToolEvidenceMixin:
                 break
             lines.append(line)
             total += len(line) + 1
-            if len(lines) >= 18:
+            if max_lines is not None and len(lines) >= max_lines:
                 break
         if not lines:
             clipped = normalized[:max_chars].strip()

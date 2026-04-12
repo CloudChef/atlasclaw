@@ -164,6 +164,16 @@ class RunnerExecutionFlowPostMixin:
             start_index=persist_run_output_start_index,
             executed_tool_names=state.get("executed_tool_names"),
         )
+        preferred_tool_only_answer = ""
+        if tool_required_has_real_execution:
+            candidate_tool_only_answer = self._build_tool_only_markdown_answer_from_messages(
+                messages=final_messages,
+                start_index=persist_run_output_start_index,
+            )
+            if candidate_tool_only_answer:
+                preferred_tool_only_answer = candidate_tool_only_answer
+                if bool(state.get("force_tool_only_finalize")):
+                    final_assistant = preferred_tool_only_answer
         missing_required_tools = self._missing_required_tool_names(
             decision=state.get("tool_gate_decision"),
             match_result=state.get("tool_match_result"),
@@ -369,7 +379,7 @@ class RunnerExecutionFlowPostMixin:
         else:
             if not final_assistant.strip():
                 if tool_required_has_real_execution:
-                    tool_only_answer = self._build_tool_only_markdown_answer_from_messages(
+                    tool_only_answer = preferred_tool_only_answer or self._build_tool_only_markdown_answer_from_messages(
                         messages=final_messages,
                         start_index=persist_run_output_start_index,
                     )

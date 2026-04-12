@@ -174,6 +174,19 @@ describe('stream-handler.js', () => {
             });
         });
 
+        test('should call onHeartbeat callback on heartbeat event', async () => {
+            const { createStreamHandler } = await import('../../app/frontend/scripts/stream-handler.js');
+
+            const onHeartbeat = jest.fn();
+            const handler = createStreamHandler('run-123', { onHeartbeat });
+            handler.start();
+
+            const es = MockEventSource.instances[0];
+            es.simulateEvent('heartbeat', { timestamp: '2026-04-12T17:30:00+08:00' });
+
+            expect(onHeartbeat).toHaveBeenCalledWith({ timestamp: '2026-04-12T17:30:00+08:00' });
+        });
+
         test('should call onEnd callback and close on lifecycle end event', async () => {
             const { createStreamHandler } = await import('../../app/frontend/scripts/stream-handler.js');
             

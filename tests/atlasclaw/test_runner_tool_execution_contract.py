@@ -516,6 +516,106 @@ async def test_tool_required_turn_ignores_agent_result_text_and_uses_tool_only_f
 
 
 @pytest.mark.asyncio
+async def test_tool_only_finalize_prefers_structured_tool_answer_over_model_plaintext() -> None:
+    runner = _PostRunner()
+    session_manager = _SessionManager()
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-2c",
+        "session_manager": session_manager,
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-2c",
+        "user_message": "CMP里面有多少待审批的",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=True,
+            needs_external_system=True,
+            reason="provider request",
+            policy=ToolPolicyMode.PREFER_TOOL,
+        ),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "available_tools": [
+            {
+                "name": "smartcmp_list_pending",
+                "capability_class": "provider:smartcmp",
+                "result_mode": "tool_only_ok",
+            }
+        ],
+        "tool_execution_required": True,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 0,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [{"name": "smartcmp_list_pending", "args": {}}],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 1,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_types=["smartcmp"],
+            target_tool_names=["smartcmp_list_pending"],
+            reason="provider action",
+        ),
+        "executed_tool_names": ["smartcmp_list_pending"],
+        "force_tool_only_finalize": True,
+    }
+
+    meta_output = "\n".join(
+        [
+            "Answer",
+            "=====",
+            "+- [1] 高 ---------------------------------------------",
+            "| 名称: Test ticket for build verification",
+            "##APPROVAL_META_START##",
+            '[{"index":1,"id":"A-1","requestId":"TIC20260316000001","name":"Test ticket for build verification","catalogName":"Incident Ticket","approvalStep":"一级审批","currentApprover":"待分配","waitHours":645.1}]',
+            "##APPROVAL_META_END##",
+        ]
+    )
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(
+            [
+                {"role": "user", "content": "CMP里面有多少待审批的"},
+                {
+                    "role": "assistant",
+                    "content": "Answer\n=====\n+- [1] 高 ---------------------------------------------",
+                    "tool_calls": [{"id": "cmp-1", "name": "smartcmp_list_pending", "args": {}}],
+                },
+                {
+                    "role": "tool",
+                    "tool_name": "smartcmp_list_pending",
+                    "content": {"output": meta_output},
+                },
+            ]
+        ),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+
+    assistant_chunks = [event.content for event in events if event.type == "assistant"]
+    assert assistant_chunks
+    final_chunk = "".join(assistant_chunks)
+    assert "Answer" not in final_chunk
+    assert "=====" not in final_chunk
+    assert "### 1. Test ticket for build verification" in final_chunk
+
+
+@pytest.mark.asyncio
 async def test_run_loop_phase_preserves_explicit_empty_runtime_history() -> None:
     runner = _LoopRunner()
     state = {
@@ -536,7 +636,15 @@ async def test_run_loop_phase_preserves_explicit_empty_runtime_history() -> None
     async for event in runner._run_loop_phase(state=state, _log_step=lambda *args, **kwargs: None):
         events.append(event)
 
-    assert events == []
+    runtime_messages = [
+        event.content
+        for event in events
+        if event.type == "runtime"
+    ]
+    assert runtime_messages[:2] == [
+        "Preparing model request context.",
+        "Starting model session.",
+    ]
     assert runner.captured_message_history == []
     assert state["run_output_start_index"] == 0
 
@@ -940,7 +1048,7 @@ def test_should_finalize_from_embedded_tool_results_when_tool_is_tool_only_ok() 
     assert should_finalize is True
 
 
-def test_should_finalize_from_terminal_no_results_tool_payload() -> None:
+def test_should_not_finalize_from_single_terminal_no_results_tool_payload() -> None:
     runner = _StreamRunnerWithEvidence()
 
     should_finalize = runner._should_finalize_from_tool_results(
@@ -959,6 +1067,66 @@ def test_should_finalize_from_terminal_no_results_tool_payload() -> None:
                     "details": {
                         "provider": "bing_html_fallback",
                         "query": "上海周边 自行车骑行公园 推荐",
+                        "summary": "",
+                        "results": [],
+                        "citations": [],
+                    },
+                    "is_error": False,
+                },
+            },
+        ],
+        start_index=1,
+        planned_tool_names=["web_search"],
+        available_tools=[
+            {
+                "name": "web_search",
+                "capability_class": "web_search",
+            }
+        ],
+    )
+
+    assert should_finalize is False
+
+
+def test_should_finalize_from_repeated_terminal_no_results_tool_payload() -> None:
+    runner = _StreamRunnerWithEvidence()
+
+    should_finalize = runner._should_finalize_from_tool_results(
+        messages=[
+            {"role": "user", "content": "上海周边有哪些自行车骑行公园"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "tc-1", "name": "web_search", "args": {"query": "上海周边 自行车骑行公园 推荐"}}],
+            },
+            {
+                "role": "tool",
+                "tool_name": "web_search",
+                "content": {
+                    "content": [{"type": "text", "text": "Search '上海周边 自行车骑行公园 推荐' returned no results"}],
+                    "details": {
+                        "provider": "bing_html_fallback",
+                        "query": "上海周边 自行车骑行公园 推荐",
+                        "summary": "",
+                        "results": [],
+                        "citations": [],
+                    },
+                    "is_error": False,
+                },
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "tc-2", "name": "web_search", "args": {"query": "上海自行车公园推荐"}}],
+            },
+            {
+                "role": "tool",
+                "tool_name": "web_search",
+                "content": {
+                    "content": [{"type": "text", "text": "Search '上海自行车公园推荐' returned no results"}],
+                    "details": {
+                        "provider": "bing_html_fallback",
+                        "query": "上海自行车公园推荐",
                         "summary": "",
                         "results": [],
                         "citations": [],
@@ -1237,10 +1405,103 @@ def test_build_tool_only_markdown_answer_includes_sources_for_structured_tool_re
         start_index=0,
     )
 
-    assert "## Answer" in answer
+    assert "## Answer" not in answer
+    assert "## Result" not in answer
     assert "13.8°C - 18.6°C" in answer
-    assert "## Sources" in answer
     assert "https://api.open-meteo.com/v1/forecast" in answer
+
+
+def test_build_tool_only_markdown_answer_keeps_multi_item_structured_provider_output() -> None:
+    runner = _PostRunner()
+    pending_output = "\n".join(
+        [
+            "CMP pending approvals (3)",
+            "1) TIC20260316000001",
+            "title: Test ticket for build verification",
+            "catalog: Incident Ticket",
+            "stage: 一级审批",
+            "assignee: 待分配",
+            "wait_hours: 507.3",
+            "priority_factor: 等待超3天",
+            "2) TIC20260313000006",
+            "title: 加急加急",
+            "catalog: 问题工单",
+            "stage: 一级审批",
+            "assignee: 待分配",
+            "wait_hours: 579.3",
+            "priority_factor: 等待超3天",
+            "3) TIC20260313000004",
+            "title: (名称为空)",
+            "catalog: 问题工单",
+            "stage: 一级审批",
+            "assignee: 待分配",
+            "wait_hours: 580.7",
+            "priority_factor: 等待超3天",
+        ]
+    )
+
+    answer = runner._build_tool_only_markdown_answer_from_messages(
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "smartcmp_list_pending",
+                "content": {
+                    "output": pending_output,
+                    "details": {
+                        "sources": [
+                            {
+                                "label": "SmartCMP approvals",
+                                "url": "https://smartcmp.example.local/pending",
+                            }
+                        ]
+                    },
+                },
+            }
+        ],
+        start_index=0,
+    )
+
+    assert "TIC20260316000001" in answer
+    assert "TIC20260313000006" in answer
+    assert "TIC20260313000004" in answer
+    assert "\n..." not in answer
+
+
+def test_build_tool_only_markdown_answer_prefers_meta_block_over_ascii_layout() -> None:
+    runner = _PostRunner()
+
+    meta_output = "\n".join(
+        [
+            "===============================================================",
+            "待审批列表 - 共 3 项（按优先级排序）",
+            "===============================================================",
+            "+- [1] 高 ---------------------------------------------",
+            "| 名称: Test ticket for build verification",
+            "| 工单号: TIC20260316000001",
+            "##APPROVAL_META_START##",
+            '[{"index":1,"id":"A-1","requestId":"TIC20260316000001","name":"Test ticket for build verification","catalogName":"Incident Ticket","approvalStep":"一级审批","currentApprover":"待分配","waitHours":645.1},{"index":2,"id":"A-2","requestId":"TIC20260313000006","name":"加急加急","catalogName":"问题工单","approvalStep":"一级审批","currentApprover":"待分配","waitHours":619.2}]',
+            "##APPROVAL_META_END##",
+        ]
+    )
+
+    answer = runner._build_tool_only_markdown_answer_from_messages(
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "smartcmp_list_pending",
+                "content": {"output": meta_output},
+            }
+        ],
+        start_index=0,
+    )
+
+    assert "## Answer" not in answer
+    assert "## Result" not in answer
+    assert "TIC20260316000001" in answer
+    assert "Test ticket for build verification" in answer
+    assert "加急加急" in answer
+    assert "===============================================================" not in answer
+    assert "+- [1]" not in answer
 
 
 @pytest.mark.asyncio

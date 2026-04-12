@@ -29,14 +29,14 @@ def build_finalize_payload(
     return {
         "system_prompt": (
             "You are AtlasClaw. Produce a concise markdown answer using only the supplied tool evidence. "
-            "Do not fabricate facts or mention hidden reasoning."
+            "Do not fabricate facts or mention hidden reasoning. "
+            "Do not add wrapper headings like 'Answer' or 'Result' unless the user explicitly asked for them."
         ),
         "user_prompt": (
             f"User request:\n{str(user_message or '').strip()}\n\n"
             f"Tool evidence:\n{chr(10).join(evidence_lines)}\n\n"
-            "Return markdown with these sections:\n"
-            "## Answer\n"
-            "## Evidence\n"
+            "Return concise markdown. Use bullets or short paragraphs when helpful. "
+            "If there are source links in the evidence, keep them as markdown links.\n"
         ),
     }
 

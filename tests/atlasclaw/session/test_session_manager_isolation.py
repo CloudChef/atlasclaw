@@ -123,6 +123,38 @@ class TestSessionManagerIsolation:
         assert "agent:main:user:alice:api:dm:bob" in data
 
     @pytest.mark.asyncio
+    async def test_concurrent_save_metadata_uses_distinct_temp_files(self, tmp_path, monkeypatch):
+        agents_dir = tmp_path / "agents"
+        manager = SessionManager(
+            agents_dir=str(agents_dir),
+            agent_id="main",
+            user_id="default",
+            reset_mode=ResetMode.MANUAL,
+        )
+        await manager._ensure_dir()
+        manager._metadata_cache = {
+            "s-1": manager._create_new_session("s-1"),
+            "s-2": manager._create_new_session("s-2"),
+        }
+        manager._loaded = True
+
+        replace_sources = []
+
+        async def _fake_replace(src, dst):
+            replace_sources.append(src.name)
+            await asyncio.sleep(0.01)
+            Path(dst).write_text(Path(src).read_text(encoding="utf-8"), encoding="utf-8")
+            Path(src).unlink(missing_ok=True)
+
+        monkeypatch.setattr(manager, "_replace_file_with_retry", _fake_replace)
+
+        await asyncio.gather(manager._save_metadata(), manager._save_metadata())
+
+        assert len(replace_sources) == 2
+        assert len(set(replace_sources)) == 2
+        assert not list((agents_dir / "main" / "sessions" / "default").glob("*.tmp"))
+
+    @pytest.mark.asyncio
     async def test_session_manager_router_routes_by_session_user(self, tmp_path):
         from app.atlasclaw.session.router import SessionManagerRouter
 

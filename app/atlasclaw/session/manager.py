@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import shutil
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -268,13 +269,19 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
         """Persist the in-memory metadata cache to disk."""
         await self._ensure_dir()
         metadata_path = self.sessions_dir / self.METADATA_FILE
-        tmp_path = metadata_path.with_suffix(f"{metadata_path.suffix}.tmp")
+        tmp_path = self._build_metadata_tmp_path(metadata_path)
         
         data = {key: meta.to_dict() for key, meta in self._metadata_cache.items()}
 
         async with aiofiles.open(tmp_path, "w", encoding="utf-8") as f:
             await f.write(json.dumps(data, ensure_ascii=False, indent=2))
         await self._replace_file_with_retry(tmp_path, metadata_path)
+
+    @staticmethod
+    def _build_metadata_tmp_path(metadata_path: Path) -> Path:
+        """Return a per-save temporary path to avoid concurrent replace collisions."""
+        unique_suffix = uuid.uuid4().hex
+        return metadata_path.with_name(f"{metadata_path.name}.{unique_suffix}.tmp")
     
     def _get_transcript_path(self, session: SessionMetadata) -> Path:
         """Return the transcript file path for a session."""

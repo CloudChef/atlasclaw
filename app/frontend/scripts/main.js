@@ -8,7 +8,7 @@
  * .atlasclaw/main_original.js.bak for reference when creating pages/chat.js
  */
 
-import { initApp } from './app.js'
+import { initApp } from './app.js?v=17'
 
 // Initialize SPA when DOM is ready
 if (document.readyState === 'loading') {

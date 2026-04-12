@@ -20,6 +20,8 @@ import {
   canAccessUserManagement
 } from './permissions.js'
 
+const SCRIPT_VERSION = '17'
+
 /**
  * Route table - lazy loaded page modules
  * Each route has:
@@ -32,13 +34,13 @@ import {
 const routes = [
   {
     path: '/',
-    loader: () => import('./pages/chat.js'),
+    loader: () => import(`./pages/chat.js?v=${SCRIPT_VERSION}`),
     auth: true,
     title: 'app.title'
   },
   {
     path: '/channels',
-    loader: () => import('./pages/channels.js'),
+    loader: () => import(`./pages/channels.js?v=${SCRIPT_VERSION}`),
     auth: true,
     accessCheck: canAccessChannelManagement,
     accessDeniedMessage: 'Access denied. You do not have permission to manage channels.',
@@ -46,13 +48,13 @@ const routes = [
   },
   {
     path: '/account',
-    loader: () => import('./pages/account-settings.js'),
+    loader: () => import(`./pages/account-settings.js?v=${SCRIPT_VERSION}`),
     auth: true,
     title: 'account.title'
   },
   {
     path: '/models',
-    loader: () => import('./pages/models.js'),
+    loader: () => import(`./pages/models.js?v=${SCRIPT_VERSION}`),
     auth: true,
     accessCheck: canAccessModelManagement,
     accessDeniedMessage: 'Access denied. You do not have permission to manage models.',
@@ -60,7 +62,7 @@ const routes = [
   },
   {
     path: '/admin/users',
-    loader: () => import('./pages/admin-users.js'),
+    loader: () => import(`./pages/admin-users.js?v=${SCRIPT_VERSION}`),
     auth: true,
     accessCheck: canAccessUserManagement,
     accessDeniedMessage: 'Access denied. You do not have permission to manage users.',

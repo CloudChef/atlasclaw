@@ -234,6 +234,8 @@ class RunnerToolGateRoutingMixin:
         if not normalized_user_message:
             return user_message, False
         identifier_follow_up = self._contains_structured_identifier(normalized_user_message)
+        if identifier_follow_up and self._identifier_request_is_self_contained(normalized_user_message):
+            return normalized_user_message, False
         if len(re.sub(r"\s+", "", normalized_user_message)) > 32 and not identifier_follow_up:
             return normalized_user_message, False
 
@@ -277,6 +279,33 @@ class RunnerToolGateRoutingMixin:
 
         combined = f"{previous_user_message} {normalized_user_message}".strip()
         return combined, low_information_follow_up and combined != normalized_user_message
+
+    @classmethod
+    def _identifier_request_is_self_contained(cls, text: str) -> bool:
+        normalized = " ".join((text or "").split()).strip()
+        if not normalized:
+            return False
+        without_identifiers = cls._strip_structured_identifiers(normalized)
+        compact_without_identifiers = re.sub(r"\s+", "", without_identifiers)
+        if len(compact_without_identifiers) >= 4:
+            return True
+        request_tokens = cls._tokenize_classifier_fallback_text(without_identifiers)
+        return len(request_tokens) >= 2
+
+    @staticmethod
+    def _strip_structured_identifiers(text: str) -> str:
+        normalized = " ".join((text or "").split()).strip()
+        if not normalized:
+            return ""
+        patterns = (
+            r"(?<![a-z0-9])[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(?![a-z0-9])",
+            r"(?<![a-z0-9])(?=[a-z0-9_-]{8,})(?=[a-z0-9_-]*[a-z])(?=[a-z0-9_-]*\d)[a-z0-9_-]+(?![a-z0-9])",
+            r"(?<!\d)\d{8,}(?!\d)",
+        )
+        stripped = normalized
+        for pattern in patterns:
+            stripped = re.sub(pattern, " ", stripped, flags=re.IGNORECASE)
+        return " ".join(stripped.split()).strip()
 
     @staticmethod
     def _contains_structured_identifier(text: str) -> bool:

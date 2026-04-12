@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any, AsyncIterator
 
 from app.atlasclaw.agent.runner_tool.runner_execution_flow_error import RunnerExecutionFlowErrorMixin
@@ -27,7 +28,32 @@ class RunnerExecutionFlowPhaseMixin(
         state["run_output_start_index"] = len(runtime_message_history)
 
         try:
+            _log_step(
+                "model_message_history_build_start",
+                runtime_history_count=len(runtime_message_history),
+            )
+            yield StreamEvent.runtime_update(
+                "reasoning",
+                "Preparing model request context.",
+                metadata={
+                    "phase": "model_message_history_build",
+                    "elapsed": round(time.monotonic() - float(state.get("start_time") or 0.0), 1),
+                },
+            )
             model_message_history = self.history.to_model_message_history(runtime_message_history)
+            _log_step(
+                "model_message_history_build_done",
+                model_history_count=len(model_message_history),
+            )
+            _log_step("agent_iter_open_start")
+            yield StreamEvent.runtime_update(
+                "reasoning",
+                "Starting model session.",
+                metadata={
+                    "phase": "agent_iter_open",
+                    "elapsed": round(time.monotonic() - float(state.get("start_time") or 0.0), 1),
+                },
+            )
             async with self._run_iter_with_optional_override(
                 agent=state.get("runtime_agent"),
                 user_message=user_message,
@@ -35,6 +61,7 @@ class RunnerExecutionFlowPhaseMixin(
                 message_history=model_message_history,
                 system_prompt=state.get("system_prompt"),
             ) as agent_run:
+                _log_step("agent_iter_open_done")
                 async for event in self._run_agent_node_stream(
                     agent_run=agent_run,
                     state=state,
