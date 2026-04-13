@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import Any, AsyncIterator
 
 from pydantic_ai.messages import ThinkingPart
 
 from app.atlasclaw.agent.stream import StreamEvent
+from app.atlasclaw.core.trace import get_current_trace_context, resolve_trace_context, sanitize_log_value
+
+
+logger = logging.getLogger(__name__)
 
 
 def split_thinking_chunks(text: str, target_size: int = 5) -> list[str]:
@@ -130,13 +135,26 @@ class ThinkingStreamEmitter:
             self.thinking_started = False
 
         self.assistant_emitted = True
+        trace_context = get_current_trace_context() or resolve_trace_context(session_key)
+        hook_payload = {
+            "session_key": session_key,
+            "content": content,
+            "trace_id": trace_context.trace_id,
+            "thread_id": trace_context.thread_id,
+            "run_id": trace_context.run_id,
+        }
+        logger.info(
+            "llm_trace %s",
+            {
+                "event": "llm_output",
+                **trace_context.as_log_fields(),
+                "content": sanitize_log_value(content),
+            },
+        )
         if hooks:
             await hooks.trigger(
                 "llm_output",
-                {
-                    "session_key": session_key,
-                    "content": content,
-                },
+                hook_payload,
             )
         yield StreamEvent.assistant_delta(content)
 

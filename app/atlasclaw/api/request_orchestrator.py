@@ -24,6 +24,7 @@ from app.atlasclaw.agent.runner import AgentRunner
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.auth.models import ANONYMOUS_USER, UserInfo
 from app.atlasclaw.core.deps import SkillDeps
+from app.atlasclaw.core.trace import enrich_trace_metadata
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
 
@@ -286,7 +287,7 @@ class RequestOrchestrator:
                 peer_id=peer_id,
                 session_key=session_key,
                 channel=channel,
-                extra=deps_extra,
+                extra=enrich_trace_metadata(session_key, extra=deps_extra),
             )
 
             runner = AgentRunner(

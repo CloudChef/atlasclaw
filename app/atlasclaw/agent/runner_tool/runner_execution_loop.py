@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from typing import Any, AsyncIterator, Optional
 
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.agent.thinking_stream import ThinkingStreamEmitter
 from app.atlasclaw.agent.tool_gate_models import CapabilityMatchResult, ToolGateDecision, ToolPolicyMode
+from app.atlasclaw.core.trace import resolve_trace_context
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.agent.runner_tool.runner_execution_finalize import RunnerExecutionFinalizePhaseMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_flow import RunnerExecutionFlowPhaseMixin
@@ -41,7 +43,13 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
         release_slot: Optional[Any] = None
         flushed_memory_signatures: set[str] = set()
         extra = deps.extra if isinstance(deps.extra, dict) else {}
-        run_id = str(extra.get("run_id", "") or "")
+        run_id = str(extra.get("run_id", "") or uuid.uuid4().hex)
+        if isinstance(extra, dict):
+            extra["run_id"] = run_id
+        trace_context = resolve_trace_context(session_key, run_id=run_id, deps=deps)
+        if isinstance(extra, dict):
+            extra["trace_id"] = trace_context.trace_id
+            extra["thread_id"] = trace_context.thread_id
         tool_execution_retry_count = int(extra.get("_tool_execution_retry_count", 0) or 0)
         run_failed = False
         message_history: list[dict] = []
@@ -76,6 +84,8 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             payload: dict[str, Any] = {
                 "session": session_key,
                 "run_id": run_id,
+                "trace_id": trace_context.trace_id,
+                "thread_id": trace_context.thread_id,
                 "step": step,
                 "elapsed": round(time.monotonic() - start_time, 3),
             }

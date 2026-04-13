@@ -11,6 +11,7 @@ from pydantic_ai.messages import ToolCallPart
 
 from app.atlasclaw.agent.tool_gate_models import CapabilityMatchResult, ToolEnforcementOutcome, ToolGateDecision
 from app.atlasclaw.agent.stream import StreamEvent
+from app.atlasclaw.core.trace import resolve_trace_context, sanitize_log_value
 from app.atlasclaw.hooks.runtime import HookRuntime
 from app.atlasclaw.hooks.runtime_models import HookEventType
 from app.atlasclaw.session.context import SessionKey
@@ -50,12 +51,26 @@ class RuntimeEventDispatcher:
         system_prompt: str,
         message_history: list[dict],
     ) -> None:
-        payload = {
-            "session_key": session_key,
-            "user_message": user_message,
-            "system_prompt": system_prompt,
-            "message_history": message_history,
-        }
+        payload = self._with_trace_fields(
+            session_key=session_key,
+            run_id=run_id,
+            payload={
+                "session_key": session_key,
+                "user_message": user_message,
+                "system_prompt": system_prompt,
+                "message_history": message_history,
+            },
+        )
+        logger.info(
+            "llm_trace %s",
+            {
+                "event": "llm_input",
+                **self._trace_log_fields(session_key=session_key, run_id=run_id),
+                "user_message": sanitize_log_value(user_message),
+                "system_prompt": sanitize_log_value(system_prompt),
+                "message_history": sanitize_log_value(message_history),
+            },
+        )
         if self.hooks:
             await self.hooks.trigger("llm_input", payload)
         self._emit_runtime_event_background(
@@ -78,6 +93,7 @@ class RuntimeEventDispatcher:
             "tool_calls_count": tool_calls_count,
             "compaction_applied": compaction_applied,
         }
+        payload = self._with_trace_fields(session_key=session_key, run_id=run_id, payload=payload)
         if self.hooks:
             await self.hooks.trigger("agent_end", payload)
         await self._emit_runtime_event(
@@ -98,7 +114,11 @@ class RuntimeEventDispatcher:
             HookEventType.RUN_STARTED,
             session_key=session_key,
             run_id=run_id,
-            payload={"user_message": user_message},
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={"user_message": user_message},
+            ),
         )
 
     async def trigger_message_received(
@@ -112,7 +132,11 @@ class RuntimeEventDispatcher:
             HookEventType.MESSAGE_RECEIVED,
             session_key=session_key,
             run_id=run_id,
-            payload={"message": user_message},
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={"message": user_message},
+            ),
         )
 
     async def trigger_run_failed(
@@ -126,7 +150,11 @@ class RuntimeEventDispatcher:
             HookEventType.RUN_FAILED,
             session_key=session_key,
             run_id=run_id,
-            payload={"error": error},
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={"error": error},
+            ),
         )
 
     async def trigger_llm_completed(
@@ -140,7 +168,11 @@ class RuntimeEventDispatcher:
             HookEventType.LLM_COMPLETED,
             session_key=session_key,
             run_id=run_id,
-            payload={"assistant_message": assistant_message},
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={"assistant_message": assistant_message},
+            ),
         )
 
     async def trigger_llm_failed(
@@ -154,7 +186,11 @@ class RuntimeEventDispatcher:
             HookEventType.LLM_FAILED,
             session_key=session_key,
             run_id=run_id,
-            payload={"error": error},
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={"error": error},
+            ),
         )
 
     async def trigger_run_context_ready(
@@ -175,16 +211,20 @@ class RuntimeEventDispatcher:
             HookEventType.RUN_CONTEXT_READY,
             session_key=session_key,
             run_id=run_id,
-            payload={
-                "user_message": user_message,
-                "system_prompt": system_prompt,
-                "message_history": message_history,
-                "assistant_message": assistant_message,
-                "tool_calls": tool_calls,
-                "run_status": run_status,
-                "error": error,
-                "session_title": session_title,
-            },
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={
+                    "user_message": user_message,
+                    "system_prompt": system_prompt,
+                    "message_history": message_history,
+                    "assistant_message": assistant_message,
+                    "tool_calls": tool_calls,
+                    "run_status": run_status,
+                    "error": error,
+                    "session_title": session_title,
+                },
+            ),
         )
 
     async def trigger_tool_gate_evaluated(
@@ -206,6 +246,7 @@ class RuntimeEventDispatcher:
             "reason": decision.reason,
             "policy": decision.policy.value,
         }
+        payload = self._with_trace_fields(session_key=session_key, run_id=run_id, payload=payload)
         self._emit_runtime_event_background(
             HookEventType.TOOL_GATE_EVALUATED,
             session_key=session_key,
@@ -236,6 +277,7 @@ class RuntimeEventDispatcher:
             "reason": match_result.reason,
             "confidence": decision.confidence,
         }
+        payload = self._with_trace_fields(session_key=session_key, run_id=run_id, payload=payload)
         self._emit_runtime_event_background(
             HookEventType.TOOL_MATCHER_RESOLVED,
             session_key=session_key,
@@ -263,11 +305,15 @@ class RuntimeEventDispatcher:
             HookEventType.HINT_RANKING_STARTED,
             session_key=session_key,
             run_id=run_id,
-            payload={
-                "candidate_count": int(candidate_count),
-                "provider_hint_count": int(provider_hint_count),
-                "skill_hint_count": int(skill_hint_count),
-            },
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={
+                    "candidate_count": int(candidate_count),
+                    "provider_hint_count": int(provider_hint_count),
+                    "skill_hint_count": int(skill_hint_count),
+                },
+            ),
         )
 
     async def trigger_hint_ranking_completed(
@@ -286,14 +332,18 @@ class RuntimeEventDispatcher:
             HookEventType.HINT_RANKING_COMPLETED,
             session_key=session_key,
             run_id=run_id,
-            payload={
-                "preferred_provider_types": list(preferred_provider_types),
-                "preferred_capability_classes": list(preferred_capability_classes),
-                "preferred_tool_names": list(preferred_tool_names),
-                "confidence": float(confidence),
-                "reason": str(reason or ""),
-                "elapsed_ms": int(elapsed_ms),
-            },
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={
+                    "preferred_provider_types": list(preferred_provider_types),
+                    "preferred_capability_classes": list(preferred_capability_classes),
+                    "preferred_tool_names": list(preferred_tool_names),
+                    "confidence": float(confidence),
+                    "reason": str(reason or ""),
+                    "elapsed_ms": int(elapsed_ms),
+                },
+            ),
         )
 
     async def trigger_hint_ranking_fallback(
@@ -308,10 +358,14 @@ class RuntimeEventDispatcher:
             HookEventType.HINT_RANKING_FALLBACK,
             session_key=session_key,
             run_id=run_id,
-            payload={
-                "reason": str(reason or ""),
-                "elapsed_ms": int(elapsed_ms),
-            },
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={
+                    "reason": str(reason or ""),
+                    "elapsed_ms": int(elapsed_ms),
+                },
+            ),
         )
 
     async def trigger_tool_enforcement_blocked(
@@ -327,14 +381,18 @@ class RuntimeEventDispatcher:
             HookEventType.TOOL_ENFORCEMENT_BLOCKED_FINAL_ANSWER,
             session_key=session_key,
             run_id=run_id,
-            payload={
-                "policy": decision.policy.value,
-                "reason": decision.reason,
-                "resolved_tools": [candidate.model_dump() for candidate in match_result.tool_candidates],
-                "missing_capabilities": list(match_result.missing_capabilities),
-                "failure_message": outcome.failure_message or "",
-                "blocked_final_answer": outcome.blocked_final_answer,
-            },
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={
+                    "policy": decision.policy.value,
+                    "reason": decision.reason,
+                    "resolved_tools": [candidate.model_dump() for candidate in match_result.tool_candidates],
+                    "missing_capabilities": list(match_result.missing_capabilities),
+                    "failure_message": outcome.failure_message or "",
+                    "blocked_final_answer": outcome.blocked_final_answer,
+                },
+            ),
         )
 
     async def trigger_tool_enforcement_prefetch_started(
@@ -349,7 +407,11 @@ class RuntimeEventDispatcher:
             HookEventType.TOOL_ENFORCEMENT_PREFETCH_STARTED,
             session_key=session_key,
             run_id=run_id,
-            payload={"tool_name": tool_name, "query": query},
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={"tool_name": tool_name, "query": query},
+            ),
         )
 
     async def trigger_tool_enforcement_prefetch_completed(
@@ -366,12 +428,16 @@ class RuntimeEventDispatcher:
             HookEventType.TOOL_ENFORCEMENT_PREFETCH_COMPLETED,
             session_key=session_key,
             run_id=run_id,
-            payload={
-                "tool_name": tool_name,
-                "query": query,
-                "result_count": result_count,
-                "provider": provider,
-            },
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={
+                    "tool_name": tool_name,
+                    "query": query,
+                    "result_count": result_count,
+                    "provider": provider,
+                },
+            ),
         )
 
     async def trigger_tool_enforcement_prefetch_failed(
@@ -387,7 +453,11 @@ class RuntimeEventDispatcher:
             HookEventType.TOOL_ENFORCEMENT_PREFETCH_FAILED,
             session_key=session_key,
             run_id=run_id,
-            payload={"tool_name": tool_name, "query": query, "error": error},
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload={"tool_name": tool_name, "query": query, "error": error},
+            ),
         )
 
     def collect_tool_calls(self, node: Any) -> list[Any]:
@@ -514,7 +584,11 @@ class RuntimeEventDispatcher:
                 HookEventType.TOOL_STARTED,
                 session_key=session_key,
                 run_id=run_id,
-                payload={"tool_name": tool_name},
+                payload=self._with_trace_fields(
+                    session_key=session_key,
+                    run_id=run_id,
+                    payload={"tool_name": tool_name},
+                ),
             )
 
             events.append(StreamEvent.tool_start(tool_name))
@@ -526,7 +600,11 @@ class RuntimeEventDispatcher:
                 HookEventType.TOOL_COMPLETED,
                 session_key=session_key,
                 run_id=run_id,
-                payload={"tool_name": tool_name},
+                payload=self._with_trace_fields(
+                    session_key=session_key,
+                    run_id=run_id,
+                    payload={"tool_name": tool_name},
+                ),
             )
 
             if self.queue:
@@ -592,4 +670,19 @@ class RuntimeEventDispatcher:
             task.result()
         except Exception as exc:  # pragma: no cover - defensive logging only
             logger.warning("Runtime event background dispatch failed: %s", exc)
+
+    @staticmethod
+    def _trace_log_fields(*, session_key: str, run_id: str) -> dict[str, str]:
+        return resolve_trace_context(session_key, run_id=run_id).as_log_fields()
+
+    def _with_trace_fields(
+        self,
+        *,
+        session_key: str,
+        run_id: str,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        enriched = dict(payload)
+        enriched.update(self._trace_log_fields(session_key=session_key, run_id=run_id))
+        return enriched
 

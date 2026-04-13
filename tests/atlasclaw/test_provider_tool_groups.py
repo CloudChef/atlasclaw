@@ -94,10 +94,12 @@ def test_build_scoped_deps_exposes_tool_group_snapshot(tmp_path) -> None:
         roles=["admin"],
     )
 
-    deps = build_scoped_deps(ctx, user, "sess-1")
+    deps = build_scoped_deps(ctx, user, "agent:main:user:u1:web:dm:peer-1:topic:thread-42")
     groups = deps.extra.get("tool_groups_snapshot", {})
     assert "group:cmp" in groups
     assert set(groups["group:cmp"]) == {"cmp_get_ticket", "cmp_list_pending"}
+    assert deps.extra.get("thread_id") == "thread-42"
+    assert deps.extra.get("trace_id") == "thread-42"
 
 
 def test_register_builtin_tools_exposes_explicit_runtime_metadata() -> None:

@@ -19,6 +19,8 @@ from typing import Optional, Any
 
 from pydantic import BaseModel, Field
 
+from app.atlasclaw.core.trace import create_traced_http_client
+
 logger = logging.getLogger(__name__)
 
 
@@ -363,6 +365,7 @@ create PydanticAI Model instance
         if config.api_key:
             provider_kwargs["api_key"] = config.api_key
 
+        provider_kwargs.setdefault("http_client", create_traced_http_client("openai"))
         provider = OpenAIProvider(**provider_kwargs)
 
         # Check if reasoning mode is enabled via model configuration
@@ -400,6 +403,7 @@ create PydanticAI Model instance
         if config.base_url:
             provider_kwargs["base_url"] = config.base_url
 
+        provider_kwargs.setdefault("http_client", create_traced_http_client("anthropic"))
         provider = AnthropicProvider(**provider_kwargs)
 
         # Check if reasoning mode is enabled via model configuration

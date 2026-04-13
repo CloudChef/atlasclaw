@@ -237,6 +237,7 @@ class ChannelManager:
                 return
             
             from app.atlasclaw.core.deps import SkillDeps
+            from app.atlasclaw.core.trace import enrich_trace_metadata
 
             user_info = UserInfo(user_id=user_id, display_name=user_id.capitalize())
             session_key = self._build_channel_session_key(
@@ -257,12 +258,15 @@ class ChannelManager:
                 session_key=session_key,
                 channel=channel_type,
                 session_manager=scoped_session_manager,
-                extra={
-                    "channel_connection_id": connection_id,
-                    "external_sender_id": message.sender_id,
-                    "external_chat_id": message.chat_id,
-                    "external_chat_type": self._resolve_chat_type(message).value,
-                },
+                extra=enrich_trace_metadata(
+                    session_key,
+                    extra={
+                        "channel_connection_id": connection_id,
+                        "external_sender_id": message.sender_id,
+                        "external_chat_id": message.chat_id,
+                        "external_chat_type": self._resolve_chat_type(message).value,
+                    },
+                ),
             )
             # Collect response from agent
             response_text = ""

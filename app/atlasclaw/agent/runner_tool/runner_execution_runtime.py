@@ -5,6 +5,7 @@ from typing import Any, AsyncIterator, Optional
 
 from app.atlasclaw.agent.context_window_guard import ContextWindowInfo, resolve_context_window_info
 from app.atlasclaw.core.deps import SkillDeps
+from app.atlasclaw.core.trace import bind_trace_context, resolve_trace_context
 from app.atlasclaw.session.context import SessionKey
 
 class RunnerExecutionRuntimeMixin:
@@ -173,6 +174,13 @@ class RunnerExecutionRuntimeMixin:
 
         """Run `agent.iter()` with optional system-prompt overrides."""
         override_factory = getattr(agent, "override", None)
+        extra = getattr(deps, "extra", {})
+        run_id = str(extra.get("run_id", "") or "") if isinstance(extra, dict) else ""
+        trace_context = resolve_trace_context(
+            getattr(deps, "session_key", "") or "",
+            run_id=run_id,
+            deps=deps,
+        )
 
         if callable(override_factory) and system_prompt:
             override_cm = nullcontext()
@@ -190,23 +198,24 @@ class RunnerExecutionRuntimeMixin:
             override_cm = nullcontext()
 
         if hasattr(override_cm, "__aenter__"):
-            async with override_cm:
+            with bind_trace_context(trace_context):
+                async with override_cm:
+                    async with agent.iter(
+                        user_message,
+                        deps=deps,
+                        message_history=message_history,
+                    ) as agent_run:
+                        yield agent_run
+            return
+
+        with bind_trace_context(trace_context):
+            with override_cm:
                 async with agent.iter(
                     user_message,
                     deps=deps,
                     message_history=message_history,
                 ) as agent_run:
                     yield agent_run
-            return
-
-        with override_cm:
-            async with agent.iter(
-                user_message,
-                deps=deps,
-                message_history=message_history,
-            ) as agent_run:
-
-                yield agent_run
     async def _iter_agent_nodes(
         self,
         agent_run: Any,

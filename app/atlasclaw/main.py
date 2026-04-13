@@ -48,6 +48,7 @@ from app.atlasclaw.agent.context_pruning import (
 from app.atlasclaw.core.config import get_config, get_config_path
 from app.atlasclaw.core.provider_registry import ServiceProviderRegistry
 from app.atlasclaw.core.provider_scanner import ProviderScanner
+from app.atlasclaw.core.trace import enrich_trace_metadata
 from app.atlasclaw.core.workspace import WorkspaceInitializer
 from app.atlasclaw.agent.agent_definition import AgentLoader
 from app.atlasclaw.channels import ChannelRegistry
@@ -586,7 +587,10 @@ async def lifespan(app: FastAPI):
             user_info=UserInfo(user_id=job.owner_user_id, display_name=job.owner_user_id),
             session_key=heartbeat_session_key,
             session_manager=session_manager,
-            extra={"run_id": heartbeat_run_id, "heartbeat_job_id": job.job_id},
+            extra=enrich_trace_metadata(
+                heartbeat_session_key,
+                extra={"run_id": heartbeat_run_id, "heartbeat_job_id": job.job_id},
+            ),
         )
         assistant_chunks: list[str] = []
         error_text = ""

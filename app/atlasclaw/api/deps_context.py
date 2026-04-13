@@ -12,6 +12,7 @@ from ..agent.routing import AgentRouter
 from ..auth.models import UserInfo
 from ..core.deps import SkillDeps
 from ..core.security_guard import ensure_user_work_dir
+from ..core.trace import enrich_trace_metadata
 from ..memory.manager import MemoryManager
 from ..session.manager import SessionManager
 from ..session.queue import SessionQueue
@@ -175,6 +176,7 @@ def build_scoped_deps(
     }
     if extra:
         deps_extra.update(extra)
+    deps_extra = enrich_trace_metadata(session_key, extra=deps_extra)
 
     return SkillDeps(
         user_info=user_info,
