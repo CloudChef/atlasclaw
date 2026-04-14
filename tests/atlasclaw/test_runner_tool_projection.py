@@ -51,12 +51,14 @@ def _allowed_tools() -> list[dict]:
             "description": "List provider instances",
             "group_ids": ["group:atlasclaw"],
             "capability_class": "session",
+            "coordination_only": True,
         },
         {
             "name": "select_provider_instance",
             "description": "Select provider instance",
             "group_ids": ["group:atlasclaw"],
             "capability_class": "session",
+            "coordination_only": True,
         },
     ]
 
@@ -494,6 +496,193 @@ def test_compress_candidate_toolset_applies_metadata_subset() -> None:
     assert [tool["name"] for tool in filtered] == [
         "cmp_list_pending",
         "cmp_get_request_detail",
+        "list_provider_instances",
+        "select_provider_instance",
+    ]
+    assert trace["reason"] == "candidate_compression_applied"
+
+
+def test_compress_candidate_toolset_prefers_explicit_artifact_tools_over_generic_fs_helpers() -> None:
+    filtered, trace = compress_candidate_toolset(
+        allowed_tools=[
+            {
+                "name": "write",
+                "description": "Write file content",
+                "group_ids": ["group:fs", "group:atlasclaw"],
+                "capability_class": "fs_write",
+                "priority": 100,
+            },
+            {
+                "name": "pptx_create_deck",
+                "description": "Create a .pptx presentation",
+                "group_ids": ["group:pptx", "group:fs"],
+                "capability_class": "artifact:pptx",
+                "priority": 120,
+            },
+            {
+                "name": "smartcmp_get_request_detail",
+                "description": "Get SmartCMP request detail",
+                "provider_type": "smartcmp",
+                "group_ids": ["group:cmp", "group:request"],
+                "capability_class": "provider:smartcmp",
+                "priority": 100,
+            },
+            {
+                "name": "list_provider_instances",
+                "description": "List provider instances",
+                "group_ids": ["group:atlasclaw"],
+                "capability_class": "",
+                "coordination_only": True,
+            },
+            {
+                "name": "select_provider_instance",
+                "description": "Select provider instance",
+                "group_ids": ["group:atlasclaw"],
+                "capability_class": "",
+                "coordination_only": True,
+            },
+        ],
+        metadata_candidates={
+            "confidence": 1.0,
+            "preferred_provider_types": ["smartcmp"],
+            "preferred_group_ids": [
+                "group:fs",
+                "group:atlasclaw",
+                "group:pptx",
+                "group:cmp",
+                "group:request",
+            ],
+            "preferred_capability_classes": ["fs_write", "artifact:pptx", "provider:smartcmp"],
+            "preferred_tool_names": ["write", "pptx_create_deck", "smartcmp_get_request_detail"],
+            "tool_candidates": [
+                {
+                    "hint_id": "tool:write",
+                    "tool_name": "write",
+                    "score": 27,
+                    "has_strong_anchor": True,
+                    "tool_names": ["write"],
+                    "group_ids": ["group:fs", "group:atlasclaw"],
+                    "capability_classes": ["fs_write"],
+                },
+                {
+                    "hint_id": "tool:pptx_create_deck",
+                    "tool_name": "pptx_create_deck",
+                    "score": 13,
+                    "has_strong_anchor": True,
+                    "tool_names": ["pptx_create_deck"],
+                    "group_ids": ["group:pptx", "group:fs"],
+                    "capability_classes": ["artifact:pptx"],
+                },
+                {
+                    "hint_id": "tool:smartcmp_get_request_detail",
+                    "tool_name": "smartcmp_get_request_detail",
+                    "score": 9,
+                    "has_strong_anchor": True,
+                    "tool_names": ["smartcmp_get_request_detail"],
+                    "group_ids": ["group:cmp", "group:request"],
+                    "capability_classes": ["provider:smartcmp"],
+                },
+            ],
+        },
+        used_follow_up_context=False,
+        min_metadata_confidence=0.3,
+        compression_threshold=2,
+    )
+
+    assert [tool["name"] for tool in filtered] == [
+        "pptx_create_deck",
+        "list_provider_instances",
+        "select_provider_instance",
+    ]
+    assert trace["reason"] == "candidate_compression_applied"
+
+
+def test_compress_candidate_toolset_prefers_explicit_artifact_tool_over_generic_write() -> None:
+    filtered, trace = compress_candidate_toolset(
+        allowed_tools=[
+            {
+                "name": "write",
+                "description": "Write file content",
+                "group_ids": ["group:fs", "group:atlasclaw"],
+                "capability_class": "fs_write",
+                "priority": 100,
+            },
+            {
+                "name": "pptx_create_deck",
+                "description": "Create a PPTX deck",
+                "group_ids": ["group:pptx", "group:fs"],
+                "capability_class": "artifact:pptx",
+                "priority": 120,
+            },
+            {
+                "name": "smartcmp_get_request_detail",
+                "description": "Get SmartCMP request detail",
+                "provider_type": "smartcmp",
+                "group_ids": ["group:cmp", "group:request"],
+                "capability_class": "provider:smartcmp",
+                "priority": 100,
+            },
+            {
+                "name": "list_provider_instances",
+                "description": "List provider instances",
+                "group_ids": ["group:atlasclaw"],
+                "capability_class": "",
+                "coordination_only": True,
+            },
+            {
+                "name": "select_provider_instance",
+                "description": "Select provider instance",
+                "group_ids": ["group:atlasclaw"],
+                "capability_class": "",
+                "coordination_only": True,
+            },
+        ],
+        metadata_candidates={
+            "confidence": 1.0,
+            "preferred_provider_types": ["smartcmp"],
+            "preferred_group_ids": [
+                "group:fs",
+                "group:atlasclaw",
+                "group:pptx",
+                "group:cmp",
+                "group:request",
+            ],
+            "preferred_capability_classes": ["fs_write", "artifact:pptx", "provider:smartcmp"],
+            "preferred_tool_names": ["write", "pptx_create_deck", "smartcmp_get_request_detail"],
+            "tool_candidates": [
+                {
+                    "tool_name": "write",
+                    "score": 27,
+                    "has_strong_anchor": True,
+                    "tool_names": ["write"],
+                    "group_ids": ["group:fs", "group:atlasclaw"],
+                    "capability_classes": ["fs_write"],
+                },
+                {
+                    "tool_name": "pptx_create_deck",
+                    "score": 13,
+                    "has_strong_anchor": True,
+                    "tool_names": ["pptx_create_deck"],
+                    "group_ids": ["group:pptx", "group:fs"],
+                    "capability_classes": ["artifact:pptx"],
+                },
+                {
+                    "tool_name": "smartcmp_get_request_detail",
+                    "score": 9,
+                    "has_strong_anchor": True,
+                    "tool_names": ["smartcmp_get_request_detail"],
+                    "group_ids": ["group:cmp", "group:request"],
+                    "capability_classes": ["provider:smartcmp"],
+                },
+            ],
+        },
+        used_follow_up_context=False,
+        min_metadata_confidence=0.3,
+        compression_threshold=2,
+    )
+
+    assert [tool["name"] for tool in filtered] == [
+        "pptx_create_deck",
         "list_provider_instances",
         "select_provider_instance",
     ]

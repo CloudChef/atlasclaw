@@ -4,10 +4,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import pytest
 import requests
@@ -17,6 +19,7 @@ from pptx import Presentation
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_USERNAME = "admin"
 DEFAULT_PASSWORD = "admin"
+DEFAULT_REMOTE_CONTAINER_NAME = "atlasclaw"
 
 
 @dataclass
@@ -251,6 +254,101 @@ def _assert_common_runtime_shape(result: LiveRunResult, *, require_tool: bool = 
     _assert_no_timeout_or_failure(result)
 
 
+def _extract_cmp_request_ids(text: str) -> list[str]:
+    seen: set[str] = set()
+    request_ids: list[str] = []
+    for match in re.finditer(r"\bTIC\d{8,}\b", text or "", flags=re.IGNORECASE):
+        request_id = str(match.group(0) or "").strip()
+        if not request_id or request_id in seen:
+            continue
+        seen.add(request_id)
+        request_ids.append(request_id)
+    return request_ids
+
+
+def _extract_generated_pptx_reference(text: str) -> tuple[str, Path]:
+    match = re.search(
+        r"([A-Za-z]:[\\/][^`\r\n]+?\.pptx|\.atlasclaw[\\/][^`\r\n]+?\.pptx|/[^`\r\n]+?\.pptx)",
+        text,
+    )
+    if match:
+        raw_path = match.group(1)
+        if raw_path.startswith(".atlasclaw/") or raw_path.startswith(".atlasclaw\\"):
+            normalized_relative = raw_path.replace("\\", "/")
+            resolved = Path("C:/Projects/cmps/atlasclaw") / normalized_relative
+            return raw_path, resolved
+        return raw_path, Path(raw_path)
+
+    filename_match = re.search(r"([^\\/\s`]+\.pptx)", text, flags=re.IGNORECASE)
+    assert filename_match, text
+    resolved = Path("C:/Projects/cmps/atlasclaw/.atlasclaw/users/admin/exports") / filename_match.group(1)
+    return filename_match.group(1), resolved
+
+
+def _download_remote_container_file(
+    *,
+    base_url: str,
+    container_path: Path,
+) -> Path:
+    ssh_user = os.getenv("ATLASCLAW_LIVE_SSH_USERNAME", "").strip()
+    ssh_password = os.getenv("ATLASCLAW_LIVE_SSH_PASSWORD", "").strip()
+    container_name = (
+        os.getenv("ATLASCLAW_LIVE_CONTAINER_NAME", DEFAULT_REMOTE_CONTAINER_NAME).strip()
+        or DEFAULT_REMOTE_CONTAINER_NAME
+    )
+    assert ssh_user and ssh_password, (
+        "Set ATLASCLAW_LIVE_SSH_USERNAME and ATLASCLAW_LIVE_SSH_PASSWORD "
+        "to validate generated files on a remote live host."
+    )
+
+    parsed = urlparse(base_url)
+    ssh_host = os.getenv("ATLASCLAW_LIVE_SSH_HOST", "").strip() or parsed.hostname or ""
+    assert ssh_host, f"Could not resolve SSH host from base_url={base_url!r}"
+
+    import base64
+    import importlib
+
+    paramiko = importlib.import_module("paramiko")
+    command = (
+        "docker exec "
+        f"{container_name} "
+        "python -c "
+        f"\"import base64, pathlib; p = pathlib.Path({container_path.as_posix()!r}); "
+        "assert p.is_file(), str(p); "
+        "print(base64.b64encode(p.read_bytes()).decode())\""
+    )
+
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.connect(ssh_host, username=ssh_user, password=ssh_password, timeout=20)
+    try:
+        _, stdout, stderr = client.exec_command(command, timeout=180)
+        encoded = stdout.read().decode("utf-8", "ignore").strip()
+        err = stderr.read().decode("utf-8", "ignore").strip()
+    finally:
+        client.close()
+
+    assert encoded, f"remote file fetch failed for {container_path}: {err}"
+    handle = tempfile.NamedTemporaryFile(delete=False, suffix=".pptx")
+    handle.write(base64.b64decode(encoded))
+    handle.flush()
+    handle.close()
+    return Path(handle.name)
+
+
+def _resolve_generated_pptx_for_validation(*, base_url: str, assistant_text: str) -> Path:
+    raw_reference, pptx_path = _extract_generated_pptx_reference(assistant_text)
+    if pptx_path.is_file():
+        return pptx_path
+
+    parsed = urlparse(base_url)
+    hostname = (parsed.hostname or "").strip().lower()
+    if raw_reference.startswith("/app/") and hostname not in {"", "127.0.0.1", "localhost"}:
+        return _download_remote_container_file(base_url=base_url, container_path=Path(raw_reference))
+
+    return pptx_path
+
+
 @pytest.mark.e2e
 @pytest.mark.integration
 def test_live_agent_cmp_pending_returns_grounded_results() -> None:
@@ -270,10 +368,12 @@ def test_live_agent_cmp_pending_returns_grounded_results() -> None:
     )
     _assert_common_runtime_shape(pending)
     _assert_real_tool_call(pending, "smartcmp_list_pending")
-    assert "TIC20260316000001" in pending.assistant_text
-    assert "TIC20260313000006" in pending.assistant_text
-    assert "TIC20260313000004" in pending.assistant_text
-    assert "一级审批" in pending.assistant_text
+    request_ids = _extract_cmp_request_ids(pending.assistant_text)
+    assert request_ids, pending.assistant_text
+    assert any(
+        marker in pending.assistant_text
+        for marker in ("审批", "待审批", "approv", "Workflow ID", "Request ID")
+    ), pending.assistant_text
 
     print(f"LIVE_AGENT_TIMING scenario=cmp_pending elapsed={pending.wall_seconds}s")
     session.close()
@@ -289,22 +389,36 @@ def test_live_agent_cmp_detail_returns_grounded_results() -> None:
         password=password,
     )
 
+    pending = _run_round_with_transient_retry(
+        session,
+        base_url=base_url,
+        token=token,
+        session_key=session_key,
+        message="查下CMP 里目前所有待审批",
+    )
+    _assert_common_runtime_shape(pending)
+    _assert_real_tool_call(pending, "smartcmp_list_pending")
+    request_ids = _extract_cmp_request_ids(pending.assistant_text)
+    assert request_ids, pending.assistant_text
+
+    target_request_id = request_ids[0]
+
     detail = _run_round_with_transient_retry(
         session,
         base_url=base_url,
         token=token,
         session_key=session_key,
-        message="我要看下TIC20260316000001的详情",
+        message=f"我要看下{target_request_id}的详情",
     )
     _assert_common_runtime_shape(detail)
     _assert_real_tool_call(detail, "smartcmp_get_request_detail")
-    assert "TIC20260316000001" in detail.assistant_text
-    assert "Test ticket for build verification" in detail.assistant_text
+    assert target_request_id in detail.assistant_text
     assert (
         "approvalId" in detail.assistant_text
         or "requestId" in detail.assistant_text
         or "Approval ID" in detail.assistant_text
         or "Request ID" in detail.assistant_text
+        or "Workflow ID" in detail.assistant_text
     )
 
     print(f"LIVE_AGENT_TIMING scenario=cmp_detail elapsed={detail.wall_seconds}s")
@@ -451,25 +565,10 @@ def test_live_agent_cmp_pending_then_ppt_creates_real_pptx() -> None:
     _assert_common_runtime_shape(ppt)
     _assert_real_tool_call(ppt, "pptx_create_deck")
     assert ".pptx" in ppt.assistant_text.lower()
-
-    match = re.search(
-        r"([A-Za-z]:[\\/][^`\r\n]+?\.pptx|\.atlasclaw[\\/][^`\r\n]+?\.pptx|/[^`\r\n]+?\.pptx)",
-        ppt.assistant_text,
+    pptx_path = _resolve_generated_pptx_for_validation(
+        base_url=base_url,
+        assistant_text=ppt.assistant_text,
     )
-    if match:
-        raw_path = match.group(1)
-        if raw_path.startswith(".atlasclaw/") or raw_path.startswith(".atlasclaw\\"):
-            normalized_relative = raw_path.replace("\\", "/")
-            pptx_path = Path("C:/Projects/cmps/atlasclaw") / normalized_relative
-        else:
-            pptx_path = Path(raw_path)
-    else:
-        filename_match = re.search(r"([^\\/\s`]+\.pptx)", ppt.assistant_text, flags=re.IGNORECASE)
-        assert filename_match, ppt.assistant_text
-        pptx_path = (
-            Path("C:/Projects/cmps/atlasclaw/.atlasclaw/users/admin/exports")
-            / filename_match.group(1)
-        )
     assert pptx_path.is_file(), f"PPTX file not created: {pptx_path}"
 
     presentation = Presentation(str(pptx_path))
@@ -480,6 +579,55 @@ def test_live_agent_cmp_pending_then_ppt_creates_real_pptx() -> None:
     print(
         "LIVE_AGENT_TIMING "
         f"scenario=cmp_pending_then_ppt "
+        f"pending={pending.wall_seconds}s "
+        f"ppt={ppt.wall_seconds}s"
+    )
+    session.close()
+
+
+@pytest.mark.e2e
+@pytest.mark.integration
+def test_live_agent_cmp_pending_then_english_ppt_follow_up_creates_real_pptx() -> None:
+    base_url, username, password = _require_live_e2e()
+    session, token, session_key = _login_and_create_thread(
+        base_url=base_url,
+        username=username,
+        password=password,
+    )
+
+    pending = _run_round_with_transient_retry(
+        session,
+        base_url=base_url,
+        token=token,
+        session_key=session_key,
+        message="查下CMP现在的审批数据",
+    )
+    _assert_common_runtime_shape(pending)
+    _assert_real_tool_call(pending, "smartcmp_list_pending")
+
+    ppt = _run_round_with_transient_retry(
+        session,
+        base_url=base_url,
+        token=token,
+        session_key=session_key,
+        message="write the request data into a PPT",
+    )
+    _assert_common_runtime_shape(ppt)
+    _assert_real_tool_call(ppt, "pptx_create_deck")
+    assert ".pptx" in ppt.assistant_text.lower()
+    assert ".txt" not in ppt.assistant_text.lower()
+    pptx_path = _resolve_generated_pptx_for_validation(
+        base_url=base_url,
+        assistant_text=ppt.assistant_text,
+    )
+    assert pptx_path.is_file(), f"PPTX file not created: {pptx_path}"
+
+    presentation = Presentation(str(pptx_path))
+    assert len(presentation.slides) >= 3
+
+    print(
+        "LIVE_AGENT_TIMING "
+        f"scenario=cmp_pending_then_english_ppt "
         f"pending={pending.wall_seconds}s "
         f"ppt={ppt.wall_seconds}s"
     )

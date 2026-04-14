@@ -22,9 +22,9 @@ from app.atlasclaw.agent.runner_tool.runner_llm_routing import (
     selected_capability_ids_from_intent_plan,
 )
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
-    DEFAULT_COORDINATION_TOOL_NAMES,
     compress_candidate_toolset,
     project_minimal_toolset,
+    tool_is_coordination_support,
     turn_action_requires_tool_execution,
 )
 from app.atlasclaw.agent.stream import StreamEvent
@@ -98,7 +98,7 @@ def select_explicit_tool_execution_target(
         if not isinstance(tool, dict):
             continue
         tool_name = str(tool.get("name", "") or "").strip()
-        if not tool_name or tool_name in DEFAULT_COORDINATION_TOOL_NAMES:
+        if not tool_name or tool_is_coordination_support(tool):
             continue
         candidate_tools.append(tool)
 
@@ -679,7 +679,10 @@ class RunnerExecutionPreparePhaseMixin:
 
             if tool_intent_plan is not None:
                 tool_gate_decision = self._normalize_tool_gate_decision(
-                    self._build_tool_gate_decision_from_intent_plan(tool_intent_plan)
+                    self._build_tool_gate_decision_from_intent_plan(
+                        tool_intent_plan,
+                        available_tools=available_tools,
+                    )
                 )
             else:
                 tool_gate_decision = self._normalize_tool_gate_decision(

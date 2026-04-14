@@ -9,6 +9,7 @@ sse-starlette>=2.0.0
 httpx>=0.26.0
 aiofiles>=23.2.0
 python-multipart>=0.0.9
+python-pptx>=1.0.2
 
 # Database
 sqlalchemy[asyncio]>=2.0

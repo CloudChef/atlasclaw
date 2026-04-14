@@ -9,6 +9,43 @@ from app.atlasclaw.core.deps import SkillDeps
 
 
 class RunnerToolGateRoutingMixin:
+    @staticmethod
+    def _tool_rank_entry_declares_artifact(entry: dict[str, Any]) -> bool:
+        for capability in (entry.get("capability_classes", []) or []):
+            normalized = str(capability or "").strip().lower()
+            if normalized.startswith("artifact:"):
+                return True
+        return False
+
+    @classmethod
+    def _select_tool_ranked_top_entries(
+        cls,
+        *,
+        tool_ranked: list[dict[str, Any]],
+        limit: int,
+        max_artifact_extras: int = 2,
+    ) -> list[dict[str, Any]]:
+        safe_limit = max(1, int(limit or 1))
+        selected = list(tool_ranked[:safe_limit])
+        selected_names = {
+            str(item.get("tool_name", "") or "").strip()
+            for item in selected
+            if isinstance(item, dict)
+        }
+        appended = 0
+        for item in tool_ranked[safe_limit:]:
+            if appended >= max_artifact_extras:
+                break
+            if not isinstance(item, dict) or not cls._tool_rank_entry_declares_artifact(item):
+                continue
+            tool_name = str(item.get("tool_name", "") or "").strip()
+            if not tool_name or tool_name in selected_names:
+                continue
+            selected.append(item)
+            selected_names.add(tool_name)
+            appended += 1
+        return selected
+
     def _align_external_system_intent(
         self,
         *,
@@ -1281,7 +1318,10 @@ class RunnerToolGateRoutingMixin:
                 }
             )
         tool_ranked.sort(key=lambda item: (-int(item.get("score", 0) or 0), str(item.get("hint_id", ""))))
-        tool_top = tool_ranked[: max(1, min(4, top_k_skill))]
+        tool_top = self._select_tool_ranked_top_entries(
+            tool_ranked=tool_ranked,
+            limit=max(1, min(4, top_k_skill)),
+        )
 
         preferred_provider_types = self._dedupe_preserve_order(
             [

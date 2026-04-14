@@ -2,28 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
-from app.atlasclaw.agent.tool_gate_models import (
-    CapabilityMatchResult,
-    ToolCandidate,
-    ToolPolicyMode,
-)
-
-
-_TOOL_CLASS_BY_NAME: dict[str, str] = {
-    "web_search": "web_search",
-    "web_fetch": "web_fetch",
-    "openmeteo_weather": "weather",
-    "browser": "browser",
-    "memory_search": "memory",
-    "memory_get": "memory",
-    "session_status": "session",
-    "sessions_list": "session",
-    "sessions_history": "session",
-    "sessions_send": "session",
-    "sessions_spawn": "session",
-    "subagents": "session",
-}
+from app.atlasclaw.agent.tool_gate_models import CapabilityMatchResult, ToolCandidate, ToolPolicyMode
 
 _TOOL_PRIORITY: dict[str, int] = {
     "provider": 120,
@@ -98,29 +79,13 @@ class CapabilityMatcher:
         return sorted(matches, key=lambda item: item.priority, reverse=True)
 
     def _infer_capability_class(self, tool: dict[str, Any]) -> str:
-        name = str(tool.get("name", "")).strip()
-        lowered_name = name.lower()
-        if lowered_name in _TOOL_CLASS_BY_NAME:
-            return _TOOL_CLASS_BY_NAME[lowered_name]
-
+        lowered_name = str(tool.get("name", "")).strip().lower()
         explicit = str(tool.get("capability_class", "") or "").strip()
         if explicit:
             lowered_explicit = explicit.lower()
-            # Some snapshots provide coarse classes like "builtin:web". Keep
-            # known fine-grained classes and provider classes; otherwise fall
-            # back to heuristic inference by tool name/description.
             if lowered_explicit.startswith("provider:"):
                 return lowered_explicit
-            if lowered_explicit in {
-                "web_search",
-                "web_fetch",
-                "weather",
-                "browser",
-                "memory",
-                "session",
-                "skill",
-            }:
-                return lowered_explicit
+            return lowered_explicit
 
         provider_type = str(tool.get("provider_type", "")).strip().lower()
         category = str(tool.get("category", "")).strip().lower()
@@ -128,16 +93,10 @@ class CapabilityMatcher:
             return f"provider:{provider_type}"
 
         description = str(tool.get("description", "")).lower()
-        if "skill" in category and lowered_name not in _TOOL_CLASS_BY_NAME:
+        if "skill" in category:
             return "skill"
-        if "jira" in lowered_name or "jira" in description:
+        if "jira" in description:
             return "provider:jira"
-        if "browser" in lowered_name or "browser" in description:
-            return "browser"
-        if "search" in lowered_name and "web" in lowered_name:
-            return "web_search"
-        if "fetch" in lowered_name and "web" in lowered_name:
-            return "web_fetch"
         if "skill" in lowered_name or "skill" in description:
             return "skill"
         return "provider:generic" if "provider" in description else lowered_name

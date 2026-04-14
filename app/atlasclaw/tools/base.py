@@ -78,14 +78,26 @@ class ToolMetadata:
         name: Tool name.
         description: Human-readable tool description.
         group: Tool group, such as `fs`, `runtime`, or `web`.
+        capability_class: Stable routing capability class declared by the tool
+            itself, for example `fs_write`, `provider:smartcmp`, or `artifact:pptx`.
+        live_data: Whether the tool depends on live external/public data.
+        browser_interaction: Whether the tool performs interactive browser actions.
+        public_web: Whether the tool is a generic public-web lookup/fetch/browse
+            capability rather than a provider/private-system integration.
         requires_approval: Whether the tool requires explicit approval.
         routing_visibility: Whether the tool should be visible in the broad
             capability surface for non-follow-up requests.
+        coordination_only: Whether the tool is a supporting coordination helper
+            that may remain visible alongside a primary targeted toolset.
     """
 
     name: str
     description: str = ""
     group: str = ""
+    capability_class: str = ""
+    live_data: bool = False
+    browser_interaction: bool = False
+    public_web: bool = False
     requires_approval: bool = False
     routing_visibility: str = "contextual"
     aliases: list[str] = field(default_factory=list)
@@ -93,3 +105,4 @@ class ToolMetadata:
     use_when: list[str] = field(default_factory=list)
     avoid_when: list[str] = field(default_factory=list)
     result_mode: str = "llm"
+    coordination_only: bool = False

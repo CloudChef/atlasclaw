@@ -10,7 +10,10 @@ import re
 from typing import Any, Optional
 
 from app.atlasclaw.agent.runner_tool.runner_agent_override import resolve_override_tools
-from app.atlasclaw.agent.runner_tool.runner_tool_projection import DEFAULT_COORDINATION_TOOL_NAMES
+from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
+    tool_is_coordination_support,
+    tool_is_generic_filesystem_helper,
+)
 from app.atlasclaw.agent.tool_gate_models import (
     ToolGateDecision,
     ToolIntentAction,
@@ -21,10 +24,6 @@ from app.atlasclaw.core.deps import SkillDeps
 
 
 logger = logging.getLogger(__name__)
-
-_GENERIC_WEB_TOOL_NAMES = frozenset({"web_search", "web_fetch", "browser"})
-_GENERIC_WEB_CAPABILITY_CLASSES = frozenset({"web_search", "web_fetch", "browser"})
-
 
 class _ModelToolGateClassifier:
     """Model-backed classifier used by the runtime when a direct model call is available."""
@@ -72,6 +71,183 @@ class _ModelToolGateClassifier:
         )
 
 class RunnerToolGateModelMixin:
+    @staticmethod
+    def _build_selected_tool_intent_plan(
+        *,
+        tools: list[dict[str, Any]],
+        reason: str,
+    ) -> Optional[ToolIntentPlan]:
+        normalized_tools = [
+            tool
+            for tool in tools
+            if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+        ]
+        if not normalized_tools:
+            return None
+
+        def _dedupe(values: list[str]) -> list[str]:
+            deduped: list[str] = []
+            seen: set[str] = set()
+            for value in values:
+                normalized = str(value or "").strip()
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                deduped.append(normalized)
+            return deduped
+
+        target_provider_types = _dedupe(
+            [
+                str(tool.get("provider_type", "") or "").strip().lower()
+                for tool in normalized_tools
+            ]
+        )
+        target_skill_names = _dedupe(
+            [
+                str(
+                    tool.get("qualified_skill_name", "") or tool.get("skill_name", "") or ""
+                ).strip()
+                for tool in normalized_tools
+            ]
+        )
+        target_group_ids = _dedupe(
+            [
+                str(group_id).strip()
+                for tool in normalized_tools
+                for group_id in (tool.get("group_ids", []) or [])
+            ]
+        )
+        target_capability_classes = _dedupe(
+            [
+                str(tool.get("capability_class", "") or "").strip().lower()
+                for tool in normalized_tools
+            ]
+        )
+        target_tool_names = _dedupe(
+            [str(tool.get("name", "") or "").strip() for tool in normalized_tools]
+        )
+        return ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_types=target_provider_types,
+            target_skill_names=target_skill_names,
+            target_group_ids=target_group_ids,
+            target_capability_classes=target_capability_classes,
+            target_tool_names=target_tool_names,
+            reason=reason,
+        )
+
+    @staticmethod
+    def _tool_declares_explicit_artifact(tool: dict[str, Any]) -> bool:
+        capability_class = str(tool.get("capability_class", "") or "").strip().lower()
+        return capability_class.startswith("artifact:")
+
+    @staticmethod
+    def _tool_is_generic_filesystem_helper(tool: dict[str, Any]) -> bool:
+        return tool_is_generic_filesystem_helper(tool)
+
+    @staticmethod
+    def _tool_is_public_web(tool: dict[str, Any]) -> bool:
+        return bool(tool.get("public_web"))
+
+    @staticmethod
+    def _tool_needs_live_data(tool: dict[str, Any]) -> bool:
+        return bool(tool.get("live_data"))
+
+    @staticmethod
+    def _tool_needs_browser_interaction(tool: dict[str, Any]) -> bool:
+        return bool(tool.get("browser_interaction"))
+
+    def _resolve_selected_tools(
+        self,
+        *,
+        available_tools: list[dict[str, Any]],
+        target_provider_types: list[str],
+        target_skill_names: list[str],
+        target_capability_classes: list[str],
+        target_tool_names: list[str],
+    ) -> list[dict[str, Any]]:
+        normalized_provider_types = {
+            str(item or "").strip().lower()
+            for item in target_provider_types
+            if str(item or "").strip()
+        }
+        normalized_skill_names = {
+            str(item or "").strip().lower()
+            for item in target_skill_names
+            if str(item or "").strip()
+        }
+        normalized_capability_classes = {
+            str(item or "").strip().lower()
+            for item in target_capability_classes
+            if str(item or "").strip()
+        }
+        normalized_tool_names = {
+            str(item or "").strip()
+            for item in target_tool_names
+            if str(item or "").strip()
+        }
+        selected: list[dict[str, Any]] = []
+        for tool in available_tools:
+            if not isinstance(tool, dict):
+                continue
+            name = str(tool.get("name", "") or "").strip()
+            if not name:
+                continue
+            provider_type = str(tool.get("provider_type", "") or "").strip().lower()
+            capability_class = str(tool.get("capability_class", "") or "").strip().lower()
+            qualified_skill_name = str(
+                tool.get("qualified_skill_name", "") or tool.get("skill_name", "") or ""
+            ).strip().lower()
+            if normalized_tool_names and name in normalized_tool_names:
+                selected.append(tool)
+                continue
+            if normalized_provider_types and provider_type in normalized_provider_types:
+                selected.append(tool)
+                continue
+            if normalized_skill_names and qualified_skill_name in normalized_skill_names:
+                selected.append(tool)
+                continue
+            if normalized_capability_classes and capability_class in normalized_capability_classes:
+                selected.append(tool)
+                continue
+        return selected
+
+    def _select_explicit_artifact_metadata_tools(
+        self,
+        *,
+        metadata_candidates: dict[str, Any],
+        available_tools: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        allowed_tools = {
+            str(tool.get("name", "") or "").strip(): tool
+            for tool in available_tools
+            if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+        }
+        ranked_candidates: list[tuple[int, int, str]] = []
+        for item in (metadata_candidates.get("tool_candidates", []) or []):
+            if not isinstance(item, dict) or not bool(item.get("has_strong_anchor")):
+                continue
+            tool_name = str(
+                item.get("tool_name", "")
+                or next(iter(item.get("tool_names", []) or []), "")
+                or ""
+            ).strip()
+            tool = allowed_tools.get(tool_name)
+            if tool is None or not self._tool_declares_explicit_artifact(tool):
+                continue
+            try:
+                score = int(item.get("score", 0) or 0)
+            except (TypeError, ValueError):
+                score = 0
+            try:
+                priority = int(tool.get("priority", 100) or 100)
+            except (TypeError, ValueError):
+                priority = 100
+            ranked_candidates.append((score, priority, tool_name))
+
+        ranked_candidates.sort(key=lambda item: (-item[0], -item[1], item[2].lower()))
+        return [allowed_tools[item[2]] for item in ranked_candidates]
+
     def _metadata_plan_represents_explicit_capability_match(
         self,
         *,
@@ -119,45 +295,42 @@ class RunnerToolGateModelMixin:
         )
         return bool(str(dominant_tool_name or "").strip())
 
-    @staticmethod
     def _metadata_targets_only_generic_web(
+        self,
         *,
+        available_tools: list[dict[str, Any]],
         target_provider_types: list[str],
         target_skill_names: list[str],
         target_capability_classes: list[str],
         target_tool_names: list[str],
     ) -> bool:
-        def _normalize_identifier(value: Any) -> str:
-            return str(value or "").strip().lower()
-
-        if any(_normalize_identifier(item) for item in target_provider_types):
+        if any(str(item or "").strip() for item in target_provider_types):
             return False
-        if any(_normalize_identifier(item) for item in target_skill_names):
+        if any(str(item or "").strip() for item in target_skill_names):
             return False
+        selected_tools = self._resolve_selected_tools(
+            available_tools=available_tools,
+            target_provider_types=target_provider_types,
+            target_skill_names=target_skill_names,
+            target_capability_classes=target_capability_classes,
+            target_tool_names=target_tool_names,
+        )
+        if not selected_tools:
+            return False
+        return all(self._tool_is_public_web(tool) for tool in selected_tools)
 
-        has_generic_web_target = False
-        for capability_class in target_capability_classes:
-            normalized = _normalize_identifier(capability_class)
-            if not normalized:
-                continue
-            if normalized not in _GENERIC_WEB_CAPABILITY_CLASSES:
-                return False
-            has_generic_web_target = True
-
-        for tool_name in target_tool_names:
-            normalized = _normalize_identifier(tool_name)
-            if not normalized:
-                continue
-            if normalized not in _GENERIC_WEB_TOOL_NAMES:
-                return False
-            has_generic_web_target = True
-
-        return has_generic_web_target
-
-    @staticmethod
     def _build_tool_gate_decision_from_intent_plan(
+        self,
         plan: ToolIntentPlan,
+        available_tools: Optional[list[dict[str, Any]]] = None,
     ) -> ToolGateDecision:
+        selected_tools = self._resolve_selected_tools(
+            available_tools=list(available_tools or []),
+            target_provider_types=list(plan.target_provider_types or []),
+            target_skill_names=list(plan.target_skill_names or []),
+            target_capability_classes=list(plan.target_capability_classes or []),
+            target_tool_names=list(plan.target_tool_names or []),
+        )
         suggested_classes: list[str] = []
         for provider_type in plan.target_provider_types:
             normalized = str(provider_type or "").strip().lower()
@@ -174,9 +347,9 @@ class RunnerToolGateModelMixin:
                 for item in plan.target_capability_classes
             )
         )
-        needs_live_data = any(
-            str(item or "").strip().lower() in {"web_search", "web_fetch", "weather", "browser"}
-            for item in plan.target_capability_classes
+        needs_live_data = any(self._tool_needs_live_data(tool) for tool in selected_tools)
+        needs_browser_interaction = any(
+            self._tool_needs_browser_interaction(tool) for tool in selected_tools
         )
         if plan.action is ToolIntentAction.CREATE_ARTIFACT:
             explicit_artifact_target = bool(
@@ -192,6 +365,7 @@ class RunnerToolGateModelMixin:
                     needs_tool=True,
                     needs_external_system=needs_external_system,
                     needs_live_data=needs_live_data,
+                    needs_browser_interaction=needs_browser_interaction,
                     suggested_tool_classes=suggested_classes,
                     confidence=0.8,
                     reason=plan.reason or "Planner selected explicit artifact execution.",
@@ -206,6 +380,7 @@ class RunnerToolGateModelMixin:
             return ToolGateDecision(
                 needs_external_system=needs_external_system,
                 needs_live_data=needs_live_data,
+                needs_browser_interaction=needs_browser_interaction,
                 suggested_tool_classes=suggested_classes,
                 reason=plan.reason or "Planner selected direct answer.",
                 confidence=0.7,
@@ -215,6 +390,7 @@ class RunnerToolGateModelMixin:
             return ToolGateDecision(
                 needs_external_system=needs_external_system,
                 needs_live_data=needs_live_data,
+                needs_browser_interaction=needs_browser_interaction,
                 suggested_tool_classes=suggested_classes,
                 reason=plan.reason or "Planner requested clarification before tool execution.",
                 confidence=0.7,
@@ -223,6 +399,7 @@ class RunnerToolGateModelMixin:
         return ToolGateDecision(
             needs_tool=True,
             needs_live_data=needs_live_data,
+            needs_browser_interaction=needs_browser_interaction,
             needs_external_system=needs_external_system,
             needs_grounded_verification=bool(needs_external_system),
             suggested_tool_classes=suggested_classes,
@@ -268,6 +445,25 @@ class RunnerToolGateModelMixin:
             for tool in available_tools
             if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
         }
+        artifact_tools = self._select_explicit_artifact_metadata_tools(
+            metadata_candidates=metadata_candidates,
+            available_tools=available_tools,
+        )
+        if artifact_tools:
+            reason = str(metadata_candidates.get("reason", "") or "").strip()
+            if reason:
+                reason = (
+                    f"Metadata fallback planner selected explicit artifact capability hints ({reason})."
+                )
+            else:
+                reason = "Metadata fallback planner selected explicit artifact capability hints."
+            plan = self._build_selected_tool_intent_plan(
+                tools=artifact_tools,
+                reason=reason,
+            )
+            if plan is not None:
+                return plan
+
         dominant_tool_name = self._select_dominant_metadata_tool_name(
             metadata_candidates=metadata_candidates,
             available_tools=available_tools,
@@ -304,6 +500,7 @@ class RunnerToolGateModelMixin:
 
                 if (
                     self._metadata_targets_only_generic_web(
+                        available_tools=available_tools,
                         target_provider_types=[provider_type] if provider_type else [],
                         target_skill_names=[qualified_skill_name] if qualified_skill_name else [],
                         target_capability_classes=[capability_class] if capability_class else [],
@@ -379,6 +576,7 @@ class RunnerToolGateModelMixin:
 
         if (
             self._metadata_targets_only_generic_web(
+                available_tools=available_tools,
                 target_provider_types=target_provider_types,
                 target_skill_names=target_skill_names,
                 target_capability_classes=target_capability_classes,
@@ -414,7 +612,7 @@ class RunnerToolGateModelMixin:
             if not isinstance(tool, dict):
                 continue
             tool_name = str(tool.get("name", "") or "").strip()
-            if not tool_name or tool_name in DEFAULT_COORDINATION_TOOL_NAMES:
+            if not tool_name or tool_is_coordination_support(tool):
                 continue
             candidate_tools.append(tool)
 
@@ -547,8 +745,8 @@ class RunnerToolGateModelMixin:
                 return False
         return True
 
-    @staticmethod
     def _select_dominant_metadata_tool_name(
+        self,
         *,
         metadata_candidates: dict[str, Any],
         available_tools: list[dict[str, Any]],
@@ -559,6 +757,11 @@ class RunnerToolGateModelMixin:
             if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
         }
         ranked_candidates: list[tuple[int, str]] = []
+        allowed_tool_index = {
+            str(tool.get("name", "") or "").strip(): tool
+            for tool in available_tools
+            if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+        }
         for item in (metadata_candidates.get("tool_candidates", []) or []):
             if not isinstance(item, dict) or not bool(item.get("has_strong_anchor")):
                 continue
@@ -573,6 +776,15 @@ class RunnerToolGateModelMixin:
                 score = int(item.get("score", 0) or 0)
             except (TypeError, ValueError):
                 score = 0
+            tool = allowed_tool_index.get(tool_name, {})
+            if (
+                self._tool_is_generic_filesystem_helper(tool)
+                and self._select_explicit_artifact_metadata_tools(
+                    metadata_candidates=metadata_candidates,
+                    available_tools=available_tools,
+                )
+            ):
+                continue
             ranked_candidates.append((score, tool_name))
 
         if not ranked_candidates:

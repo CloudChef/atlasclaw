@@ -109,6 +109,10 @@ class SkillMetadata(BaseModel):
     use_when: list[str] = Field(default_factory=list)
     avoid_when: list[str] = Field(default_factory=list)
     result_mode: str = "llm"
+    coordination_only: bool = False
+    live_data: bool = False
+    browser_interaction: bool = False
+    public_web: bool = False
 
 
 @dataclass
@@ -193,6 +197,10 @@ class SkillRegistry:
                 "group_ids": list(metadata.group_ids or []),
                 "capability_class": metadata.capability_class or "",
                 "priority": int(metadata.priority or 100),
+                "coordination_only": bool(metadata.coordination_only),
+                "live_data": bool(metadata.live_data),
+                "browser_interaction": bool(metadata.browser_interaction),
+                "public_web": bool(metadata.public_web),
             }
 
     def unregister(self, name: str) -> bool:
@@ -228,6 +236,10 @@ class SkillRegistry:
                 "use_when": list(meta.use_when),
                 "avoid_when": list(meta.avoid_when),
                 "result_mode": str(meta.result_mode or "").strip(),
+                "coordination_only": bool(meta.coordination_only),
+                "live_data": bool(meta.live_data),
+                "browser_interaction": bool(meta.browser_interaction),
+                "public_web": bool(meta.public_web),
             }
             for meta, _ in self._skills.values()
         ]
@@ -261,6 +273,10 @@ class SkillRegistry:
                 "use_when": list(meta.use_when),
                 "avoid_when": list(meta.avoid_when),
                 "result_mode": str(meta.result_mode or "").strip(),
+                "coordination_only": bool(meta.coordination_only),
+                "live_data": bool(meta.live_data),
+                "browser_interaction": bool(meta.browser_interaction),
+                "public_web": bool(meta.public_web),
             }
             for meta, _ in self._skills.values()
             if meta.name not in md_derived
@@ -291,6 +307,10 @@ class SkillRegistry:
                 "use_when": list(meta.use_when),
                 "avoid_when": list(meta.avoid_when),
                 "result_mode": str(meta.result_mode or "").strip(),
+                "coordination_only": bool(meta.coordination_only),
+                "live_data": bool(meta.live_data),
+                "browser_interaction": bool(meta.browser_interaction),
+                "public_web": bool(meta.public_web),
             }
             normalized.append(record)
         return normalized
@@ -886,13 +906,6 @@ register name
         if provider_type:
             return f"provider:{provider_type}"
 
-        name = str(meta.name or "").strip().lower()
-        if name in {"web_search", "web_fetch"}:
-            return name
-        if name == "browser":
-            return "browser"
-        if name == "openmeteo_weather":
-            return "weather"
         if source == "md_skill":
             return "skill"
         return ""

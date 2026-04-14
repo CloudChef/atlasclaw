@@ -353,6 +353,9 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
         use_when: Any = None,
         avoid_when: Any = None,
         result_mode: Any = None,
+        live_data: Any = None,
+        browser_interaction: Any = None,
+        public_web: Any = None,
     ) -> None:
         normalized_name = str(name or "").strip()
         if not normalized_name or normalized_name in seen_names:
@@ -441,6 +444,16 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
         )
         if normalized_result_mode:
             tool_record["result_mode"] = normalized_result_mode
+        if bool(live_data if live_data is not None else indexed_meta.get("live_data", False)):
+            tool_record["live_data"] = True
+        if bool(
+            browser_interaction
+            if browser_interaction is not None
+            else indexed_meta.get("browser_interaction", False)
+        ):
+            tool_record["browser_interaction"] = True
+        if bool(public_web if public_web is not None else indexed_meta.get("public_web", False)):
+            tool_record["public_web"] = True
 
         explicit_capability_class = _normalize_optional_text(
             capability_class,
@@ -478,6 +491,9 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             use_when=tool.get("use_when"),
             avoid_when=tool.get("avoid_when"),
             result_mode=tool.get("result_mode"),
+            live_data=tool.get("live_data"),
+            browser_interaction=tool.get("browser_interaction"),
+            public_web=tool.get("public_web"),
         )
 
     if tools_snapshot_authoritative:
@@ -500,6 +516,9 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             use_when = tool.get("use_when")
             avoid_when = tool.get("avoid_when")
             result_mode = tool.get("result_mode")
+            live_data = tool.get("live_data")
+            browser_interaction = tool.get("browser_interaction")
+            public_web = tool.get("public_web")
         else:
             name = getattr(tool, "name", None) or getattr(tool, "__name__", None)
             description = getattr(tool, "description", "") or getattr(tool, "__doc__", "") or ""
@@ -558,6 +577,18 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
                 getattr(tool, "result_mode", None)
                 or getattr(getattr(tool, "metadata", None), "result_mode", None)
             )
+            live_data = (
+                getattr(tool, "live_data", None)
+                or getattr(getattr(tool, "metadata", None), "live_data", None)
+            )
+            browser_interaction = (
+                getattr(tool, "browser_interaction", None)
+                or getattr(getattr(tool, "metadata", None), "browser_interaction", None)
+            )
+            public_web = (
+                getattr(tool, "public_web", None)
+                or getattr(getattr(tool, "metadata", None), "public_web", None)
+            )
         _append_tool_record(
             name=name,
             description=description,
@@ -574,6 +605,9 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             use_when=use_when,
             avoid_when=avoid_when,
             result_mode=result_mode,
+            live_data=live_data,
+            browser_interaction=browser_interaction,
+            public_web=public_web,
         )
 
     # Fallback/merge path: when pydantic-ai internal tool exposure is partial or missing,
@@ -599,6 +633,9 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             use_when=item.get("use_when"),
             avoid_when=item.get("avoid_when"),
             result_mode=item.get("result_mode"),
+            live_data=item.get("live_data"),
+            browser_interaction=item.get("browser_interaction"),
+            public_web=item.get("public_web"),
         )
 
     return tools
@@ -691,6 +728,9 @@ def _build_skill_metadata_index(
             "use_when": _normalize_string_list(item.get("use_when", [])),
             "avoid_when": _normalize_string_list(item.get("avoid_when", [])),
             "result_mode": _normalize_optional_text(item.get("result_mode", "")),
+            "live_data": bool(item.get("live_data", False)),
+            "browser_interaction": bool(item.get("browser_interaction", False)),
+            "public_web": bool(item.get("public_web", False)),
         }
 
     for entry in md_skills_snapshot:
@@ -725,6 +765,9 @@ def _build_skill_metadata_index(
                 "use_when": _normalize_string_list(metadata.get("use_when", [])),
                 "avoid_when": _normalize_string_list(metadata.get("avoid_when", [])),
                 "result_mode": _normalize_optional_text(metadata.get("result_mode", "")),
+                "live_data": bool(metadata.get("live_data", False)),
+                "browser_interaction": bool(metadata.get("browser_interaction", False)),
+                "public_web": bool(metadata.get("public_web", False)),
             }
 
     return index
@@ -767,26 +810,19 @@ def _infer_capability_class(
     provider_type: str,
     category: str,
 ) -> str:
-    lowered_name = (name or "").strip().lower()
     lowered_description = (description or "").strip().lower()
     lowered_category = (category or "").strip().lower()
     lowered_provider = (provider_type or "").strip().lower()
 
     if lowered_provider and lowered_provider != "none":
         return f"provider:{lowered_provider}"
-    if lowered_name in {"web_search", "web_fetch"}:
-        return lowered_name
-    if lowered_name == "openmeteo_weather":
-        return "weather"
-    if lowered_name == "browser":
-        return "browser"
-    if "jira" in lowered_name or "jira" in lowered_description:
+    if "jira" in lowered_description:
         return "provider:jira"
     if "provider:" in lowered_description or lowered_category.startswith("provider"):
         return "provider:generic"
     if "skill" in lowered_category or lowered_category == "md_skill":
         return "skill"
-    if "skill" in lowered_description and lowered_name not in {"web_search", "web_fetch"}:
+    if "skill" in lowered_description:
         return "skill"
     return ""
 
@@ -816,6 +852,9 @@ def _normalize_snapshot_tool(item: dict[str, Any]) -> dict[str, Any]:
     use_when = _normalize_string_list(item.get("use_when", []))
     avoid_when = _normalize_string_list(item.get("avoid_when", []))
     result_mode = _normalize_optional_text(item.get("result_mode", ""))
+    live_data = bool(item.get("live_data", False))
+    browser_interaction = bool(item.get("browser_interaction", False))
+    public_web = bool(item.get("public_web", False))
 
     if provider_type:
         normalized["provider_type"] = provider_type
@@ -845,6 +884,12 @@ def _normalize_snapshot_tool(item: dict[str, Any]) -> dict[str, Any]:
         normalized["avoid_when"] = avoid_when
     if result_mode:
         normalized["result_mode"] = result_mode
+    if live_data:
+        normalized["live_data"] = True
+    if browser_interaction:
+        normalized["browser_interaction"] = True
+    if public_web:
+        normalized["public_web"] = True
     parameters_schema = _normalize_parameters_schema(item.get("parameters_schema", {}))
     if parameters_schema:
         normalized["parameters_schema"] = parameters_schema

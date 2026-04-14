@@ -112,6 +112,14 @@ def test_metadata_targets_only_generic_web_treats_web_tools_as_fallback_not_clea
     runner = _GateRunner()
 
     assert runner._metadata_targets_only_generic_web(
+        available_tools=[
+            {
+                "name": "web_search",
+                "description": "Search the public web",
+                "capability_class": "web_search",
+                "public_web": True,
+            }
+        ],
         target_provider_types=[],
         target_skill_names=[],
         target_capability_classes=["web_search"],
@@ -173,6 +181,7 @@ def test_projected_toolset_short_circuit_uses_single_tool_only_ok() -> None:
                 "description": "Select provider instance",
                 "capability_class": "session",
                 "group_ids": ["group:atlasclaw"],
+                "coordination_only": True,
             },
         ]
     )
@@ -233,6 +242,7 @@ def test_project_minimal_toolset_keeps_explicit_target_tool_even_with_provider_t
                 "description": "Select provider instance",
                 "capability_class": "provider:generic",
                 "group_ids": ["group:providers", "group:atlasclaw"],
+                "coordination_only": True,
             },
         ],
         intent_plan=intent_plan,
@@ -773,6 +783,156 @@ def test_metadata_fallback_prefers_local_write_tool_over_generic_provider_create
     assert plan.target_capability_classes == ["fs_write"]
 
 
+def test_metadata_fallback_keeps_explicit_artifact_candidate_instead_of_collapsing_to_generic_write() -> None:
+    runner = _GateRunner()
+    available_tools = [
+        {
+            "name": "write",
+            "description": "Write file content",
+            "source": "builtin",
+            "group_ids": ["group:fs", "group:atlasclaw"],
+            "capability_class": "fs_write",
+            "aliases": ["write file", "create file", "save file", "create text file"],
+            "keywords": ["write", "create", "file", "save", "content", "overwrite"],
+            "use_when": [
+                "User asks to create a local file or write text content to a file",
+            ],
+            "avoid_when": [],
+            "result_mode": "tool_only_ok",
+        },
+        {
+            "name": "pptx_create_deck",
+            "description": "Create a .pptx presentation in the AtlasClaw workspace from structured items.",
+            "source": "md_skill",
+            "group_ids": ["group:pptx", "group:fs"],
+            "capability_class": "artifact:pptx",
+            "priority": 120,
+            "skill_name": "pptx",
+            "qualified_skill_name": "pptx",
+            "aliases": ["pptx"],
+            "keywords": ["ppt", "pptx", "slides", "presentation"],
+            "use_when": [
+                "User wants a real PPTX file to be created from structured content",
+                "User asks to save current results into a PowerPoint deck",
+            ],
+            "avoid_when": [],
+        },
+        {
+            "name": "smartcmp_get_request_detail",
+            "description": "Get SmartCMP request detail",
+            "source": "provider",
+            "provider_type": "smartcmp",
+            "group_ids": ["group:cmp", "group:request"],
+            "capability_class": "provider:smartcmp",
+            "keywords": ["cmp", "request", "detail", "approval"],
+            "use_when": ["User asks for CMP request detail"],
+            "avoid_when": [],
+        },
+    ]
+    tool_hint_docs = runner._build_tool_hint_docs(available_tools=available_tools)
+    metadata = runner._recall_provider_skill_candidates_from_metadata(
+        user_message="write the request data into a PPT",
+        recent_history=[
+            {"role": "user", "content": "查下CMP现在的审批数据"},
+            {"role": "assistant", "content": "我已经列出了当前待审批数据。"},
+        ],
+        used_follow_up_context=False,
+        available_tools=available_tools,
+        provider_hint_docs=[],
+        skill_hint_docs=[],
+        tool_hint_docs=tool_hint_docs,
+        top_k_provider=2,
+        top_k_skill=2,
+    )
+
+    plan = runner._build_metadata_fallback_tool_intent_plan(
+        metadata_candidates=metadata,
+        available_tools=available_tools,
+    )
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.USE_TOOLS
+    assert "pptx_create_deck" in plan.target_tool_names
+    assert "artifact:pptx" in plan.target_capability_classes
+    assert plan.target_tool_names != ["write"]
+
+
+def test_metadata_recall_keeps_explicit_artifact_tool_in_top_candidates_for_english_ppt_follow_up() -> None:
+    runner = _GateRunner()
+    available_tools = [
+        {
+            "name": "write",
+            "description": "Write file content",
+            "source": "builtin",
+            "group_ids": ["group:fs", "group:atlasclaw"],
+            "capability_class": "fs_write",
+            "aliases": ["write file", "create file", "save file", "create text file"],
+            "keywords": ["write", "create", "file", "save", "content", "overwrite"],
+            "use_when": ["User asks to create a local file or write text content to a file"],
+            "avoid_when": [],
+            "result_mode": "tool_only_ok",
+        },
+        {
+            "name": "pptx_create_deck",
+            "description": "Create a .pptx presentation in the AtlasClaw workspace from structured items.",
+            "source": "md_skill",
+            "group_ids": ["group:pptx", "group:fs"],
+            "capability_class": "artifact:pptx",
+            "priority": 120,
+            "skill_name": "pptx",
+            "qualified_skill_name": "pptx",
+            "aliases": ["pptx"],
+            "keywords": ["ppt", "pptx", "slides", "presentation"],
+            "use_when": [
+                "User wants a real PPTX file to be created from structured content",
+                "User asks to save current results into a PowerPoint deck",
+            ],
+            "avoid_when": [],
+        },
+        {
+            "name": "smartcmp_get_request_detail",
+            "description": "Get SmartCMP request detail",
+            "source": "provider",
+            "provider_type": "smartcmp",
+            "group_ids": ["group:cmp", "group:request"],
+            "capability_class": "provider:smartcmp",
+            "keywords": ["cmp", "request", "detail", "approval"],
+            "use_when": ["User asks for CMP request detail"],
+            "avoid_when": [],
+        },
+        {
+            "name": "smartcmp_list_services",
+            "description": "List SmartCMP service catalogs",
+            "source": "provider",
+            "provider_type": "smartcmp",
+            "group_ids": ["group:cmp", "group:request"],
+            "capability_class": "provider:smartcmp",
+            "keywords": ["cmp", "request", "service", "catalog"],
+            "use_when": ["User asks for CMP services"],
+            "avoid_when": [],
+        },
+    ]
+    tool_hint_docs = runner._build_tool_hint_docs(available_tools=available_tools)
+
+    metadata = runner._recall_provider_skill_candidates_from_metadata(
+        user_message="write the request data into a PPT",
+        recent_history=[],
+        used_follow_up_context=False,
+        available_tools=available_tools,
+        provider_hint_docs=[],
+        skill_hint_docs=[],
+        tool_hint_docs=tool_hint_docs,
+        top_k_provider=2,
+        top_k_skill=2,
+    )
+
+    assert "pptx_create_deck" in metadata["preferred_tool_names"]
+    artifact_tool_candidates = [
+        item for item in metadata["tool_candidates"] if item.get("tool_name") == "pptx_create_deck"
+    ]
+    assert artifact_tool_candidates, metadata
+
+
 def test_metadata_fallback_builds_weather_plan_from_builtin_tool_candidates() -> None:
     runner = _GateRunner()
     available_tools = [
@@ -905,6 +1065,7 @@ def test_metadata_fallback_ignores_generic_web_only_hint_without_explicit_search
             "source": "builtin",
             "capability_class": "web_search",
             "group_ids": ["group:web"],
+            "public_web": True,
         }
     ]
 

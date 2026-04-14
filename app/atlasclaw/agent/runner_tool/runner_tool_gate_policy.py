@@ -526,15 +526,6 @@ class RunnerToolGatePolicyMixin:
         direct = capability_map.get(name, "")
         if direct:
             return direct
-        lowered = str(name or "").strip().lower()
-        if lowered in {"web_search", "web_fetch", "browser", "openmeteo_weather"}:
-            return {
-                "openmeteo_weather": "weather",
-            }.get(lowered, lowered)
-        if lowered.startswith("provider_") or lowered.startswith("smartcmp") or lowered.startswith("jira"):
-            if "jira" in lowered:
-                return "provider:jira"
-            return "provider:generic"
         return ""
     @staticmethod
     def _called_capabilities_satisfy_required(

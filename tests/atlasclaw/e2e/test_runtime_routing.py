@@ -371,13 +371,17 @@ def _extract_latest_user_text(messages: list[ModelMessage]) -> str:
 
 def _extract_previous_assistant_text(messages: list[ModelMessage]) -> str:
     """Read the latest assistant text already present in model history."""
+    fallback_chunks: list[str] = []
     for message in reversed(messages):
         if not isinstance(message, ModelResponse):
+            for part in getattr(message, "parts", []) or []:
+                if isinstance(part, TextPart) and isinstance(part.content, str) and part.content.strip():
+                    fallback_chunks.append(part.content.strip())
             continue
         combined = "".join(part.content for part in message.parts if isinstance(part, TextPart)).strip()
         if combined:
             return combined
-    return ""
+    return "\n".join(reversed(fallback_chunks)).strip()
 
 
 def _extract_latest_tool_return(messages: list[ModelMessage]) -> Optional[ToolReturnPart]:
@@ -401,10 +405,21 @@ def _extract_pending_items(messages: list[ModelMessage]) -> list[dict[str, Any]]
                 return [item for item in parsed if isinstance(item, dict)]
 
     assistant_text = _extract_previous_assistant_text(messages)
+    raw_history_chunks = [assistant_text] if assistant_text else []
+    for message in messages:
+        model_dump_json = getattr(message, "model_dump_json", None)
+        if callable(model_dump_json):
+            try:
+                raw_history_chunks.append(str(model_dump_json()))
+                continue
+            except Exception:
+                pass
+        raw_history_chunks.append(repr(message))
+    history_corpus = "\n".join(chunk for chunk in raw_history_chunks if chunk).strip()
     matched: list[dict[str, Any]] = []
     for item in PENDING_APPROVALS:
         workflow_id = str(item.get("workflowId", "")).strip()
-        if workflow_id and workflow_id in assistant_text:
+        if workflow_id and workflow_id in history_corpus:
             matched.append(
                 {
                     "id": workflow_id,
@@ -504,7 +519,7 @@ def _decide_model_action(messages: list[ModelMessage], agent_info: AgentInfo) ->
         raise AssertionError(f"Unexpected tool continuation: {last_tool_return.tool_name}")
 
     user_text = _extract_latest_user_text(messages)
-    if "待审批" in user_text:
+    if "待审批" in user_text or "审批数据" in user_text:
         _require_tool(available_tools, "smartcmp_list_pending", user_text)
         return "tool", "smartcmp_list_pending", {}, "call-pending-1"
     if "详情" in user_text and "TIC20260316000001" in user_text:
@@ -777,3 +792,28 @@ def test_pending_then_ppt_follow_up_creates_real_pptx(agent_harness: AgentHarnes
     assert len(presentation.slides) == 5
     title_shapes = [shape.text for shape in presentation.slides[0].shapes if hasattr(shape, "text")]
     assert any("CMP 待审批申请汇总" in text for text in title_shapes)
+
+
+def test_pending_then_english_ppt_follow_up_creates_real_pptx(agent_harness: AgentHarness) -> None:
+    session_key = agent_harness.create_thread()
+    first = _run_round(agent_harness, "查下CMP现在的审批数据", session_key)
+    _assert_completed(first)
+    assert first.tool_starts == ["smartcmp_list_pending"]
+    approvals_before_follow_up = agent_harness.cmp_state["approvals_requests"]
+    assert approvals_before_follow_up >= 1
+
+    second = _run_round(agent_harness, "write the request data into a PPT", session_key)
+    _assert_completed(second)
+
+    assert second.tool_starts == ["pptx_create_deck"]
+    assert agent_harness.cmp_state["approvals_requests"] == approvals_before_follow_up
+    assert ".pptx" in second.assistant_text.lower()
+    assert ".txt" not in second.assistant_text.lower()
+
+    pptx_match = re.search(r"([A-Za-z]:\\\S+\.pptx|/\S+\.pptx)", second.assistant_text)
+    assert pptx_match, second.assistant_text
+    pptx_path = Path(pptx_match.group(1))
+    assert pptx_path.is_file(), f"PPTX file not created: {pptx_path}"
+
+    presentation = Presentation(str(pptx_path))
+    assert len(presentation.slides) == 5

@@ -5,12 +5,15 @@ from typing import Any
 from app.atlasclaw.agent.tool_gate_models import ToolIntentAction, ToolIntentPlan
 
 
-DEFAULT_COORDINATION_TOOL_NAMES = (
-    "list_provider_instances",
-    "select_provider_instance",
-    "read",
-    "session_status",
-)
+def tool_is_coordination_support(tool: dict[str, Any]) -> bool:
+    """Return whether the tool is declared as a coordination helper."""
+    return bool(tool.get("coordination_only"))
+
+
+def tool_is_generic_filesystem_helper(tool: dict[str, Any]) -> bool:
+    """Return whether the tool is a generic filesystem helper capability."""
+    capability_class = str(tool.get("capability_class", "") or "").strip().lower()
+    return capability_class.startswith("fs_")
 
 
 def _artifact_turn_has_explicit_targets(intent_plan: ToolIntentPlan) -> bool:
@@ -28,7 +31,6 @@ def project_minimal_toolset(
     *,
     allowed_tools: list[dict[str, Any]],
     intent_plan: ToolIntentPlan | None,
-    coordination_tool_names: tuple[str, ...] = DEFAULT_COORDINATION_TOOL_NAMES,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Project the policy-allowed tool universe into the minimal executable set for this turn."""
     normalized_tools = [
@@ -157,7 +159,7 @@ def project_minimal_toolset(
             tool_name = str(tool.get("name", "") or "").strip()
             if not tool_name or tool_name in current_names:
                 continue
-            if tool_name not in coordination_tool_names:
+            if not tool_is_coordination_support(tool):
                 continue
             coordination_tools.append(tool)
             current_names.add(tool_name)
@@ -185,7 +187,6 @@ def compress_candidate_toolset(
     used_follow_up_context: bool,
     min_metadata_confidence: float = 0.3,
     compression_threshold: int = 12,
-    coordination_tool_names: tuple[str, ...] = DEFAULT_COORDINATION_TOOL_NAMES,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Optionally shrink the visible toolset without deciding the turn action.
 
@@ -226,7 +227,6 @@ def compress_candidate_toolset(
     subset = _append_coordination_tools(
         current=subset,
         all_tools=normalized_tools,
-        coordination_tool_names=coordination_tool_names,
     )
     trace.update(
         {
@@ -236,7 +236,7 @@ def compress_candidate_toolset(
             "coordination_tools": [
                 str(tool.get("name", "") or "").strip()
                 for tool in subset
-                if str(tool.get("name", "") or "").strip() in coordination_tool_names
+                if tool_is_coordination_support(tool)
             ],
         }
     )
@@ -324,6 +324,13 @@ def _select_tools_from_metadata_candidates(
     if confidence < max(0.0, float(min_metadata_confidence or 0.0)) and not has_single_tool_consensus:
         return []
 
+    artifact_tools = _select_explicit_artifact_tools_from_metadata_candidates(
+        metadata_candidates=metadata_candidates,
+        tools=tools,
+    )
+    if artifact_tools:
+        return artifact_tools
+
     if has_single_tool_consensus:
         preferred_tool_name = _extract_single_preferred_tool_name(
             metadata_candidates=metadata_candidates,
@@ -400,7 +407,51 @@ def _select_tools_from_metadata_candidates(
             matches = True
         if matches:
             selected.append(tool)
+    if any(_tool_declares_explicit_artifact(tool) for tool in selected):
+        selected = [
+            tool for tool in selected if not tool_is_generic_filesystem_helper(tool)
+        ] or selected
     return selected
+
+
+def _select_explicit_artifact_tools_from_metadata_candidates(
+    *,
+    metadata_candidates: dict[str, Any],
+    tools: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    allowed_tools = {
+        str(tool.get("name", "") or "").strip(): tool
+        for tool in tools
+        if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+    }
+    ranked_candidates: list[tuple[int, int, str]] = []
+    for item in (metadata_candidates.get("tool_candidates", []) or []):
+        if not isinstance(item, dict) or not bool(item.get("has_strong_anchor")):
+            continue
+        tool_name = str(
+            item.get("tool_name", "")
+            or next(iter(item.get("tool_names", []) or []), "")
+            or ""
+        ).strip()
+        tool = allowed_tools.get(tool_name)
+        if tool is None or not _tool_declares_explicit_artifact(tool):
+            continue
+        try:
+            score = int(item.get("score", 0) or 0)
+        except (TypeError, ValueError):
+            score = 0
+        try:
+            priority = int(tool.get("priority", 100) or 100)
+        except (TypeError, ValueError):
+            priority = 100
+        ranked_candidates.append((score, priority, tool_name))
+    ranked_candidates.sort(key=lambda item: (-item[0], -item[1], item[2].lower()))
+    return [allowed_tools[item[2]] for item in ranked_candidates]
+
+
+def _tool_declares_explicit_artifact(tool: dict[str, Any]) -> bool:
+    capability_class = str(tool.get("capability_class", "") or "").strip().lower()
+    return capability_class.startswith("artifact:")
 
 
 def _extract_single_preferred_tool_name(
@@ -473,7 +524,6 @@ def _append_coordination_tools(
     *,
     current: list[dict[str, Any]],
     all_tools: list[dict[str, Any]],
-    coordination_tool_names: tuple[str, ...],
 ) -> list[dict[str, Any]]:
     selected = list(current)
     current_names = {str(tool.get("name", "") or "").strip() for tool in selected}
@@ -481,7 +531,7 @@ def _append_coordination_tools(
         tool_name = str(tool.get("name", "") or "").strip()
         if not tool_name or tool_name in current_names:
             continue
-        if tool_name not in coordination_tool_names:
+        if not tool_is_coordination_support(tool):
             continue
         selected.append(tool)
         current_names.add(tool_name)
