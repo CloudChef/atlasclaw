@@ -94,31 +94,32 @@ def create_script_wrapper(
     async def script_handler(ctx=None, **kwargs) -> dict:
         import os
 
-        runtime_kwargs = _normalize_runtime_kwargs(
-            py_file=py_file,
-            provider_type=provider_type,
-            ctx=ctx,
-            kwargs=kwargs,
-        )
+        runtime_kwargs = dict(kwargs)
         env = os.environ.copy()
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
+        deps = getattr(ctx, "deps", None) if ctx is not None else None
 
-        if ctx is not None and hasattr(ctx, "deps") and hasattr(ctx.deps, "cookies"):
-            cookies = ctx.deps.cookies
+        user_info = getattr(deps, "user_info", None)
+        user_id = str(getattr(user_info, "user_id", "") or "").strip()
+        if user_id:
+            env.setdefault("ATLASCLAW_USER_ID", user_id)
+
+        if deps is not None and hasattr(deps, "cookies"):
+            cookies = deps.cookies
             if cookies:
                 try:
                     env["ATLASCLAW_COOKIES"] = json.dumps(cookies)
-                    if hasattr(ctx.deps, "user_info") and ctx.deps.user_info:
+                    if user_info:
                         print(
-                            f"[DEBUG] Set ATLASCLAW_COOKIES for user={ctx.deps.user_info.user_id}, "
+                            f"[DEBUG] Set ATLASCLAW_COOKIES for user={user_id}, "
                             f"cookies={list(cookies.keys())}"
                         )
                 except (TypeError, ValueError) as exc:
                     print(f"[WARNING] Failed to serialize cookies: {exc}")
 
-        if ctx is not None and hasattr(ctx, "deps") and hasattr(ctx.deps, "extra"):
-            extra = ctx.deps.extra
+        if deps is not None and hasattr(deps, "extra"):
+            extra = deps.extra
             provider_config = extra.get("provider_config", {}) if extra else {}
             # Fallback: build provider_config from provider_instances (channel path)
             if not provider_config and extra:
@@ -139,8 +140,8 @@ def create_script_wrapper(
                 except (TypeError, ValueError) as exc:
                     print(f"[WARNING] Failed to serialize provider_config: {exc}")
 
-        if ctx is not None and hasattr(ctx, "deps") and hasattr(ctx.deps, "extra"):
-            extra = ctx.deps.extra
+        if deps is not None and hasattr(deps, "extra"):
+            extra = deps.extra
             print(f"[DEBUG] Tool execution: provider_type={provider_type}")
             print(f"[DEBUG] ctx.deps.extra keys: {list(extra.keys())}")
 
@@ -252,86 +253,20 @@ def create_script_wrapper(
             return {"success": False, "error": str(exc)}
 
     return script_handler
-
-
-def _normalize_runtime_kwargs(
-    *,
-    py_file: Path,
-    provider_type: Optional[str],
-    ctx: Any,
-    kwargs: dict[str, Any],
-) -> dict[str, Any]:
-    """Apply per-provider runtime argument normalization before script execution."""
-    normalized = dict(kwargs)
-    if provider_type != "smartcmp" or py_file.stem != "submit":
-        return normalized
-
-    json_body = normalized.get("json_body")
-    if not isinstance(json_body, dict):
-        return normalized
-    if json_body.get("userId") or json_body.get("userLoginId"):
-        return normalized
-
-    enriched_body = dict(json_body)
-    deps = getattr(ctx, "deps", None)
-    cookies = getattr(deps, "cookies", None)
-    if isinstance(cookies, dict):
-        cookie_user_id = str(cookies.get("userId", "") or "").strip()
-        if cookie_user_id and not enriched_body.get("userId"):
-            enriched_body["userId"] = cookie_user_id
-
-        cookie_login_id = str(cookies.get("userLoginId", "") or "").strip()
-        if cookie_login_id and not enriched_body.get("userLoginId"):
-            enriched_body["userLoginId"] = cookie_login_id
-
-    user_info = getattr(deps, "user_info", None)
-    fallback_login_id = str(getattr(user_info, "user_id", "") or "").strip()
-    if fallback_login_id and not enriched_body.get("userLoginId"):
-        enriched_body["userLoginId"] = fallback_login_id
-
-    normalized["json_body"] = enriched_body
-    return normalized
-
-
 def _normalize_script_result(
     *,
     py_file: Path,
     provider_type: Optional[str],
     result: dict[str, Any],
 ) -> dict[str, Any]:
-    """Clean provider script output so the model sees concise workflow-relevant text."""
+    """Apply generic normalization to script output before returning it to the runtime."""
+    del py_file, provider_type
     normalized = dict(result)
     output = normalized.get("output")
-    if provider_type != "smartcmp" or not isinstance(output, str):
+    if not isinstance(output, str):
         return normalized
 
-    tool_name = py_file.stem.lower()
-    text = output.replace("\r\n", "\n")
-
-    if tool_name == "list_components":
-        normalized["output"] = ""
-        return normalized
-
-    if tool_name == "list_os_templates":
-        lines = text.splitlines()
-        cleaned: list[str] = []
-        skipping_separator = False
-        for line in lines:
-            stripped = line.strip()
-            lowered = stripped.lower()
-            if lowered.startswith("os templates") and "resourcebundleid=" in lowered:
-                skipping_separator = True
-                continue
-            if skipping_separator and stripped and set(stripped) == {"="}:
-                skipping_separator = False
-                continue
-            skipping_separator = False
-            cleaned.append(line)
-        text = "\n".join(cleaned).strip()
-        normalized["output"] = f"{text}\n" if text else ""
-        return normalized
-
-    normalized["output"] = text
+    normalized["output"] = output.replace("\r\n", "\n")
     return normalized
 
 
@@ -686,10 +621,6 @@ def _resolve_cli_flag_name(name: str, config: ScriptInvocationConfig) -> str:
     override = str(config.flag_name_overrides.get(name, "") or "").strip()
     if override:
         return override
-    if name == "json_body":
-        # Some provider skills historically instructed the model to emit
-        # `json_body`, while their scripts only accept `--json`.
-        return "--json"
     return f"--{name.replace('_', '-')}"
 
 

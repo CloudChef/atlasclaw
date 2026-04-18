@@ -61,7 +61,7 @@ class _SessionManager:
         return None
 
 
-def test_build_tool_failure_fallback_payload_forbids_fake_submit_claims() -> None:
+def test_build_tool_failure_fallback_payload_forbids_inferred_side_effect_claims() -> None:
     payload = build_tool_failure_fallback_payload(
         user_message="申请 Linux VM",
         tool_results=[],
@@ -71,8 +71,8 @@ def test_build_tool_failure_fallback_payload_forbids_fake_submit_claims() -> Non
         failure_reasons=["Repeated tool execution for smartcmp_list_components did not add new evidence."],
     )
 
-    assert "If smartcmp_submit_request is not listed under Attempted tools" in payload["system_prompt"]
-    assert "The workflow stopped during component lookup before request submission." in payload["user_prompt"]
+    assert "Never infer that a side-effecting action" in payload["system_prompt"]
+    assert "Authoritative workflow notes" not in payload["user_prompt"]
 
 
 class _PostRunner(

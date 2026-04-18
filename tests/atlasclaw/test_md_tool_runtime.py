@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from pathlib import Path
 
 from app.atlasclaw.skills.md_tool_runtime import ScriptInvocationConfig, create_script_wrapper
@@ -100,13 +99,18 @@ def test_script_wrapper_maps_json_body_to_json_flag_and_serializes_dict(tmp_path
         encoding="utf-8",
     )
 
-    wrapper = create_script_wrapper(script)
+    wrapper = create_script_wrapper(
+        script,
+        invocation_config=ScriptInvocationConfig(
+            flag_name_overrides={"json_body": "--json"},
+        ),
+    )
     result = asyncio.run(
         wrapper(
             json_body={
                 "catalogId": "catalog-1",
                 "businessGroupId": "bg-1",
-                "name": "机房没网络了",
+                "name": "server-room-network-issue",
             }
         )
     )
@@ -117,19 +121,17 @@ def test_script_wrapper_maps_json_body_to_json_flag_and_serializes_dict(tmp_path
     assert payload["parsed"] == {
         "catalogId": "catalog-1",
         "businessGroupId": "bg-1",
-        "name": "机房没网络了",
+        "name": "server-room-network-issue",
     }
 
 
-def test_smartcmp_submit_wrapper_injects_user_login_id_from_context(tmp_path: Path) -> None:
-    script = tmp_path / "submit.py"
+def test_script_wrapper_exposes_user_id_to_script_environment(tmp_path: Path) -> None:
+    script = tmp_path / "echo_user.py"
     script.write_text(
         "\n".join(
             [
-                "import json, sys",
-                "argv = sys.argv[1:]",
-                "parsed = json.loads(argv[1]) if len(argv) >= 2 and argv[0] == '--json' else None",
-                "print(json.dumps({'argv': argv, 'parsed': parsed}, ensure_ascii=False))",
+                "import json, os",
+                "print(json.dumps({'user_id': os.environ.get('ATLASCLAW_USER_ID', '')}))",
             ]
         ),
         encoding="utf-8",
@@ -144,56 +146,30 @@ def test_smartcmp_submit_wrapper_injects_user_login_id_from_context(tmp_path: Pa
     class _Ctx:
         deps = _Deps()
 
-    wrapper = create_script_wrapper(script, provider_type="smartcmp")
-    result = asyncio.run(
-        wrapper(
-            ctx=_Ctx(),
-            json_body={
-                "catalogName": "Linux VM",
-                "businessGroupId": "bg-1",
-                "name": "vm-01",
-            },
-        )
-    )
+    wrapper = create_script_wrapper(script)
+    result = asyncio.run(wrapper(ctx=_Ctx()))
 
     assert result["success"] is True
     payload = json.loads(result["output"].strip())
-    assert payload["argv"][0] == "--json"
-    assert payload["parsed"]["catalogName"] == "Linux VM"
-    assert payload["parsed"]["userLoginId"] == "admin"
+    assert payload["user_id"] == "admin"
 
 
-def test_smartcmp_list_components_wrapper_hides_info_banner(tmp_path: Path) -> None:
-    script = tmp_path / "list_components.py"
-    script.write_text("print('[INFO] Component metadata loaded.')", encoding="utf-8")
-
-    wrapper = create_script_wrapper(script, provider_type="smartcmp")
-    result = asyncio.run(wrapper())
-
-    assert result["success"] is True
-    assert result["output"] == ""
-
-
-def test_smartcmp_list_os_templates_wrapper_strips_verbose_header(tmp_path: Path) -> None:
-    script = tmp_path / "list_os_templates.py"
+def test_script_wrapper_normalizes_crlf_output(tmp_path: Path) -> None:
+    script = tmp_path / "echo_crlf.py"
     script.write_text(
         "\n".join(
             [
-                "print('')",
-                "print('OS Templates  (osType=Linux, resourceBundleId=00101011-03d8-40f0-9ca9-21df162e013b)')",
-                "print('=' * 60)",
-                "print('  [1] CentOS')",
-                "print('  [2] RedHat')",
-                "print('')",
-                "print('请选择OS模板（输入编号）：')",
+                "import sys",
+                "sys.stdout.write('line1\\r\\nline2\\r\\n')",
             ]
         ),
         encoding="utf-8",
     )
 
-    wrapper = create_script_wrapper(script, provider_type="smartcmp")
+    wrapper = create_script_wrapper(script)
     result = asyncio.run(wrapper())
 
     assert result["success"] is True
-    assert "resourceBundleId" not in result["output"]
-    assert "[1] CentOS" in result["output"]
+    assert "\r" not in result["output"]
+    assert "line1" in result["output"]
+    assert "line2" in result["output"]

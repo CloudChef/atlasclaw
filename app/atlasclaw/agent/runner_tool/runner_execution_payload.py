@@ -64,13 +64,11 @@ def build_tool_failure_fallback_payload(
         evidence_lines.append("- tool: no usable tool output was captured")
 
     attempted_lines: list[str] = []
-    attempted_tool_names: list[str] = []
     for item in attempted_tools or []:
         if isinstance(item, dict):
             tool_name = str(item.get("name", "") or item.get("tool_name", "")).strip()
             if not tool_name:
                 continue
-            attempted_tool_names.append(tool_name)
             args = item.get("args")
             if isinstance(args, dict) and args:
                 attempted_lines.append(
@@ -81,13 +79,9 @@ def build_tool_failure_fallback_payload(
             continue
         tool_name = str(item or "").strip()
         if tool_name:
-            attempted_tool_names.append(tool_name)
             attempted_lines.append(f"- {tool_name}")
     if not attempted_lines:
         attempted_lines.append("- none recorded")
-    attempted_tool_name_set = {
-        str(tool_name).strip() for tool_name in attempted_tool_names if str(tool_name).strip()
-    }
 
     failure_lines = [
         f"- {str(reason).strip()}"
@@ -96,19 +90,6 @@ def build_tool_failure_fallback_payload(
     ]
     if not failure_lines:
         failure_lines.append("- Tool execution did not yield usable evidence.")
-
-    authoritative_note_lines: list[str] = []
-    if "smartcmp_submit_request" not in attempted_tool_name_set:
-        authoritative_note_lines.append(
-            "- smartcmp_submit_request was not executed in this failed turn; do not say the request was submitted or submission was attempted."
-        )
-    if (
-        "smartcmp_list_components" in attempted_tool_name_set
-        and "smartcmp_submit_request" not in attempted_tool_name_set
-    ):
-        authoritative_note_lines.append(
-            "- The workflow stopped during component lookup before request submission."
-        )
 
     return {
         "system_prompt": (
@@ -119,7 +100,8 @@ def build_tool_failure_fallback_payload(
             "If the request is a public recommendation or general knowledge question, you may provide a best-effort answer "
             "from model knowledge, but clearly say it was not verified by tools.\n"
             "Never claim a tool ran unless it appears under Attempted tools.\n"
-            "If smartcmp_submit_request is not listed under Attempted tools, do not say the request was submitted or that submission was attempted.\n"
+            "Never infer that a side-effecting action such as submission, creation, update, deletion, or provisioning "
+            "was attempted or succeeded unless the Attempted tools list or tool evidence explicitly shows it.\n"
             "Do not mention hidden reasoning. Do not call tools. Do not add wrapper headings like 'Answer' or 'Result' "
             "unless the user explicitly asked for them."
         ),
@@ -127,7 +109,6 @@ def build_tool_failure_fallback_payload(
             f"User request:\n{str(user_message or '').strip()}\n\n"
             f"Attempted tools:\n{chr(10).join(attempted_lines)}\n\n"
             f"Tool failure summary:\n{chr(10).join(failure_lines)}\n\n"
-            f"Authoritative workflow notes:\n{chr(10).join(authoritative_note_lines) if authoritative_note_lines else '- none'}\n\n"
             f"Tool evidence snapshot:\n{chr(10).join(evidence_lines)}\n\n"
             "Return concise markdown. Be transparent about missing verification when needed."
         ),
