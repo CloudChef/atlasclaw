@@ -15,6 +15,10 @@ from ..auth.models import UserInfo
 from ..core.deps import SkillDeps
 from ..core.security_guard import ensure_user_work_dir
 from ..core.trace import enrich_trace_metadata
+from ..core.user_provider_bindings import (
+    ResolvedProviderInstanceRegistry,
+    build_user_provider_instances,
+)
 from ..memory.manager import MemoryManager
 from ..session.manager import SessionManager
 from ..session.queue import SessionQueue
@@ -159,10 +163,30 @@ def build_scoped_deps(
     else:
         tool_groups_snapshot = {}
 
+    merged_provider_instances = {
+        provider_type: {
+            instance_name: dict(instance_config)
+            for instance_name, instance_config in instances.items()
+        }
+        for provider_type, instances in (ctx.provider_instances or {}).items()
+        if isinstance(instances, dict)
+    }
+    user_provider_instances = build_user_provider_instances(
+        user_info.user_id,
+        workspace_path=str(scoped_session_mgr.workspace_path),
+    )
+    for provider_type, instances in user_provider_instances.items():
+        provider_bucket = merged_provider_instances.setdefault(provider_type, {})
+        for instance_name, instance_config in instances.items():
+            provider_bucket[instance_name] = dict(instance_config)
+
+    provider_registry = ResolvedProviderInstanceRegistry(merged_provider_instances)
+    available_providers = provider_registry.get_available_providers_summary()
+
     deps_extra = {
-        "_service_provider_registry": ctx.service_provider_registry,
-        "available_providers": ctx.available_providers,
-        "provider_instances": ctx.provider_instances,
+        "_service_provider_registry": provider_registry,
+        "available_providers": available_providers,
+        "provider_instances": merged_provider_instances,
         "provider_config": provider_config or {},
         "tools_snapshot": tools_snapshot,
         "tools_snapshot_authoritative": False,
