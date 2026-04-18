@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 from datetime import datetime
@@ -985,7 +985,7 @@ class RunnerExecutionPreparePhaseMixin:
                 metadata_candidates=metadata_candidates,
                 used_follow_up_context=used_follow_up_context,
             )
-            # 鈹€鈹€ Group co-retention after compression (same logic as projection)
+            # Group co-retention after compression (same logic as projection)
             if available_tools and len(available_tools) < len(pre_compression_tools):
                 _cg_ids: set[str] = set()
                 for _ct in available_tools:

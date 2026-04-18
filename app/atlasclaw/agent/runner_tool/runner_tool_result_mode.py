@@ -20,6 +20,10 @@ _SILENT_DESCRIPTION_HINTS = (
 _SILENT_DESCRIPTION_PREFIX = (
     "For workflow continuation only. Do not mention this tool call or show its raw output to the user."
 )
+_CJK_BACKEND_STEP = "\u540e\u53f0\u6b65\u9aa4"
+_CJK_INTERMEDIATE_LOOKUP = "\u4e2d\u95f4\u67e5\u8be2"
+_CJK_BACKEND_STATE = "\u540e\u53f0\u72b6\u6001"
+_CJK_INTERNAL_METADATA = "\u5185\u90e8\u5143\u6570\u636e"
 _WORKFLOW_ONLY_TEXT_REPLACEMENTS = (
     (
         "Treat returned _internal metadata such as id, sourceKey, serviceCategory, "
@@ -37,8 +41,8 @@ _WORKFLOW_ONLY_TEXT_REPLACEMENTS = (
     ("hidden backend step", "intermediate lookup"),
     ("backend state", "workflow-only metadata"),
     ("backend metadata", "intermediate metadata"),
-    ("后台步骤", "中间查询"),
-    ("后台状态", "内部元数据"),
+    (_CJK_BACKEND_STEP, _CJK_INTERMEDIATE_LOOKUP),
+    (_CJK_BACKEND_STATE, _CJK_INTERNAL_METADATA),
 )
 
 

@@ -8,6 +8,13 @@ from app.atlasclaw.agent.tool_gate_models import CapabilityMatchResult, ToolGate
 from app.atlasclaw.core.deps import SkillDeps
 
 
+_CJK_YES = "\u662f"
+_CJK_NO = "\u5426"
+_FULLWIDTH_COMMA = "\uFF0C"
+_FULLWIDTH_SEMICOLON = "\uFF1B"
+_FULLWIDTH_QUESTION_MARK = "\uFF1F"
+_FULLWIDTH_COLON = "\uFF1A"
+
 class RunnerToolGateRoutingMixin:
     @staticmethod
     def _tool_rank_entry_declares_artifact(entry: dict[str, Any]) -> bool:
@@ -64,7 +71,7 @@ class RunnerToolGateRoutingMixin:
         if not current:
             return previous
         inline_selection_pattern = re.compile(
-            r"^(?:\d+|[yn]|yes|no|true|false|是|否)$",
+            rf"^(?:\d+|[yn]|yes|no|true|false|{_CJK_YES}|{_CJK_NO})$",
             re.IGNORECASE,
         )
         separator = " " if inline_selection_pattern.fullmatch(current) else "\n"
@@ -414,7 +421,7 @@ class RunnerToolGateRoutingMixin:
             return False
         parts = [
             item.strip()
-            for item in re.split(r"\s*[,，;；|]\s*", normalized)
+            for item in re.split(rf"\s*[,{_FULLWIDTH_COMMA};{_FULLWIDTH_SEMICOLON}|]\s*", normalized)
             if item.strip()
         ]
         if len(parts) < 2:
@@ -666,10 +673,10 @@ class RunnerToolGateRoutingMixin:
         if not text:
             return False
         lowered = text.lower()
-        question_count = text.count("?") + text.count("？")
+        question_count = text.count("?") + text.count(_FULLWIDTH_QUESTION_MARK)
         numbered_choices = len(re.findall(r"(?:^|[\s\n])(?:1[\)\.]|2[\)\.]|3[\)\.])", text))
         enumerated_field_lines = len(
-            re.findall(r"(?m)^\s*\d+[\.\)]\s+.+?(?:[:：]\s*)$", text)
+            re.findall(rf"(?m)^\s*\d+[\.\)]\s+.+?(?:[:{_FULLWIDTH_COLON}]\s*)$", text)
         )
         interaction_markers = (
             "please reply",
