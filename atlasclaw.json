@@ -60,26 +60,6 @@
         "api_type": "openai",
         "priority": 100,
         "weight": 100
-      },
-      {
-        "id": "model-2",
-        "provider": "${TOKEN_2_PROVIDER}",
-        "model": "${TOKEN_2_MODEL}",
-        "base_url": "${TOKEN_2_BASE_URL}",
-        "api_key": "${TOKEN_2_API_KEY}",
-        "api_type": "openai",
-        "priority": 90,
-        "weight": 80
-      },
-      {
-        "id": "model-3",
-        "provider": "${TOKEN_3_PROVIDER}",
-        "model": "${TOKEN_3_MODEL}",
-        "base_url": "${TOKEN_3_BASE_URL}",
-        "api_key": "${TOKEN_3_API_KEY}",
-        "api_type": "openai",
-        "priority": 80,
-        "weight": 60
       }
     ]
   },
@@ -87,10 +67,7 @@
     "smartcmp": {
       "default": {
         "base_url": "${CMP_URL}",
-        "auth_type": "cookie",
-        "cookie": "${CMP_COOKIE}",
-        "username": "${CMP_USERNAME}",
-        "password": "${CMP_PASSWORD}"
+        "auth_type": "user_token"
       }
     }
   },
@@ -161,4 +138,3 @@
     ]
   }
 }
-

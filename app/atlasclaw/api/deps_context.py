@@ -163,12 +163,20 @@ def build_scoped_deps(
     else:
         tool_groups_snapshot = {}
 
+    # Request-scoped provider_config may already include runtime overrides
+    # (for example DB-backed instance values). Preserve that shape before
+    # layering in per-user provider bindings from the workspace.
+    base_provider_instances = (
+        provider_config
+        if isinstance(provider_config, dict) and provider_config
+        else (ctx.provider_instances or {})
+    )
     merged_provider_instances = {
         provider_type: {
             instance_name: dict(instance_config)
             for instance_name, instance_config in instances.items()
         }
-        for provider_type, instances in (ctx.provider_instances or {}).items()
+        for provider_type, instances in base_provider_instances.items()
         if isinstance(instances, dict)
     }
     user_provider_instances = build_user_provider_instances(
@@ -187,7 +195,7 @@ def build_scoped_deps(
         "_service_provider_registry": provider_registry,
         "available_providers": available_providers,
         "provider_instances": merged_provider_instances,
-        "provider_config": provider_config or {},
+        "provider_config": merged_provider_instances,
         "tools_snapshot": tools_snapshot,
         "tools_snapshot_authoritative": False,
         "tool_groups_snapshot": tool_groups_snapshot,

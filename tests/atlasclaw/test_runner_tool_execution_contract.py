@@ -1469,6 +1469,84 @@ def test_should_finalize_from_embedded_tool_results_when_tool_is_tool_only_ok() 
     assert should_finalize is True
 
 
+def test_should_not_finalize_submit_request_without_request_id() -> None:
+    runner = _StreamRunnerWithEvidence()
+
+    should_finalize = runner._should_finalize_from_tool_results(
+        messages=[
+            {"role": "user", "content": "提交 Linux VM 申请"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tc-1",
+                        "name": "smartcmp_submit_request",
+                        "args": {"json_body": "{\"name\":\"linux-test123\"}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_name": "smartcmp_submit_request",
+                "content": {
+                    "output": "[SUCCESS] 申请已提交\n  State: INITIALING",
+                },
+            },
+        ],
+        start_index=1,
+        planned_tool_names=["smartcmp_submit_request"],
+        available_tools=[
+            {
+                "name": "smartcmp_submit_request",
+                "capability_class": "provider:smartcmp",
+                "result_mode": "tool_only_ok",
+            }
+        ],
+    )
+
+    assert should_finalize is False
+
+
+def test_should_finalize_submit_request_with_request_id() -> None:
+    runner = _StreamRunnerWithEvidence()
+
+    should_finalize = runner._should_finalize_from_tool_results(
+        messages=[
+            {"role": "user", "content": "提交 Linux VM 申请"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tc-1",
+                        "name": "smartcmp_submit_request",
+                        "args": {"json_body": "{\"name\":\"linux-test123\"}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_name": "smartcmp_submit_request",
+                "content": {
+                    "output": "[SUCCESS] 申请已提交\n  Request ID: req-123\n  State: INITIALING",
+                },
+            },
+        ],
+        start_index=1,
+        planned_tool_names=["smartcmp_submit_request"],
+        available_tools=[
+            {
+                "name": "smartcmp_submit_request",
+                "capability_class": "provider:smartcmp",
+                "result_mode": "tool_only_ok",
+            }
+        ],
+    )
+
+    assert should_finalize is True
+
+
 def test_should_not_finalize_from_tool_results_for_silent_backend_lookup() -> None:
     runner = _StreamRunnerWithEvidence()
 

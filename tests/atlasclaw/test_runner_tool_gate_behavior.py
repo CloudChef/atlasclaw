@@ -10,6 +10,7 @@ import pytest
 from app.atlasclaw.agent.runner_tool.runner_tool_gate_model import RunnerToolGateModelMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import RunnerExecutionPreparePhaseMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
+    _infer_active_skill_from_workflow_context,
     prune_auto_selected_provider_instance_tools,
 )
 from app.atlasclaw.agent.runner_tool.runner_llm_routing import build_llm_first_guidance_plan
@@ -569,6 +570,29 @@ def test_resolve_contextual_tool_request_reuses_previous_request_for_structured_
     assert used_follow_up_context is True
 
 
+def test_resolve_contextual_tool_request_reuses_previous_request_for_whitespace_separated_chinese_fields() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="用户名 root 密码 Passw0rd 名称 linux-test123",
+        recent_history=[
+            {"role": "user", "content": "我要申请一台 2C4G 的 Linux 虚拟机"},
+            {
+                "role": "assistant",
+                "content": (
+                    "请补充以下信息后我再提交申请：\n"
+                    "1. 资源名称\n"
+                    "2. 用户名\n"
+                    "3. 密码"
+                ),
+            },
+        ],
+    )
+
+    assert resolved == "我要申请一台 2C4G 的 Linux 虚拟机\n用户名 root 密码 Passw0rd 名称 linux-test123"
+    assert used_follow_up_context is True
+
+
 def test_resolve_contextual_tool_request_recognizes_enumerated_field_prompt_without_markers() -> None:
     runner = _GateRunner()
 
@@ -931,6 +955,115 @@ def test_tool_hint_docs_support_provider_metadata_recall() -> None:
     assert recalled["preferred_provider_types"] == ["smartcmp"]
     assert recalled["preferred_capability_classes"] == ["provider:smartcmp"]
     assert recalled["preferred_tool_names"] == ["smartcmp_get_request_detail"]
+
+
+def test_metadata_recall_follow_up_ignores_assistant_artifact_noise_for_request_thread() -> None:
+    runner = _GateRunner()
+    available_tools = [
+        {
+            "name": "smartcmp_list_services",
+            "description": "List SmartCMP services",
+            "source": "provider",
+            "provider_type": "smartcmp",
+            "group_ids": ["group:cmp", "group:request"],
+            "capability_class": "provider:smartcmp",
+            "keywords": ["cmp", "service", "catalog", "申请", "虚拟机"],
+            "use_when": ["User starts a SmartCMP request workflow"],
+            "avoid_when": [],
+        },
+        {
+            "name": "smartcmp_submit_request",
+            "description": "Submit SmartCMP request",
+            "source": "provider",
+            "provider_type": "smartcmp",
+            "group_ids": ["group:cmp", "group:request"],
+            "capability_class": "provider:smartcmp",
+            "keywords": ["cmp", "request", "submit", "申请", "提交"],
+            "use_when": ["User asks to submit a CMP request"],
+            "avoid_when": [],
+        },
+        {
+            "name": "pptx_create_deck",
+            "description": "Create a .pptx presentation in the AtlasClaw workspace from structured items.",
+            "source": "md_skill",
+            "group_ids": ["group:pptx", "group:fs"],
+            "capability_class": "artifact:pptx",
+            "keywords": ["ppt", "pptx", "slides", "presentation", "演示文稿"],
+            "use_when": ["User wants a real PPTX file"],
+            "avoid_when": [],
+        },
+    ]
+
+    recalled = runner._recall_provider_skill_candidates_from_metadata(
+        user_message="我要申请一台 2C4G 的 Linux 虚拟机\n好",
+        recent_history=[
+            {"role": "user", "content": "我要申请一台 2C4G 的 Linux 虚拟机"},
+            {
+                "role": "assistant",
+                "content": (
+                    "No PPTX artifact was generated. The runtime only performed intermediate "
+                    "lookups and did not produce the final requested file."
+                ),
+            },
+            {"role": "user", "content": "好"},
+        ],
+        used_follow_up_context=True,
+        available_tools=available_tools,
+        provider_hint_docs=[],
+        skill_hint_docs=[],
+        tool_hint_docs=runner._build_tool_hint_docs(available_tools=available_tools),
+        top_k_provider=2,
+        top_k_skill=2,
+    )
+
+    assert recalled["preferred_provider_types"] == ["smartcmp"]
+    assert recalled["preferred_tool_names"][:2] == [
+        "smartcmp_list_services",
+        "smartcmp_submit_request",
+    ]
+    assert "pptx_create_deck" not in recalled["preferred_tool_names"]
+
+
+def test_infer_active_skill_from_workflow_context_prefers_parent_request_skill() -> None:
+    workflow_context = {
+        "recent_tool_metadata": [
+            {
+                "tool_name": "smartcmp_list_services",
+                "metadata": {
+                    "internal_request_trace_id": "trace-1",
+                    "catalogs": [{"id": "catalog-1", "name": "Linux OS"}],
+                },
+            },
+            {
+                "tool_name": "smartcmp_list_all_business_groups",
+                "metadata": [{"id": "bg-1", "name": "测试"}],
+            },
+        ],
+        "internal_request_trace_id": "trace-1",
+    }
+    md_skills_snapshot = [
+        {
+            "qualified_name": "smartcmp:datasource",
+            "metadata": {
+                "tool_list_all_business_groups_name": "smartcmp_list_all_business_groups",
+            },
+        },
+        {
+            "qualified_name": "smartcmp:request",
+            "metadata": {
+                "tool_list_services_name": "smartcmp_list_services",
+                "tool_submit_name": "smartcmp_submit_request",
+            },
+        },
+    ]
+
+    assert (
+        _infer_active_skill_from_workflow_context(
+            workflow_context=workflow_context,
+            md_skills_snapshot=md_skills_snapshot,
+        )
+        == "smartcmp:request"
+    )
 
 
 def test_metadata_fallback_prefers_local_write_tool_over_generic_provider_create_hints() -> None:

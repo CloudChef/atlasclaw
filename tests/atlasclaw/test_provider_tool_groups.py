@@ -153,6 +153,7 @@ def test_build_scoped_deps_merges_user_provider_instances_over_template_config(t
     assert github_default["user_token"] == "github_pat_user_123"
     assert github_default["base_url"] == "https://api.github.com"
     assert deps.extra["available_providers"]["github"] == ["default"]
+    assert deps.extra["provider_config"]["github"]["default"]["user_token"] == "github_pat_user_123"
 
     registry_adapter = deps.extra["_service_provider_registry"]
     assert registry_adapter.get_instance_config("github", "default")["user_token"] == "github_pat_user_123"

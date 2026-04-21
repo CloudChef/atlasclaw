@@ -208,6 +208,43 @@ def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _build_md_skill_tool_index(
+    *,
+    md_skills_snapshot: list[dict[str, Any]],
+) -> dict[str, set[str]]:
+    """Build a qualified skill -> declared tool names index."""
+    skill_tool_index: dict[str, set[str]] = {}
+    for skill in md_skills_snapshot:
+        if not isinstance(skill, dict):
+            continue
+        qname = str(
+            skill.get("qualified_name") or skill.get("name") or ""
+        ).strip().lower()
+        if not qname:
+            continue
+        metadata = skill.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        declared: set[str] = set()
+        for key, value in metadata.items():
+            key_str = str(key)
+            if key_str.startswith("tool_") and key_str.endswith("_name"):
+                tool_name = str(value or "").strip().lower()
+                if tool_name:
+                    declared.add(tool_name)
+        single = str(metadata.get("tool_name", "")).strip().lower()
+        if single:
+            declared.add(single)
+        for raw_list_key in ("declared_tool_names", "tool_names"):
+            for item in (metadata.get(raw_list_key) or skill.get(raw_list_key) or []):
+                tool_name = str(item).strip().lower()
+                if tool_name:
+                    declared.add(tool_name)
+        if declared:
+            skill_tool_index[qname] = declared
+    return skill_tool_index
+
+
 def _infer_active_skill_from_transcript(
     *,
     message_history: list[dict[str, Any]],
@@ -239,40 +276,7 @@ def _infer_active_skill_from_transcript(
     if not recent_tool_names:
         return None
 
-    # Build skill -> declared_tool_names index from md_skills_snapshot
-    skill_tool_index: dict[str, set[str]] = {}
-    for skill in md_skills_snapshot:
-        if not isinstance(skill, dict):
-            continue
-        qname = str(
-            skill.get("qualified_name") or skill.get("name") or ""
-        ).strip().lower()
-        if not qname:
-            continue
-        metadata = skill.get("metadata", {})
-        if not isinstance(metadata, dict):
-            metadata = {}
-        declared = set()
-        # Extract tool names from metadata.tool_*_name keys (same pattern
-        # as _extract_md_tool_names in runner_prompt_context)
-        for key, value in metadata.items():
-            key_str = str(key)
-            if key_str.startswith("tool_") and key_str.endswith("_name"):
-                n = str(value or "").strip().lower()
-                if n:
-                    declared.add(n)
-        single = str(metadata.get("tool_name", "")).strip().lower()
-        if single:
-            declared.add(single)
-        # Also check pre-built declared_tool_names if available
-        for raw_list_key in ("declared_tool_names", "tool_names"):
-            for item in (metadata.get(raw_list_key) or skill.get(raw_list_key) or []):
-                n = str(item).strip().lower()
-                if n:
-                    declared.add(n)
-        if declared:
-            skill_tool_index[qname] = declared
-
+    skill_tool_index = _build_md_skill_tool_index(md_skills_snapshot=md_skills_snapshot)
     if not skill_tool_index:
         return None
 
@@ -283,6 +287,50 @@ def _infer_active_skill_from_transcript(
                 return qname
 
     return None
+
+
+def _infer_active_skill_from_workflow_context(
+    *,
+    workflow_context: Optional[dict[str, Any]],
+    md_skills_snapshot: list[dict[str, Any]],
+) -> Optional[str]:
+    """Infer the parent workflow skill from scoped request metadata.
+
+    Request workflows often call datasource helpers like business-group lookup.
+    When the routed skill doc must be recovered during a follow-up turn, prefer
+    the parent request skill if the scoped workflow metadata still contains one
+    of its request-owned tools (for example `smartcmp_list_services`).
+    """
+    if not isinstance(workflow_context, dict) or not md_skills_snapshot:
+        return None
+    recent_tool_metadata = workflow_context.get("recent_tool_metadata")
+    if not isinstance(recent_tool_metadata, list) or not recent_tool_metadata:
+        return None
+
+    skill_tool_index = _build_md_skill_tool_index(md_skills_snapshot=md_skills_snapshot)
+    if not skill_tool_index:
+        return None
+
+    matched_skills: list[str] = []
+    for item in recent_tool_metadata:
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool_name", "") or "").strip().lower()
+        if not tool_name:
+            continue
+        for qname, declared_tools in skill_tool_index.items():
+            if tool_name not in declared_tools:
+                continue
+            if qname not in matched_skills:
+                matched_skills.append(qname)
+
+    if not matched_skills:
+        return None
+
+    for qname in matched_skills:
+        if qname.endswith(":request") or qname == "request":
+            return qname
+    return matched_skills[0]
 
 
 def _artifact_classes_for_entry(entry: dict[str, Any]) -> set[str]:
@@ -1138,7 +1186,7 @@ class RunnerExecutionPreparePhaseMixin:
                 metadata_plan=metadata_tool_intent_plan,
                 explicit_capability_match=explicit_capability_match,
             )
-            artifact_goal = resolve_artifact_goal_from_intent_plan(metadata_tool_intent_plan)
+            artifact_goal = resolve_artifact_goal_from_intent_plan(tool_intent_plan)
             if isinstance(deps.extra, dict):
                 if artifact_goal is not None:
                     deps.extra["artifact_goal"] = dict(artifact_goal)
@@ -1148,7 +1196,7 @@ class RunnerExecutionPreparePhaseMixin:
                 "artifact_goal_resolved",
                 artifact_kind=str((artifact_goal or {}).get("kind", "") or ""),
                 artifact_label=str((artifact_goal or {}).get("label", "") or ""),
-                source="metadata_capability",
+                source="runtime_intent_plan",
             )
             if isinstance(deps.extra, dict):
                 if tool_intent_plan is not None:
@@ -1312,6 +1360,9 @@ class RunnerExecutionPreparePhaseMixin:
                 reason=str(tool_projection_trace.get("reason", "") or ""),
                 coordination_tools=list(tool_projection_trace.get("coordination_tools", []) or []),
             )
+            target_md_skill_workflow_context = build_target_md_skill_workflow_context(
+                recent_history=message_history,
+            )
             target_md_skill = None
             # ── SKILL.md resolution ──────────────────────────────────────
             # SKILL.md loading follows the routing plan as-is.  Runtime does
@@ -1326,9 +1377,21 @@ class RunnerExecutionPreparePhaseMixin:
             # back to the metadata hint for SKILL.md loading only.
             skill_resolution_plan = tool_intent_plan
             if used_follow_up_context:
+                workflow_active_skill = _infer_active_skill_from_workflow_context(
+                    workflow_context=target_md_skill_workflow_context,
+                    md_skills_snapshot=list(deps.extra.get("md_skills_snapshot") or []),
+                )
+                if workflow_active_skill:
+                    if isinstance(deps.extra, dict):
+                        deps.extra["workflow_skill_continuation_hint"] = workflow_active_skill
+                    _log_step(
+                        "workflow_skill_continuation_hint_computed",
+                        reason="scoped_workflow_metadata_suggests_parent_skill",
+                        hint_skill=workflow_active_skill,
+                    )
                 # Compute transcript hint — soft prompt injection only,
                 # never used to override skill_resolution_plan.
-                transcript_active_skill = _infer_active_skill_from_transcript(
+                transcript_active_skill = workflow_active_skill or _infer_active_skill_from_transcript(
                     message_history=message_history,
                     md_skills_snapshot=list(deps.extra.get("md_skills_snapshot") or []),
                 )
@@ -1351,10 +1414,7 @@ class RunnerExecutionPreparePhaseMixin:
                     # plan so the hinted skill ranks first for SKILL.md
                     # loading.  This is context recovery (loading the right
                     # reference document), not decision override.
-                    if (
-                        transcript_active_skill
-                        and metadata_tool_intent_plan.target_skill_names
-                    ):
+                    if transcript_active_skill:
                         refined_skill_names = [transcript_active_skill] + [
                             s
                             for s in metadata_tool_intent_plan.target_skill_names
@@ -1372,6 +1432,7 @@ class RunnerExecutionPreparePhaseMixin:
                         "follow_up_skill_doc_hint_from_metadata",
                         reason="routing_plan_absent_using_metadata_hint_for_skill_doc",
                         transcript_hint_applied=bool(transcript_active_skill),
+                        workflow_hint_applied=bool(workflow_active_skill),
                         hint_skill_names=list(
                             (skill_resolution_plan.target_skill_names or [])
                         ),
@@ -1386,9 +1447,6 @@ class RunnerExecutionPreparePhaseMixin:
                         or 262144
                     ),
                 )
-            target_md_skill_workflow_context = build_target_md_skill_workflow_context(
-                recent_history=message_history,
-            )
             target_md_skill = enrich_target_md_skill_with_workflow_context(
                 target_md_skill=target_md_skill,
                 workflow_trace=target_md_skill_workflow_context,
