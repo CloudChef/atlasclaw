@@ -127,6 +127,30 @@ def test_cmp_mode_auth_me_accepts_local_admin_jwt(tmp_path: Path, monkeypatch) -
         config_module._config_manager = old_manager
 
 
+def test_cmp_mode_auth_me_accepts_cmp_cookies(tmp_path: Path, monkeypatch) -> None:
+    app, config_module, old_manager = _create_cmp_app(tmp_path, monkeypatch)
+    try:
+        with TestClient(app) as client:
+            me_response = client.get(
+                "/api/auth/me",
+                cookies={
+                    "CloudChef-Authenticate": "cmp-token",
+                    "userLoginId": "cmp-admin",
+                    "username": "CMP%20Admin",
+                    "tenant_id": "tenant-a",
+                },
+            )
+            assert me_response.status_code == 200
+            body = me_response.json()
+            assert body["user_id"]
+            assert body["display_name"] == "CMP Admin"
+            assert body["provider"] == "cmp"
+            assert body["auth_type"] == "cmp"
+            assert body["tenant_id"] == "tenant-a"
+    finally:
+        config_module._config_manager = old_manager
+
+
 def test_cmp_mode_admin_api_accepts_local_admin_jwt(tmp_path: Path, monkeypatch) -> None:
     app, config_module, old_manager = _create_cmp_app(tmp_path, monkeypatch)
     try:

@@ -33,6 +33,13 @@ _SSO_PATHS = frozenset({
     "/api/auth/me",
 })
 
+_CMP_PUBLIC_PATHS = frozenset({
+    "/api/auth/login",
+    "/api/auth/local/login",
+    "/api/auth/callback",
+    "/api/auth/logout",
+})
+
 _STATIC_PREFIXES = (
     "/static/",
     "/styles/",
@@ -114,7 +121,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 request.state.user_info = self._build_user_info_from_payload(payload, atlas_token)
                 return await call_next(request)
 
-            if request.url.path in _SSO_PATHS:
+            if request.url.path in _CMP_PUBLIC_PATHS:
                 request.state.user_info = ANONYMOUS_USER
                 return await call_next(request)
 
