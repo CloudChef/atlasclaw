@@ -379,6 +379,7 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
         live_data: Any = None,
         browser_interaction: Any = None,
         public_web: Any = None,
+        success_contract: Any = None,
     ) -> None:
         normalized_name = str(name or "").strip()
         if not normalized_name or normalized_name in seen_names:
@@ -489,6 +490,11 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             )
         if normalized_result_mode:
             tool_record["result_mode"] = normalized_result_mode
+        normalized_success_contract = _normalize_metadata_object(
+            success_contract if success_contract is not None else indexed_meta.get("success_contract", {})
+        )
+        if normalized_success_contract:
+            tool_record["success_contract"] = normalized_success_contract
         if bool(live_data if live_data is not None else indexed_meta.get("live_data", False)):
             tool_record["live_data"] = True
         if bool(
@@ -539,6 +545,7 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             live_data=tool.get("live_data"),
             browser_interaction=tool.get("browser_interaction"),
             public_web=tool.get("public_web"),
+            success_contract=tool.get("success_contract"),
         )
 
     if tools_snapshot_authoritative:
@@ -561,6 +568,7 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             use_when = tool.get("use_when")
             avoid_when = tool.get("avoid_when")
             result_mode = tool.get("result_mode")
+            success_contract = tool.get("success_contract")
             live_data = tool.get("live_data")
             browser_interaction = tool.get("browser_interaction")
             public_web = tool.get("public_web")
@@ -622,6 +630,10 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
                 getattr(tool, "result_mode", None)
                 or getattr(getattr(tool, "metadata", None), "result_mode", None)
             )
+            success_contract = (
+                getattr(tool, "success_contract", None)
+                or getattr(getattr(tool, "metadata", None), "success_contract", None)
+            )
             live_data = (
                 getattr(tool, "live_data", None)
                 or getattr(getattr(tool, "metadata", None), "live_data", None)
@@ -653,6 +665,7 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             live_data=live_data,
             browser_interaction=browser_interaction,
             public_web=public_web,
+            success_contract=success_contract,
         )
 
     # Fallback/merge path: when pydantic-ai internal tool exposure is partial or missing,
@@ -681,6 +694,7 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             live_data=item.get("live_data"),
             browser_interaction=item.get("browser_interaction"),
             public_web=item.get("public_web"),
+            success_contract=item.get("success_contract"),
         )
 
     return tools
@@ -773,6 +787,7 @@ def _build_skill_metadata_index(
             "use_when": _normalize_string_list(item.get("use_when", [])),
             "avoid_when": _normalize_string_list(item.get("avoid_when", [])),
             "result_mode": _normalize_optional_text(item.get("result_mode", "")),
+            "success_contract": _normalize_metadata_object(item.get("success_contract", {})),
             "live_data": bool(item.get("live_data", False)),
             "browser_interaction": bool(item.get("browser_interaction", False)),
             "public_web": bool(item.get("public_web", False)),
@@ -810,6 +825,13 @@ def _build_skill_metadata_index(
                 "use_when": _normalize_string_list(metadata.get("use_when", [])),
                 "avoid_when": _normalize_string_list(metadata.get("avoid_when", [])),
                 "result_mode": _normalize_optional_text(metadata.get("result_mode", "")),
+                "success_contract": _normalize_metadata_object(
+                    _extract_md_tool_metadata_dict(
+                        entry,
+                        tool_name=tool_name,
+                        key_suffix="success_contract",
+                    )
+                ),
                 "live_data": bool(metadata.get("live_data", False)),
                 "browser_interaction": bool(metadata.get("browser_interaction", False)),
                 "public_web": bool(metadata.get("public_web", False)),
@@ -839,6 +861,35 @@ def _extract_md_tool_names(entry: dict) -> list[str]:
     if fallback_name and fallback_name not in names:
         names.append(fallback_name)
     return _normalize_string_list(names)
+
+
+def _extract_md_tool_metadata_dict(
+    entry: dict[str, Any],
+    *,
+    tool_name: str,
+    key_suffix: str,
+) -> dict[str, Any]:
+    metadata = entry.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return {}
+
+    normalized_tool_name = str(tool_name or "").strip()
+    if normalized_tool_name:
+        for key, value in metadata.items():
+            key_text = str(key or "").strip()
+            if not key_text.startswith("tool_") or not key_text.endswith("_name"):
+                continue
+            if str(value or "").strip() != normalized_tool_name:
+                continue
+            tool_id = key_text[len("tool_") : -len("_name")]
+            candidate = metadata.get(f"tool_{tool_id}_{key_suffix}", {})
+            if isinstance(candidate, dict):
+                return dict(candidate)
+
+    direct_value = metadata.get(key_suffix, {})
+    if isinstance(direct_value, dict):
+        return dict(direct_value)
+    return {}
 
 
 def _qualified_name_provider(qualified_name: str) -> str:
@@ -960,6 +1011,9 @@ def _normalize_snapshot_tool(item: dict[str, Any]) -> dict[str, Any]:
     parameters_schema = _normalize_parameters_schema(item.get("parameters_schema", {}))
     if parameters_schema:
         normalized["parameters_schema"] = parameters_schema
+    success_contract = _normalize_metadata_object(item.get("success_contract", {}))
+    if success_contract:
+        normalized["success_contract"] = success_contract
     return normalized
 
 
@@ -1056,3 +1110,15 @@ def _normalize_parameters_schema(value: Any) -> dict[str, Any]:
     if isinstance(required, list):
         normalized["required"] = [str(item) for item in required if str(item).strip()]
     return normalized
+
+
+def _normalize_metadata_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, str):
+        payload = value.strip()
+        if not payload:
+            return {}
+        try:
+            value = json.loads(payload)
+        except Exception:
+            return {}
+    return dict(value) if isinstance(value, dict) else {}

@@ -245,6 +245,13 @@ def _build_md_skill_tool_index(
     return skill_tool_index
 
 
+def _resolve_md_skill_workflow_role(skill: dict[str, Any]) -> str:
+    metadata = skill.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return ""
+    return str(metadata.get("workflow_role", "") or "").strip().lower()
+
+
 def _infer_active_skill_from_transcript(
     *,
     message_history: list[dict[str, Any]],
@@ -310,6 +317,12 @@ def _infer_active_skill_from_workflow_context(
     skill_tool_index = _build_md_skill_tool_index(md_skills_snapshot=md_skills_snapshot)
     if not skill_tool_index:
         return None
+    skill_entries_by_qname = {
+        str(skill.get("qualified_name") or skill.get("name") or "").strip().lower(): skill
+        for skill in md_skills_snapshot
+        if isinstance(skill, dict)
+        and str(skill.get("qualified_name") or skill.get("name") or "").strip()
+    }
 
     matched_skills: list[str] = []
     for item in recent_tool_metadata:
@@ -327,9 +340,14 @@ def _infer_active_skill_from_workflow_context(
     if not matched_skills:
         return None
 
-    for qname in matched_skills:
-        if qname.endswith(":request") or qname == "request":
-            return qname
+    request_parent_skills = [
+        qname
+        for qname in matched_skills
+        if _resolve_md_skill_workflow_role(skill_entries_by_qname.get(qname, {}))
+        == "request_parent"
+    ]
+    if request_parent_skills:
+        return request_parent_skills[0]
     return matched_skills[0]
 
 
@@ -629,8 +647,10 @@ def build_target_md_skill_workflow_context(
 
     safe_max_entries = max(1, int(max_entries or 0))
     safe_max_chars = max(512, int(max_chars or 0))
-    recent_tool_metadata: list[dict[str, Any]] = []
-    current_size = 0
+    same_trace_metadata: list[dict[str, Any]] = []
+    same_trace_size = 0
+    legacy_metadata: list[dict[str, Any]] = []
+    legacy_size = 0
 
     for message in reversed(recent_history):
         if not isinstance(message, dict):
@@ -659,13 +679,33 @@ def build_target_md_skill_workflow_context(
             "metadata": metadata,
         }
         serialized_entry = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
-        if recent_tool_metadata and current_size + len(serialized_entry) > safe_max_chars:
+        if resolved_trace_id:
+            entry_trace_id = _extract_trace_id_from_metadata(metadata)
+            if entry_trace_id == resolved_trace_id:
+                if same_trace_metadata and same_trace_size + len(serialized_entry) > safe_max_chars:
+                    break
+                same_trace_metadata.append(entry)
+                same_trace_size += len(serialized_entry)
+                if len(same_trace_metadata) >= safe_max_entries:
+                    break
+                continue
+            if entry_trace_id:
+                continue
+            if legacy_metadata and legacy_size + len(serialized_entry) > safe_max_chars:
+                continue
+            if len(legacy_metadata) >= safe_max_entries:
+                continue
+            legacy_metadata.append(entry)
+            legacy_size += len(serialized_entry)
+            continue
+        if legacy_metadata and legacy_size + len(serialized_entry) > safe_max_chars:
             break
-        recent_tool_metadata.append(entry)
-        current_size += len(serialized_entry)
-        if len(recent_tool_metadata) >= safe_max_entries:
+        legacy_metadata.append(entry)
+        legacy_size += len(serialized_entry)
+        if len(legacy_metadata) >= safe_max_entries:
             break
 
+    recent_tool_metadata = same_trace_metadata if same_trace_metadata else legacy_metadata
     if not recent_tool_metadata:
         return None
 

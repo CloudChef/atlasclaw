@@ -136,6 +136,11 @@ def test_collect_tools_snapshot_preserves_normalized_metadata_from_deps() -> Non
                     "use_when": ["User asks for pending approvals"],
                     "avoid_when": ["User asks for weather"],
                     "result_mode": "tool_only_ok",
+                    "success_contract": {
+                        "type": "identifier_presence",
+                        "fields": ["requestId"],
+                        "text_labels": ["Request ID"],
+                    },
                 }
             ]
         }
@@ -164,6 +169,11 @@ def test_collect_tools_snapshot_preserves_normalized_metadata_from_deps() -> Non
             "use_when": ["User asks for pending approvals"],
             "avoid_when": ["User asks for weather"],
             "result_mode": "tool_only_ok",
+            "success_contract": {
+                "type": "identifier_presence",
+                "fields": ["requestId"],
+                "text_labels": ["Request ID"],
+            },
         }
     ]
 
@@ -253,6 +263,56 @@ def test_collect_tools_snapshot_infers_md_skill_capability() -> None:
             "capability_class": "skill",
         }
     ]
+
+
+def test_collect_tools_snapshot_prefers_tool_specific_md_success_contract() -> None:
+    agent = SimpleNamespace(
+        tools=[
+            {
+                "name": "provider_submit_request",
+                "description": "Submit request",
+                "result_mode": "tool_only_ok",
+            }
+        ]
+    )
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot": [],
+            "skills_snapshot": [],
+            "md_skills_snapshot": [
+                {
+                    "name": "request",
+                    "qualified_name": "smartcmp:request",
+                    "provider": "smartcmp",
+                    "metadata": {
+                        "success_contract": {
+                            "type": "identifier_presence",
+                            "fields": ["id"],
+                        },
+                        "tool_submit_name": "provider_submit_request",
+                        "tool_submit_success_contract": {
+                            "type": "identifier_presence",
+                            "fields": ["requestId"],
+                            "text_labels": ["Request ID"],
+                        },
+                    },
+                }
+            ],
+        }
+    )
+
+    snapshot = collect_tools_snapshot(agent=agent, deps=deps)
+
+    assert len(snapshot) == 1
+    assert snapshot[0]["name"] == "provider_submit_request"
+    assert snapshot[0]["provider_type"] == "smartcmp"
+    assert snapshot[0]["result_mode"] == "tool_only_ok"
+    assert snapshot[0]["capability_class"] == "provider:smartcmp"
+    assert snapshot[0]["success_contract"] == {
+        "type": "identifier_presence",
+        "fields": ["requestId"],
+        "text_labels": ["Request ID"],
+    }
 
 
 def test_collect_tools_snapshot_falls_back_to_skills_snapshot_when_agent_has_no_tools() -> None:

@@ -420,6 +420,7 @@ def _register_md_tool_entry(
             metadata.get(f"tool_{tool_id}_avoid_when") if tool_id else metadata.get("avoid_when")
         ),
         result_mode=_extract_result_mode(metadata, tool_id=tool_id),
+        success_contract=_extract_success_contract(metadata, tool_id=tool_id),
     )
     registry.register(meta, handler)
     registered.add(tool_name)
@@ -531,6 +532,15 @@ def _extract_result_mode(metadata: dict[str, Any], *, tool_id: str = "") -> str:
         candidate = metadata.get(f"tool_{tool_id}_result_mode", "llm")
     normalized = str(candidate or "").strip().lower()
     return normalized or "llm"
+
+
+def _extract_success_contract(metadata: dict[str, Any], *, tool_id: str = "") -> dict[str, Any]:
+    candidate: Any = {}
+    if tool_id and f"tool_{tool_id}_success_contract" in metadata:
+        candidate = metadata.get(f"tool_{tool_id}_success_contract", {})
+    elif "success_contract" in metadata:
+        candidate = metadata.get("success_contract", {})
+    return dict(candidate) if isinstance(candidate, dict) else {}
 
 
 def _extract_script_invocation_config(

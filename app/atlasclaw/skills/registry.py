@@ -112,6 +112,7 @@ class SkillMetadata(BaseModel):
     use_when: list[str] = Field(default_factory=list)
     avoid_when: list[str] = Field(default_factory=list)
     result_mode: str = "llm"
+    success_contract: dict[str, Any] = Field(default_factory=dict)
     coordination_only: bool = False
     live_data: bool = False
     browser_interaction: bool = False
@@ -200,6 +201,7 @@ class SkillRegistry:
                 "group_ids": list(metadata.group_ids or []),
                 "capability_class": metadata.capability_class or "",
                 "priority": int(metadata.priority or 100),
+                "success_contract": dict(metadata.success_contract or {}),
                 "coordination_only": bool(metadata.coordination_only),
                 "live_data": bool(metadata.live_data),
                 "browser_interaction": bool(metadata.browser_interaction),
@@ -239,6 +241,7 @@ class SkillRegistry:
                 "use_when": list(meta.use_when),
                 "avoid_when": list(meta.avoid_when),
                 "result_mode": str(meta.result_mode or "").strip(),
+                "success_contract": dict(meta.success_contract or {}),
                 "coordination_only": bool(meta.coordination_only),
                 "live_data": bool(meta.live_data),
                 "browser_interaction": bool(meta.browser_interaction),
@@ -276,6 +279,7 @@ class SkillRegistry:
                 "use_when": list(meta.use_when),
                 "avoid_when": list(meta.avoid_when),
                 "result_mode": str(meta.result_mode or "").strip(),
+                "success_contract": dict(meta.success_contract or {}),
                 "coordination_only": bool(meta.coordination_only),
                 "live_data": bool(meta.live_data),
                 "browser_interaction": bool(meta.browser_interaction),
@@ -310,6 +314,7 @@ class SkillRegistry:
                 "use_when": list(meta.use_when),
                 "avoid_when": list(meta.avoid_when),
                 "result_mode": str(meta.result_mode or "").strip(),
+                "success_contract": dict(meta.success_contract or {}),
                 "coordination_only": bool(meta.coordination_only),
                 "live_data": bool(meta.live_data),
                 "browser_interaction": bool(meta.browser_interaction),

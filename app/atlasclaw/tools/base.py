@@ -108,4 +108,5 @@ class ToolMetadata:
     use_when: list[str] = field(default_factory=list)
     avoid_when: list[str] = field(default_factory=list)
     result_mode: str = "llm"
+    success_contract: dict[str, Any] = field(default_factory=dict)
     coordination_only: bool = False

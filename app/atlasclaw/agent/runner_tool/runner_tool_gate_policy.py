@@ -315,6 +315,7 @@ class RunnerToolGatePolicyMixin:
             successful_tools = self._collect_successful_tool_names(
                 messages=final_messages,
                 start_index=run_output_start_index,
+                available_tools=available_tools,
             )
             if required:
                 missing_success = [name for name in required if name not in successful_tools]
@@ -421,16 +422,25 @@ class RunnerToolGatePolicyMixin:
         *,
         messages: list[dict[str, Any]],
         start_index: int = 0,
+        available_tools: Optional[list[dict[str, Any]]] = None,
     ) -> set[str]:
         successful: set[str] = set()
         safe_start = max(0, min(int(start_index), len(messages)))
+        tool_index = {
+            str(tool.get("name", "") or "").strip(): tool
+            for tool in (available_tools or [])
+            if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+        }
         for message in messages[safe_start:]:
             if not isinstance(message, dict):
                 continue
             role = str(message.get("role", "")).strip().lower()
             if role in {"tool", "toolresult", "tool_result"}:
                 tool_name = str(message.get("tool_name", "") or message.get("name", "")).strip()
-                if tool_name and self._is_tool_result_success(message):
+                if tool_name and self._is_tool_result_success(
+                    message,
+                    tool_meta=tool_index.get(tool_name),
+                ):
                     successful.add(tool_name)
             tool_results = message.get("tool_results")
             if not isinstance(tool_results, list):
@@ -439,31 +449,76 @@ class RunnerToolGatePolicyMixin:
                 if not isinstance(result, dict):
                     continue
                 tool_name = str(result.get("tool_name", "") or result.get("name", "")).strip()
-                if tool_name and self._is_tool_result_success(result):
+                if tool_name and self._is_tool_result_success(
+                    result,
+                    tool_meta=tool_index.get(tool_name),
+                ):
                     successful.add(tool_name)
         return successful
-    @staticmethod
-    def _tool_requires_identifier_success_contract(tool_name: str) -> bool:
-        # Request submission is only considered complete once the backend returns
-        # a concrete request/workflow identifier that the user can track later.
-        return str(tool_name or "").strip().lower() == "smartcmp_submit_request"
 
     @classmethod
-    def _payload_contains_required_identifier(cls, payload: Any) -> bool:
+    def _get_tool_success_contract(cls, tool_meta: Any) -> dict[str, Any]:
+        if not isinstance(tool_meta, dict):
+            return {}
+        contract = tool_meta.get("success_contract")
+        return dict(contract) if isinstance(contract, dict) else {}
+
+    @staticmethod
+    def _normalize_identifier_fields(fields: Any) -> list[str]:
+        normalized: list[str] = []
+        for item in (fields if isinstance(fields, list) else []):
+            value = str(item or "").strip()
+            if value and value not in normalized:
+                normalized.append(value)
+        return normalized
+
+    @staticmethod
+    def _normalize_text_labels(labels: Any) -> list[str]:
+        normalized: list[str] = []
+        for item in (labels if isinstance(labels, list) else []):
+            value = str(item or "").strip()
+            if value and value not in normalized:
+                normalized.append(value)
+        return normalized
+
+    @staticmethod
+    def _has_meaningful_identifier_value(value: Any) -> bool:
+        normalized = str(value or "").strip()
+        return bool(normalized and normalized.lower() not in {"n/a", "na", "none", "null"})
+
+    @classmethod
+    def _payload_contains_required_identifier(
+        cls,
+        payload: Any,
+        *,
+        fields: Any = None,
+        text_labels: Any = None,
+    ) -> bool:
+        normalized_fields = cls._normalize_identifier_fields(fields)
+        normalized_labels = cls._normalize_text_labels(text_labels)
         if payload is None:
             return False
         if isinstance(payload, dict):
-            for key in ("id", "requestId", "request_id", "workflowId", "workflow_id"):
-                value = payload.get(key)
-                normalized = str(value or "").strip()
-                if normalized and normalized.lower() not in {"n/a", "na", "none", "null"}:
+            for key in normalized_fields:
+                if cls._has_meaningful_identifier_value(payload.get(key)):
                     return True
             for key in ("output", "content", "details", "results", "data", "summary", "text", "message"):
-                if key in payload and cls._payload_contains_required_identifier(payload.get(key)):
+                if key in payload and cls._payload_contains_required_identifier(
+                    payload.get(key),
+                    fields=normalized_fields,
+                    text_labels=normalized_labels,
+                ):
                     return True
             return False
         if isinstance(payload, list):
-            return any(cls._payload_contains_required_identifier(item) for item in payload)
+            return any(
+                cls._payload_contains_required_identifier(
+                    item,
+                    fields=normalized_fields,
+                    text_labels=normalized_labels,
+                )
+                for item in payload
+            )
         if isinstance(payload, str):
             normalized = payload.strip()
             if not normalized:
@@ -474,23 +529,50 @@ class RunnerToolGatePolicyMixin:
                 except Exception:
                     parsed = None
                 if parsed is not None:
-                    return cls._payload_contains_required_identifier(parsed)
-            # Provider scripts often print plain text instead of structured JSON.
-            # Accept the result only when it clearly surfaces a request/workflow ID.
-            return bool(
-                re.search(
-                    r"\b(?:request|workflow)\s*id\s*:\s*(?!n/?a\b|none\b|null\b)([A-Za-z0-9][A-Za-z0-9._:-]*)",
+                    return cls._payload_contains_required_identifier(
+                        parsed,
+                        fields=normalized_fields,
+                        text_labels=normalized_labels,
+                    )
+            for label in normalized_labels:
+                label_pattern = re.escape(label)
+                if re.search(
+                    rf"\b{label_pattern}\s*:\s*(?!n/?a\b|none\b|null\b)([A-Za-z0-9][A-Za-z0-9._:-]*)",
                     normalized,
                     flags=re.IGNORECASE,
-                )
-            )
+                ):
+                    return True
+            return False
         return False
 
     @classmethod
-    def _is_tool_result_success(cls, message: dict[str, Any]) -> bool:
+    def _payload_satisfies_success_contract(
+        cls,
+        payload: Any,
+        *,
+        tool_meta: dict[str, Any] | None = None,
+    ) -> Optional[bool]:
+        contract = cls._get_tool_success_contract(tool_meta)
+        if not contract:
+            return None
+        contract_type = str(contract.get("type", "") or "").strip().lower()
+        if contract_type != "identifier_presence":
+            return None
+        return cls._payload_contains_required_identifier(
+            payload,
+            fields=contract.get("fields"),
+            text_labels=contract.get("text_labels"),
+        )
+
+    @classmethod
+    def _is_tool_result_success(
+        cls,
+        message: dict[str, Any],
+        *,
+        tool_meta: dict[str, Any] | None = None,
+    ) -> bool:
         if bool(message.get("is_error")):
             return False
-        tool_name = str(message.get("tool_name", "") or message.get("name", "")).strip()
         content = message.get("content")
         if isinstance(content, str):
             payload = content.strip()
@@ -500,26 +582,37 @@ class RunnerToolGatePolicyMixin:
                 try:
                     parsed = json.loads(payload)
                 except Exception:
-                    return cls._is_tool_payload_success(payload, tool_name=tool_name)
-                return cls._is_tool_payload_success(parsed, tool_name=tool_name)
-            return cls._is_tool_payload_success(payload, tool_name=tool_name)
-        return cls._is_tool_payload_success(content, tool_name=tool_name)
+                    return cls._is_tool_payload_success(payload, tool_meta=tool_meta)
+                return cls._is_tool_payload_success(parsed, tool_meta=tool_meta)
+            return cls._is_tool_payload_success(payload, tool_meta=tool_meta)
+        return cls._is_tool_payload_success(content, tool_meta=tool_meta)
 
     @classmethod
-    def _is_tool_payload_success(cls, payload: Any, *, tool_name: str = "") -> bool:
-        requires_identifier = cls._tool_requires_identifier_success_contract(tool_name)
-        if payload is None:
-            return False
-        if isinstance(payload, dict):
-            if bool(payload.get("is_error")):
-                return False
-            if requires_identifier:
+    def _is_tool_payload_success(
+        cls,
+        payload: Any,
+        *,
+        tool_meta: dict[str, Any] | None = None,
+    ) -> bool:
+        contract_success = cls._payload_satisfies_success_contract(
+            payload,
+            tool_meta=tool_meta,
+        )
+        if contract_success is not None:
+            if isinstance(payload, dict):
+                if bool(payload.get("is_error")):
+                    return False
                 error_value = payload.get("error")
                 if isinstance(error_value, str) and error_value.strip():
                     return False
                 if isinstance(error_value, (dict, list)) and error_value:
                     return False
-                return cls._payload_contains_required_identifier(payload)
+            return bool(contract_success)
+        if payload is None:
+            return False
+        if isinstance(payload, dict):
+            if bool(payload.get("is_error")):
+                return False
             if payload.get("success") is True:
                 output_value = payload.get("output")
                 if isinstance(output_value, str) and output_value.strip():
@@ -541,13 +634,13 @@ class RunnerToolGatePolicyMixin:
             if isinstance(error_value, list) and error_value:
                 return False
             if "content" in payload:
-                return cls._is_tool_payload_success(payload.get("content"), tool_name=tool_name)
+                return cls._is_tool_payload_success(payload.get("content"), tool_meta=tool_meta)
             if "details" in payload:
                 return True
             if "results" in payload:
-                return cls._is_tool_payload_success(payload.get("results"), tool_name=tool_name)
+                return cls._is_tool_payload_success(payload.get("results"), tool_meta=tool_meta)
             if "data" in payload:
-                return cls._is_tool_payload_success(payload.get("data"), tool_name=tool_name)
+                return cls._is_tool_payload_success(payload.get("data"), tool_meta=tool_meta)
             if "summary" in payload and str(payload.get("summary", "")).strip():
                 return True
             if "text" in payload and str(payload.get("text", "")).strip():
@@ -559,16 +652,12 @@ class RunnerToolGatePolicyMixin:
             if not payload:
                 return False
             for item in payload:
-                if cls._is_tool_payload_success(item, tool_name=tool_name):
+                if cls._is_tool_payload_success(item, tool_meta=tool_meta):
                     return True
             return False
         if isinstance(payload, (int, float, bool)):
-            if requires_identifier:
-                return False
             return True
         if isinstance(payload, str):
-            if requires_identifier:
-                return cls._payload_contains_required_identifier(payload)
             return bool(payload.strip())
         return bool(payload)
     @staticmethod

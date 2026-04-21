@@ -1024,7 +1024,7 @@ def test_metadata_recall_follow_up_ignores_assistant_artifact_noise_for_request_
     assert "pptx_create_deck" not in recalled["preferred_tool_names"]
 
 
-def test_infer_active_skill_from_workflow_context_prefers_parent_request_skill() -> None:
+def test_infer_active_skill_from_workflow_context_prefers_explicit_request_parent_role() -> None:
     workflow_context = {
         "recent_tool_metadata": [
             {
@@ -1049,8 +1049,9 @@ def test_infer_active_skill_from_workflow_context_prefers_parent_request_skill()
             },
         },
         {
-            "qualified_name": "smartcmp:request",
+            "qualified_name": "smartcmp:submit-flow",
             "metadata": {
+                "workflow_role": "request_parent",
                 "tool_list_services_name": "smartcmp_list_services",
                 "tool_submit_name": "smartcmp_submit_request",
             },
@@ -1062,7 +1063,7 @@ def test_infer_active_skill_from_workflow_context_prefers_parent_request_skill()
             workflow_context=workflow_context,
             md_skills_snapshot=md_skills_snapshot,
         )
-        == "smartcmp:request"
+        == "smartcmp:submit-flow"
     )
 
 

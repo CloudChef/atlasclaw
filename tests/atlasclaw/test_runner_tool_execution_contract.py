@@ -1469,7 +1469,7 @@ def test_should_finalize_from_embedded_tool_results_when_tool_is_tool_only_ok() 
     assert should_finalize is True
 
 
-def test_should_not_finalize_submit_request_without_request_id() -> None:
+def test_should_not_finalize_identifier_contract_without_required_identifier() -> None:
     runner = _StreamRunnerWithEvidence()
 
     should_finalize = runner._should_finalize_from_tool_results(
@@ -1481,26 +1481,31 @@ def test_should_not_finalize_submit_request_without_request_id() -> None:
                 "tool_calls": [
                     {
                         "id": "tc-1",
-                        "name": "smartcmp_submit_request",
+                        "name": "provider_submit_request",
                         "args": {"json_body": "{\"name\":\"linux-test123\"}"},
                     }
                 ],
             },
             {
                 "role": "tool",
-                "tool_name": "smartcmp_submit_request",
+                "tool_name": "provider_submit_request",
                 "content": {
                     "output": "[SUCCESS] 申请已提交\n  State: INITIALING",
                 },
             },
         ],
         start_index=1,
-        planned_tool_names=["smartcmp_submit_request"],
+        planned_tool_names=["provider_submit_request"],
         available_tools=[
             {
-                "name": "smartcmp_submit_request",
-                "capability_class": "provider:smartcmp",
+                "name": "provider_submit_request",
+                "capability_class": "provider:demo",
                 "result_mode": "tool_only_ok",
+                "success_contract": {
+                    "type": "identifier_presence",
+                    "fields": ["id", "requestId", "request_id", "workflowId", "workflow_id"],
+                    "text_labels": ["Request ID", "Workflow ID"],
+                },
             }
         ],
     )
@@ -1508,7 +1513,7 @@ def test_should_not_finalize_submit_request_without_request_id() -> None:
     assert should_finalize is False
 
 
-def test_should_finalize_submit_request_with_request_id() -> None:
+def test_should_finalize_identifier_contract_with_textual_request_id() -> None:
     runner = _StreamRunnerWithEvidence()
 
     should_finalize = runner._should_finalize_from_tool_results(
@@ -1520,26 +1525,78 @@ def test_should_finalize_submit_request_with_request_id() -> None:
                 "tool_calls": [
                     {
                         "id": "tc-1",
-                        "name": "smartcmp_submit_request",
+                        "name": "provider_submit_request",
                         "args": {"json_body": "{\"name\":\"linux-test123\"}"},
                     }
                 ],
             },
             {
                 "role": "tool",
-                "tool_name": "smartcmp_submit_request",
+                "tool_name": "provider_submit_request",
                 "content": {
                     "output": "[SUCCESS] 申请已提交\n  Request ID: req-123\n  State: INITIALING",
                 },
             },
         ],
         start_index=1,
-        planned_tool_names=["smartcmp_submit_request"],
+        planned_tool_names=["provider_submit_request"],
         available_tools=[
             {
-                "name": "smartcmp_submit_request",
-                "capability_class": "provider:smartcmp",
+                "name": "provider_submit_request",
+                "capability_class": "provider:demo",
                 "result_mode": "tool_only_ok",
+                "success_contract": {
+                    "type": "identifier_presence",
+                    "fields": ["id", "requestId", "request_id", "workflowId", "workflow_id"],
+                    "text_labels": ["Request ID", "Workflow ID"],
+                },
+            }
+        ],
+    )
+
+    assert should_finalize is True
+
+
+def test_should_finalize_identifier_contract_with_structured_identifier_field() -> None:
+    runner = _StreamRunnerWithEvidence()
+
+    should_finalize = runner._should_finalize_from_tool_results(
+        messages=[
+            {"role": "user", "content": "提交 Linux VM 申请"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "tc-1",
+                        "name": "provider_submit_request",
+                        "args": {"json_body": "{\"name\":\"linux-test123\"}"},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_name": "provider_submit_request",
+                "content": {
+                    "data": {
+                        "requestId": "req-456",
+                        "state": "INITIALING",
+                    },
+                },
+            },
+        ],
+        start_index=1,
+        planned_tool_names=["provider_submit_request"],
+        available_tools=[
+            {
+                "name": "provider_submit_request",
+                "capability_class": "provider:demo",
+                "result_mode": "tool_only_ok",
+                "success_contract": {
+                    "type": "identifier_presence",
+                    "fields": ["id", "requestId", "request_id", "workflowId", "workflow_id"],
+                    "text_labels": ["Request ID", "Workflow ID"],
+                },
             }
         ],
     )

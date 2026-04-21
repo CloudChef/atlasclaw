@@ -203,8 +203,8 @@ class TestLimits:
 # Test D: Mixed metadata (some with trace, some without)
 # ---------------------------------------------------------------------------
 class TestMixedMetadata:
-    def test_entries_without_trace_included_when_trace_active(self):
-        """Entries without a trace_id are included (they don't conflict)."""
+    def test_entries_without_trace_excluded_when_same_trace_entries_exist(self):
+        """When same-trace metadata exists, untraced entries should not mix in by default."""
         history = [
             _tool_msg("tool_no_trace", {"some_data": "abc"}),
             _tool_msg("tool_with_trace", {"internal_request_trace_id": "trace-mix", "data": "xyz"}),
@@ -212,11 +212,11 @@ class TestMixedMetadata:
         result = build_target_md_skill_workflow_context(recent_history=history)
         assert result is not None
         assert result["internal_request_trace_id"] == "trace-mix"
-        # Both entries should be present (entry without trace has no conflicting trace_id)
-        assert len(result["recent_tool_metadata"]) == 2
+        names = [e["tool_name"] for e in result["recent_tool_metadata"]]
+        assert names == ["tool_with_trace"]
 
     def test_entries_with_different_trace_excluded(self):
-        """Only entries with matching trace_id or no trace_id are included."""
+        """Only entries with matching trace_id are included when same-trace data exists."""
         history = [
             _tool_msg("tool_old", {"internal_request_trace_id": "trace-old", "data": "old"}),
             _tool_msg("tool_no_trace", {"data": "neutral"}),
@@ -225,11 +225,25 @@ class TestMixedMetadata:
         result = build_target_md_skill_workflow_context(recent_history=history)
         assert result is not None
         assert result["internal_request_trace_id"] == "trace-new"
-        # trace-old should be excluded, but no-trace and trace-new should be included
+        # trace-old and untraced entries should be excluded while same-trace data exists
         names = [e["tool_name"] for e in result["recent_tool_metadata"]]
         assert "tool_old" not in names
-        assert "tool_no_trace" in names
+        assert "tool_no_trace" not in names
         assert "tool_new" in names
+
+    def test_entries_without_matching_trace_fall_back_to_untraced_metadata(self):
+        """If no same-trace metadata survives, legacy untraced entries remain available."""
+        history = [
+            _tool_msg("tool_old", {"internal_request_trace_id": "trace-old", "data": "old"}),
+            _tool_msg("tool_no_trace", {"data": "neutral"}),
+        ]
+        result = build_target_md_skill_workflow_context(
+            recent_history=history,
+            active_trace_id="trace-missing",
+        )
+        assert result is not None
+        names = [e["tool_name"] for e in result["recent_tool_metadata"]]
+        assert names == ["tool_no_trace"]
 
 
 # ---------------------------------------------------------------------------

@@ -781,7 +781,12 @@ class RunnerExecutionFlowStreamMixin:
         collect_successful = getattr(self, "_collect_successful_tool_names", None)
         if callable(collect_successful):
             successful_tool_names = set(
-                collect_successful(messages=messages, start_index=start_index) or set()
+                collect_successful(
+                    messages=messages,
+                    start_index=start_index,
+                    available_tools=available_tools,
+                )
+                or set()
             )
         return all(tool_name in successful_tool_names for tool_name in normalized_planned)
 

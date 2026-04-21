@@ -499,6 +499,7 @@ def register_builtin_tools(
             use_when=list(tool_meta.use_when or []),
             avoid_when=list(tool_meta.avoid_when or []),
             result_mode=str(tool_meta.result_mode or "").strip() or "llm",
+            success_contract=dict(tool_meta.success_contract or {}),
             coordination_only=bool(tool_meta.coordination_only),
             live_data=bool(tool_meta.live_data),
             browser_interaction=bool(tool_meta.browser_interaction),
