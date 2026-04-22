@@ -228,7 +228,9 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-content ul,.response-content ol{margin:0 0 12px 20px;padding:0}
 .response-content li{margin:4px 0;line-height:1.7}
 .response-content h1,.response-content h2,.response-content h3{margin:0 0 10px 0;line-height:1.4}
+.response-content pre{margin:0 0 12px 0;padding:18px 20px;overflow-x:auto;border-radius:16px;background:#1e293b;color:#e2e8f0}
 .response-content code{padding:2px 6px;border-radius:6px;background:#eef2f7;font-size:.95em}
+.response-content pre code{display:block;padding:0;border-radius:0;background:transparent;color:inherit;font-size:13px;line-height:1.7;white-space:pre;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace}
 .response-content a{color:#2563eb;text-decoration:none}
 .response-content a:hover{text-decoration:underline}
 .message-wrapper{display:flex;flex-direction:column;gap:12px}
@@ -713,6 +715,9 @@ function renderAssistantMarkdown(text) {
   const htmlParts = []
   let paragraph = []
   let listType = null
+  let insideFencedCodeBlock = false
+  let fencedCodeLanguage = ''
+  let fencedCodeLines = []
 
   const flushParagraph = () => {
     if (!paragraph.length) return
@@ -726,9 +731,40 @@ function renderAssistantMarkdown(text) {
     listType = null
   }
 
+  const flushCodeBlock = () => {
+    if (!insideFencedCodeBlock && !fencedCodeLines.length && !fencedCodeLanguage) return
+    const languageClass = fencedCodeLanguage
+      ? ` class="language-${fencedCodeLanguage}"`
+      : ''
+    htmlParts.push(`<pre><code${languageClass}>${fencedCodeLines.join('\n')}</code></pre>`)
+    insideFencedCodeBlock = false
+    fencedCodeLanguage = ''
+    fencedCodeLines = []
+  }
+
   for (let index = 0; index < lines.length; index += 1) {
     const rawLine = lines[index]
     const line = (rawLine || '').trim()
+
+    if (insideFencedCodeBlock) {
+      if (/^```/.test(line)) {
+        flushCodeBlock()
+      } else {
+        fencedCodeLines.push(rawLine || '')
+      }
+      continue
+    }
+
+    const fencedCodeMatch = /^```([a-zA-Z0-9_-]+)?\s*$/.exec(line)
+    if (fencedCodeMatch) {
+      flushParagraph()
+      flushList()
+      insideFencedCodeBlock = true
+      fencedCodeLanguage = (fencedCodeMatch[1] || '').toLowerCase()
+      fencedCodeLines = []
+      continue
+    }
+
     if (!line) {
       flushParagraph()
       flushList()
@@ -822,6 +858,7 @@ function renderAssistantMarkdown(text) {
 
   flushParagraph()
   flushList()
+  flushCodeBlock()
   return htmlParts.join('')
 }
 

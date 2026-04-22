@@ -432,6 +432,60 @@ describe('chat-ui.js handler mode', () => {
         await handlerPromise;
     });
 
+    test('handler renders fenced json preview as a code block during streaming', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-json-preview' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'show json preview', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances[0];
+        stream.simulateEvent('assistant', {
+            text: [
+                'JSON 预览：',
+                '',
+                '```json',
+                '{',
+                '  "name": "test-linux-vm-01"',
+                '}',
+                '```',
+                '',
+                '请确认。'
+            ].join('\n'),
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
+        expect(htmlPayload).toContain('<pre><code class="language-json">');
+        expect(htmlPayload).toContain('&quot;name&quot;: &quot;test-linux-vm-01&quot;');
+        expect(htmlPayload).toContain('</code></pre>');
+        expect(htmlPayload).not.toContain('<p>```json');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
     test('handler preserves thinking content and runtime states after final answer arrives', async () => {
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const element = createChatElement();
