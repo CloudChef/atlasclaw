@@ -111,6 +111,15 @@ function createDomChatElement() {
     return { element, input };
 }
 
+function createDomChatElementWithMessages() {
+    const { element, input } = createDomChatElement();
+    const messages = document.createElement('div');
+    messages.className = 'messages-container';
+    messages.innerHTML = '<div class="outer-message-container">stale message</div>';
+    element.shadowRoot.appendChild(messages);
+    return { element, input, messages };
+}
+
 describe('chat-ui.js handler mode', () => {
     test('composition commit enter is blocked once before normal submit resumes', async () => {
         sessionStorage.setItem('atlasclaw_session_key', 'session-123');
@@ -146,6 +155,32 @@ describe('chat-ui.js handler mode', () => {
 
         expect(secondDispatchResult).toBe(true);
         expect(secondEnter.defaultPrevented).toBe(false);
+        expect(deepChatSubmitListener).toHaveBeenCalledTimes(1);
+    });
+
+    test('shift+enter is not blocked by the IME guard', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, input } = createDomChatElement();
+
+        await initChat(element);
+
+        const deepChatSubmitListener = jest.fn();
+        input.addEventListener('keydown', deepChatSubmitListener);
+        input.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+        input.dispatchEvent(new Event('compositionend', { bubbles: true }));
+
+        const shiftEnter = new KeyboardEvent('keydown', {
+            key: 'Enter',
+            shiftKey: true,
+            bubbles: true,
+            cancelable: true
+        });
+        const dispatchResult = input.dispatchEvent(shiftEnter);
+
+        expect(dispatchResult).toBe(true);
+        expect(shiftEnter.defaultPrevented).toBe(false);
         expect(deepChatSubmitListener).toHaveBeenCalledTimes(1);
     });
 
@@ -196,6 +231,37 @@ describe('chat-ui.js handler mode', () => {
             { role: 'ai', text: 'hi there' }
         ]);
         expect(element.introMessage).toBeNull();
+    });
+
+    test('activateSession clears rendered messages when switching to an empty session', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const { initChat, activateSession } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ welcome_message: 'Hello!' })
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ messages: [] })
+            });
+
+        await initChat(element);
+
+        messages.innerHTML = '<div class="outer-message-container">stale message</div>';
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ messages: [] })
+        });
+
+        await activateSession('session-456');
+
+        expect(messages.innerHTML).toBe('');
+        expect(element.history).toEqual([]);
     });
 
     test('handler calls API with correct body and starts SSE stream', async () => {
@@ -545,6 +611,7 @@ describe('chat-ui.js handler mode', () => {
         const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
         expect(htmlPayload).toContain('Running tool');
         expect(htmlPayload).toContain('web_search');
+        expect(htmlPayload).not.toContain('details class="runtime-panel" open');
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;

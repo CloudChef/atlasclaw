@@ -258,6 +258,23 @@ describe('chat page', () => {
     expect(sidebar.textContent).not.toContain('Create virtual machine')
   })
 
+  test('activateChatSession switches the mounted chat page to a fresh empty session', async () => {
+    const chatPage = await import('../../app/frontend/scripts/pages/chat.js')
+    const container = document.getElementById('page-root')
+
+    await chatPage.mount(container)
+
+    const activated = await chatPage.activateChatSession('session-c')
+
+    expect(activated).toBe(true)
+    expect(sessionStorage.getItem('atlasclaw_session_key')).toBe('session-c')
+
+    const sidebar = document.getElementById('sidebar-dynamic-content')
+    const activeButton = sidebar.querySelector('.session-list-row.active [data-session-key="session-c"]')
+    expect(activeButton).not.toBeNull()
+    expect(activeButton.textContent).toBe('New Chat')
+  })
+
   test('user turn hides empty state immediately before assistant response returns', async () => {
     jest.resetModules()
 

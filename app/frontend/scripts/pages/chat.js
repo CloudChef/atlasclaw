@@ -113,6 +113,12 @@ export async function unmount() {
   mounted = false
 }
 
+export async function activateChatSession(nextKey) {
+  if (!mounted || !nextKey) return false
+  await switchActiveSession(nextKey)
+  return true
+}
+
 async function loadSessions() {
   const sidebarContent = document.getElementById('sidebar-dynamic-content')
   if (!sidebarContent) return
@@ -193,12 +199,17 @@ async function handleSessionClick(event) {
   const nextKey = event.currentTarget.getAttribute('data-session-key')
   if (!nextKey || nextKey === currentSessionKey) return
 
+  await switchActiveSession(nextKey)
+  syncHeaderTitle()
+}
+
+async function switchActiveSession(nextKey) {
   abortCurrentStream()
   setSessionKey(nextKey)
   currentSessionKey = nextKey
   await activateSession(nextKey)
+  ensureActiveSessionEntry()
   renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
-  syncHeaderTitle()
 }
 
 function handleUserTurnStarted({ sessionKey, messageText }) {

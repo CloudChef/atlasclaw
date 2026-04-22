@@ -51,11 +51,17 @@ function hasActiveImeEnterGuard() {
 
 function shouldBlockImeEnter(event) {
   if (event?.key !== 'Enter') return false
-  return isComposing ||
+  const activelyComposing = isComposing ||
     event.isComposing === true ||
     event.keyCode === 229 ||
-    event.which === 229 ||
-    hasActiveImeEnterGuard()
+    event.which === 229
+
+  if (!activelyComposing && event.shiftKey) {
+    clearImeEnterGuard()
+    return false
+  }
+
+  return activelyComposing || hasActiveImeEnterGuard()
 }
 
 function getMessageContainer() {
@@ -304,6 +310,7 @@ async function restoreSessionHistory(element, sessionKey) {
 
 function applyHistoryToElement(element, history) {
   if (!element) return
+  clearRenderedMessages(element)
   if (typeof element.loadHistory === 'function') {
     element.loadHistory(history)
   } else {
@@ -313,6 +320,19 @@ function applyHistoryToElement(element, history) {
     }
   }
   element.introMessage = null
+}
+
+function clearRenderedMessages(element) {
+  const root = element?.shadowRoot
+  if (!root) return
+  const containers = [
+    root.querySelector('.messages-container'),
+    root.querySelector('#messages'),
+    root.querySelector('[class*="message-container"]')
+  ].filter(Boolean)
+  for (const container of containers) {
+    container.innerHTML = ''
+  }
 }
 
 function mapTranscriptMessageToHistory(message) {
@@ -593,7 +613,7 @@ function buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs = null, is
   const titleElapsedHtml = titleElapsed
     ? `<span class="runtime-title-elapsed">${escapeHtml(titleElapsed)}</span>`
     : ''
-  const shouldOpen = typeof panelOpen === 'boolean' ? panelOpen : isThinking
+  const shouldOpen = typeof panelOpen === 'boolean' ? panelOpen : false
   const detailsAttrs = shouldOpen ? ' open' : ''
   return `<details class="runtime-panel"${detailsAttrs}><summary><div class="runtime-summary-left"><span class="runtime-title">Thinking</span>${titleIcon}${titleElapsedHtml}</div><div class="runtime-summary-right"><span class="runtime-toggle">></span></div></summary><div class="runtime-body">${chips ? `<div class="runtime-statuses">${chips}</div>` : ''}${logs ? `<div class="runtime-log">${logs}</div>` : ''}${thinkingHtml}</div></details>`
 }
@@ -923,7 +943,7 @@ async function handleStreamWithSignals(runId, signals, context) {
   }
 
   function autoPanelShouldOpen() {
-    return !thinkingFinalized
+    return false
   }
 
   function currentPanelShouldOpen() {
