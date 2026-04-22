@@ -18,6 +18,7 @@ from app.atlasclaw.agent.runner_tool.runner_execution_flow_stream import RunnerE
 from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     RunnerExecutionPayloadMixin,
     build_finalize_payload,
+    build_lookup_dump_recovery_payload,
     build_tool_failure_fallback_payload,
 )
 from app.atlasclaw.agent.runner_tool.runner_execution_retry import RunnerExecutionRetryMixin
@@ -89,6 +90,8 @@ class _PostRunner(
         self.fallback_calls = []
         self.direct_answer_recovery_answer = ""
         self.direct_answer_recovery_calls = []
+        self.lookup_dump_recovery_answer = ""
+        self.lookup_dump_recovery_calls = []
         self.retry_after_missing_tool_execution_calls = []
 
     @staticmethod
@@ -126,6 +129,10 @@ class _PostRunner(
     async def _generate_direct_answer_recovery_answer(self, **kwargs):
         self.direct_answer_recovery_calls.append(kwargs)
         return self.direct_answer_recovery_answer
+
+    async def _generate_lookup_dump_recovery_answer(self, **kwargs):
+        self.lookup_dump_recovery_calls.append(kwargs)
+        return self.lookup_dump_recovery_answer
 
     async def _maybe_finalize_title(self, **kwargs):
         return None
@@ -2054,6 +2061,153 @@ def test_build_finalize_payload_is_minimal_for_tool_backed_answer() -> None:
     assert "openmeteo_weather" in payload["user_prompt"]
 
 
+def test_build_lookup_dump_recovery_payload_rewrites_internal_lookup_dump() -> None:
+    payload = build_lookup_dump_recovery_payload(
+        user_message="我要申请工单",
+        invalid_output='{"success": true, "_internal": {"catalogs": [{"name": "通用工单"}]}}',
+        tool_results=[
+            {
+                "tool_name": "smartcmp_list_services",
+                "content": '{"catalogs":[{"name":"通用工单"}]}',
+            }
+        ],
+        workflow_notes=[
+            '已为您自动选择"通用工单"服务。',
+            "正在继续确认可用业务组。",
+        ],
+    )
+
+    assert "incorrectly echoed raw internal lookup metadata" in payload["system_prompt"]
+    assert "Preserve decisions already made in the workflow notes" in payload["system_prompt"]
+    assert "Do not quote JSON" in payload["system_prompt"]
+    assert "Discard this invalid draft" in payload["user_prompt"]
+    assert "Workflow notes:" in payload["user_prompt"]
+    assert '已为您自动选择"通用工单"服务。' in payload["user_prompt"]
+    assert "smartcmp_list_services" in payload["user_prompt"]
+
+
+def test_extract_lookup_workflow_notes_keeps_prior_assistant_steps() -> None:
+    runner = _PostRunner()
+
+    notes = runner._extract_lookup_workflow_notes(
+        final_messages=[
+            {"role": "user", "content": "我要申请工单"},
+            {
+                "role": "assistant",
+                "content": "我来帮您申请工单。首先让我查看可用的服务目录。",
+                "tool_calls": [{"id": "tc-1", "name": "smartcmp_list_services", "args": {}}],
+            },
+            {
+                "role": "tool",
+                "tool_name": "smartcmp_list_services",
+                "content": {"_internal": {"catalogs": [{"name": "通用工单"}]}},
+            },
+            {
+                "role": "assistant",
+                "content": '已为您自动选择"通用工单"服务。现在我需要确定您要在哪个业务组下申请工单。让我查看可用的业务组选项。',
+                "tool_calls": [{"id": "tc-2", "name": "smartcmp_list_all_business_groups", "args": {}}],
+            },
+            {
+                "role": "assistant",
+                "content": '{"success": true, "_internal": {"catalogs": [{"name": "通用工单"}]}}',
+            },
+        ],
+        start_index=1,
+        invalid_output='{"success": true, "_internal": {"catalogs": [{"name": "通用工单"}]}}',
+    )
+
+    assert notes == [
+        "我来帮您申请工单。首先让我查看可用的服务目录。",
+        '已为您自动选择"通用工单"服务。现在我需要确定您要在哪个业务组下申请工单。让我查看可用的业务组选项。',
+    ]
+
+
+def test_looks_like_raw_lookup_dump_rejects_legitimate_preview_json() -> None:
+    assert _PostRunner._looks_like_raw_lookup_dump(
+        '{"catalogId":"catalog-1","catalogName":"Linux VM","businessGroupName":"测试"}'
+    ) is False
+
+
+def test_looks_like_raw_lookup_dump_accepts_plain_lookup_lists() -> None:
+    assert _PostRunner._looks_like_raw_lookup_dump(
+        '[{"index":1,"id":"bg-1","name":"测试","code":"0003"},{"index":2,"id":"bg-2","name":"开发","code":"0002"}]'
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_lookup_dump_recovery_rewrites_buffered_lookup_output_before_emit() -> None:
+    runner = _PostRunner()
+    runner.lookup_dump_recovery_answer = "已为您自动选择通用工单。请选择业务组：1. 测试 2. 开发 3. 我的业务组。"
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-lookup",
+        "session_manager": _SessionManager(),
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-lookup",
+        "user_message": "我要申请工单",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=False,
+            reason="lookup continuation",
+            policy=ToolPolicyMode.PREFER_TOOL,
+        ),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "available_tools": [{"name": "smartcmp_list_services"}],
+        "tool_execution_required": False,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 0,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [{"name": "smartcmp_list_services"}],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 2,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.DIRECT_ANSWER,
+            target_provider_types=["smartcmp"],
+            reason="lookup follow-up",
+        ),
+        "synthetic_tool_messages": [],
+        "session_message_history": [],
+        "runtime_base_history_len": 0,
+    }
+
+    messages = [
+        {"role": "user", "content": "我要申请工单"},
+        {"role": "tool", "tool_name": "smartcmp_list_services", "content": {"_internal": {"catalogs": [{"name": "通用工单"}]}}},
+        {"role": "tool", "tool_name": "smartcmp_list_all_business_groups", "content": {"_internal": [{"name": "测试"}, {"name": "开发"}]}},
+        {"role": "assistant", "content": '{"success": true, "_internal": {"catalogs": [{"name": "通用工单"}]}}'},
+    ]
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(messages),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+    await runner._await_background_post_success_tasks()
+
+    assistant_events = [event.content for event in events if event.type == "assistant"]
+
+    assert assistant_events == [runner.lookup_dump_recovery_answer]
+    assert runner.lookup_dump_recovery_calls
+    assert state["session_manager"].persisted_messages[-1]["content"] == runner.lookup_dump_recovery_answer
+
+
 def test_build_tool_only_markdown_answer_includes_sources_for_structured_tool_result() -> None:
     runner = _PostRunner()
 
@@ -2220,6 +2374,54 @@ def test_build_tool_only_markdown_answer_normalizes_plain_ascii_layout_to_markdo
     assert "- 名称: Test ticket for build verification" in answer
     assert "- 工单号: TIC20260316000001" in answer
     assert "### [2] 高" in answer
+
+
+def test_build_tool_only_markdown_answer_does_not_append_ellipsis_for_whitespace_only_compaction() -> None:
+    runner = _PostRunner()
+
+    tool_output = "\n".join(
+        [
+            "[SUCCESS] Request submitted",
+            "  Request ID: TIC20260422000004",
+            "  State: APPROVAL_PENDING",
+            "  Catalog: 通用工单",
+            "  Name: CRM 问题",
+        ]
+    )
+
+    answer = runner._build_tool_only_markdown_answer_from_messages(
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "smartcmp_submit_request",
+                "content": {"output": tool_output},
+            }
+        ],
+        start_index=0,
+    )
+
+    assert answer == "\n".join(
+        [
+            "[SUCCESS] Request submitted",
+            "Request ID: TIC20260422000004",
+            "State: APPROVAL_PENDING",
+            "Catalog: 通用工单",
+            "Name: CRM 问题",
+        ]
+    )
+    assert "\n..." not in answer
+
+
+def test_build_tool_only_markdown_answer_keeps_ellipsis_when_content_is_actually_truncated() -> None:
+    runner = _PostRunner()
+
+    tool_output = "Request summary: " + ("A" * 1600)
+
+    answer = runner._compact_tool_fallback_text(tool_output, max_chars=1200)
+
+    assert "Request summary:" in answer
+    assert len(answer) < len(tool_output)
+    assert "..." in answer
 
 
 @pytest.mark.asyncio

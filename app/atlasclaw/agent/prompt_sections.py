@@ -42,10 +42,17 @@ def build_target_md_skill(target_md_skill: dict[str, Any]) -> str:
     lines.append("You must use only this markdown skill for the current run.")
     lines.append("Prefer any executable tool already registered for this skill.")
     lines.append(
-        "If the workflow needs intermediate metadata lookups, continue directly to the next "
-        "user-facing question or confirmation after the lookup."
+        "If the workflow needs intermediate metadata lookups, treat them as internal-only steps "
+        "and continue directly to the next user-facing question or confirmation after the lookup result is available."
     )
-    lines.append("Do not announce intermediate tool calls or expose their internal metadata.")
+    lines.append(
+        "Use only the resolved facts from those lookup results. Never repeat lookup scaffolding "
+        "such as 'Found N ...', numbered raw dumps, JSON blobs, or unlabeled UUID/ID dumps as the reply."
+    )
+    lines.append(
+        "Do not announce intermediate tool calls or expose their internal metadata as a raw "
+        "user-facing reply."
+    )
     if workflow_context:
         try:
             serialized_context = json.dumps(workflow_context, ensure_ascii=False, indent=2)
@@ -66,7 +73,7 @@ def build_target_md_skill(target_md_skill: dict[str, Any]) -> str:
                 "",
                 scope_note,
                 "Interpret earlier numbered user selections against this context.",
-                "Do not quote or dump this raw metadata to the user.",
+                "Do not quote or dump this raw metadata to the user as a reply.",
                 "",
                 "```json",
                 serialized_context,
@@ -230,6 +237,14 @@ def build_tool_policy(tool_policy: Optional[dict]) -> str:
         )
         lines.append(
             "You may use tools when they help gather or save data, but do not stop after intermediate lookup results."
+        )
+        lines.append(
+            "After any internal lookup result, continue with the next user-facing question or "
+            "confirmation in the workflow, phrased naturally."
+        )
+        lines.append(
+            "Never answer with raw lookup scaffolding such as 'Found N ...', numbered dumps, "
+            "JSON, or unlabeled UUID/ID dumps; convert the resolved facts into the workflow response."
         )
         lines.append(
             "Either produce the requested artifact, ask one focused clarification question, or explain what blocked artifact creation."

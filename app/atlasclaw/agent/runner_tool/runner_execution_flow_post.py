@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from typing import Any, AsyncIterator
@@ -11,9 +12,11 @@ from typing import Any, AsyncIterator
 from app.atlasclaw.agent.plaintext_tool_calls import looks_like_plaintext_tool_call_attempt
 from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     build_direct_answer_recovery_payload,
+    build_lookup_dump_recovery_payload,
     build_tool_failure_fallback_payload,
 )
 from app.atlasclaw.agent.runner_tool.runner_llm_routing import messages_satisfy_artifact_goal
+from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import has_hidden_lookup_result_content
 from app.atlasclaw.agent.runner_tool.runner_tool_messages import overlay_synthetic_tool_messages
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
     tool_required_turn_has_real_execution,
@@ -318,6 +321,169 @@ class RunnerExecutionFlowPostMixin:
             return ""
         return normalized
 
+    @staticmethod
+    def _looks_like_raw_lookup_dump(text: str) -> bool:
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        lowered = normalized.lower()
+        if '"_internal"' in normalized or '"returncode"' in normalized or '"success"' in normalized:
+            return True
+        if lowered.startswith("found ") and ("catalog" in lowered or "business group" in lowered):
+            return True
+        try:
+            parsed = json.loads(normalized)
+        except Exception:
+            blocks = [block.strip() for block in normalized.split("\n\n") if block.strip()]
+            if not blocks:
+                return False
+            try:
+                return all(
+                    RunnerExecutionFlowPostMixin._parsed_lookup_payload_seems_internal(
+                        json.loads(block)
+                    )
+                    for block in blocks
+                )
+            except Exception:
+                return False
+        return RunnerExecutionFlowPostMixin._parsed_lookup_payload_seems_internal(parsed)
+
+    @staticmethod
+    def _parsed_lookup_payload_seems_internal(payload: Any) -> bool:
+        if isinstance(payload, dict):
+            keys = {str(key).strip() for key in payload.keys()}
+            if {"_internal", "success"} <= keys:
+                return True
+            if "_internal" in keys or "returncode" in keys:
+                return True
+            if "catalogs" in keys and ("success" in keys or "returncode" in keys):
+                return True
+            return False
+
+        if isinstance(payload, list) and payload:
+            if not all(isinstance(item, dict) for item in payload):
+                return False
+            allowed_keys = {"index", "id", "name", "code"}
+            return all(
+                set(str(key).strip() for key in item.keys()).issubset(allowed_keys)
+                and "name" in item
+                for item in payload
+            )
+
+        return False
+
+    @staticmethod
+    def _has_silent_lookup_results(
+        *,
+        messages: list[dict[str, Any]],
+        start_index: int,
+    ) -> bool:
+        safe_start = max(0, min(int(start_index), len(messages)))
+        for message in messages[safe_start:]:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role", "") or "").strip().lower()
+            if role in {"tool", "toolresult", "tool_result"}:
+                if has_hidden_lookup_result_content(message.get("content")):
+                    return True
+            for result in message.get("tool_results", []) or []:
+                if not isinstance(result, dict):
+                    continue
+                if has_hidden_lookup_result_content(result.get("content", result)):
+                    return True
+        return False
+
+    def _extract_lookup_workflow_notes(
+        self,
+        *,
+        final_messages: list[dict[str, Any]],
+        start_index: int,
+        invalid_output: str,
+        max_items: int = 3,
+    ) -> list[str]:
+        safe_start = max(0, min(int(start_index), len(final_messages)))
+        invalid_normalized = str(invalid_output or "").strip()
+        notes: list[str] = []
+        seen: set[str] = set()
+        for message in final_messages[safe_start:]:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role", "") or "").strip().lower()
+            if role != "assistant":
+                continue
+            content = str(message.get("content", "") or "").strip()
+            if not content or content == invalid_normalized:
+                continue
+            if self._looks_like_raw_lookup_dump(content):
+                continue
+            if self._looks_like_plaintext_tool_call_attempt(content):
+                continue
+            signature = content[:240]
+            if signature in seen:
+                continue
+            seen.add(signature)
+            notes.append(content)
+            if len(notes) >= max(1, int(max_items)):
+                break
+        return notes
+
+    async def _generate_lookup_dump_recovery_answer(
+        self,
+        *,
+        user_message: str,
+        invalid_output: str,
+        final_messages: list[dict[str, Any]],
+        start_index: int,
+        deps: Any,
+        agent: Any,
+    ) -> str:
+        tool_results: list[dict[str, Any]] = []
+        extract_records = getattr(self, "_extract_tool_result_records_from_messages", None)
+        if callable(extract_records):
+            for record in extract_records(
+                messages=final_messages,
+                start_index=start_index,
+                max_items=3,
+            ) or []:
+                if not isinstance(record, dict):
+                    continue
+                content = str(record.get("text", "") or "").strip()
+                if not content:
+                    continue
+                tool_results.append(
+                    {
+                        "tool_name": str(record.get("tool_name", "") or "tool").strip() or "tool",
+                        "content": content,
+                    }
+                )
+        workflow_notes = self._extract_lookup_workflow_notes(
+            final_messages=final_messages,
+            start_index=start_index,
+            invalid_output=invalid_output,
+        )
+        payload = build_lookup_dump_recovery_payload(
+            user_message=user_message,
+            invalid_output=invalid_output,
+            tool_results=tool_results,
+            workflow_notes=workflow_notes,
+        )
+        run_single = getattr(self, "run_single", None)
+        if not callable(run_single):
+            return ""
+        raw_output = await run_single(
+            payload["user_prompt"],
+            deps,
+            system_prompt=payload["system_prompt"],
+            agent=agent,
+            allowed_tool_names=[],
+        )
+        normalized = str(raw_output or "").strip()
+        if not normalized or normalized.startswith("[Error:"):
+            return ""
+        if self._looks_like_raw_lookup_dump(normalized):
+            return ""
+        return normalized
+
     async def _process_agent_run_outcome(
         self,
         *,
@@ -604,6 +770,53 @@ class RunnerExecutionFlowPostMixin:
                     final_assistant = recovered_answer.strip()
                 _log_step(
                     "direct_answer_recovery_done",
+                    answered=bool(final_assistant.strip()),
+                )
+
+        if (
+            final_assistant
+            and self._looks_like_raw_lookup_dump(final_assistant)
+            and self._has_silent_lookup_results(
+                messages=final_messages,
+                start_index=persist_run_output_start_index,
+            )
+        ):
+            yield StreamEvent.runtime_update(
+                "warning",
+                "Discarding a raw lookup dump and regenerating a user-facing workflow response.",
+                metadata={
+                    "phase": "lookup_dump_recovery",
+                    "attempt": current_model_attempt,
+                    "elapsed": round(time.monotonic() - start_time, 1),
+                },
+            )
+            yield StreamEvent.runtime_update(
+                "reasoning",
+                "Rewriting the lookup result into the next natural-language workflow step.",
+                metadata={
+                    "phase": "lookup_dump_recovery",
+                    "attempt": current_model_attempt,
+                    "elapsed": round(time.monotonic() - start_time, 1),
+                },
+            )
+            _log_step("lookup_dump_recovery_start")
+            try:
+                recovered_lookup_answer = await self._generate_lookup_dump_recovery_answer(
+                    user_message=user_message,
+                    invalid_output=final_assistant,
+                    final_messages=final_messages,
+                    start_index=persist_run_output_start_index,
+                    deps=deps,
+                    agent=state.get("runtime_agent") or getattr(self, "agent", None),
+                )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning("lookup_dump_recovery failed: %s", exc)
+                _log_step("lookup_dump_recovery_error", error=str(exc))
+            else:
+                if recovered_lookup_answer.strip():
+                    final_assistant = recovered_lookup_answer.strip()
+                _log_step(
+                    "lookup_dump_recovery_done",
                     answered=bool(final_assistant.strip()),
                 )
 

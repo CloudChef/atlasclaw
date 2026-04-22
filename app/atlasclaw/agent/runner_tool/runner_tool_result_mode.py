@@ -85,3 +85,50 @@ def normalize_tool_description(*, description: Any, silent_backend: bool) -> str
     if not silent_backend:
         return normalized_description
     return sanitize_workflow_only_text(normalized_description)
+
+
+def should_hide_lookup_output(
+    *,
+    result_mode: str,
+    success_contract: dict[str, Any] | None,
+    result: dict[str, Any] | None,
+) -> bool:
+    """Return whether a silent lookup result should hide its raw scaffold output."""
+    if not isinstance(result, dict):
+        return False
+
+    normalized_result_mode = _normalize_text(result_mode).lower()
+    if normalized_result_mode not in _SILENT_RESULT_MODES:
+        return False
+
+    normalized_success_contract = success_contract if isinstance(success_contract, dict) else {}
+    if normalized_success_contract:
+        return False
+
+    if not bool(result.get("success")):
+        return False
+
+    if "_internal" not in result:
+        return False
+
+    output = result.get("output")
+    return isinstance(output, str) and bool(output.strip())
+
+
+def has_hidden_lookup_result_content(content: Any) -> bool:
+    """Return whether persisted tool content represents a hidden silent lookup result."""
+    if not isinstance(content, dict):
+        return False
+
+    if "_internal" not in content:
+        return False
+
+    if bool(content.get("_lookup_output_hidden")):
+        return True
+
+    output = content.get("output")
+    if output is None:
+        return True
+    if isinstance(output, str):
+        return not bool(output.strip())
+    return False

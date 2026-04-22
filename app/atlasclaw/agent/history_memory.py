@@ -21,6 +21,7 @@ from pydantic_ai.messages import (
 )
 
 from app.atlasclaw.agent.compaction import CompactionPipeline
+from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import has_hidden_lookup_result_content
 from app.atlasclaw.core.deps import SkillDeps
 
 
@@ -42,6 +43,13 @@ class HistoryMemoryCoordinator:
                 item = dict(msg)
                 item.setdefault("role", "assistant")
                 item.setdefault("content", "")
+                role = str(item.get("role", "") or "").strip().lower()
+                if role == "tool":
+                    tool_name = str(item.get("tool_name", "") or item.get("name", "")).strip()
+                    item["content"] = self._sanitize_tool_content_for_runtime_message(
+                        tool_name=tool_name,
+                        content=item.get("content"),
+                    )
                 normalized.append(item)
                 continue
 
@@ -113,6 +121,10 @@ class HistoryMemoryCoordinator:
                         continue
                     if isinstance(payload, str) and not payload.strip():
                         continue
+                    payload = self._sanitize_tool_content_for_runtime_message(
+                        tool_name=tool_name,
+                        content=payload,
+                    )
                     item = {
                         "role": "tool",
                         "content": payload,
@@ -387,6 +399,20 @@ class HistoryMemoryCoordinator:
         return False
 
     @staticmethod
+    def _sanitize_tool_content_for_runtime_message(*, tool_name: str, content: Any) -> Any:
+        """Hide raw lookup scaffolding while keeping workflow metadata for same-turn continuation."""
+        del tool_name
+        if not isinstance(content, dict):
+            return content
+
+        if not has_hidden_lookup_result_content(content):
+            return content
+
+        normalized = dict(content)
+        normalized.pop("output", None)
+        return normalized
+
+    @staticmethod
     def _normalize_tool_content_for_model(*, tool_name: str, content: Any) -> Any:
         """Drop runtime-only metadata before replaying tool content to the model."""
         del tool_name
@@ -397,7 +423,11 @@ class HistoryMemoryCoordinator:
             return content
 
         normalized = dict(content)
+        hide_output = has_hidden_lookup_result_content(content)
         normalized.pop("_internal", None)
+        normalized.pop("_lookup_output_hidden", None)
+        if hide_output:
+            normalized.pop("output", None)
         return normalized
 
     def _infer_tool_message_identity(

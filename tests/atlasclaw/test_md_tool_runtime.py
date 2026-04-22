@@ -175,3 +175,65 @@ def test_script_wrapper_normalizes_crlf_output(tmp_path: Path) -> None:
     assert "\r" not in result["output"]
     assert "line1" in result["output"]
     assert "line2" in result["output"]
+
+
+def test_script_wrapper_hides_silent_lookup_output_when_internal_metadata_exists(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "list_services.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import sys",
+                "print('Found 3 published catalog(s).')",
+                "sys.stderr.write('##SMARTCMP_META_START##\\n')",
+                "sys.stderr.write('{\"catalogs\": [{\"id\": \"catalog-1\", \"name\": \"Linux VM\"}]}\\n')",
+                "sys.stderr.write('##SMARTCMP_META_END##\\n')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    wrapper = create_script_wrapper(
+        script,
+        tool_name="smartcmp_list_services",
+        result_mode="silent_ok",
+        success_contract={},
+    )
+    result = asyncio.run(wrapper())
+
+    assert result["success"] is True
+    assert result["output"] == ""
+    assert result["_internal"] == '{"catalogs": [{"id": "catalog-1", "name": "Linux VM"}]}'
+    assert result["_lookup_output_hidden"] is True
+
+
+def test_script_wrapper_keeps_visible_output_for_non_lookup_tools_even_with_internal_metadata(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "submit.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import sys",
+                "print('Request submitted successfully.')",
+                "sys.stderr.write('##SMARTCMP_META_START##\\n')",
+                "sys.stderr.write('{\"requestId\": \"TIC20260422000001\"}\\n')",
+                "sys.stderr.write('##SMARTCMP_META_END##\\n')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    wrapper = create_script_wrapper(
+        script,
+        tool_name="smartcmp_submit_request",
+        result_mode="silent_ok",
+        success_contract={"required_fields": ["requestId"]},
+    )
+    result = asyncio.run(wrapper())
+
+    assert result["success"] is True
+    assert result["output"] == "Request submitted successfully.\n"
+    assert result["_internal"] == '{"requestId": "TIC20260422000001"}'
+    assert "_lookup_output_hidden" not in result

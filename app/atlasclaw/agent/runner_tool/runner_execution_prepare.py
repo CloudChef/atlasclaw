@@ -197,7 +197,11 @@ def build_explicit_tool_execution_prompt(
     )
     if result_mode == "silent_ok":
         prompt += (
-            "If you call this tool, continue directly to the next user-facing step afterward.\n"
+            "If you call this tool, continue directly to the next user-facing question or confirmation afterward.\n"
+            "If this tool is an internal lookup step, do not stop at the lookup result.\n"
+            "Phrase that next user-facing step naturally instead of narrating the lookup itself.\n"
+            "Use only the resolved facts from the lookup. Never quote scaffolding phrases such as "
+            "'Found N ...', replay numbered raw dumps, or surface raw JSON or unlabeled UUID/ID dumps.\n"
             "Do not call the same tool again with the same arguments after its result is available.\n"
             "Do not mention the tool call to the user and do not surface its raw output.\n"
         )
@@ -306,7 +310,7 @@ def _infer_active_skill_from_workflow_context(
     Request workflows often call datasource helpers like business-group lookup.
     When the routed skill doc must be recovered during a follow-up turn, prefer
     the parent request skill if the scoped workflow metadata still contains one
-    of its request-owned tools (for example `smartcmp_list_services`).
+    of its request-owned catalog lookup tools.
     """
     if not isinstance(workflow_context, dict) or not md_skills_snapshot:
         return None

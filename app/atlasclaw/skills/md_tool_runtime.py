@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import should_hide_lookup_output
+
 
 @dataclass(frozen=True)
 class ScriptInvocationConfig:
@@ -43,6 +45,10 @@ def load_handler_from_file(
     attr_name: str,
     provider_type: Optional[str] = None,
     invocation_config: Optional[ScriptInvocationConfig] = None,
+    *,
+    tool_name: str = "",
+    result_mode: str = "",
+    success_contract: dict[str, Any] | None = None,
 ) -> Callable:
     """Load callable handler from file or fallback to script wrapper."""
     scripts_dir = str(py_file.parent)
@@ -57,6 +63,9 @@ def load_handler_from_file(
                 py_file,
                 provider_type,
                 invocation_config=invocation_config,
+                tool_name=tool_name,
+                result_mode=result_mode,
+                success_contract=success_contract,
             )
 
         module_hash = hashlib.sha1(str(py_file).encode("utf-8")).hexdigest()[:12]
@@ -75,6 +84,9 @@ def load_handler_from_file(
             py_file,
             provider_type,
             invocation_config=invocation_config,
+            tool_name=tool_name,
+            result_mode=result_mode,
+            success_contract=success_contract,
         )
     finally:
         if inserted:
@@ -89,6 +101,9 @@ def create_script_wrapper(
     provider_type: Optional[str] = None,
     *,
     invocation_config: Optional[ScriptInvocationConfig] = None,
+    tool_name: str = "",
+    result_mode: str = "",
+    success_contract: dict[str, Any] | None = None,
 ) -> Callable:
     """Create a wrapper function that executes a script file."""
     config = invocation_config or ScriptInvocationConfig()
@@ -255,6 +270,9 @@ def create_script_wrapper(
             result_dict = _normalize_script_result(
                 py_file=py_file,
                 provider_type=provider_type,
+                tool_name=tool_name,
+                result_mode=result_mode,
+                success_contract=success_contract,
                 result=result_dict,
             )
             return result_dict
@@ -264,20 +282,34 @@ def create_script_wrapper(
             return {"success": False, "error": str(exc)}
 
     return script_handler
+
+
 def _normalize_script_result(
     *,
     py_file: Path,
     provider_type: Optional[str],
+    tool_name: str,
+    result_mode: str,
+    success_contract: dict[str, Any] | None,
     result: dict[str, Any],
 ) -> dict[str, Any]:
     """Apply generic normalization to script output before returning it to the runtime."""
-    del py_file, provider_type
+    del py_file, provider_type, tool_name
     normalized = dict(result)
     output = normalized.get("output")
     if not isinstance(output, str):
         return normalized
 
     normalized["output"] = output.replace("\r\n", "\n")
+    if should_hide_lookup_output(
+        result_mode=result_mode,
+        success_contract=success_contract,
+        result=normalized,
+    ):
+        # Keep workflow metadata for follow-up tool calls, but hide scaffolding
+        # like "Found N ..." from the model during same-turn continuation.
+        normalized["output"] = ""
+        normalized["_lookup_output_hidden"] = True
     return normalized
 
 
@@ -371,6 +403,8 @@ def _register_md_tool_entry(
 
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
     provider_type = str(metadata.get("provider_type", "")).strip() or entry.provider or None
+    result_mode = _extract_result_mode(metadata, tool_id=tool_id)
+    success_contract = _extract_success_contract(metadata, tool_id=tool_id)
     try:
         invocation_config = _extract_script_invocation_config(metadata, tool_id=tool_id)
         handler = load_handler_from_file(
@@ -378,6 +412,9 @@ def _register_md_tool_entry(
             attr_name,
             provider_type,
             invocation_config=invocation_config,
+            tool_name=tool_name,
+            result_mode=result_mode,
+            success_contract=success_contract,
         )
     except Exception as exc:
         logger.warning(
@@ -419,8 +456,8 @@ def _register_md_tool_entry(
         avoid_when=_extract_string_sequence(
             metadata.get(f"tool_{tool_id}_avoid_when") if tool_id else metadata.get("avoid_when")
         ),
-        result_mode=_extract_result_mode(metadata, tool_id=tool_id),
-        success_contract=_extract_success_contract(metadata, tool_id=tool_id),
+        result_mode=result_mode,
+        success_contract=success_contract,
     )
     registry.register(meta, handler)
     registered.add(tool_name)

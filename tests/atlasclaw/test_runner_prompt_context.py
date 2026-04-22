@@ -25,6 +25,7 @@ from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
     select_explicit_tool_execution_target,
     should_resolve_target_md_skill,
 )
+from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import sanitize_workflow_only_text
 from app.atlasclaw.agent.tool_gate_models import ToolIntentAction, ToolIntentPlan
 
 
@@ -892,6 +893,34 @@ def test_build_target_md_skill_renders_current_workflow_context_block() -> None:
     assert '"name": "Linux VM"' in rendered
 
 
+def test_build_target_md_skill_sanitizes_workflow_only_lookup_text() -> None:
+    rendered = prompt_sections.build_target_md_skill(
+        {
+            "provider": "smartcmp",
+            "qualified_name": "smartcmp:request",
+            "file_path": "/skills/request/SKILL.md",
+            "content": (
+                "Silent backend lookup for request workflow.\n"
+                "After the internal lookup result is available, continue with the next natural-language follow-up."
+            ),
+        }
+    )
+
+    assert "backend" not in rendered.lower()
+    assert "Silent backend lookup for request workflow." not in rendered
+    assert "next user-facing question or confirmation" in rendered
+    assert "Never repeat lookup scaffolding" in rendered
+    assert "raw user-facing reply" in rendered
+    assert sanitize_workflow_only_text(
+        "Silent backend lookup for request workflow. Continue with the next natural-language follow-up."
+    ) == "Continue with the next natural-language follow-up."
+    assert sanitize_workflow_only_text(
+        "Do not announce intermediate tool calls or expose their internal metadata as a raw user-facing reply."
+    ) == (
+        "Do not announce intermediate tool calls or expose their internal metadata as a raw user-facing reply."
+    )
+
+
 def test_should_resolve_target_md_skill_for_llm_first_skill_hint_plan() -> None:
     assert should_resolve_target_md_skill(
         ToolIntentPlan(
@@ -1008,6 +1037,10 @@ def test_build_explicit_tool_execution_prompt_hides_intermediate_tool_calls() ->
     )
 
     assert "Do not mention the tool call to the user" in prompt
+    assert "next user-facing question or confirmation" in prompt
+    assert "Phrase that next user-facing step naturally" in prompt
+    assert "Never quote scaffolding phrases such as 'Found N ...'" in prompt
+    assert "unlabeled UUID/ID dumps" in prompt
     assert "Do not call the same tool again with the same arguments" in prompt
     assert "backend" not in prompt.lower()
 

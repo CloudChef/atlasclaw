@@ -570,7 +570,7 @@ def test_resolve_contextual_tool_request_reuses_previous_request_for_structured_
     assert used_follow_up_context is True
 
 
-def test_resolve_contextual_tool_request_does_not_treat_whitespace_field_pairs_as_generic_follow_up() -> None:
+def test_resolve_contextual_tool_request_reuses_previous_request_for_whitespace_separated_chinese_fields() -> None:
     runner = _GateRunner()
 
     resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
@@ -589,7 +589,48 @@ def test_resolve_contextual_tool_request_does_not_treat_whitespace_field_pairs_a
         ],
     )
 
-    assert resolved == "用户名 root 密码 Passw0rd 名称 linux-test123"
+    assert resolved == "我要申请一台 2C4G 的 Linux 虚拟机\n用户名 root 密码 Passw0rd 名称 linux-test123"
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_reuses_previous_request_for_prompt_derived_field_labels() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="Project Code alpha-1 Owner alice Region cn-east-1",
+        recent_history=[
+            {"role": "user", "content": "Create an environment for analytics"},
+            {
+                "role": "assistant",
+                "content": (
+                    "Please provide the following details:\n"
+                    "1. Project Code:\n"
+                    "2. Owner:\n"
+                    "3. Region:"
+                ),
+            },
+        ],
+    )
+
+    assert resolved == "Create an environment for analytics\nProject Code alpha-1 Owner alice Region cn-east-1"
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_does_not_merge_prompt_shaped_fields_without_follow_up_prompt() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="Project Code alpha-1 Owner alice Region cn-east-1",
+        recent_history=[
+            {"role": "user", "content": "Create an environment for analytics"},
+            {
+                "role": "assistant",
+                "content": "I checked the catalog and can proceed once you tell me what you want next.",
+            },
+        ],
+    )
+
+    assert resolved == "Project Code alpha-1 Owner alice Region cn-east-1"
     assert used_follow_up_context is False
 
 

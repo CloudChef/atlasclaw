@@ -870,21 +870,28 @@ class RunnerToolEvidenceMixin:
         if not normalized:
             return ""
 
+        raw_lines = normalized.splitlines()
         lines: list[str] = []
         total = 0
-        for raw_line in normalized.splitlines():
+        truncated = False
+        for index, raw_line in enumerate(raw_lines):
             line = " ".join(raw_line.split()).strip()
             if not line:
                 continue
             if line.startswith("{") and len(line) > 240:
+                truncated = True
                 continue
             if line.startswith("[") and len(line) > 240:
+                truncated = True
                 continue
             if total + len(line) + 1 > max_chars:
+                truncated = True
                 break
             lines.append(line)
             total += len(line) + 1
             if max_lines is not None and len(lines) >= max_lines:
+                if any(" ".join(remaining.split()).strip() for remaining in raw_lines[index + 1 :]):
+                    truncated = True
                 break
         if not lines:
             clipped = normalized[:max_chars].strip()
@@ -893,7 +900,7 @@ class RunnerToolEvidenceMixin:
             return clipped
 
         compacted = "\n".join(lines).strip()
-        if len(compacted) < len(normalized):
+        if truncated:
             compacted += "\n..."
         return compacted
 

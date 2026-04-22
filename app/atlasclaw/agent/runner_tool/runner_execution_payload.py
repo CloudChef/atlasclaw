@@ -143,6 +143,54 @@ def build_direct_answer_recovery_payload(
     }
 
 
+def build_lookup_dump_recovery_payload(
+    *,
+    user_message: str,
+    invalid_output: str,
+    tool_results: list[dict[str, Any]],
+    workflow_notes: list[str] | None = None,
+) -> dict[str, str]:
+    """Build a recovery payload for raw workflow-lookup dumps echoed by the model."""
+    evidence_lines: list[str] = []
+    for item in tool_results or []:
+        if not isinstance(item, dict):
+            continue
+        tool_name = str(item.get("tool_name", "") or "").strip() or "tool"
+        content = str(item.get("content", "") or "").strip()
+        if not content:
+            continue
+        evidence_lines.append(f"- {tool_name}: {content}")
+    if not evidence_lines:
+        evidence_lines.append("- tool: no usable lookup evidence was captured")
+
+    note_lines = [
+        f"- {str(note).strip()}"
+        for note in (workflow_notes or [])
+        if str(note).strip()
+    ]
+    if not note_lines:
+        note_lines.append("- none")
+
+    invalid_preview = str(invalid_output or "").strip() or "(empty draft)"
+    return {
+        "system_prompt": (
+            "You are AtlasClaw. The previous draft incorrectly echoed raw internal lookup metadata.\n"
+            "Use only the supplied tool evidence to continue the workflow in natural language.\n"
+            "Preserve decisions already made in the workflow notes instead of restarting from an earlier lookup step.\n"
+            "Ask the next concise user-facing question or confirmation when appropriate.\n"
+            "Do not quote JSON, UUIDs, IDs, raw metadata dumps, or scaffolding phrases like 'Found N ...'.\n"
+            "Do not call tools. Do not mention hidden reasoning."
+        ),
+        "user_prompt": (
+            f"User request:\n{str(user_message or '').strip()}\n\n"
+            f"Discard this invalid draft:\n{invalid_preview}\n\n"
+            f"Workflow notes:\n{chr(10).join(note_lines)}\n\n"
+            f"Tool evidence:\n{chr(10).join(evidence_lines)}\n\n"
+            "Rewrite it as the next natural-language workflow response."
+        ),
+    }
+
+
 class RunnerExecutionPayloadMixin:
     @staticmethod
     def _should_surface_prompt_warning(warning_message: Any) -> bool:

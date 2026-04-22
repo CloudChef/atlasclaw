@@ -177,20 +177,58 @@ def test_history_memory_strips_runtime_only_internal_metadata():
     )
 
     assert isinstance(payload, dict)
-    assert payload["output"] == "[INFO] Component metadata loaded."
     assert payload["success"] is True
+    assert payload["output"] == "[INFO] Component metadata loaded."
     assert "_internal" not in payload
 
 
-def test_history_memory_keeps_visible_output_while_dropping_internal_blob():
+def test_history_memory_drops_lookup_output_while_dropping_internal_blob():
     payload = HistoryMemoryCoordinator._normalize_tool_content_for_model(
         tool_name="smartcmp_list_services",
         content={
-            "output": "Found 1 published catalog(s):\n\n  [1] Linux VM\n",
+            "output": "",
             "_internal": '[{"index":1,"name":"Linux VM"}]',
+            "_lookup_output_hidden": True,
         },
     )
 
     assert isinstance(payload, dict)
-    assert payload["output"] == "Found 1 published catalog(s):\n\n  [1] Linux VM\n"
+    assert "output" not in payload
     assert "_internal" not in payload
+    assert "_lookup_output_hidden" not in payload
+
+
+def test_history_memory_normalize_messages_sanitizes_runtime_tool_return_parts():
+    coordinator = HistoryMemoryCoordinator(
+        session_manager=object(),
+        compaction=CompactionPipeline(CompactionConfig()),
+    )
+    message = ModelRequest(
+        parts=[
+            ToolReturnPart(
+                tool_name="smartcmp_list_services",
+                content={
+                    "success": True,
+                    "output": "",
+                    "_internal": '{"catalogs":[{"id":"catalog-1","name":"Linux VM"}]}',
+                    "_lookup_output_hidden": True,
+                },
+                tool_call_id="call-services-1",
+            )
+        ]
+    )
+
+    normalized = coordinator.normalize_messages([message])
+
+    assert normalized == [
+        {
+            "role": "tool",
+            "content": {
+                "success": True,
+                "_internal": '{"catalogs":[{"id":"catalog-1","name":"Linux VM"}]}',
+                "_lookup_output_hidden": True,
+            },
+            "tool_name": "smartcmp_list_services",
+            "tool_call_id": "call-services-1",
+        }
+    ]

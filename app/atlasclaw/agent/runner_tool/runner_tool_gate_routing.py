@@ -297,9 +297,36 @@ class RunnerToolGateRoutingMixin:
         normalized_user_message = " ".join((user_message or "").split()).strip()
         if not normalized_user_message:
             return user_message, False
+
+        last_assistant_index: Optional[int] = None
+        last_assistant_message = ""
+        last_assistant_raw_message = ""
+        for index in range(len(recent_history) - 1, -1, -1):
+            item = recent_history[index]
+            if str(item.get("role", "")).strip() != "assistant":
+                continue
+            content_raw = str(item.get("content", "") or "")
+            content = " ".join(content_raw.split()).strip()
+            if not content:
+                continue
+            last_assistant_index = index
+            last_assistant_message = content
+            last_assistant_raw_message = content_raw
+            break
+
+        if last_assistant_index is None:
+            return normalized_user_message, False
+
+        assistant_requests_follow_up = self._looks_like_follow_up_request(last_assistant_message)
+        expected_field_labels = (
+            self._extract_follow_up_field_labels(last_assistant_raw_message)
+            if assistant_requests_follow_up
+            else []
+        )
         identifier_follow_up = self._contains_structured_identifier(normalized_user_message)
-        structured_field_response = self._looks_like_structured_field_response(
-            normalized_user_message
+        structured_field_response = assistant_requests_follow_up and self._looks_like_structured_field_response(
+            normalized_user_message,
+            expected_labels=expected_field_labels,
         )
         if (
             identifier_follow_up
@@ -311,22 +338,6 @@ class RunnerToolGateRoutingMixin:
         current_tokens = self._tokenize_classifier_fallback_text(normalized_user_message)
         long_structured_follow_up = compact_current_len > 32 and not identifier_follow_up
         low_information_follow_up = compact_current_len <= 8 or len(current_tokens) <= 1
-
-        last_assistant_index: Optional[int] = None
-        last_assistant_message = ""
-        for index in range(len(recent_history) - 1, -1, -1):
-            item = recent_history[index]
-            if str(item.get("role", "")).strip() != "assistant":
-                continue
-            content = " ".join(str(item.get("content", "") or "").split()).strip()
-            if not content:
-                continue
-            last_assistant_index = index
-            last_assistant_message = content
-            break
-
-        if last_assistant_index is None:
-            return normalized_user_message, False
 
         previous_user_message = ""
         fallback_previous_user_message = ""
@@ -356,8 +367,6 @@ class RunnerToolGateRoutingMixin:
                 normalized_user_message,
             )
             return combined, combined != normalized_user_message
-
-        assistant_requests_follow_up = self._looks_like_follow_up_request(last_assistant_message)
 
         if long_structured_follow_up and not assistant_requests_follow_up:
             return normalized_user_message, False
@@ -412,7 +421,11 @@ class RunnerToolGateRoutingMixin:
         return any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in patterns)
 
     @staticmethod
-    def _looks_like_structured_field_response(text: str) -> bool:
+    def _looks_like_structured_field_response(
+        text: str,
+        *,
+        expected_labels: Optional[list[str]] = None,
+    ) -> bool:
         normalized = " ".join((text or "").split()).strip()
         if not normalized:
             return False
@@ -428,7 +441,70 @@ class RunnerToolGateRoutingMixin:
             ]
             if len(informative_parts) >= 2:
                 return True
+
+        normalized_labels: list[str] = []
+        for item in (expected_labels or []):
+            label = " ".join(str(item or "").split()).strip()
+            if not label:
+                continue
+            folded = label.casefold()
+            if folded not in normalized_labels:
+                normalized_labels.append(folded)
+        if len(normalized_labels) < 2:
+            return False
+
+        label_pattern = re.compile(
+            r"(?<![0-9A-Za-z_\u4e00-\u9fff])(?:"
+            + "|".join(re.escape(label) for label in sorted(normalized_labels, key=len, reverse=True))
+            + r")(?![0-9A-Za-z_\u4e00-\u9fff])",
+            flags=re.IGNORECASE,
+        )
+        matches = list(label_pattern.finditer(normalized))
+        if len(matches) < 2:
+            return False
+
+        informative_segments = 0
+        for index, match in enumerate(matches):
+            next_start = matches[index + 1].start() if index + 1 < len(matches) else len(normalized)
+            value = normalized[match.end():next_start]
+            value = value.lstrip(" :=：,，;；|/-")
+            value = value.strip()
+            if len(re.sub(r"\s+", "", value)) >= 1:
+                informative_segments += 1
+            if informative_segments >= 2:
+                return True
         return False
+
+    @staticmethod
+    def _extract_follow_up_field_labels(text: str, *, max_labels: int = 8) -> list[str]:
+        normalized_text = unicodedata.normalize("NFKC", str(text or ""))
+        labels: list[str] = []
+        for raw_line in normalized_text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if not re.match(r"^(?:\[\d+\]|\d[\.\)]|[-*•])\s*", line):
+                continue
+            candidate = re.sub(r"^(?:\[\d+\]|\d[\.\)]|[-*•])\s*", "", line)
+            candidate = candidate.rstrip("：:?？").strip()
+            candidate = " ".join(candidate.split())
+            compact = re.sub(r"\s+", "", candidate)
+            if not compact or len(compact) < 2 or len(compact) > 24:
+                continue
+            if len(candidate.split()) > 3:
+                continue
+            if re.search(r"[，,；;。.!]", candidate):
+                continue
+            if re.search(r"\d", candidate):
+                continue
+            folded = candidate.casefold()
+            if folded in labels:
+                continue
+            labels.append(folded)
+            if len(labels) >= max_labels:
+                break
+        return labels
+
     @staticmethod
     def _build_classifier_history(
         *,

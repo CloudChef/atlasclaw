@@ -268,13 +268,14 @@ class RunnerExecutionFlowStreamMixin:
             plaintext_tool_calls_in_node = []
             if not tool_calls_in_node:
                 plaintext_tool_calls_in_node = self.runtime_events.collect_plaintext_tool_calls(node)
+            tool_call_summaries = state.get("tool_call_summaries") or []
             buffer_assistant_output = bool(
                 tool_execution_required
+                or tool_call_summaries
                 or tool_calls_in_node
                 or plaintext_tool_calls_in_node
                 or state.get("buffer_direct_answer_output")
             )
-            tool_call_summaries = state.get("tool_call_summaries") or []
             if hasattr(node, "model_response") and node.model_response:
                 async for event in thinking_emitter.emit_from_model_response(
                     model_response=node.model_response,
