@@ -280,8 +280,14 @@ function setupLinkInterception() {
 
 async function handleNewChatClick() {
   try {
-    const { startNewSession } = await import('./session-manager.js')
-    await startNewSession(true, { channel: 'web', chatType: 'dm' })
+    const { startNewSession } = await import(`./session-manager.js?v=${SCRIPT_VERSION}`)
+    const nextSessionKey = await startNewSession(true, { channel: 'web', chatType: 'dm' })
+    if (stripBasePath(window.location.pathname) === '/') {
+      const { activateChatSession } = await import(`./pages/chat.js?v=${SCRIPT_VERSION}`)
+      if (await activateChatSession(nextSessionKey)) {
+        return
+      }
+    }
     window.__spaRouter?.navigate('/', { replace: stripBasePath(window.location.pathname) === '/' })
   } catch (error) {
     console.error('[App] Failed to start new chat:', error)
