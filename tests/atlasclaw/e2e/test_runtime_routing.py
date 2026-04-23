@@ -342,6 +342,39 @@ def _tool_output_text(tool_content: Any) -> str:
     return ""
 
 
+def _tool_internal_payload(tool_content: Any) -> Any:
+    """Extract structured internal metadata from a tool return payload."""
+    if not isinstance(tool_content, dict):
+        return None
+    internal = tool_content.get("_internal")
+    if isinstance(internal, (dict, list)):
+        return internal
+    if isinstance(internal, str) and internal.strip():
+        return json.loads(internal)
+    return None
+
+
+def _extract_catalog_meta(content: Any) -> list[dict[str, Any]]:
+    """Normalize catalog metadata from either legacy stdout or current _internal payloads."""
+    internal = _tool_internal_payload(content)
+    if isinstance(internal, list):
+        return [item for item in internal if isinstance(item, dict)]
+    if isinstance(internal, dict):
+        catalogs = internal.get("catalogs")
+        if isinstance(catalogs, list):
+            return [item for item in catalogs if isinstance(item, dict)]
+
+    output = _tool_output_text(content)
+    parsed = _extract_json_block(output, "##CATALOG_META_START##", "##CATALOG_META_END##")
+    if isinstance(parsed, list):
+        return [item for item in parsed if isinstance(item, dict)]
+    if isinstance(parsed, dict):
+        catalogs = parsed.get("catalogs")
+        if isinstance(catalogs, list):
+            return [item for item in catalogs if isinstance(item, dict)]
+    return []
+
+
 def _iter_message_parts(messages: list[ModelMessage]) -> list[Any]:
     """Flatten model message parts for simpler history inspection."""
     parts: list[Any] = []
@@ -489,9 +522,8 @@ def _format_detail_summary(content: Any) -> str:
 
 
 def _format_services_summary(content: Any) -> str:
-    output = _tool_output_text(content)
-    parsed = _extract_json_block(output, "##CATALOG_META_START##", "##CATALOG_META_END##")
-    assert isinstance(parsed, list) and parsed, f"catalog meta missing: {content!r}"
+    parsed = _extract_catalog_meta(content)
+    assert parsed, f"catalog meta missing: {content!r}"
     names = [str(item.get("name", "")).strip() for item in parsed if str(item.get("name", "")).strip()]
     return "当前服务目录包括：" + "、".join(names) + "。"
 

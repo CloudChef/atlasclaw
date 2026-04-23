@@ -13,6 +13,168 @@ from app.atlasclaw.agent.plaintext_tool_calls import (
     parse_plaintext_tool_calls,
 )
 
+def _parse_workflow_internal_metadata(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        return value
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        try:
+            return json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return text
+    return str(value)
+
+
+def _extract_workflow_candidate_items(metadata: Any) -> tuple[Optional[str], list[dict[str, Any]]]:
+    if isinstance(metadata, list) and all(isinstance(item, dict) for item in metadata):
+        return "__root__", [dict(item) for item in metadata]
+    if not isinstance(metadata, dict):
+        return None, []
+
+    list_keys = [
+        key
+        for key, value in metadata.items()
+        if isinstance(value, list) and all(isinstance(item, dict) for item in value)
+    ]
+    if len(list_keys) != 1:
+        return None, []
+    key = list_keys[0]
+    return key, [dict(item) for item in metadata.get(key, [])]
+
+
+def _replace_workflow_candidate_items(
+    metadata: Any,
+    *,
+    container_key: str,
+    items: list[dict[str, Any]],
+) -> Any:
+    if container_key == "__root__":
+        return [dict(item) for item in items]
+    if not isinstance(metadata, dict):
+        return metadata
+    updated = dict(metadata)
+    updated[container_key] = [dict(item) for item in items]
+    return updated
+
+
+def _encode_workflow_internal_metadata(original: Any, narrowed: Any) -> Any:
+    """Preserve the original storage shape when rewriting narrowed metadata."""
+    if isinstance(original, str):
+        return json.dumps(narrowed, ensure_ascii=False, separators=(",", ":"))
+    return narrowed
+
+
+def _workflow_candidate_selection_tokens(item: dict[str, Any]) -> set[str]:
+    tokens: set[str] = set()
+    for key in ("id", "entityId", "key", "code"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            tokens.add(value)
+    return tokens
+
+
+def _collect_explicit_selection_tokens(value: Any) -> set[str]:
+    tokens: set[str] = set()
+    if value is None:
+        return tokens
+    if isinstance(value, dict):
+        for nested in value.values():
+            tokens.update(_collect_explicit_selection_tokens(nested))
+        return tokens
+    if isinstance(value, list):
+        for nested in value:
+            tokens.update(_collect_explicit_selection_tokens(nested))
+        return tokens
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return tokens
+        if text[:1] in {"{", "["}:
+            try:
+                parsed = json.loads(text)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            else:
+                tokens.update(_collect_explicit_selection_tokens(parsed))
+                return tokens
+        tokens.add(text)
+        return tokens
+    if isinstance(value, (int, float)):
+        tokens.add(str(value))
+        return tokens
+    return tokens
+
+
+def _extract_selected_candidates_from_tool_calls(
+    candidates: list[dict[str, Any]],
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    candidate_lookup: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        for token in _workflow_candidate_selection_tokens(candidate):
+            candidate_lookup.setdefault(token, candidate)
+
+    if not candidate_lookup:
+        return []
+
+    matched: list[dict[str, Any]] = []
+    seen_signatures: set[str] = set()
+    for message in messages:
+        if str(message.get("role", "")).strip().lower() != "assistant":
+            continue
+        for call in message.get("tool_calls", []) or []:
+            if not isinstance(call, dict):
+                continue
+            args = call.get("args", call.get("arguments"))
+            for token in _collect_explicit_selection_tokens(args):
+                candidate = candidate_lookup.get(token)
+                if not candidate:
+                    continue
+                signature = json.dumps(candidate, ensure_ascii=False, sort_keys=True)
+                if signature in seen_signatures:
+                    continue
+                seen_signatures.add(signature)
+                matched.append(dict(candidate))
+    return matched
+
+
+def _narrow_workflow_tool_message(
+    message: dict[str, Any],
+    *,
+    following_messages: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Return a narrowed copy of a tool message when later tool calls carry an explicit selection."""
+    if not following_messages:
+        return None
+    content = message.get("content")
+    if not isinstance(content, dict) or "_internal" not in content:
+        return None
+    parsed_internal = _parse_workflow_internal_metadata(content.get("_internal"))
+    container_key, candidates = _extract_workflow_candidate_items(parsed_internal)
+    if not container_key or len(candidates) <= 1:
+        return None
+
+    narrowed_candidates = _extract_selected_candidates_from_tool_calls(candidates, following_messages)
+    if len(narrowed_candidates) != 1:
+        return None
+
+    updated_content = dict(content)
+    updated_content["_internal"] = _encode_workflow_internal_metadata(
+        content.get("_internal"),
+        _replace_workflow_candidate_items(
+            parsed_internal,
+            container_key=container_key,
+            items=narrowed_candidates,
+        ),
+    )
+    updated_message = dict(message)
+    updated_message["content"] = updated_content
+    return updated_message
+
 
 class RunnerToolEvidenceMixin:
     _META_LABEL_OVERRIDES = {
@@ -702,6 +864,18 @@ class RunnerToolEvidenceMixin:
             ):
                 continue
             sanitized.append(item)
+
+        for tool_index in range(safe_start, len(sanitized)):
+            tool_message = sanitized[tool_index]
+            if str(tool_message.get("role", "")).strip().lower() != "tool":
+                continue
+            narrowed_tool_message = _narrow_workflow_tool_message(
+                tool_message,
+                following_messages=sanitized[tool_index + 1 :],
+            )
+            if narrowed_tool_message is None:
+                continue
+            sanitized[tool_index] = narrowed_tool_message
 
         if not final_assistant_text:
             return sanitized
