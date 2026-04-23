@@ -15,6 +15,7 @@ from app.atlasclaw.api.service_provider_schemas import (
 )
 from app.atlasclaw.core.config import get_config
 
+
 _SENSITIVE_KEYS = frozenset(
     {
         "token",
@@ -292,10 +293,21 @@ class ResolvedProviderInstanceRegistry:
         if config is None:
             return None
 
-        redacted: dict[str, Any] = {}
-        for key, value in config.items():
+        from app.atlasclaw.core.trace import sanitize_log_value
+
+        redacted = sanitize_log_value(
+            config,
+            redacted_text="***",
+            provider_type=provider_type,
+            field_defaults=config,
+        )
+        if not isinstance(redacted, dict):
+            return {}
+
+        for key in config.keys():
             normalized_key = str(key or "").strip().lower()
-            redacted[key] = "***" if normalized_key in _SENSITIVE_KEYS else value
+            if normalized_key in _SENSITIVE_KEYS:
+                redacted[key] = "***"
         return redacted
 
     def get_available_providers_summary(self) -> dict[str, list[str]]:

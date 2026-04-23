@@ -63,8 +63,16 @@ def _is_sensitive(key: str) -> bool:
     return key.lower() in _SENSITIVE_KEYS
 
 
-def _redact_config(config: dict[str, Any]) -> dict[str, Any]:
-    return {k: ("***" if _is_sensitive(k) else v) for k, v in config.items()}
+def _redact_config(config: dict[str, Any], *, provider_type: str = "") -> dict[str, Any]:
+    from app.atlasclaw.core.trace import sanitize_log_value
+
+    redacted = sanitize_log_value(
+        config,
+        redacted_text="***",
+        provider_type=provider_type,
+        field_defaults=config,
+    )
+    return redacted if isinstance(redacted, dict) else {}
 
 
 @dataclass
@@ -286,7 +294,7 @@ class ServiceProviderRegistry:
         config = self.get_instance_config(provider_type, instance_name)
         if config is None:
             return None
-        return _redact_config(config)
+        return _redact_config(config, provider_type=provider_type)
 
     def get_all_instance_configs(self) -> dict[str, dict[str, dict[str, Any]]]:
         """Return all resolved provider instance configs."""

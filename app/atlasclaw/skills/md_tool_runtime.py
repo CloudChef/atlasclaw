@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import should_hide_lookup_output
+from app.atlasclaw.core.trace import sanitize_log_value
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,24 @@ def should_override_location(existing_location: str, new_location: str) -> bool:
     """Return whether new location should override existing by priority."""
     priority = {"built-in": 0, "external": 1, "user": 2, "workspace": 3}
     return priority.get(new_location, 0) >= priority.get(existing_location, 0)
+
+
+def _format_log_value(
+    key: str,
+    value: Any,
+    *,
+    provider_type: Optional[str] = None,
+    config: Optional[dict[str, Any]] = None,
+) -> str:
+    sanitized = sanitize_log_value(
+        {str(key): value},
+        redacted_text="***...",
+        provider_type=provider_type,
+        field_defaults=config,
+    )
+    if isinstance(sanitized, dict) and sanitized.get(str(key)) == "***...":
+        return "***..."
+    return f"{str(value)[:50]}..."
 
 
 def load_handler_from_file(
@@ -159,12 +178,19 @@ def create_script_wrapper(
 
         if deps is not None and hasattr(deps, "extra"):
             extra = deps.extra
-            print(f"[DEBUG] Tool execution: provider_type={provider_type}")
+            normalized_tool_name = str(tool_name or py_file.stem).strip()
+            print(
+                "[DEBUG] Tool execution: "
+                f"tool_name={normalized_tool_name}, provider_type={provider_type}"
+            )
             print(f"[DEBUG] ctx.deps.extra keys: {list(extra.keys())}")
 
             provider_instance = extra.get("provider_instance")
             if provider_instance:
-                print(f"[DEBUG] Using selected provider_instance: {provider_instance}")
+                print(
+                    "[DEBUG] Using selected provider_instance: "
+                    f"{sanitize_log_value(provider_instance, redacted_text='***...', provider_type=str(provider_type or ''), field_defaults=provider_instance)}"
+                )
                 for key, value in provider_instance.items():
                     if value is not None and key not in ("token", "secret"):
                         env[key.upper()] = str(value)
@@ -182,7 +208,10 @@ def create_script_wrapper(
                         for key, value in default_instance.items():
                             if value is not None and key not in ("token", "secret"):
                                 env[key.upper()] = str(value)
-                                print(f"[DEBUG] Set env var: {key.upper()}={'***' if key in ('password',) else str(value)[:50]}...")
+                                print(
+                                    "[DEBUG] Set env var: "
+                                    f"{key.upper()}={_format_log_value(key, value, provider_type=provider_type, config=default_instance)}"
+                                )
                 else:
                     print("[DEBUG] No specific provider_type, using first available")
                     for _, instances in provider_instances.items():

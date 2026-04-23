@@ -15,6 +15,7 @@ from urllib.parse import parse_qsl
 
 import httpx
 
+from app.atlasclaw.core.provider_registry import _is_sensitive as _is_sensitive_provider_config_key
 from app.atlasclaw.session.context import SessionKey
 
 if TYPE_CHECKING:
@@ -138,23 +139,34 @@ def sanitize_log_value(
     max_string_chars: int = 512,
     max_list_items: int = 20,
     max_depth: int = 6,
+    redacted_text: str = "[REDACTED]",
+    provider_type: str = "",
+    field_defaults: Optional[Mapping[str, Any]] = None,
 ) -> Any:
     """Recursively redact sensitive values and truncate long payloads."""
     if max_depth <= 0:
         return "[max depth reached]"
 
     if isinstance(value, Mapping):
+        effective_defaults = field_defaults if isinstance(field_defaults, Mapping) else value
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
             key_str = str(key)
-            if _is_sensitive_key(key_str):
-                sanitized[key_str] = "[REDACTED]"
+            if _is_sensitive_log_key(
+                key_str,
+                provider_type=provider_type,
+                field_defaults=effective_defaults,
+            ):
+                sanitized[key_str] = redacted_text
             else:
                 sanitized[key_str] = sanitize_log_value(
                     item,
                     max_string_chars=max_string_chars,
                     max_list_items=max_list_items,
                     max_depth=max_depth - 1,
+                    redacted_text=redacted_text,
+                    provider_type=provider_type,
+                    field_defaults=effective_defaults,
                 )
         return sanitized
 
@@ -166,6 +178,9 @@ def sanitize_log_value(
                 max_string_chars=max_string_chars,
                 max_list_items=max_list_items,
                 max_depth=max_depth - 1,
+                redacted_text=redacted_text,
+                provider_type=provider_type,
+                field_defaults=field_defaults,
             )
             for item in items[:max_list_items]
         ]
@@ -308,6 +323,44 @@ def _decode_possible_json(content: bytes | str) -> Any:
 def _is_sensitive_key(key: str) -> bool:
     lowered = str(key or "").strip().lower()
     return any(token in lowered for token in _SENSITIVE_KEY_TOKENS)
+
+
+def _is_sensitive_log_key(
+    key: str,
+    *,
+    provider_type: str = "",
+    field_defaults: Optional[Mapping[str, Any]] = None,
+) -> bool:
+    normalized = str(key or "").strip().lower()
+    if not normalized:
+        return False
+    if _is_sensitive_key(normalized) or _is_sensitive_provider_config_key(normalized):
+        return True
+
+    definition = _get_provider_schema_definition(provider_type)
+    if definition is None:
+        return False
+
+    defaults = dict(field_defaults) if isinstance(field_defaults, Mapping) else None
+    for field in definition.resolve_fields(
+        field_defaults=defaults,
+        filter_by_auth_type=False,
+    ):
+        if str(field.name or "").strip().lower() != normalized:
+            continue
+        return bool(field.sensitive or field.type == "password")
+    return False
+
+
+def _get_provider_schema_definition(provider_type: str):
+    normalized = str(provider_type or "").strip().lower()
+    if not normalized:
+        return None
+    try:
+        from app.atlasclaw.api.service_provider_schemas import get_provider_schema_definition
+    except Exception:
+        return None
+    return get_provider_schema_definition(normalized)
 
 
 def _truncate_text(value: str, *, max_string_chars: int) -> str:

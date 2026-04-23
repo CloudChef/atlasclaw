@@ -19,6 +19,7 @@ from app.atlasclaw.core.trace import (
     build_http_request_log_payload,
     build_http_response_log_payload,
     resolve_trace_context,
+    sanitize_log_value,
 )
 
 
@@ -163,6 +164,30 @@ def test_http_request_log_payload_redacts_headers_and_truncates_body() -> None:
     assert payload["body_snapshot"]["messages"][0]["content"].startswith("system system")
     assert payload["body_snapshot"]["messages"][0]["content"].endswith("...[truncated]")
     assert payload["query"] == "foo=bar"
+
+
+def test_sanitize_log_value_redacts_provider_schema_sensitive_fields() -> None:
+    provider_config = {
+        "provider_type": "smartcmp",
+        "instance_name": "default",
+        "base_url": "https://cmp.example.com/platform-api",
+        "auth_type": "user_token",
+        "cookie": "CloudChef-Authenticate=session-cookie",
+        "password": "super-secret-password",
+        "user_token": "fake-smartcmp-user-token",
+    }
+
+    payload = sanitize_log_value(
+        provider_config,
+        provider_type="smartcmp",
+        field_defaults=provider_config,
+    )
+
+    assert payload["provider_type"] == "smartcmp"
+    assert payload["base_url"] == "https://cmp.example.com/platform-api"
+    assert payload["cookie"] == "[REDACTED]"
+    assert payload["password"] == "[REDACTED]"
+    assert payload["user_token"] == "[REDACTED]"
 
 
 def test_http_response_log_payload_marks_streaming_without_consuming_body() -> None:

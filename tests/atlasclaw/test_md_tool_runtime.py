@@ -237,3 +237,50 @@ def test_script_wrapper_keeps_visible_output_for_non_lookup_tools_even_with_inte
     assert result["output"] == "Request submitted successfully.\n"
     assert result["_internal"] == '{"requestId": "TIC20260422000001"}'
     assert "_lookup_output_hidden" not in result
+
+
+def test_script_wrapper_logs_tool_name_and_masks_sensitive_env_values(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    script = tmp_path / "echo_ok.py"
+    script.write_text("print('ok')\n", encoding="utf-8")
+
+    class _Deps:
+        cookies = {}
+        extra = {
+            "provider_instances": {
+                "smartcmp": {
+                    "default": {
+                        "provider_type": "smartcmp",
+                        "instance_name": "default",
+                        "base_url": "https://cmp.example.com/platform-api",
+                        "auth_type": "user_token",
+                        "cookie": "CloudChef-Authenticate=session-cookie",
+                        "password": "super-secret-password",
+                        "user_token": "fake-smartcmp-user-token",
+                    }
+                }
+            }
+        }
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(
+        script,
+        provider_type="smartcmp",
+        tool_name="smartcmp_list_flavors",
+    )
+
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+    captured = capsys.readouterr()
+
+    assert result["success"] is True
+    assert "tool_name=smartcmp_list_flavors, provider_type=smartcmp" in captured.out
+    assert "[DEBUG] Set env var: PASSWORD=***..." in captured.out
+    assert "[DEBUG] Set env var: COOKIE=***..." in captured.out
+    assert "[DEBUG] Set env var: USER_TOKEN=***..." in captured.out
+    assert "super-secret-password" not in captured.out
+    assert "CloudChef-Authenticate=session-cookie" not in captured.out
+    assert "fake-smartcmp-user-token" not in captured.out
