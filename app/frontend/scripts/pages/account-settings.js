@@ -11,7 +11,8 @@
 import { getCurrentLocale, t, translateIfExists, updateContainerTranslations } from '../i18n.js'
 import { showToast } from '../components/toast.js'
 import { checkAuth } from '../auth.js'
-import { buildAssetUrl } from '../config.js'
+import { buildAppUrl, buildAssetUrl } from '../config.js'
+import { canAccessProviderManagement } from '../permissions.js'
 
 const ACCOUNT_UI_PREFS_KEY = 'atlasclaw_account_ui_preferences'
 
@@ -24,6 +25,7 @@ const DEFAULT_UI_PREFS = {
 
 let containerRef = null
 let currentProfile = null
+let currentAuthInfo = null
 let currentUiPrefs = { ...DEFAULT_UI_PREFS }
 let eventCleanupFns = []
 let isProfileEditing = false
@@ -215,6 +217,30 @@ const PAGE_HTML = `
           <button type="button" class="account-link-action" id="accountNotificationBtn" data-i18n="account.notificationConfig">
             Notification config
           </button>
+        </article>
+
+        <article class="settings-card account-auth-config-card" id="accountAuthConfigCard" hidden>
+          <div class="account-auth-config-summary">
+            <div>
+              <h2 data-i18n="account.authConfigTitle">Authentication Configuration</h2>
+              <p class="account-auth-config-copy" data-i18n="account.authConfigSummary">
+                Review provider credentials and access parameters from one dedicated workspace.
+              </p>
+            </div>
+
+            <button type="button" class="account-link-action account-link-action-inline" id="accountOpenAuthConfigBtn" data-i18n="account.authConfigAction">
+              Open management
+            </button>
+          </div>
+
+          <div class="account-auth-config-meta">
+            <span class="account-auth-config-pill" data-i18n="account.authConfigStatus">
+              Dedicated workspace
+            </span>
+            <span class="account-auth-config-hint" data-i18n="account.authConfigHint">
+              Provider credentials, access parameters, and connection settings stay on the dedicated page.
+            </span>
+          </div>
         </article>
       </div>
 
@@ -437,6 +463,19 @@ function syncUiToggles() {
   containerRef.querySelector('#accountPrefEmailReports').checked = Boolean(currentUiPrefs.emailReports)
 }
 
+function hasProviderConfigAccess() {
+  return canAccessProviderManagement(currentAuthInfo)
+}
+
+function applyProviderConfigAccessState() {
+  const authConfigCard = containerRef?.querySelector('#accountAuthConfigCard')
+  if (!authConfigCard) {
+    return
+  }
+
+  authConfigCard.hidden = !hasProviderConfigAccess()
+}
+
 function collectUiToggles() {
   return {
     twoFactor: containerRef.querySelector('#accountPrefTwoFactor').checked,
@@ -516,6 +555,15 @@ function applyProfileEditState() {
     notificationBtn.classList.toggle('disabled', !isEditing)
   }
 
+}
+
+function openAuthenticationConfigPage() {
+  if (window.__spaRouter && typeof window.__spaRouter.navigate === 'function') {
+    window.__spaRouter.navigate('/providers')
+    return
+  }
+
+  window.location.href = buildAppUrl('/providers')
 }
 
 function enterProfileEditMode() {
@@ -814,6 +862,10 @@ function setupEventListeners() {
     )
   })
 
+  addTrackedListener(containerRef.querySelector('#accountOpenAuthConfigBtn'), 'click', () => {
+    openAuthenticationConfigPage()
+  })
+
   addTrackedListener(containerRef.querySelector('#accountDeactivateBtn'), 'click', () => {
     showToast(
       translateOrFallback(
@@ -856,6 +908,7 @@ export async function mount(container, { params, route } = {}) {
   if (!user) {
     return
   }
+  currentAuthInfo = user
 
   currentUiPrefs = loadUiPreferences()
 
@@ -869,6 +922,7 @@ export async function mount(container, { params, route } = {}) {
 
   containerRef.innerHTML = PAGE_HTML
   updateContainerTranslations(containerRef)
+  applyProviderConfigAccessState()
   syncUiToggles()
   isProfileEditing = false
   applyProfileEditState()
@@ -887,6 +941,7 @@ export async function unmount() {
   document.getElementById('account-settings-page-css')?.remove()
 
   currentProfile = null
+  currentAuthInfo = null
   currentUiPrefs = { ...DEFAULT_UI_PREFS }
   isProfileEditing = false
   containerRef = null

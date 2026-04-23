@@ -293,6 +293,11 @@
   color: #5b21b6;
 }
 
+.auth-config-icon {
+  background: #ecfeff;
+  color: #0f766e;
+}
+
 .account-identity-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -364,8 +369,9 @@
 
 .account-detail-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 18px;
+  align-items: stretch;
 }
 
 .account-toggle-list {
@@ -455,6 +461,81 @@
   text-transform: uppercase;
   letter-spacing: 0.04em;
   cursor: pointer;
+}
+
+.account-security-card,
+.account-preferences-card,
+.account-auth-config-card {
+  display: flex;
+  flex-direction: column;
+}
+
+.account-auth-config-card {
+  gap: 16px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.98) 0%, rgba(255, 255, 255, 0.98) 100%);
+}
+
+.account-auth-config-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.account-auth-config-summary h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+  color: #0f172a;
+}
+
+.account-auth-config-copy {
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.account-auth-config-meta {
+  margin-top: auto;
+  padding-top: 14px;
+  border-top: 1px solid rgba(226, 232, 240, 0.92);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.account-auth-config-pill {
+  display: inline-flex;
+  align-self: flex-start;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #ecfeff;
+  color: #0f766e;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.account-auth-config-hint {
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.account-link-action-inline {
+  margin-top: 0;
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.account-link-action-inline::after {
+  content: '>';
+  font-size: 12px;
 }
 
 .account-link-action.disabled {
@@ -591,6 +672,12 @@
 
   .account-profile-pane {
     grid-row: 2;
+  }
+}
+
+@media (max-width: 980px) {
+  .account-detail-grid {
+    grid-template-columns: 1fr;
   }
 }
 
