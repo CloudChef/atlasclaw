@@ -16,7 +16,6 @@ from .handler import ChannelHandler
 from .models import ChannelConnection, ConnectionStatus, InboundMessage, OutboundMessage
 from .registry import ChannelRegistry
 from app.atlasclaw.auth.models import UserInfo
-from app.atlasclaw.core.user_provider_bindings import build_provider_binding_runtime_context
 from app.atlasclaw.db.orm.channel_config import ChannelConfigService
 from app.atlasclaw.session.context import ChatType, SessionKey, SessionScope
 
@@ -80,22 +79,6 @@ class ChannelManager:
         """Set the per-user session manager router used by channel traffic."""
         self._session_manager_router = session_manager_router
 
-    def _build_provider_runtime_extra(
-        self,
-        user_id: str,
-        handler_config: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """Build provider runtime context for channel-originated agent turns."""
-        binding_value = ""
-        if isinstance(handler_config, dict):
-            binding_value = str(handler_config.get("provider_binding", "") or "").strip()
-
-        return build_provider_binding_runtime_context(
-            user_id,
-            binding_value,
-            workspace_path=str(Path(self._workspace_path).resolve()),
-        )
-
     async def initialize_connection(
         self,
         user_id: str,
@@ -139,13 +122,6 @@ class ChannelManager:
 
             # Create instance
             instance_key = f"{user_id}:{channel_type}:{connection_id}"
-
-            try:
-                self._build_provider_runtime_extra(user_id, connection_config.get("config"))
-            except ValueError as exc:
-                logger.error("Channel provider binding is invalid for %s: %s", instance_key, exc)
-                self._set_connection_runtime_status(connection_id, ConnectionStatus.ERROR)
-                return False
 
             handler = ChannelRegistry.create_instance(
                 instance_key,
@@ -278,8 +254,6 @@ class ChannelManager:
                 if self._session_manager_router is not None
                 else None
             )
-            provider_runtime_extra = self._build_provider_runtime_extra(user_id, getattr(handler, "config", {}))
-
             deps = SkillDeps(
                 user_info=user_info,
                 peer_id=self._resolve_peer_id(message),
@@ -293,7 +267,6 @@ class ChannelManager:
                         "external_sender_id": message.sender_id,
                         "external_chat_id": message.chat_id,
                         "external_chat_type": self._resolve_chat_type(message).value,
-                        **provider_runtime_extra,
                     },
                 ),
             )

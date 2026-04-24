@@ -298,24 +298,6 @@ def load_user_setting_document(
     return document
 
 
-def parse_provider_binding(binding_value: Any) -> Optional[tuple[str, str]]:
-    """Parse a `provider_type/instance_name` binding string."""
-    raw_value = str(binding_value or "").strip()
-    if not raw_value:
-        return None
-
-    provider_type, separator, instance_name = raw_value.partition("/")
-    provider_type = provider_type.strip().lower()
-    instance_name = instance_name.strip()
-
-    if not separator or not provider_type or not instance_name:
-        raise ValueError(
-            "Provider binding must use the format '<provider_type>/<instance_name>'"
-        )
-
-    return provider_type, instance_name
-
-
 def get_provider_template_config(
     provider_type: str,
     instance_name: str,
@@ -451,46 +433,6 @@ def build_user_provider_instances(
     }
 
 
-def build_provider_binding_options(
-    user_id: str,
-    workspace_path: Optional[str] = None,
-    runtime_context: Optional[dict[str, Any]] = None,
-) -> list[dict[str, str]]:
-    """Build select options for channel provider bindings."""
-    resolved_instances = build_user_provider_instances(
-        user_id,
-        workspace_path,
-        runtime_context=runtime_context,
-    )
-    options: list[dict[str, str]] = []
-
-    for provider_type, instances in resolved_instances.items():
-        provider_definition = get_provider_schema_definition(provider_type)
-        provider_label = (
-            provider_definition.display_name
-            if provider_definition is not None and provider_definition.display_name
-            else provider_type
-        )
-
-        for instance_name, config in instances.items():
-            value = f"{provider_type}/{instance_name}"
-            base_url = str(config.get("base_url", "") or "").strip()
-            label = f"{provider_label} / {instance_name}"
-            if base_url:
-                label = f"{label} ({base_url})"
-            options.append(
-                {
-                    "value": value,
-                    "label": label,
-                    "provider_type": provider_type,
-                    "instance_name": instance_name,
-                    "base_url": base_url,
-                }
-            )
-
-    return options
-
-
 class ResolvedProviderInstanceRegistry:
     """Registry adapter backed by resolved user-scoped provider instances."""
 
@@ -563,49 +505,3 @@ class ResolvedProviderInstanceRegistry:
             }
             for provider_type, instances in self._provider_instances.items()
         }
-
-
-def build_provider_binding_runtime_context(
-    user_id: str,
-    binding_value: Any = "",
-    workspace_path: Optional[str] = None,
-    runtime_context: Optional[dict[str, Any]] = None,
-    provider_templates: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
-) -> dict[str, Any]:
-    """Build runtime context payload for a user's provider bindings."""
-    normalized_runtime_context = normalize_provider_runtime_context(runtime_context)
-    provider_instances = build_user_provider_instances(
-        user_id,
-        workspace_path,
-        runtime_context=normalized_runtime_context,
-        provider_templates=provider_templates,
-    )
-    registry = ResolvedProviderInstanceRegistry(provider_instances)
-    context: dict[str, Any] = {
-        **normalized_runtime_context,
-        "available_providers": registry.get_available_providers_summary(),
-        "provider_instances": registry.get_all_instance_configs(),
-        "_service_provider_registry": registry,
-    }
-
-    parsed_binding = parse_provider_binding(binding_value)
-    if not parsed_binding:
-        return context
-
-    provider_type, instance_name = parsed_binding
-    resolved_instance = resolve_user_provider_instance(
-        user_id,
-        provider_type,
-        instance_name,
-        workspace_path,
-        runtime_context=normalized_runtime_context,
-        provider_templates=provider_templates,
-    )
-    context.update(
-        {
-            "provider_type": provider_type,
-            "provider_instance_name": instance_name,
-            "provider_instance": resolved_instance,
-        }
-    )
-    return context

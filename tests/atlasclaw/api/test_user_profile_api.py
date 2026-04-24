@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import AsyncGenerator
@@ -143,6 +144,23 @@ def _create_provider_config_sync(
             )
 
     asyncio.run(_create())
+
+
+@contextmanager
+def _patch_runtime_config(
+    workspace_path: Path,
+    service_providers: dict | None = None,
+):
+    """Patch config lookups used by user settings and merged provider catalog."""
+    config = SimpleNamespace(
+        workspace=SimpleNamespace(path=str(workspace_path)),
+        service_providers=service_providers or {},
+    )
+    with patch("app.atlasclaw.api.api_routes.get_config", return_value=config), patch(
+        "app.atlasclaw.core.provider_catalog.get_config",
+        return_value=config,
+    ):
+        yield
 
 
 def _get_auth_config() -> AuthConfig:
@@ -622,19 +640,16 @@ class TestUserProfileAPI:
             encoding="utf-8",
         )
 
-        with patch(
-            "app.atlasclaw.api.api_routes.get_config",
-            return_value=SimpleNamespace(
-                workspace=SimpleNamespace(path=str(workspace_path)),
-                service_providers={
-                    "smartcmp": {
-                        "default": {
-                            "base_url": "https://console.smartcmp.cloud",
-                            "auth_type": "user_token",
-                        }
+        with _patch_runtime_config(
+            workspace_path,
+            service_providers={
+                "smartcmp": {
+                    "default": {
+                        "base_url": "https://console.smartcmp.cloud",
+                        "auth_type": "user_token",
                     }
-                },
-            ),
+                }
+            },
         ):
             resp = client.put(
                 "/api/users/me/provider-settings",
@@ -674,13 +689,7 @@ class TestUserProfileAPI:
             },
         )
 
-        with patch(
-            "app.atlasclaw.api.api_routes.get_config",
-            return_value=SimpleNamespace(
-                workspace=SimpleNamespace(path=str(workspace_path)),
-                service_providers={},
-            ),
-        ):
+        with _patch_runtime_config(workspace_path, service_providers={}):
             resp = client.put(
                 "/api/users/me/provider-settings",
                 json={
@@ -735,19 +744,16 @@ class TestUserProfileAPI:
             encoding="utf-8",
         )
 
-        with patch(
-            "app.atlasclaw.api.api_routes.get_config",
-            return_value=SimpleNamespace(
-                workspace=SimpleNamespace(path=str(workspace_path)),
-                service_providers={
-                    "smartcmp": {
-                        "default": {
-                            "base_url": "https://console.smartcmp.cloud",
-                            "auth_type": "user_token",
-                        }
+        with _patch_runtime_config(
+            workspace_path,
+            service_providers={
+                "smartcmp": {
+                    "default": {
+                        "base_url": "https://console.smartcmp.cloud",
+                        "auth_type": "user_token",
                     }
-                },
-            ),
+                }
+            },
         ):
             resp = client.put(
                 "/api/users/me/provider-settings",
@@ -778,19 +784,16 @@ class TestUserProfileAPI:
         workspace_path = tmp_path / "workspace"
         workspace_path.mkdir(parents=True, exist_ok=True)
 
-        with patch(
-            "app.atlasclaw.api.api_routes.get_config",
-            return_value=SimpleNamespace(
-                workspace=SimpleNamespace(path=str(workspace_path)),
-                service_providers={
-                    "smartcmp": {
-                        "default": {
-                            "base_url": "https://console.smartcmp.cloud",
-                            "auth_type": ["cookie", "user_token"],
-                        }
+        with _patch_runtime_config(
+            workspace_path,
+            service_providers={
+                "smartcmp": {
+                    "default": {
+                        "base_url": "https://console.smartcmp.cloud",
+                        "auth_type": ["cookie", "user_token"],
                     }
-                },
-            ),
+                }
+            },
         ):
             resp = client.put(
                 "/api/users/me/provider-settings",
@@ -825,20 +828,17 @@ class TestUserProfileAPI:
         workspace_path = tmp_path / "workspace"
         workspace_path.mkdir(parents=True, exist_ok=True)
 
-        with patch(
-            "app.atlasclaw.api.api_routes.get_config",
-            return_value=SimpleNamespace(
-                workspace=SimpleNamespace(path=str(workspace_path)),
-                service_providers={
-                    "smartcmp": {
-                        "default": {
-                            "base_url": "https://console.smartcmp.cloud",
-                            "auth_type": ["cookie", "user_token"],
-                            "cookie": "CloudChef-Authenticate=template-cookie",
-                        }
+        with _patch_runtime_config(
+            workspace_path,
+            service_providers={
+                "smartcmp": {
+                    "default": {
+                        "base_url": "https://console.smartcmp.cloud",
+                        "auth_type": ["cookie", "user_token"],
+                        "cookie": "CloudChef-Authenticate=template-cookie",
                     }
-                },
-            ),
+                }
+            },
         ):
             resp = client.put(
                 "/api/users/me/provider-settings",
@@ -871,20 +871,17 @@ class TestUserProfileAPI:
         workspace_path = tmp_path / "workspace"
         workspace_path.mkdir(parents=True, exist_ok=True)
 
-        with patch(
-            "app.atlasclaw.api.api_routes.get_config",
-            return_value=SimpleNamespace(
-                workspace=SimpleNamespace(path=str(workspace_path)),
-                service_providers={
-                    "smartcmp": {
-                        "default": {
-                            "base_url": "https://console.smartcmp.cloud",
-                            "auth_type": ["provider_token", "user_token"],
-                            "provider_token": "template-provider-token",
-                        }
+        with _patch_runtime_config(
+            workspace_path,
+            service_providers={
+                "smartcmp": {
+                    "default": {
+                        "base_url": "https://console.smartcmp.cloud",
+                        "auth_type": ["provider_token", "user_token"],
+                        "provider_token": "template-provider-token",
                     }
-                },
-            ),
+                }
+            },
         ):
             resp = client.put(
                 "/api/users/me/provider-settings",
@@ -918,20 +915,17 @@ class TestUserProfileAPI:
         workspace_path = tmp_path / "workspace"
         workspace_path.mkdir(parents=True, exist_ok=True)
 
-        with patch(
-            "app.atlasclaw.api.api_routes.get_config",
-            return_value=SimpleNamespace(
-                workspace=SimpleNamespace(path=str(workspace_path)),
-                service_providers={
-                    "smartcmp": {
-                        "default": {
-                            "base_url": "https://console.smartcmp.cloud",
-                            "auth_type": ["cookie", "provider_token"],
-                            "provider_token": "template-provider-token",
-                        }
+        with _patch_runtime_config(
+            workspace_path,
+            service_providers={
+                "smartcmp": {
+                    "default": {
+                        "base_url": "https://console.smartcmp.cloud",
+                        "auth_type": ["cookie", "provider_token"],
+                        "provider_token": "template-provider-token",
                     }
-                },
-            ),
+                }
+            },
         ):
             resp = client.put(
                 "/api/users/me/provider-settings",
@@ -962,20 +956,17 @@ class TestUserProfileAPI:
         workspace_path = tmp_path / "workspace"
         workspace_path.mkdir(parents=True, exist_ok=True)
 
-        with patch(
-            "app.atlasclaw.api.api_routes.get_config",
-            return_value=SimpleNamespace(
-                workspace=SimpleNamespace(path=str(workspace_path)),
-                service_providers={
-                    "smartcmp": {
-                        "default": {
-                            "base_url": "https://console.smartcmp.cloud",
-                            "auth_type": ["provider_token", "user_token"],
-                            "provider_token": "template-provider-token",
-                        }
+        with _patch_runtime_config(
+            workspace_path,
+            service_providers={
+                "smartcmp": {
+                    "default": {
+                        "base_url": "https://console.smartcmp.cloud",
+                        "auth_type": ["provider_token", "user_token"],
+                        "provider_token": "template-provider-token",
                     }
-                },
-            ),
+                }
+            },
         ):
             resp = client.put(
                 "/api/users/me/provider-settings",

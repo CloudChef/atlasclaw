@@ -243,6 +243,50 @@ def test_build_scoped_deps_resolves_cookie_auth_from_user_cookie_context(tmp_pat
     assert "provider_token" not in smartcmp_default
 
 
+def test_build_scoped_deps_resolves_cookie_auth_from_request_cookies(tmp_path) -> None:
+    registry = SkillRegistry()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    session_manager = SessionManager(str(workspace))
+    session_queue = SessionQueue()
+    ctx = APIContext(
+        session_manager=session_manager,
+        session_queue=session_queue,
+        skill_registry=registry,
+        provider_instances={
+            "smartcmp": {
+                "default": {
+                    "base_url": "https://cmp.example.com",
+                    "auth_type": ["cookie", "user_token"],
+                    "user_token": "fallback-user-token",
+                }
+            }
+        },
+    )
+
+    user = UserInfo(
+        user_id="u1",
+        display_name="Admin",
+        raw_token="atlas-jwt",
+        roles=["admin"],
+        auth_type="local",
+    )
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        request_cookies={"CloudChef-Authenticate": "browser-cookie-token"},
+    )
+
+    assert deps.extra["provider_cookie_available"] is True
+    assert deps.extra["provider_cookie_token"] == "browser-cookie-token"
+    smartcmp_default = deps.extra["provider_instances"]["smartcmp"]["default"]
+    assert smartcmp_default["auth_type"] == "cookie"
+    assert smartcmp_default["cookie"] == "browser-cookie-token"
+    assert "user_token" not in smartcmp_default
+
+
 def test_register_builtin_tools_exposes_explicit_runtime_metadata() -> None:
     registry = SkillRegistry()
     register_builtin_tools(registry)

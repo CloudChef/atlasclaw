@@ -22,11 +22,6 @@ from app.atlasclaw.auth.guards import (
 )
 from app.atlasclaw.channels.manager import ChannelManager
 from app.atlasclaw.channels.registry import ChannelRegistry
-from app.atlasclaw.core.user_provider_bindings import (
-    build_provider_binding_options,
-    build_provider_binding_runtime_context,
-    parse_provider_binding,
-)
 from app.atlasclaw.db import get_db_session_dependency as get_db_session
 from app.atlasclaw.db.orm.channel_config import ChannelConfigService, _decrypt_config
 from app.atlasclaw.db.schemas import ChannelCreate, ChannelUpdate
@@ -45,121 +40,38 @@ def _normalize_channel_config(
     config: Optional[Dict[str, Any]],
 ) -> Dict[str, Any]:
     """Validate and normalize generic channel config extensions."""
+    del user_id
     normalized_config: Dict[str, Any] = dict(config or {})
-    provider_type = str(normalized_config.get("provider_type", "") or "").strip().lower()
-    provider_binding = str(normalized_config.get("provider_binding", "") or "").strip()
-
     normalized_config.pop("provider_type", None)
-
-    if not provider_binding:
-        normalized_config.pop("provider_binding", None)
-        return normalized_config
-
-    parsed_binding = parse_provider_binding(provider_binding)
-    if parsed_binding is None:
-        normalized_config.pop("provider_binding", None)
-        return normalized_config
-
-    resolved_provider_type, _ = parsed_binding
-    if provider_type and provider_type != resolved_provider_type:
-        provider_binding = f"{resolved_provider_type}/{parsed_binding[1]}"
-
-    build_provider_binding_runtime_context(user_id, provider_binding)
-    normalized_config["provider_binding"] = provider_binding
+    normalized_config.pop("provider_binding", None)
+    normalized_config.pop("provider_bindings", None)
     return normalized_config
 
 
 def _expand_channel_config_for_response(config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Expose helper provider fields for channel edit forms."""
+    """Return channel config without legacy provider-binding helper fields."""
     expanded_config: Dict[str, Any] = dict(config or {})
-    provider_binding = str(expanded_config.get("provider_binding", "") or "").strip()
-    if not provider_binding:
-        expanded_config.pop("provider_type", None)
-        return expanded_config
-
-    parsed_binding = parse_provider_binding(provider_binding)
-    if parsed_binding is None:
-        expanded_config.pop("provider_type", None)
-        return expanded_config
-
-    provider_type, _ = parsed_binding
-    expanded_config["provider_type"] = provider_type
+    expanded_config.pop("provider_type", None)
+    expanded_config.pop("provider_binding", None)
+    expanded_config.pop("provider_bindings", None)
     return expanded_config
 
 
-def _augment_channel_schema(
-    schema: Optional[Dict[str, Any]],
-    *,
-    user_id: str,
-) -> Dict[str, Any]:
-    """Inject generic provider-binding fields into channel schemas."""
+def _normalize_channel_schema(schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return channel schema without legacy provider-binding helper fields."""
     base_schema = dict(schema or {})
     properties = dict(base_schema.get("properties") or {})
-    provider_options = build_provider_binding_options(user_id)
-
-    if provider_options:
-        provider_type_options: list[str] = []
-        provider_type_labels: Dict[str, str] = {}
-        options_by_provider: Dict[str, List[Dict[str, str]]] = {}
-
-        for item in provider_options:
-            option_provider_type = str(item["provider_type"] or "").strip().lower()
-            option_instance_name = str(item["instance_name"] or "").strip()
-            option_value = str(item["value"] or "").strip()
-            if not option_provider_type or not option_instance_name or not option_value:
-                continue
-
-            if option_provider_type not in provider_type_labels:
-                provider_type_options.append(option_provider_type)
-                provider_label = str(item["label"] or option_provider_type).split("/", 1)[0].strip()
-                provider_type_labels[option_provider_type] = provider_label or option_provider_type
-
-            options_by_provider.setdefault(option_provider_type, []).append(
-                {
-                    "value": option_value,
-                    "label": option_instance_name,
-                }
-            )
-
-        provider_field: Dict[str, Any] = {
-            "type": "string",
-            "title": "Authentication Method",
-            "description": (
-                "Choose which authentication configuration this channel should use."
-            ),
-            "enum": provider_type_options,
-            "enumLabels": provider_type_labels,
-        }
-
-        binding_field: Dict[str, Any] = {
-            "type": "string",
-            "title": "Authentication Instance",
-            "description": (
-                "Choose one configured authentication instance under the selected authentication method."
-            ),
-            "enum": [item["value"] for item in provider_options],
-            "enumLabels": {
-                item["value"]: item["instance_name"]
-                for item in provider_options
-            },
-            "optionsByProvider": options_by_provider,
-        }
-
-        ordered_properties: Dict[str, Any] = {}
-        if "connection_mode" in properties:
-            ordered_properties["connection_mode"] = properties["connection_mode"]
-
-        ordered_properties["provider_type"] = provider_field
-        ordered_properties["provider_binding"] = binding_field
-
-        for field_name, field_schema in properties.items():
-            if field_name == "connection_mode":
-                continue
-            ordered_properties[field_name] = field_schema
-
-        properties = ordered_properties
-
+    properties.pop("provider_type", None)
+    properties.pop("provider_binding", None)
+    properties.pop("provider_bindings", None)
     base_schema["properties"] = properties
+    required = base_schema.get("required")
+    if isinstance(required, list):
+        base_schema["required"] = [
+            item
+            for item in required
+            if item not in {"provider_type", "provider_binding", "provider_bindings"}
+        ]
     return base_schema
 
 
@@ -293,10 +205,7 @@ async def get_channel_schema(
     # Create temporary instance to get schema
     try:
         handler = handler_class({})
-        return _augment_channel_schema(
-            handler.describe_schema(),
-            user_id=authz.user.user_id,
-        )
+        return _normalize_channel_schema(handler.describe_schema())
     except Exception as e:
         logger.error(f"Failed to get schema for {channel_type}: {e}")
         return {

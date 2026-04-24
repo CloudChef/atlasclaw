@@ -18,11 +18,7 @@ from app.atlasclaw.api.service_provider_schemas import (
     normalize_provider_auth_type_chain,
     serialize_provider_auth_type,
 )
-from app.atlasclaw.bootstrap.startup_helpers import (
-    build_provider_instances_from_db,
-    merge_provider_instances,
-)
-from app.atlasclaw.db.database import get_db_manager
+from app.atlasclaw.core.provider_catalog import get_provider_catalog_instances
 
 router = APIRouter(tags=["Provider API"])
 logger = logging.getLogger(__name__)
@@ -200,34 +196,6 @@ def _collect_provider_field_defaults(
     return defaults
 
 
-def _get_config_provider_instances() -> dict[str, dict[str, dict[str, Any]]]:
-    from app.atlasclaw.core.config import get_config
-
-    return {
-        provider_type: {
-            instance_name: dict(instance_config)
-            for instance_name, instance_config in instances.items()
-            if isinstance(instance_config, dict)
-        }
-        for provider_type, instances in (get_config().service_providers or {}).items()
-        if isinstance(instances, dict)
-    }
-
-
-async def _get_merged_provider_instances() -> dict[str, dict[str, dict[str, Any]]]:
-    config_provider_instances = _get_config_provider_instances()
-    manager = get_db_manager()
-    if not manager.is_initialized:
-        return config_provider_instances
-
-    async with manager.get_session() as session:
-        db_provider_instances = await build_provider_instances_from_db(session)
-
-    if not db_provider_instances:
-        return config_provider_instances
-    return merge_provider_instances(db_provider_instances, config_provider_instances)
-
-
 def _get_schema_default(provider_type: str, field_name: str) -> Any:
     """Return a provider schema default when the configured instance leaves a field blank."""
     definition = get_provider_schema_definition(provider_type)
@@ -273,7 +241,7 @@ async def get_available_instances() -> dict[str, Any]:
     identity, instance names, base URL, configured auth type when present, and
     non-sensitive config keys only.
     """
-    service_providers = await _get_merged_provider_instances()
+    service_providers = await get_provider_catalog_instances()
 
     providers: list[dict[str, Any]] = []
 
@@ -313,7 +281,7 @@ async def get_available_instances() -> dict[str, Any]:
 @router.get("/service-providers/definitions")
 async def get_service_provider_definitions() -> dict[str, Any]:
     """Return backend-managed provider definitions and form schemas."""
-    service_providers = await _get_merged_provider_instances()
+    service_providers = await get_provider_catalog_instances()
     providers = get_provider_schema_catalog(
         field_defaults=_collect_provider_field_defaults(service_providers)
     )

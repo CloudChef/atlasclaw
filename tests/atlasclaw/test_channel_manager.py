@@ -5,9 +5,7 @@
 
 from __future__ import annotations
 
-import json
 import tempfile
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -17,7 +15,6 @@ from app.atlasclaw.channels import ChannelConnection, ChannelRegistry
 from app.atlasclaw.channels.handlers import WebSocketHandler
 from app.atlasclaw.channels.models import ConnectionStatus, InboundMessage, SendResult
 from app.atlasclaw.channels.manager import ChannelManager
-from app.atlasclaw.core.config import get_config_manager
 
 
 class TestChannelManager:
@@ -333,63 +330,9 @@ class TestChannelManager:
         assert first_key == "agent:main:user:owner-1:dingtalk:conn-1:group:group-42"
 
     @pytest.mark.asyncio
-    async def test_process_message_async_injects_selected_provider_binding(
-        self,
-        tmp_path,
-        monkeypatch,
-    ):
-        """Channel turns should receive the bound user provider config in deps.extra."""
-        workspace_path = tmp_path / "workspace"
-        user_dir = workspace_path / "users" / "user-123"
-        user_dir.mkdir(parents=True, exist_ok=True)
-        (user_dir / "user_setting.json").write_text(
-            json.dumps(
-                {
-                    "channels": {},
-                    "providers": {
-                        "smartcmp": {
-                            "default": {
-                                "configured": True,
-                                "config": {
-                                    "auth_type": "user_token",
-                                    "user_token": "secret-token",
-                                },
-                                "updated_at": "2026-04-13T10:00:00Z",
-                            }
-                        }
-                    },
-                    "preferences": {},
-                },
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-
-        config_path = tmp_path / "atlasclaw.test.json"
-        config_path.write_text(
-            json.dumps(
-                {
-                    "workspace": {"path": str(workspace_path)},
-                    "service_providers": {
-                        "smartcmp": {
-                            "default": {
-                                "base_url": "https://console.smartcmp.cloud",
-                                "auth_type": "user_token",
-                            }
-                        }
-                    },
-                },
-                indent=2,
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-
-        monkeypatch.setenv("ATLASCLAW_CONFIG", str(config_path))
-        get_config_manager().reload()
-
-        manager = ChannelManager(str(workspace_path))
+    async def test_process_message_async_ignores_legacy_provider_binding(self):
+        """Channel turns should not receive provider binding runtime data."""
+        manager = ChannelManager(self.temp_dir)
         handler = WebSocketHandler({"provider_binding": "smartcmp/default"})
         handler.send_message = AsyncMock(return_value=SendResult(success=True))
         manager._active_connections["user-123:websocket:conn-123"] = handler
@@ -416,14 +359,8 @@ class TestChannelManager:
         await manager._process_message_async("user-123", "websocket", "conn-123", message)
 
         deps = captured["deps"]
-        assert deps.extra["provider_type"] == "smartcmp"
-        assert deps.extra["provider_instance_name"] == "default"
-        assert deps.extra["provider_instance"]["provider_type"] == "smartcmp"
-        assert deps.extra["provider_instance"]["instance_name"] == "default"
-        assert deps.extra["provider_instance"]["base_url"] == "https://console.smartcmp.cloud"
-        assert deps.extra["provider_instance"]["user_token"] == "secret-token"
-        assert deps.extra["available_providers"] == {"smartcmp": ["default"]}
-        assert deps.extra["provider_instances"]["smartcmp"]["default"]["user_token"] == "secret-token"
-
-        monkeypatch.delenv("ATLASCLAW_CONFIG", raising=False)
-        get_config_manager().reload()
+        assert "provider_type" not in deps.extra
+        assert "provider_instance_name" not in deps.extra
+        assert "provider_instance" not in deps.extra
+        assert "available_providers" not in deps.extra
+        assert "provider_instances" not in deps.extra

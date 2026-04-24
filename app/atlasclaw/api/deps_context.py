@@ -33,6 +33,23 @@ from ..heartbeat.runtime import HeartbeatRuntime
 from .sse import SSEManager
 from .webhook_dispatch import WebhookDispatchManager
 
+_ATLASCLAW_AUTH_COOKIE_NAMES = frozenset({"atlasclaw-authenticate"})
+
+
+def _extract_provider_cookie_token(request_cookies: Optional[dict[str, str]]) -> str:
+    """Return an external browser auth cookie without exposing AtlasClaw's session."""
+    if not isinstance(request_cookies, dict):
+        return ""
+
+    for cookie_name, cookie_value in request_cookies.items():
+        normalized_name = str(cookie_name or "").strip().lower()
+        token = str(cookie_value or "").strip()
+        if not token or normalized_name in _ATLASCLAW_AUTH_COOKIE_NAMES:
+            continue
+        if "authenticate" in normalized_name:
+            return token
+    return ""
+
 
 @dataclass
 class APIContext:
@@ -214,7 +231,11 @@ def build_scoped_deps(
     )
     # Bridge request-scoped provider cookies into the provider resolver for
     # this request only; user settings continue to store only user-owned values.
-    request_cookie_token = ""
+    request_cookie_token = str(
+        runtime_context_source.get("provider_cookie_token", "") or ""
+    ).strip()
+    if not request_cookie_token:
+        request_cookie_token = _extract_provider_cookie_token(request_cookies)
     if not request_cookie_token and str(getattr(user_info, "auth_type", "") or "").strip() == "cookie":
         request_cookie_token = str(getattr(user_info, "raw_token", "") or "").strip()
     if request_cookie_token:
@@ -250,7 +271,7 @@ def build_scoped_deps(
         if isinstance(provider_config, dict) and provider_config
         else (ctx.provider_instances or {})
     )
-    merged_provider_instances = build_resolved_provider_instances(
+    resolved_provider_instances = build_resolved_provider_instances(
         base_provider_instances,
         runtime_context=runtime_context,
     )
@@ -261,11 +282,11 @@ def build_scoped_deps(
         provider_templates=base_provider_instances,
     )
     for provider_type, instances in user_provider_instances.items():
-        provider_bucket = merged_provider_instances.setdefault(provider_type, {})
+        provider_bucket = resolved_provider_instances.setdefault(provider_type, {})
         for instance_name, instance_config in instances.items():
             provider_bucket[instance_name] = dict(instance_config)
 
-    provider_registry = ResolvedProviderInstanceRegistry(merged_provider_instances)
+    provider_registry = ResolvedProviderInstanceRegistry(resolved_provider_instances)
     available_providers = provider_registry.get_available_providers_summary()
 
     # Apply user skill permission filtering if provided via request context.
@@ -334,8 +355,8 @@ def build_scoped_deps(
         **runtime_context,
         "_service_provider_registry": provider_registry,
         "available_providers": available_providers,
-        "provider_instances": merged_provider_instances,
-        "provider_config": merged_provider_instances,
+        "provider_instances": resolved_provider_instances,
+        "provider_config": resolved_provider_instances,
         "tools_snapshot": tools_snapshot,
         "tools_snapshot_authoritative": _rbac_active,
         "tool_groups_snapshot": tool_groups_snapshot,

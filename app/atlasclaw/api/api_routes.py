@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.atlasclaw.core.config import get_config
+from app.atlasclaw.core.provider_catalog import get_provider_catalog_instances
 from app.atlasclaw.db import get_db_session_dependency as get_db_session
 from app.atlasclaw.db.schemas import (
     AgentCreate,
@@ -74,10 +75,6 @@ from app.atlasclaw.api.service_provider_schemas import (
     normalize_provider_config,
     normalize_provider_auth_type_chain,
     serialize_provider_auth_type,
-)
-from app.atlasclaw.bootstrap.startup_helpers import (
-    build_provider_instances_from_db,
-    merge_provider_instances,
 )
 from .deps_context import get_api_context
 from .services.auth_service import load_profile_snapshot
@@ -335,42 +332,20 @@ def _default_user_setting_document() -> dict[str, object]:
     }
 
 
-def _get_config_provider_instances() -> dict[str, dict[str, dict[str, Any]]]:
-    return {
-        provider_type: {
-            instance_name: dict(instance_config)
-            for instance_name, instance_config in instances.items()
-            if isinstance(instance_config, dict)
-        }
-        for provider_type, instances in (get_config().service_providers or {}).items()
-        if isinstance(instances, dict)
-    }
-
-
-async def _get_merged_provider_instances(
-    session: AsyncSession,
-) -> dict[str, dict[str, dict[str, Any]]]:
-    config_provider_instances = _get_config_provider_instances()
-    db_provider_instances = await build_provider_instances_from_db(session)
-    if not db_provider_instances:
-        return config_provider_instances
-    return merge_provider_instances(db_provider_instances, config_provider_instances)
-
-
 async def _refresh_provider_instances_in_api_context(session: AsyncSession) -> None:
     """Refresh in-memory provider instances after config CRUD operations."""
     ctx = get_api_context()
-    merged_provider_instances = await _get_merged_provider_instances(session)
+    provider_instances = await get_provider_catalog_instances(session)
 
     if ctx.service_provider_registry is not None:
-        ctx.service_provider_registry.load_instances_from_config(merged_provider_instances)
+        ctx.service_provider_registry.load_instances_from_config(provider_instances)
         ctx.provider_instances = ctx.service_provider_registry.get_all_instance_configs()
         ctx.available_providers = ctx.service_provider_registry.get_available_providers_summary()
     else:
-        ctx.provider_instances = merged_provider_instances
+        ctx.provider_instances = provider_instances
         ctx.available_providers = {
             provider_type: sorted(instances.keys())
-            for provider_type, instances in merged_provider_instances.items()
+            for provider_type, instances in provider_instances.items()
             if isinstance(instances, dict)
         }
 
@@ -419,11 +394,10 @@ def _save_user_setting_document(workspace_path: str, user_id: str, document: dic
 def _get_provider_template_config(
     provider_type: str,
     instance_name: str,
-    provider_instances: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
+    provider_instances: dict[str, dict[str, dict[str, Any]]],
 ) -> Optional[dict[str, object]]:
     """Resolve a configured system provider template instance."""
-    service_providers = provider_instances or _get_config_provider_instances()
-    provider_bucket = service_providers.get(provider_type)
+    provider_bucket = provider_instances.get(provider_type)
     if not isinstance(provider_bucket, dict):
         return None
     template_config = provider_bucket.get(instance_name)
@@ -435,9 +409,10 @@ def _normalize_user_provider_config(
     instance_name: str,
     config: dict[str, object],
     existing_config: Optional[dict[str, object]] = None,
-    provider_instances: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
+    provider_instances: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> dict[str, object]:
     """Validate user-owned provider config against a system template instance."""
+    provider_instances = provider_instances or {}
     template_config = _get_provider_template_config(
         provider_type,
         instance_name,
@@ -1321,7 +1296,7 @@ async def update_my_provider_settings(
         else {}
     )
 
-    provider_instances = await _get_merged_provider_instances(session)
+    provider_instances = await get_provider_catalog_instances(session)
     normalized_config = _normalize_user_provider_config(
         provider_data.provider_type,
         provider_data.instance_name,
