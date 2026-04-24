@@ -80,7 +80,7 @@ describe('header.js', () => {
     expect(container.querySelector('a[href="/channels"]')).toBeNull()
   })
 
-  test('renderHeader shows provider management link when provider permissions are granted', async () => {
+  test('renderHeader hides provider management link even when provider permissions are granted', async () => {
     const { renderHeader } = await import('../../app/frontend/scripts/components/header.js')
 
     const container = document.getElementById('header')
@@ -94,7 +94,7 @@ describe('header.js', () => {
       }
     })
 
-    expect(container.querySelector('a[href="/providers"]')).not.toBeNull()
+    expect(container.querySelector('a[href="/providers"]')).toBeNull()
     expect(container.querySelector('a[href="/models"]')).toBeNull()
   })
 

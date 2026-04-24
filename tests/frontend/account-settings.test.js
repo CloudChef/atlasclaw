@@ -2,8 +2,16 @@
  *  Copyright 2021  Qianyun, Inc. All rights reserved.
  */
 
+const checkAuthMock = jest.fn(() => Promise.resolve({
+  username: 'atlas-admin',
+  is_admin: true,
+  permissions: {
+    provider_configs: { view: true }
+  }
+}))
+
 jest.mock('../../app/frontend/scripts/auth.js', () => ({
-  checkAuth: jest.fn(() => Promise.resolve({ username: 'atlas-admin', is_admin: true })),
+  checkAuth: checkAuthMock,
   installAuthFetchInterceptor: jest.fn(),
   logout: jest.fn()
 }))
@@ -249,5 +257,52 @@ describe('account settings page', () => {
 
     expect(document.getElementById('accountSummaryRole').textContent).toBe('No explicit roles')
     expect(document.getElementById('accountRoleValue').textContent).toBe('No explicit roles')
+  })
+
+  test('provider management entry in account settings navigates to the authentication config page', async () => {
+    checkAuthMock.mockResolvedValue({
+      username: 'ops-admin',
+      is_admin: false,
+      permissions: {
+        provider_configs: { view: true }
+      }
+    })
+
+    const navigate = jest.fn()
+    window.__spaRouter = { navigate }
+
+    const page = await import('../../app/frontend/scripts/pages/account-settings.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+
+    const button = document.getElementById('accountOpenAuthConfigBtn')
+    expect(button).not.toBeNull()
+
+    button.click()
+
+    expect(navigate).toHaveBeenCalledWith('/providers')
+  })
+
+  test('provider management entry renders as a lightweight summary card', async () => {
+    checkAuthMock.mockResolvedValue({
+      username: 'ops-admin',
+      is_admin: false,
+      permissions: {
+        provider_configs: { view: true }
+      }
+    })
+
+    const page = await import('../../app/frontend/scripts/pages/account-settings.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+
+    const card = document.getElementById('accountAuthConfigCard')
+    expect(card).not.toBeNull()
+    expect(card.querySelector('.settings-card-header')).toBeNull()
+    expect(card.querySelector('.account-auth-config-summary')).not.toBeNull()
+    expect(card.querySelector('.account-auth-config-meta')).not.toBeNull()
+    expect(card.querySelector('#accountOpenAuthConfigBtn')).not.toBeNull()
   })
 })

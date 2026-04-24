@@ -15,7 +15,6 @@ import { logout } from '../auth.js'
 import {
   canAccessChannelManagement,
   canAccessModelManagement,
-  canAccessProviderManagement,
   canAccessRoleManagement,
   canAccessUserManagement
 } from '../permissions.js'
@@ -69,9 +68,8 @@ export function renderHeader(container, { authInfo, embeddedMode = isEmbeddedMod
   const canAccessUsers = canAccessUserManagement(currentHeaderAuthInfo)
   const canAccessRoles = canAccessRoleManagement(currentHeaderAuthInfo)
   const canAccessModels = canAccessModelManagement(currentHeaderAuthInfo)
-  const canAccessProviders = canAccessProviderManagement(currentHeaderAuthInfo)
   const canAccessChannels = canAccessChannelManagement(currentHeaderAuthInfo)
-  const hasAdminNavigation = canAccessUsers || canAccessRoles || canAccessModels || canAccessProviders || canAccessChannels
+  const hasAdminNavigation = canAccessUsers || canAccessRoles || canAccessModels || canAccessChannels
   const roleText = isAdmin
     ? translateOrFallback('user.roleAdmin', 'Administrator')
     : translateOrFallback('user.roleUser', 'User')
@@ -109,9 +107,6 @@ export function renderHeader(container, { authInfo, embeddedMode = isEmbeddedMod
           </a>` : ''}
           ${canAccessModels ? `<a href="${buildAppUrl('/models')}" class="dropdown-item" data-admin-only data-nav-link>
             ${ICONS.models} ${translateOrFallback('nav.models', 'Model Management')}
-          </a>` : ''}
-          ${canAccessProviders ? `<a href="${buildAppUrl('/providers')}" class="dropdown-item" data-admin-only data-nav-link>
-            ${ICONS.providers} ${translateOrFallback('nav.providers', 'Provider Configuration')}
           </a>` : ''}
           ${canAccessChannels ? `<a href="${buildAppUrl('/channels')}" class="dropdown-item" data-admin-only data-nav-link>
             ${ICONS.channels} ${translateOrFallback('nav.channels', 'Channel Management')}

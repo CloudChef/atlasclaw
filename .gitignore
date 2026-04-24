@@ -2,6 +2,7 @@ node_modules/
 dist/
 openspec/
 .qoder/
+.worktrees/
 .idea/
 .sisyphus/
 *.pyc
