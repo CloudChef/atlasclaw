@@ -197,6 +197,98 @@ async def _collect_runtime_user_ids(
         if user_id and user_id not in {"default", "anonymous"}
     )
 
+async def _ensure_admin_default_skill_permissions(skill_registry) -> None:
+    """Seed admin role skill_permissions from the *complete* skill catalog.
+
+    The catalog includes both built-in executable tools (tools_snapshot) and
+    markdown skills (md_snapshot).  Admin should default to all-enabled so
+    that a freshly initialized system does not lose any built-in capability.
+
+    Only runs when the admin role has no stored skill_permissions yet.
+    """
+    try:
+        from app.atlasclaw.db.database import get_db_manager
+        from sqlalchemy import select
+        from app.atlasclaw.db.orm.role import RoleModel
+
+        async with get_db_manager().get_session() as session:
+            result = await session.execute(
+                select(RoleModel).where(
+                    RoleModel.identifier == "admin",
+                    RoleModel.is_builtin == True,
+                )
+            )
+            admin_role = result.scalar_one_or_none()
+            if admin_role is None:
+                return
+
+            perms = admin_role.permissions or {}
+            skill_perms = (perms.get("skills") or {}).get("skill_permissions", [])
+            if isinstance(skill_perms, list) and skill_perms:
+                # Already has stored skill permissions – do not overwrite.
+                return
+
+            # ---- Build from the FULL catalog ----
+            seen_ids: set[str] = set()
+            default_skill_permissions: list[dict] = []
+
+            # 1. Built-in executable tools (from tools_snapshot)
+            tools_snap = skill_registry.tools_snapshot()
+            for tool in tools_snap:
+                tool_name = str(tool.get("name", "") or "").strip()
+                if not tool_name or tool_name in seen_ids:
+                    continue
+                seen_ids.add(tool_name)
+                default_skill_permissions.append({
+                    "skill_id": tool_name,
+                    "skill_name": tool_name,
+                    "description": tool.get("description", ""),
+                    "runtime_enabled": True,
+                    "authorized": True,
+                    "enabled": True,
+                })
+
+            # 2. Markdown skills (from md_snapshot)
+            md_skills = skill_registry.md_snapshot()
+            for md in md_skills:
+                md_name = str(md.get("name", "") or "").strip()
+                md_qname = str(md.get("qualified_name", "") or "").strip()
+                # Use qualified_name as skill_id to match runtime filter logic
+                skill_id = md_qname or md_name
+                if not skill_id or skill_id in seen_ids:
+                    continue
+                seen_ids.add(skill_id)
+                md_meta = md.get("metadata") or {}
+                skill_type = str(md_meta.get("type", "") or "").strip().lower()
+                is_executable = skill_type == "executable"
+                default_skill_permissions.append({
+                    "skill_id": skill_id,
+                    "skill_name": md_name,
+                    "description": md.get("description", ""),
+                    "runtime_enabled": True,
+                    "authorized": True,
+                    "enabled": True,
+                })
+
+            if not default_skill_permissions:
+                return
+
+            new_perms = dict(perms)
+            new_perms["skills"] = {
+                **(perms.get("skills") or {}),
+                "skill_permissions": default_skill_permissions,
+            }
+            admin_role.permissions = new_perms
+            await session.commit()
+            print(
+                f"[AtlasClaw] Bootstrapped admin default skill permissions "
+                f"({len(default_skill_permissions)} entries: "
+                f"{len(tools_snap)} executable + {len(md_skills)} markdown)"
+            )
+    except Exception as e:
+        print(f"[AtlasClaw] Warning: Failed to bootstrap admin skill permissions: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
 
@@ -388,24 +480,42 @@ async def lifespan(app: FastAPI):
     )
     print(f"[AtlasClaw] Registered {len(registered_tools)} built-in tools")
     
-    # Load skills from multiple sources (priority: workspace > global > built-in)
-
-    # 1. External provider skills (from providers_root config)
+    # Load markdown skills from multiple sources.
+    # 1. Provider skills: load from ALL provider directories (not just
+    #    configured ones) so that hot-adding a provider instance at runtime
+    #    does not require a restart to pick up its skills.
+    loaded_provider_skill_count = 0
     if providers_root.exists():
         for provider_path in providers_root.iterdir():
             if provider_path.is_dir() and not provider_path.name.startswith(("_", ".")):
                 provider_skills = provider_path / "skills"
                 if provider_skills.exists():
                     provider_namespace = derive_provider_namespace(provider_path.name)
-                    _skill_registry.load_from_directory(
+                    loaded_provider_skill_count += _skill_registry.load_from_directory(
                         str(provider_skills),
                         location="provider",
-                        provider=provider_namespace
+                        provider=provider_namespace,
                     )
+    print(
+        f"[AtlasClaw] Loaded {loaded_provider_skill_count} provider markdown skills"
+    )
 
-    # 2. Standalone skills (from skills_root config)
+    loaded_standalone_skill_count = 0
     if skills_root.exists():
-        _skill_registry.load_from_directory(str(skills_root), location="skills-root")
+        loaded_standalone_skill_count = _skill_registry.load_from_directory(
+            str(skills_root),
+            location="skills-root",
+        )
+    print(
+        f"[AtlasClaw] Loaded {loaded_standalone_skill_count} standalone markdown skills"
+    )
+
+    # Bootstrap admin role default skill permissions if not yet stored.
+    # This replaces a problematic frontend auto-PUT that was triggered on
+    # every role-management page load.  The backend is the right place to
+    # seed permissions because it has access to the loaded skill catalog.
+    if db_initialized:
+        await _ensure_admin_default_skill_permissions(_skill_registry)
 
     from pydantic_ai import Agent
     from app.atlasclaw.core.deps import SkillDeps

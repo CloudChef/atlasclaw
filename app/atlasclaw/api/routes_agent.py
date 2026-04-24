@@ -10,6 +10,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
 
 from ..auth.models import ANONYMOUS_USER, UserInfo
+from ..auth.guards import get_authorization_context, AuthorizationContext
 from ..session.context import SessionKey
 from .deps_context import APIContext, get_api_context
 from .schemas import AgentRunRequest, AgentRunResponse, AgentStatusResponse
@@ -56,6 +57,65 @@ def register_agent_routes(router: APIRouter) -> None:
         safe_message = normalize_user_message(request.message)
         init_run(ctx, run_id, request.session_key, safe_message, request.timeout_seconds)
 
+        # Resolve user skill permissions for agent context filtering.
+        # This is fail-closed: if permission resolution fails, the run is
+        # rejected rather than falling through without permissions.
+        #
+        # Sentinel semantics:
+        #   user_skill_permissions = None  -> no RBAC (anonymous / no-DB mode)
+        #   user_skill_permissions = []    -> RBAC resolved, no grants (deny-all)
+        #   user_skill_permissions = [...]  -> RBAC resolved, per-skill grants
+        user_skill_permissions: list[dict] | None = None
+        try:
+            from app.atlasclaw.db.database import get_db_manager
+            db_mgr = get_db_manager()
+            if db_mgr is None or db_mgr._session_factory is None:
+                # No database configured (anonymous / file-only mode) -- skip RBAC.
+                print("[SkillFilter] No DB available, skipping permission resolution")
+            else:
+                db_session = db_mgr._session_factory()
+                try:
+                    from ..auth.guards import resolve_authorization_context
+                    authz = await resolve_authorization_context(db_session, user_info)
+                    user_skill_permissions = (
+                        authz.permissions.get("skills", {}).get("skill_permissions", [])
+                    )
+                    disabled_skills = [
+                        s.get("skill_id") for s in user_skill_permissions
+                        if not s.get("enabled")
+                    ]
+                    print(
+                        f"[SkillFilter] user={user_info.user_id} total_perms={len(user_skill_permissions)} disabled={disabled_skills}"
+                    )
+                    await db_session.commit()
+                except Exception as exc:
+                    await db_session.rollback()
+                    print(f"[SkillFilter] Permission resolution failed (fail-closed): {exc}")
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail="Failed to resolve skill permissions for this run.",
+                    ) from exc
+                finally:
+                    await db_session.close()
+        except HTTPException:
+            raise
+        except Exception as exc:
+            print(f"[SkillFilter] DB access failed (fail-closed): {exc}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to resolve skill permissions for this run.",
+            ) from exc
+
+        request_context = request.context or {}
+        # Always pass RBAC result to runtime when DB is available (including
+        # empty list which means deny-all).  Only skip when RBAC is not
+        # enabled at all (None sentinel).
+        if user_skill_permissions is not None:
+            request_context = {
+                **(request_context or {}),
+                "_user_skill_permissions": user_skill_permissions,
+            }
+
         background_tasks.add_task(
             execute_agent_run,
             ctx,
@@ -66,7 +126,7 @@ def register_agent_routes(router: APIRouter) -> None:
             user_info,
             request_cookies,
             provider_config,
-            request.context,
+            request_context,
         )
 
         return AgentRunResponse(

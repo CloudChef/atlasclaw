@@ -124,7 +124,7 @@ Pydantic models defining all configuration sections.
 | `HumanDelayConfig` | `mode=OFF`, `min_ms=800`, `max_ms=2500` |
 | `SandboxConfig` | `enabled=False`, `mode=OFF`, `workspace_root=""`, `elevated_exec=False` |
 | `SecurityPolicyConfig` | `allowed_tools=[]`, `denied_tools=[]`, `workspace_access="rw"` |
-| `SkillsConfig` | `md_skills_max_count=20`, `md_skills_desc_max_chars=200`, `md_skills_index_max_chars=3000`, `md_skills_max_file_bytes=262144`, `tools_exclusive=[]`, `allow_script_execution=True` |
+| `SkillsConfig` | `enabled_skills=[]`, `md_skills_max_count=20`, `md_skills_desc_max_chars=200`, `md_skills_index_max_chars=3000`, `md_skills_max_file_bytes=262144`, `tools_exclusive=[]`, `allow_script_execution=True` |
 | `WebhookConfig` | `enabled=False`, `header_name="X-AtlasClaw-SK"`, `systems=[]` |
 | `WebhookSystemConfig` | `system_id`, `enabled=True`, `sk_env`, `default_agent_id="main"`, `allowed_skills=[]` |
 | `ModelConfig` | `primary="doubao-pro-32k"`, `fallbacks=[]`, `temperature=0.7`, `max_tokens=None`, `providers={}` |

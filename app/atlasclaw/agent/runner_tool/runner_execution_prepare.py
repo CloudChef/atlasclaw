@@ -1227,6 +1227,33 @@ class RunnerExecutionPreparePhaseMixin:
             )
             _log_step("session_draft_title_done")
             all_available_tools = collect_tools_snapshot(agent=runtime_agent, deps=deps)
+            # Apply skill permission filtering: remove handler tools whose skill
+            # is disabled in the user's role.  Two filtering strategies:
+            # 1. _disabled_tool_names: exact tool name match (from md_skill metadata)
+            # 2. _disabled_skill_ids: match by skill_name/qualified_skill_name field
+            _extra = deps.extra or {}
+            _disabled_tools = _extra.get("_disabled_tool_names")
+            _disabled_sids = _extra.get("_disabled_skill_ids")
+            if (isinstance(_disabled_tools, set) and _disabled_tools) or (
+                isinstance(_disabled_sids, set) and _disabled_sids
+            ):
+                _dt = _disabled_tools if isinstance(_disabled_tools, set) else set()
+                _ds = _disabled_sids if isinstance(_disabled_sids, set) else set()
+                def _tool_allowed(t: dict) -> bool:
+                    tname = str(t.get("name", "") or "").strip()
+                    if tname and tname in _dt:
+                        return False
+                    if _ds:
+                        sname = str(t.get("skill_name", "") or "").strip().lower()
+                        qsname = str(t.get("qualified_skill_name", "") or "").strip().lower()
+                        bare_sname = sname.split(":")[-1] if sname else ""
+                        bare_qsname = qsname.split(":")[-1] if qsname else ""
+                        if (sname and (sname in _ds or bare_sname in _ds)) or (
+                            qsname and (qsname in _ds or bare_qsname in _ds)
+                        ):
+                            return False
+                    return True
+                all_available_tools = [t for t in all_available_tools if _tool_allowed(t)]
             _log_step("tools_snapshot_collected", all_tools_count=len(all_available_tools))
             tool_groups_snapshot = collect_tool_groups_snapshot(deps)
             _log_step("tool_groups_snapshot_collected", group_count=len(tool_groups_snapshot))

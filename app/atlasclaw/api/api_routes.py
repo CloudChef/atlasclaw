@@ -968,10 +968,15 @@ async def update_role(
 
     if "permissions" in role_data.model_fields_set:
         if old_role.is_builtin and is_system_managed_builtin_role(old_role.identifier):
-            raise HTTPException(
-                status_code=400,
-                detail="Built-in admin permissions are managed by the system and cannot be modified",
-            )
+            # System-managed admin role: allow skills permission changes.
+            # Strip non-skills changes so only the skills module is persisted.
+            old_perms = RoleService.normalize_permissions(old_role.permissions)
+            new_perms = RoleService.normalize_permissions(role_data.permissions)
+            # Preserve existing non-skills modules unchanged
+            for module_id in list(new_perms.keys()):
+                if module_id != "skills":
+                    new_perms[module_id] = old_perms.get(module_id, new_perms[module_id])
+            role_data.permissions = new_perms
         ensure_can_manage_permission_modules(
             authz,
             role_data.permissions,

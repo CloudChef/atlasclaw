@@ -322,7 +322,7 @@ The `lifespan()` async context manager executes this ordered sequence:
 10. **Load TokenPool** -Creates `TokenPool` from merged JSON + DB token configs (DB takes precedence on same token_id)
 11. **Load ServiceProviderRegistry** -Reads provider templates from disk, merges JSON + DB instance configs (DB takes precedence on same provider_type.instance_name)
 10. **Register built-in tools** -`register_builtin_tools()` with the configured `ToolProfile`
-11. **Load skills** -From 4 sources in priority order: workspace ->workspace providers ->global ->built-in
+11. **Load skills** -Register built-in executable tools, then load provider markdown skills only for providers with configured instances and standalone markdown skills only when explicitly listed in `skills.enabled_skills`
 12. **Create AgentInstancePool** -Creates pool for agent instance caching with concurrency control
 13. **Create PydanticAI Agent** -Instantiates the agent with resolved model configuration
 14. **Register skills to agent** -`SkillRegistry.register_to_agent()`

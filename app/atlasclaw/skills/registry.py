@@ -44,6 +44,18 @@ _MAX_NAME_LENGTH = 64
 _MAX_DESCRIPTION_LENGTH = 1024
 _DEFAULT_MAX_FILE_BYTES = 262144  # 256 KB
 
+
+def _normalize_skill_filter_values(values: Optional[set[str] | list[str] | tuple[str, ...]]) -> Optional[set[str]]:
+    """Normalize configured skill identifiers for selective MD-skill loading."""
+    if values is None:
+        return None
+    return {
+        str(value or "").strip().lower()
+        for value in values
+        if str(value or "").strip()
+    }
+
+
 def validate_skill_name(
     name: str,
     *,
@@ -640,6 +652,7 @@ from count JSON Schema
         *,
         provider: Optional[str] = None,
         max_file_bytes: int = _DEFAULT_MAX_FILE_BYTES,
+        allowed_skill_names: Optional[set[str] | list[str] | tuple[str, ...]] = None,
     ) -> int:
         """Load skills from SKILL.md metadata in the target directory.
 
@@ -655,6 +668,7 @@ from count JSON Schema
             location,
             provider=provider,
             max_file_bytes=max_file_bytes,
+            allowed_skill_names=_normalize_skill_filter_values(allowed_skill_names),
         )
     # ------------------------------------------------------------------
     # MD Skills
@@ -667,6 +681,7 @@ from count JSON Schema
         *,
         provider: Optional[str],
         max_file_bytes: int = _DEFAULT_MAX_FILE_BYTES,
+        allowed_skill_names: Optional[set[str]] = None,
     ) -> int:
         """
 
@@ -695,6 +710,7 @@ MD Skills.
                 is_directory_skill=True,
                 provider=provider,
                 max_file_bytes=max_file_bytes,
+                allowed_skill_names=allowed_skill_names,
             ):
                 count += 1
 
@@ -708,6 +724,7 @@ MD Skills.
                 is_directory_skill=False,
                 provider=provider,
                 max_file_bytes=max_file_bytes,
+                allowed_skill_names=allowed_skill_names,
             ):
                 count += 1
 
@@ -721,6 +738,7 @@ MD Skills.
         is_directory_skill: bool,
         provider: Optional[str],
         max_file_bytes: int,
+        allowed_skill_names: Optional[set[str]],
     ) -> bool:
         """
 
@@ -793,6 +811,15 @@ single MD Skill.
 
         provider_name = str(metadata.get("provider_type", "")).strip() or (provider or "").strip()
         qualified_name = f"{provider_name}:{name}" if provider_name else name
+        if not self._matches_allowed_skill_names(
+            allowed_skill_names,
+            name=name,
+            qualified_name=qualified_name,
+            file_path=file_path,
+            is_directory_skill=is_directory_skill,
+            metadata=metadata,
+        ):
+            return False
 
         # :location >=
         if qualified_name in self._md_skills:
@@ -826,6 +853,32 @@ single MD Skill.
             skill_metadata_cls=SkillMetadata,
             logger=logger,
         )
+
+    @staticmethod
+    def _matches_allowed_skill_names(
+        allowed_skill_names: Optional[set[str]],
+        *,
+        name: str,
+        qualified_name: str,
+        file_path: Path,
+        is_directory_skill: bool,
+        metadata: dict[str, Any],
+    ) -> bool:
+        """Return whether an MD skill should be loaded under the current filter."""
+        if allowed_skill_names is None:
+            return True
+
+        candidates = {
+            str(name or "").strip().lower(),
+            str(qualified_name or "").strip().lower(),
+            str(file_path.stem or "").strip().lower(),
+            str(metadata.get("slug", "") or "").strip().lower(),
+        }
+        if is_directory_skill:
+            candidates.add(str(file_path.parent.name or "").strip().lower())
+
+        candidates.discard("")
+        return any(candidate in allowed_skill_names for candidate in candidates)
 
     @staticmethod
     def _should_override(existing_location: str, new_location: str) -> bool:

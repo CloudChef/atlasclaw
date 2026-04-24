@@ -254,11 +254,15 @@ class RoleService:
             )
             if current:
                 normalized_current_permissions = RoleService.normalize_permissions(current.permissions)
-                target_permissions = (
-                    normalized_definition_permissions
-                    if is_system_managed_builtin_role(identifier)
-                    else normalized_current_permissions
-                )
+                if is_system_managed_builtin_role(identifier):
+                    # Reset non-skills modules to canonical defaults,
+                    # but preserve user-managed skills permissions from DB.
+                    target_permissions = dict(normalized_definition_permissions)
+                    current_skills = normalized_current_permissions.get("skills")
+                    if isinstance(current_skills, dict) and current_skills.get("skill_permissions"):
+                        target_permissions["skills"] = current_skills
+                else:
+                    target_permissions = normalized_current_permissions
                 if current.is_builtin and (
                     current.name != definition["name"]
                     or current.description != definition["description"]

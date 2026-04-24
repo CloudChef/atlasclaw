@@ -5,16 +5,21 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.atlasclaw.bootstrap.startup_helpers import derive_provider_namespace
 from app.atlasclaw.auth.guards import (
     AuthorizationContext,
     ensure_any_permission,
     ensure_skill_access,
     get_authorization_context,
 )
+from app.atlasclaw.core.config import get_config, get_config_path
+from app.atlasclaw.skills.frontmatter import parse_frontmatter
+from app.atlasclaw.skills.registry import validate_skill_name
 from .deps_context import APIContext, get_api_context
 from .schemas import (
     MemorySearchRequest,
@@ -22,6 +27,134 @@ from .schemas import (
     SkillExecuteRequest,
     SkillExecuteResponse,
 )
+
+
+def _resolve_config_relative_path(config_value: str) -> Path:
+    config_path = get_config_path()
+    config_root = config_path.parent if config_path is not None else Path.cwd()
+    return (config_root / config_value).resolve()
+
+
+def _iter_skill_markdown_files(base_path: Path) -> list[tuple[Path, bool]]:
+    if not base_path.exists():
+        return []
+
+    files: list[tuple[Path, bool]] = []
+    files.extend((skill_file, True) for skill_file in sorted(base_path.glob("*/SKILL.md")))
+    files.extend(
+        (md_file, False)
+        for md_file in sorted(base_path.glob("*.md"))
+        if not md_file.name.startswith("_")
+    )
+    return files
+
+
+def _discover_md_skill_catalog(
+    base_path: Path,
+    *,
+    location: str,
+    provider: str = "",
+    max_file_bytes: int = 262144,
+) -> list[dict[str, Any]]:
+    """Read markdown skill metadata for UI catalog display without registering skills."""
+    discovered: list[dict[str, Any]] = []
+    for file_path, is_directory_skill in _iter_skill_markdown_files(base_path):
+        try:
+            if file_path.stat().st_size > max_file_bytes:
+                continue
+            raw = file_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        fm = parse_frontmatter(raw)
+        if is_directory_skill:
+            name = str(fm.metadata.get("name", file_path.parent.name) or "").strip()
+            parent_dir_name = file_path.parent.name
+        else:
+            name = str(fm.metadata.get("name", file_path.stem) or "").strip()
+            parent_dir_name = None
+        if validate_skill_name(name, parent_dir_name=parent_dir_name):
+            continue
+
+        description = str(fm.metadata.get("description", "") or "").strip()
+        if not description:
+            continue
+
+        metadata = {
+            key: value
+            for key, value in fm.metadata.items()
+            if key not in ("name", "description")
+        }
+        provider_name = str(metadata.get("provider_type", "") or provider or "").strip()
+        qualified_name = f"{provider_name}:{name}" if provider_name else name
+        discovered.append(
+            {
+                "name": name,
+                "description": description,
+                "provider": provider_name,
+                "qualified_name": qualified_name,
+                "file_path": str(file_path.resolve()),
+                "location": location,
+                "metadata": metadata,
+            }
+        )
+
+    return discovered
+
+
+def _build_md_skill_catalog(ctx: APIContext) -> list[dict[str, Any]]:
+    """Build full markdown skill catalog while keeping runtime-loaded state explicit."""
+    config = get_config()
+    providers_root = _resolve_config_relative_path(config.providers_root)
+    skills_root = _resolve_config_relative_path(config.skills_root)
+    max_file_bytes = int(getattr(config.skills, "md_skills_max_file_bytes", 262144) or 262144)
+
+    catalog_by_qualified_name: dict[str, dict[str, Any]] = {}
+    for entry in ctx.skill_registry.md_snapshot():
+        key = str(entry.get("qualified_name") or entry.get("name") or "").strip()
+        if not key:
+            continue
+        catalog_by_qualified_name[key] = {
+            **entry,
+            "runtime_enabled": True,
+        }
+
+    if providers_root.exists():
+        for provider_path in sorted(providers_root.iterdir(), key=lambda item: item.name.lower()):
+            if not provider_path.is_dir() or provider_path.name.startswith(("_", ".")):
+                continue
+            provider_skills = provider_path / "skills"
+            if not provider_skills.exists():
+                continue
+            provider_namespace = derive_provider_namespace(provider_path.name)
+            for entry in _discover_md_skill_catalog(
+                provider_skills,
+                location="provider",
+                provider=provider_namespace,
+                max_file_bytes=max_file_bytes,
+            ):
+                key = entry["qualified_name"]
+                if key in catalog_by_qualified_name:
+                    continue
+                catalog_by_qualified_name[key] = {
+                    **entry,
+                    "runtime_enabled": False,
+                }
+
+    for entry in _discover_md_skill_catalog(
+        skills_root,
+        location="skills-root",
+        max_file_bytes=max_file_bytes,
+    ):
+        key = entry["qualified_name"]
+        if key in catalog_by_qualified_name:
+            continue
+        catalog_by_qualified_name[key] = {
+            **entry,
+            "runtime_enabled": False,
+        }
+
+    return list(catalog_by_qualified_name.values())
 
 
 def register_skills_memory_routes(router: APIRouter) -> None:
@@ -42,7 +175,7 @@ def register_skills_memory_routes(router: APIRouter) -> None:
             if include_metadata
             else ctx.skill_registry.snapshot_builtins()
         )
-        md_skills = ctx.skill_registry.md_snapshot()
+        md_skills = _build_md_skill_catalog(ctx)
 
         all_skills = []
         for s in executable_skills:
@@ -52,6 +185,7 @@ def register_skills_memory_routes(router: APIRouter) -> None:
                     "description": s["description"],
                     "category": s.get("category", "utility"),
                     "type": "executable",
+                    "runtime_enabled": True,
                     **(
                         {
                             "provider_type": s.get("provider_type", ""),
@@ -70,14 +204,22 @@ def register_skills_memory_routes(router: APIRouter) -> None:
             metadata = s.get("metadata", {})
             if not isinstance(metadata, dict):
                 metadata = {}
+            skill_provider_type = (
+                s.get("provider", "") or metadata.get("provider_type", "") or ""
+            ).strip()
             all_skills.append(
                 {
                     "name": s["name"],
                     "description": s["description"],
                     "category": metadata.get("category", "skill"),
                     "type": "markdown",
+                    "runtime_enabled": s.get("runtime_enabled", True) is True,
+                    **({
+                        "provider_type": skill_provider_type,
+                    } if skill_provider_type else {}),
                     **(
                         {
+                            "qualified_name": s.get("qualified_name", s["name"]),
                             "provider_type": (
                                 metadata.get("provider_type")
                                 or s.get("provider", "")

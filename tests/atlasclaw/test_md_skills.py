@@ -253,6 +253,27 @@ class TestSkillRegistryMdLoading:
         assert len(snap) == 1
         assert snap[0]["name"] == "my-skill"
 
+    @pytest.mark.parametrize("allowed_names", [{"github"}, {"github-1.0.0"}])
+    def test_directory_skill_discovery_can_filter_by_enabled_names(self, tmp_path, allowed_names):
+        """Only explicitly enabled standalone skills should be loaded."""
+        _write_skill_md(
+            tmp_path / "github-1.0.0" / "SKILL.md",
+            ["name: github", "description: GitHub helper"],
+        )
+        _write_skill_md(
+            tmp_path / "pptx" / "SKILL.md",
+            ["name: pptx", "description: PPTX helper"],
+        )
+        reg = SkillRegistry()
+        reg.load_from_directory(
+            str(tmp_path),
+            location="skills-root",
+            allowed_skill_names=allowed_names,
+        )
+
+        snap = reg.md_snapshot()
+        assert [entry["name"] for entry in snap] == ["github"]
+
     def test_underscore_prefix_excluded(self, tmp_path):
         """_ 前缀的扁平 MD 文件被排除"""
         _write_skill_md(
