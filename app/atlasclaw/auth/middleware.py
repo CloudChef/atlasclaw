@@ -142,8 +142,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
                 logger.warning("CMP DEBUG: shadow user_id=%s", shadow.user_id)
                 self._strategy.ensure_user_workspace(shadow.user_id)
+                provider_cookie_context = {
+                    "provider_cookie_available": True,
+                    "provider_cookie_token": auth_result.raw_token,
+                }
                 request.state.user_info = shadow.to_user_info(
-                    raw_token=auth_result.raw_token
+                    raw_token=auth_result.raw_token,
+                    extra={**auth_result.extra, **provider_cookie_context},
                 )
                 logger.warning("CMP DEBUG: user_info set, proceeding")
                 return await call_next(request)

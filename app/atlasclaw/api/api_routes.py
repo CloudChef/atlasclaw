@@ -20,7 +20,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -127,18 +127,15 @@ NON_ADMIN_ASSIGNABLE_PERMISSION_PATHS = frozenset({
     "users.view",
     "roles.view",
 })
-SENSITIVE_PROVIDER_CONFIG_KEYS = frozenset(
-    {
+SENSITIVE_PROVIDER_CONFIG_KEY_FRAGMENTS = frozenset(
+    (
         "cookie",
-        "provider_token",
+        "token",
         "password",
         "secret",
-        "app_secret",
-        "api_key",
-        "access_token",
-        "token",
+        "apikey",
         "credential",
-    }
+    )
 )
 
 
@@ -338,10 +335,8 @@ def _default_user_setting_document() -> dict[str, object]:
     }
 
 
-async def _refresh_provider_instances_in_api_context(session: AsyncSession) -> None:
-    """Refresh in-memory provider instances after config CRUD operations."""
-    ctx = get_api_context()
-    config_provider_instances: dict[str, dict[str, dict[str, object]]] = {
+def _get_config_provider_instances() -> dict[str, dict[str, dict[str, Any]]]:
+    return {
         provider_type: {
             instance_name: dict(instance_config)
             for instance_name, instance_config in instances.items()
@@ -350,11 +345,22 @@ async def _refresh_provider_instances_in_api_context(session: AsyncSession) -> N
         for provider_type, instances in (get_config().service_providers or {}).items()
         if isinstance(instances, dict)
     }
+
+
+async def _get_merged_provider_instances(
+    session: AsyncSession,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    config_provider_instances = _get_config_provider_instances()
     db_provider_instances = await build_provider_instances_from_db(session)
-    merged_provider_instances = merge_provider_instances(
-        db_provider_instances,
-        config_provider_instances,
-    ) if db_provider_instances else config_provider_instances
+    if not db_provider_instances:
+        return config_provider_instances
+    return merge_provider_instances(db_provider_instances, config_provider_instances)
+
+
+async def _refresh_provider_instances_in_api_context(session: AsyncSession) -> None:
+    """Refresh in-memory provider instances after config CRUD operations."""
+    ctx = get_api_context()
+    merged_provider_instances = await _get_merged_provider_instances(session)
 
     if ctx.service_provider_registry is not None:
         ctx.service_provider_registry.load_instances_from_config(merged_provider_instances)
@@ -413,13 +419,14 @@ def _save_user_setting_document(workspace_path: str, user_id: str, document: dic
 def _get_provider_template_config(
     provider_type: str,
     instance_name: str,
+    provider_instances: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
 ) -> Optional[dict[str, object]]:
-    """Resolve a configured system provider template instance from atlasclaw.json."""
-    service_providers = get_config().service_providers or {}
-    provider_instances = service_providers.get(provider_type)
-    if not isinstance(provider_instances, dict):
+    """Resolve a configured system provider template instance."""
+    service_providers = provider_instances or _get_config_provider_instances()
+    provider_bucket = service_providers.get(provider_type)
+    if not isinstance(provider_bucket, dict):
         return None
-    template_config = provider_instances.get(instance_name)
+    template_config = provider_bucket.get(instance_name)
     return dict(template_config) if isinstance(template_config, dict) else None
 
 
@@ -428,9 +435,14 @@ def _normalize_user_provider_config(
     instance_name: str,
     config: dict[str, object],
     existing_config: Optional[dict[str, object]] = None,
+    provider_instances: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
 ) -> dict[str, object]:
     """Validate user-owned provider config against a system template instance."""
-    template_config = _get_provider_template_config(provider_type, instance_name)
+    template_config = _get_provider_template_config(
+        provider_type,
+        instance_name,
+        provider_instances=provider_instances,
+    )
     if template_config is None:
         raise HTTPException(
             status_code=404,
@@ -538,7 +550,13 @@ def _is_sensitive_provider_config_field(provider_type: str, field_name: str) -> 
     normalized_field_name = str(field_name or "").strip().lower()
     if not normalized_field_name:
         return False
-    if normalized_field_name in SENSITIVE_PROVIDER_CONFIG_KEYS:
+    compact_field_name = "".join(
+        char for char in normalized_field_name if char.isalnum()
+    )
+    if any(
+        fragment in normalized_field_name or fragment in compact_field_name
+        for fragment in SENSITIVE_PROVIDER_CONFIG_KEY_FRAGMENTS
+    ):
         return True
 
     definition = get_provider_schema_definition(provider_type)
@@ -1281,6 +1299,7 @@ async def get_my_provider_settings(
 async def update_my_provider_settings(
     provider_data: UserProviderSettingUpdate,
     current_user: UserInfo = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
 ) -> UserProviderSettingsResponse:
     """Create or update the authenticated user's provider credentials."""
     workspace_path = str(Path(get_config().workspace.path).resolve())
@@ -1302,11 +1321,13 @@ async def update_my_provider_settings(
         else {}
     )
 
+    provider_instances = await _get_merged_provider_instances(session)
     normalized_config = _normalize_user_provider_config(
         provider_data.provider_type,
         provider_data.instance_name,
         provider_data.config,
         existing_config=existing_config if isinstance(existing_config, dict) else None,
+        provider_instances=provider_instances,
     )
 
     provider_bucket[provider_data.instance_name] = {

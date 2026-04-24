@@ -286,6 +286,17 @@ def create_script_wrapper(
                 env["ATLASCLAW_PROVIDER_SSO_TOKEN"] = provider_sso_token
                 print("[DEBUG] Set env var: ATLASCLAW_PROVIDER_SSO_TOKEN=***...")
 
+            provider_cookie_token = str(extra.get("provider_cookie_token", "") or "").strip()
+            provider_cookie_available = bool(extra.get("provider_cookie_available")) and bool(
+                provider_cookie_token
+            )
+            env["ATLASCLAW_PROVIDER_COOKIE_AVAILABLE"] = (
+                "1" if provider_cookie_available else "0"
+            )
+            if provider_cookie_available:
+                env["ATLASCLAW_PROVIDER_COOKIE_TOKEN"] = provider_cookie_token
+                print("[DEBUG] Set env var: ATLASCLAW_PROVIDER_COOKIE_TOKEN=***...")
+
             provider_instance = extra.get("provider_instance")
             if provider_instance:
                 print(

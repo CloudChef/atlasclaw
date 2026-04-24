@@ -87,7 +87,7 @@ class CMPAuthProvider(AuthProvider):
             tenant_id=tenant_id,
             raw_token=cmp_token,
             extra={
-                "auth_type": "cmp",
+                "auth_type": "cookie",
                 "user_id": user_id,
             },
         )

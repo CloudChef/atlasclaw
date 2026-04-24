@@ -88,6 +88,7 @@ def test_resolve_provider_instance_config_uses_request_scoped_cookie() -> None:
     )
 
     assert resolved["auth_type"] == "cookie"
+    assert resolved["cookie"] == "request-cookie-token"
     assert "provider_token" not in resolved
 
 

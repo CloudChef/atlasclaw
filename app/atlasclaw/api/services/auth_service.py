@@ -507,7 +507,7 @@ async def get_current_user_payload(request: Request) -> dict[str, Any]:
                 "user_id": user_info.user_id,
                 "display_name": user_info.display_name,
                 "provider": "cmp",
-                "auth_type": "cmp",
+                "auth_type": user_info.auth_type or "cookie",
                 "tenant_id": user_info.tenant_id,
             }
         raise HTTPException(

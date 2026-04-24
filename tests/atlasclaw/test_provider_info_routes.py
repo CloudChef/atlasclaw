@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 import pytest
@@ -12,6 +13,9 @@ from fastapi.testclient import TestClient
 
 import app.atlasclaw.core.config as config_module
 from app.atlasclaw.api.provider_info_routes import router as provider_info_router
+from app.atlasclaw.db.database import DatabaseConfig, init_database
+from app.atlasclaw.db.orm.service_provider_config import ServiceProviderConfigService
+from app.atlasclaw.db.schemas import ServiceProviderConfigCreate
 
 
 @pytest.fixture(autouse=True)
@@ -235,6 +239,76 @@ def test_available_instances_expose_ordered_auth_chain_when_template_uses_multi_
     assert response.status_code == 200
     payload = response.json()
     assert payload["providers"][0]["auth_type"] == ["cookie", "user_token"]
+
+
+def test_available_instances_include_db_managed_provider_configs(tmp_path, monkeypatch):
+    config_path = tmp_path / "atlasclaw.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ATLASCLAW_CONFIG", str(config_path))
+    config_path.write_text(
+        """
+{
+  "workspace": { "path": ".atlasclaw" },
+  "service_providers": {}
+}
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    async def _init_db():
+        manager = await init_database(
+            DatabaseConfig(db_type="sqlite", sqlite_path=str(tmp_path / "providers.db"))
+        )
+        await manager.create_tables()
+        async with manager.get_session() as session:
+            await ServiceProviderConfigService.create(
+                session,
+                ServiceProviderConfigCreate(
+                    provider_type="smartcmp",
+                    instance_name="db-managed",
+                    config={
+                        "base_url": "https://db.smartcmp.cloud",
+                        "auth_type": ["provider_token", "user_token"],
+                        "provider_token": "shared-provider-token",
+                    },
+                    is_active=True,
+                ),
+            )
+        return manager
+
+    manager = asyncio.run(_init_db())
+
+    try:
+        app = FastAPI()
+        app.include_router(provider_info_router, prefix="/api")
+        client = TestClient(app)
+
+        instances_response = client.get("/api/service-providers/available-instances")
+        definitions_response = client.get("/api/service-providers/definitions")
+
+        assert instances_response.status_code == 200
+        instances_payload = instances_response.json()
+        assert instances_payload["providers"] == [
+            {
+                "provider_type": "smartcmp",
+                "instance_name": "db-managed",
+                "base_url": "https://db.smartcmp.cloud",
+                "auth_type": ["provider_token", "user_token"],
+                "config_keys": [],
+            }
+        ]
+
+        assert definitions_response.status_code == 200
+        smartcmp_fields = {
+            field["name"]: field
+            for provider in definitions_response.json()["providers"]
+            if provider["provider_type"] == "smartcmp"
+            for field in provider["schema"]["fields"]
+        }
+        assert smartcmp_fields["base_url"]["default"] == "https://db.smartcmp.cloud"
+        assert smartcmp_fields["auth_type"]["default"] == ["provider_token", "user_token"]
+    finally:
+        asyncio.run(manager.close())
 
 
 def test_available_instances_skips_unknown_auth_type_and_logs_error(

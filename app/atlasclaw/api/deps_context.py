@@ -212,12 +212,10 @@ def build_scoped_deps(
         if isinstance(getattr(user_info, "extra", {}), dict)
         else {}
     )
-    # Bridge reverse-proxy/CMP cookies into the provider resolver for this
-    # request only; user settings continue to store only user-owned values.
+    # Bridge request-scoped provider cookies into the provider resolver for
+    # this request only; user settings continue to store only user-owned values.
     request_cookie_token = ""
-    if isinstance(request_cookies, dict):
-        request_cookie_token = str(request_cookies.get("CloudChef-Authenticate", "") or "").strip()
-    if not request_cookie_token and str(getattr(user_info, "auth_type", "") or "").strip() == "cmp":
+    if not request_cookie_token and str(getattr(user_info, "auth_type", "") or "").strip() == "cookie":
         request_cookie_token = str(getattr(user_info, "raw_token", "") or "").strip()
     if request_cookie_token:
         runtime_context_source["provider_cookie_available"] = True
@@ -260,6 +258,7 @@ def build_scoped_deps(
         user_info.user_id,
         workspace_path=str(scoped_session_mgr.workspace_path),
         runtime_context=runtime_context,
+        provider_templates=base_provider_instances,
     )
     for provider_type, instances in user_provider_instances.items():
         provider_bucket = merged_provider_instances.setdefault(provider_type, {})

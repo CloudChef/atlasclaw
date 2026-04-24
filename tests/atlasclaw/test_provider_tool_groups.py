@@ -134,7 +134,7 @@ def test_build_scoped_deps_merges_user_provider_instances_over_template_config(t
 
     monkeypatch.setattr(
         "app.atlasclaw.api.deps_context.build_user_provider_instances",
-        lambda user_id, workspace_path=None, runtime_context=None: {
+        lambda user_id, workspace_path=None, runtime_context=None, provider_templates=None: {
             "github": {
                 "default": {
                     "provider_type": "github",
@@ -200,7 +200,7 @@ def test_build_scoped_deps_exposes_provider_sso_context_and_resolves_template_in
     assert "user_token" not in generic_default
 
 
-def test_build_scoped_deps_resolves_cookie_auth_from_request_cookie(tmp_path) -> None:
+def test_build_scoped_deps_resolves_cookie_auth_from_user_cookie_context(tmp_path) -> None:
     registry = SkillRegistry()
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)
@@ -221,19 +221,25 @@ def test_build_scoped_deps_resolves_cookie_auth_from_request_cookie(tmp_path) ->
         },
     )
 
-    user = UserInfo(user_id="u1", display_name="Admin", raw_token="atlas-jwt", roles=["admin"])
+    user = UserInfo(
+        user_id="u1",
+        display_name="Admin",
+        raw_token="request-cookie-token",
+        roles=["admin"],
+        auth_type="cookie",
+    )
 
     deps = build_scoped_deps(
         ctx,
         user,
         "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
-        request_cookies={"CloudChef-Authenticate": "request-cookie-token"},
     )
 
     assert deps.extra["provider_cookie_available"] is True
     assert deps.extra["provider_cookie_token"] == "request-cookie-token"
     smartcmp_default = deps.extra["provider_instances"]["smartcmp"]["default"]
     assert smartcmp_default["auth_type"] == "cookie"
+    assert smartcmp_default["cookie"] == "request-cookie-token"
     assert "provider_token" not in smartcmp_default
 
 

@@ -30,8 +30,9 @@ from app.atlasclaw.auth.config import AuthConfig
 from app.atlasclaw.auth.middleware import setup_auth_middleware
 from app.atlasclaw.db import get_db_session
 from app.atlasclaw.db.database import DatabaseConfig, DatabaseManager, init_database
+from app.atlasclaw.db.orm.service_provider_config import ServiceProviderConfigService
 from app.atlasclaw.db.orm.user import UserService
-from app.atlasclaw.db.schemas import UserCreate
+from app.atlasclaw.db.schemas import ServiceProviderConfigCreate, UserCreate
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillRegistry
@@ -118,6 +119,30 @@ def _init_database_sync(tmp_path: Path):
 def _cleanup_manager(manager):
     """Clean up database manager."""
     asyncio.run(manager.close())
+
+
+def _create_provider_config_sync(
+    manager: DatabaseManager,
+    *,
+    provider_type: str,
+    instance_name: str,
+    config: dict,
+) -> None:
+    """Create a DB-backed provider config for tests."""
+
+    async def _create() -> None:
+        async with manager.get_session() as session:
+            await ServiceProviderConfigService.create(
+                session,
+                ServiceProviderConfigCreate(
+                    provider_type=provider_type,
+                    instance_name=instance_name,
+                    config=config,
+                    is_active=True,
+                ),
+            )
+
+    asyncio.run(_create())
 
 
 def _get_auth_config() -> AuthConfig:
@@ -516,6 +541,61 @@ class TestUserProfileAPI:
 
         _cleanup_manager(manager)
 
+    def test_get_my_provider_settings_redacts_unknown_provider_sensitive_values(self, tmp_path):
+        """Sensitive config keys are redacted even when a provider has no built-in schema."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "testuser", "testpass123")
+        workspace_path = tmp_path / "workspace"
+        user_dir = workspace_path / "users" / "testuser"
+        user_dir.mkdir(parents=True, exist_ok=True)
+        (user_dir / "user_setting.json").write_text(
+            json.dumps(
+                {
+                    "channels": {},
+                    "providers": {
+                        "external": {
+                            "default": {
+                                "configured": True,
+                                "config": {
+                                    "auth_type": "user_token",
+                                    "user_token": "secret-user-token",
+                                    "provider_token": "secret-provider-token",
+                                    "accessToken": "secret-access-token",
+                                    "api-key": "secret-api-key",
+                                    "password": "secret-password",
+                                    "clientSecret": "secret-client-secret",
+                                    "session_cookie": "secret-cookie",
+                                    "region": "cn-north-1",
+                                },
+                                "updated_at": "2026-04-13T10:00:00Z",
+                            }
+                        }
+                    },
+                    "preferences": {},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch(
+            "app.atlasclaw.api.api_routes.get_config",
+            return_value=SimpleNamespace(workspace=SimpleNamespace(path=str(workspace_path))),
+        ):
+            resp = client.get(
+                "/api/users/me/provider-settings",
+                headers={"AtlasClaw-Authenticate": token},
+            )
+
+        assert resp.status_code == 200
+        config = resp.json()["providers"]["external"]["default"]["config"]
+        assert config == {
+            "auth_type": "user_token",
+            "region": "cn-north-1",
+        }
+
+        _cleanup_manager(manager)
+
     def test_put_my_provider_settings_persists_user_token_without_mutating_template_url(self, tmp_path):
         """Authenticated users can save personal provider credentials without storing base_url."""
         manager = _init_database_sync(tmp_path)
@@ -573,6 +653,55 @@ class TestUserProfileAPI:
         saved = json.loads((workspace_path / "users" / "testuser" / "user_setting.json").read_text(encoding="utf-8"))
         assert saved["providers"]["smartcmp"]["default"]["config"]["user_token"] == "secret-token"
         assert "base_url" not in saved["providers"]["smartcmp"]["default"]["config"]
+
+        _cleanup_manager(manager)
+
+    def test_put_my_provider_settings_uses_db_managed_provider_template(self, tmp_path):
+        """User-owned provider settings use the merged DB/config provider catalog."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "testuser", "testpass123")
+        workspace_path = tmp_path / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+        _create_provider_config_sync(
+            manager,
+            provider_type="smartcmp",
+            instance_name="db-managed",
+            config={
+                "base_url": "https://db.smartcmp.cloud",
+                "auth_type": ["provider_token", "user_token"],
+                "provider_token": "shared-provider-token",
+            },
+        )
+
+        with patch(
+            "app.atlasclaw.api.api_routes.get_config",
+            return_value=SimpleNamespace(
+                workspace=SimpleNamespace(path=str(workspace_path)),
+                service_providers={},
+            ),
+        ):
+            resp = client.put(
+                "/api/users/me/provider-settings",
+                json={
+                    "provider_type": "smartcmp",
+                    "instance_name": "db-managed",
+                    "config": {
+                        "user_token": "secret-token",
+                    },
+                },
+                headers={"AtlasClaw-Authenticate": token},
+            )
+
+        assert resp.status_code == 200
+        saved = json.loads(
+            (workspace_path / "users" / "testuser" / "user_setting.json").read_text(encoding="utf-8")
+        )
+        persisted = saved["providers"]["smartcmp"]["db-managed"]["config"]
+        assert persisted["auth_type"] == ["provider_token", "user_token"]
+        assert persisted["user_token"] == "secret-token"
+        assert "provider_token" not in persisted
+        assert "base_url" not in persisted
 
         _cleanup_manager(manager)
 

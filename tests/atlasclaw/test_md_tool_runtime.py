@@ -335,6 +335,58 @@ def test_script_wrapper_exposes_provider_sso_runtime_context_to_script_environme
     }
 
 
+def test_script_wrapper_exposes_provider_cookie_runtime_context_to_script_environment(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "echo_cookie.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "print(json.dumps({",
+                "  'available': os.environ.get('ATLASCLAW_PROVIDER_COOKIE_AVAILABLE', ''),",
+                "  'token': os.environ.get('ATLASCLAW_PROVIDER_COOKIE_TOKEN', ''),",
+                "  'cookie': os.environ.get('COOKIE', ''),",
+                "}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Deps:
+        cookies = {}
+        extra = {
+            "provider_cookie_available": True,
+            "provider_cookie_token": "request-cookie-token",
+            "provider_instance": {
+                "provider_type": "generic",
+                "instance_name": "default",
+                "base_url": "https://provider.example.com/platform-api",
+                "auth_type": "cookie",
+                "cookie": "request-cookie-token",
+            },
+        }
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(
+        script,
+        provider_type="generic",
+        tool_name="generic_list_catalogs",
+    )
+
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is True
+    payload = json.loads(result["output"].strip())
+    assert payload == {
+        "available": "1",
+        "token": "request-cookie-token",
+        "cookie": "request-cookie-token",
+    }
+
+
 def test_script_wrapper_blocks_submit_request_without_explicit_confirmation(
     tmp_path: Path,
 ) -> None:

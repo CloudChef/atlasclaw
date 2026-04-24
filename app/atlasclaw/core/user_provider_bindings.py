@@ -132,6 +132,22 @@ def _strip_non_selected_auth_fields(
     return runtime_config
 
 
+def _get_provider_template_from_instances(
+    provider_instances: Optional[dict[str, dict[str, dict[str, Any]]]],
+    provider_type: str,
+    instance_name: str,
+) -> Optional[dict[str, Any]]:
+    if not isinstance(provider_instances, dict):
+        return None
+
+    provider_bucket = provider_instances.get(provider_type)
+    if not isinstance(provider_bucket, dict):
+        return None
+
+    template_config = provider_bucket.get(instance_name)
+    return dict(template_config) if isinstance(template_config, dict) else None
+
+
 def resolve_provider_instance_config(
     provider_type: str,
     instance_name: str,
@@ -180,6 +196,13 @@ def resolve_provider_instance_config(
         )
 
     runtime_config = _strip_non_selected_auth_fields(normalized_config, selected_auth_type)
+    if selected_auth_type == "cookie":
+        runtime_cookie_token = normalized_runtime_context.get("provider_cookie_token")
+        if not _is_blank(runtime_cookie_token):
+            # Cookie auth can be selected purely from the current request. Put
+            # that token into the runtime config so provider scripts receive
+            # the same credential that made the mode usable.
+            runtime_config["cookie"] = runtime_cookie_token
     return {
         "provider_type": provider_type,
         "instance_name": instance_name,
@@ -296,14 +319,23 @@ def parse_provider_binding(binding_value: Any) -> Optional[tuple[str, str]]:
 def get_provider_template_config(
     provider_type: str,
     instance_name: str,
+    provider_instances: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
 ) -> Optional[dict[str, Any]]:
     """Return the configured system provider template for a binding."""
+    template_config = _get_provider_template_from_instances(
+        provider_instances,
+        provider_type,
+        instance_name,
+    )
+    if template_config is not None:
+        return template_config
+
     service_providers = get_config().service_providers or {}
-    provider_instances = service_providers.get(provider_type)
-    if not isinstance(provider_instances, dict):
+    config_provider_instances = service_providers.get(provider_type)
+    if not isinstance(config_provider_instances, dict):
         return None
 
-    template_config = provider_instances.get(instance_name)
+    template_config = config_provider_instances.get(instance_name)
     return dict(template_config) if isinstance(template_config, dict) else None
 
 
@@ -332,10 +364,15 @@ def resolve_user_provider_instance(
     instance_name: str,
     workspace_path: Optional[str] = None,
     runtime_context: Optional[dict[str, Any]] = None,
+    provider_templates: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
 ) -> dict[str, Any]:
     """Resolve a user-configured provider instance to a runtime-ready config."""
     binding_value = f"{provider_type}/{instance_name}"
-    template_config = get_provider_template_config(provider_type, instance_name)
+    template_config = get_provider_template_config(
+        provider_type,
+        instance_name,
+        provider_instances=provider_templates,
+    )
     if template_config is None:
         raise ValueError(f"Provider binding '{binding_value}' was not found")
 
@@ -364,6 +401,7 @@ def build_user_provider_instances(
     user_id: str,
     workspace_path: Optional[str] = None,
     runtime_context: Optional[dict[str, Any]] = None,
+    provider_templates: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Return resolved provider instances configured for a user."""
     document = load_user_setting_document(user_id, workspace_path)
@@ -395,6 +433,7 @@ def build_user_provider_instances(
                     normalized_instance_name,
                     workspace_path,
                     runtime_context=runtime_context,
+                    provider_templates=provider_templates,
                 )
             except ValueError:
                 continue
@@ -531,6 +570,7 @@ def build_provider_binding_runtime_context(
     binding_value: Any = "",
     workspace_path: Optional[str] = None,
     runtime_context: Optional[dict[str, Any]] = None,
+    provider_templates: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
 ) -> dict[str, Any]:
     """Build runtime context payload for a user's provider bindings."""
     normalized_runtime_context = normalize_provider_runtime_context(runtime_context)
@@ -538,6 +578,7 @@ def build_provider_binding_runtime_context(
         user_id,
         workspace_path,
         runtime_context=normalized_runtime_context,
+        provider_templates=provider_templates,
     )
     registry = ResolvedProviderInstanceRegistry(provider_instances)
     context: dict[str, Any] = {
@@ -558,6 +599,7 @@ def build_provider_binding_runtime_context(
         instance_name,
         workspace_path,
         runtime_context=normalized_runtime_context,
+        provider_templates=provider_templates,
     )
     context.update(
         {

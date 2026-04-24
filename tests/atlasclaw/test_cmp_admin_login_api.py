@@ -143,7 +143,7 @@ def test_cmp_mode_auth_me_accepts_cmp_cookies(tmp_path: Path, monkeypatch) -> No
             assert body["user_id"]
             assert body["display_name"] == "CMP Admin"
             assert body["provider"] == "cmp"
-            assert body["auth_type"] == "cmp"
+            assert body["auth_type"] == "cookie"
             assert body["tenant_id"] == "tenant-a"
     finally:
         config_module._config_manager = old_manager
