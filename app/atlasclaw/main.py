@@ -198,13 +198,18 @@ async def _collect_runtime_user_ids(
     )
 
 async def _ensure_admin_default_skill_permissions(skill_registry) -> None:
-    """Seed admin role skill_permissions from the *complete* skill catalog.
+    """Seed / incrementally merge admin role skill_permissions from the
+    *complete* skill catalog.
 
     The catalog includes both built-in executable tools (tools_snapshot) and
     markdown skills (md_snapshot).  Admin should default to all-enabled so
     that a freshly initialized system does not lose any built-in capability.
 
-    Only runs when the admin role has no stored skill_permissions yet.
+    Behaviour:
+      - Fresh install (no stored permissions): write the full catalog.
+      - Upgrade (existing permissions): append any NEW skills that are in the
+        catalog but missing from stored permissions.  Existing user choices
+        (enabled/disabled) are preserved.
     """
     try:
         from app.atlasclaw.db.database import get_db_manager
@@ -223,14 +228,22 @@ async def _ensure_admin_default_skill_permissions(skill_registry) -> None:
                 return
 
             perms = admin_role.permissions or {}
-            skill_perms = (perms.get("skills") or {}).get("skill_permissions", [])
-            if isinstance(skill_perms, list) and skill_perms:
-                # Already has stored skill permissions – do not overwrite.
-                return
+            existing_perms: list[dict] = (
+                (perms.get("skills") or {}).get("skill_permissions", [])
+            )
+            if not isinstance(existing_perms, list):
+                existing_perms = []
 
-            # ---- Build from the FULL catalog ----
+            # Build a set of skill_ids already stored so we can detect gaps.
+            existing_ids: set[str] = {
+                str(e.get("skill_id", "")).strip()
+                for e in existing_perms
+                if str(e.get("skill_id", "")).strip()
+            }
+
+            # ---- Build full catalog entries ----
             seen_ids: set[str] = set()
-            default_skill_permissions: list[dict] = []
+            catalog_entries: list[dict] = []
 
             # 1. Built-in executable tools (from tools_snapshot)
             tools_snap = skill_registry.tools_snapshot()
@@ -239,7 +252,7 @@ async def _ensure_admin_default_skill_permissions(skill_registry) -> None:
                 if not tool_name or tool_name in seen_ids:
                     continue
                 seen_ids.add(tool_name)
-                default_skill_permissions.append({
+                catalog_entries.append({
                     "skill_id": tool_name,
                     "skill_name": tool_name,
                     "description": tool.get("description", ""),
@@ -253,15 +266,11 @@ async def _ensure_admin_default_skill_permissions(skill_registry) -> None:
             for md in md_skills:
                 md_name = str(md.get("name", "") or "").strip()
                 md_qname = str(md.get("qualified_name", "") or "").strip()
-                # Use qualified_name as skill_id to match runtime filter logic
                 skill_id = md_qname or md_name
                 if not skill_id or skill_id in seen_ids:
                     continue
                 seen_ids.add(skill_id)
-                md_meta = md.get("metadata") or {}
-                skill_type = str(md_meta.get("type", "") or "").strip().lower()
-                is_executable = skill_type == "executable"
-                default_skill_permissions.append({
+                catalog_entries.append({
                     "skill_id": skill_id,
                     "skill_name": md_name,
                     "description": md.get("description", ""),
@@ -270,21 +279,46 @@ async def _ensure_admin_default_skill_permissions(skill_registry) -> None:
                     "enabled": True,
                 })
 
-            if not default_skill_permissions:
+            if not catalog_entries:
+                return
+
+            # ---- Incremental merge ----
+            new_entries = [
+                entry for entry in catalog_entries
+                if entry["skill_id"] not in existing_ids
+            ]
+
+            if not existing_perms:
+                # Fresh install: write the full catalog.
+                merged = catalog_entries
+                action = "bootstrapped"
+            elif new_entries:
+                # Upgrade: append only the missing skills.
+                merged = existing_perms + new_entries
+                action = "merged"
+            else:
+                # Everything is up-to-date.
                 return
 
             new_perms = dict(perms)
             new_perms["skills"] = {
                 **(perms.get("skills") or {}),
-                "skill_permissions": default_skill_permissions,
+                "skill_permissions": merged,
             }
             admin_role.permissions = new_perms
             await session.commit()
-            print(
-                f"[AtlasClaw] Bootstrapped admin default skill permissions "
-                f"({len(default_skill_permissions)} entries: "
-                f"{len(tools_snap)} executable + {len(md_skills)} markdown)"
-            )
+
+            if action == "bootstrapped":
+                print(
+                    f"[AtlasClaw] Bootstrapped admin default skill permissions "
+                    f"({len(merged)} entries: "
+                    f"{len(tools_snap)} executable + {len(md_skills)} markdown)"
+                )
+            else:
+                print(
+                    f"[AtlasClaw] Merged {len(new_entries)} new skill(s) into "
+                    f"admin permissions (was {len(existing_perms)}, now {len(merged)})"
+                )
     except Exception as e:
         print(f"[AtlasClaw] Warning: Failed to bootstrap admin skill permissions: {e}")
 
