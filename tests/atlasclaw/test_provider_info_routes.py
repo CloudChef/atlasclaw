@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -33,7 +35,15 @@ def test_available_instances_exposes_auth_type_and_safe_config_keys(tmp_path, mo
         "base_url": "https://console.smartcmp.cloud",
         "auth_type": "credential",
         "username": "cmp-robot",
-        "password": "secret-pass"
+        "password": "secret-pass",
+        "ACCESS_TOKEN": "access-token",
+        "refreshToken": "refresh-token",
+        "provider-token": "provider-token",
+        "clientSecret": "client-secret",
+        "APIKey": "api-key",
+        "sessionCookie": "session-cookie",
+        "credentialAlias": "credential-alias",
+        "region": "cn-north-1"
       }
     },
     "dingtalk": {
@@ -70,7 +80,7 @@ def test_available_instances_exposes_auth_type_and_safe_config_keys(tmp_path, mo
         "instance_name": "default",
         "base_url": "https://console.smartcmp.cloud",
         "auth_type": "credential",
-        "config_keys": ["username"],
+        "config_keys": ["region", "username"],
     }
     assert providers[("dingtalk", "default")] == {
         "provider_type": "dingtalk",
@@ -189,3 +199,83 @@ def test_provider_definitions_fill_base_url_default_from_config(tmp_path, monkey
     }
 
     assert smartcmp_fields["base_url"]["default"] == "https://console.smartcmp.cloud"
+
+
+def test_available_instances_expose_ordered_auth_chain_when_template_uses_multi_auth(
+    tmp_path,
+    monkeypatch,
+):
+    config_path = tmp_path / "atlasclaw.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ATLASCLAW_CONFIG", str(config_path))
+    config_path.write_text(
+        """
+{
+  "workspace": { "path": ".atlasclaw" },
+  "service_providers": {
+    "smartcmp": {
+      "default": {
+        "base_url": "https://console.smartcmp.cloud",
+        "auth_type": ["cookie", "user_token"],
+        "username": "cmp-robot"
+      }
+    }
+  }
+}
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    app = FastAPI()
+    app.include_router(provider_info_router, prefix="/api")
+    client = TestClient(app)
+
+    response = client.get("/api/service-providers/available-instances")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["providers"][0]["auth_type"] == ["cookie", "user_token"]
+
+
+def test_available_instances_skips_unknown_auth_type_and_logs_error(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    config_path = tmp_path / "atlasclaw.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ATLASCLAW_CONFIG", str(config_path))
+    config_path.write_text(
+        """
+{
+  "workspace": { "path": ".atlasclaw" },
+  "service_providers": {
+    "smartcmp": {
+      "legacy": {
+        "base_url": "https://legacy.smartcmp.cloud",
+        "auth_type": "cmp"
+      },
+      "default": {
+        "base_url": "https://console.smartcmp.cloud",
+        "auth_type": "user_token"
+      }
+    }
+  }
+}
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    app = FastAPI()
+    app.include_router(provider_info_router, prefix="/api")
+    client = TestClient(app)
+
+    with caplog.at_level(logging.ERROR):
+        response = client.get("/api/service-providers/available-instances")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["count"] == 1
+    assert payload["providers"][0]["instance_name"] == "default"
+    assert "Unsupported auth_type: cmp" in caplog.text
+    assert "Skipping provider instance smartcmp.legacy" in caplog.text

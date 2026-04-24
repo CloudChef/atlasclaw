@@ -10,8 +10,12 @@ from pathlib import Path
 from typing import Any, Optional
 
 from app.atlasclaw.api.service_provider_schemas import (
+    PROVIDER_AUTH_FIELD_NAMES,
+    PROVIDER_AUTH_REQUIRED_FIELDS,
     get_provider_schema_definition,
     normalize_provider_config,
+    normalize_provider_auth_type_chain,
+    serialize_provider_auth_type,
 )
 from app.atlasclaw.core.config import get_config
 
@@ -19,6 +23,8 @@ from app.atlasclaw.core.config import get_config
 _SENSITIVE_KEYS = frozenset(
     {
         "token",
+        "provider_token",
+        "user_token",
         "password",
         "secret",
         "api_key",
@@ -30,6 +36,199 @@ _SENSITIVE_KEYS = frozenset(
         "app_secret",
     }
 )
+
+
+def _is_blank(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set)):
+        if not value:
+            return True
+        return all(_is_blank(item) for item in value)
+    return False
+
+
+def normalize_provider_runtime_context(
+    runtime_context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Normalize request-scoped provider auth context."""
+    source = runtime_context or {}
+    # These credentials are runtime-only signals from the current request. They
+    # must never be copied into user settings or provider templates.
+    sso_token = str(source.get("provider_sso_token", "") or "").strip()
+    sso_available = bool(source.get("provider_sso_available")) and bool(sso_token)
+    cookie_token = str(source.get("provider_cookie_token", "") or "").strip()
+    cookie_available = bool(source.get("provider_cookie_available")) and bool(cookie_token)
+    return {
+        "provider_sso_available": sso_available,
+        "provider_sso_token": sso_token if sso_available else "",
+        "provider_cookie_available": cookie_available,
+        "provider_cookie_token": cookie_token if cookie_available else "",
+    }
+
+
+def _get_template_auth_chain(
+    provider_type: str,
+    template_config: dict[str, Any],
+    user_config: Optional[dict[str, Any]] = None,
+) -> tuple[str, ...]:
+    """Return the provider-owned auth chain; user settings cannot override it."""
+    definition = get_provider_schema_definition(provider_type)
+    template_auth_source = template_config.get("auth_type")
+    fallback = (
+        definition.default_auth_type
+        if definition is not None
+        else (user_config or {}).get("auth_type")
+    )
+    return normalize_provider_auth_type_chain(template_auth_source, fallback=fallback)
+
+
+def _filter_user_config(user_config: Optional[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(user_config, dict):
+        return {}
+    # Users may supply their own credentials, but provider-owned routing and
+    # shared credentials remain controlled by the provider instance template.
+    return {
+        key: value
+        for key, value in user_config.items()
+        if key not in {"base_url", "auth_type", "provider_token"}
+    }
+
+
+def _is_auth_mode_usable(
+    auth_type: str,
+    config: dict[str, Any],
+    runtime_context: dict[str, Any],
+) -> bool:
+    if auth_type == "sso":
+        return bool(runtime_context.get("provider_sso_available")) and not _is_blank(
+            runtime_context.get("provider_sso_token")
+        )
+    if auth_type == "cookie" and bool(runtime_context.get("provider_cookie_available")):
+        return not _is_blank(runtime_context.get("provider_cookie_token"))
+
+    required_fields = PROVIDER_AUTH_REQUIRED_FIELDS.get(auth_type, ())
+    return all(not _is_blank(config.get(field_name)) for field_name in required_fields)
+
+
+def _strip_non_selected_auth_fields(
+    config: dict[str, Any],
+    selected_auth_type: str,
+) -> dict[str, Any]:
+    """Remove credentials for inactive auth modes before passing config to tools."""
+    selected_fields = set(PROVIDER_AUTH_REQUIRED_FIELDS.get(selected_auth_type, ()))
+    runtime_config: dict[str, Any] = {"auth_type": selected_auth_type}
+
+    for key, value in config.items():
+        normalized_key = str(key or "").strip().lower()
+        if normalized_key == "auth_type":
+            continue
+        if normalized_key in PROVIDER_AUTH_FIELD_NAMES and normalized_key not in selected_fields:
+            continue
+        runtime_config[key] = value
+
+    return runtime_config
+
+
+def resolve_provider_instance_config(
+    provider_type: str,
+    instance_name: str,
+    *,
+    template_config: dict[str, Any],
+    user_config: Optional[dict[str, Any]] = None,
+    runtime_context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Resolve a provider instance to the first usable auth mode in template order."""
+    binding_value = f"{provider_type}/{instance_name}"
+    normalized_runtime_context = normalize_provider_runtime_context(runtime_context)
+    auth_chain = _get_template_auth_chain(provider_type, template_config, user_config)
+    authoritative_auth_type = serialize_provider_auth_type(auth_chain)
+
+    merged_config = dict(template_config)
+    merged_config.update(_filter_user_config(user_config))
+    # The selected chain always comes from the provider template. A user-level
+    # saved auth_type is ignored so account settings cannot switch provider mode.
+    merged_config["auth_type"] = authoritative_auth_type
+
+    try:
+        normalized_config = normalize_provider_config(
+            provider_type,
+            merged_config,
+            validate_auth_requirements=False,
+        )
+    except ValueError as exc:
+        raise ValueError(
+            f"Provider binding '{binding_value}' is invalid: {exc}"
+        ) from exc
+
+    # Provider order is the fallback policy: the first auth mode with available
+    # credentials wins for this request/user.
+    selected_auth_type = next(
+        (
+            auth_type
+            for auth_type in auth_chain
+            if _is_auth_mode_usable(auth_type, normalized_config, normalized_runtime_context)
+        ),
+        "",
+    )
+    if not selected_auth_type:
+        attempted_auth_chain = ", ".join(auth_chain)
+        raise ValueError(
+            f"Provider binding '{binding_value}' has no usable auth mode in chain [{attempted_auth_chain}]"
+        )
+
+    runtime_config = _strip_non_selected_auth_fields(normalized_config, selected_auth_type)
+    return {
+        "provider_type": provider_type,
+        "instance_name": instance_name,
+        **runtime_config,
+    }
+
+
+def build_resolved_provider_instances(
+    provider_instances: Optional[dict[str, dict[str, dict[str, Any]]]],
+    *,
+    runtime_context: Optional[dict[str, Any]] = None,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Resolve system provider instances using request-scoped auth availability."""
+    resolved_instances: dict[str, dict[str, dict[str, Any]]] = {}
+
+    for provider_type, instances in (provider_instances or {}).items():
+        if not isinstance(instances, dict):
+            continue
+
+        normalized_provider_type = str(provider_type or "").strip().lower()
+        if not normalized_provider_type:
+            continue
+
+        for instance_name, instance_config in instances.items():
+            normalized_instance_name = str(instance_name or "").strip()
+            if not normalized_instance_name or not isinstance(instance_config, dict):
+                continue
+
+            try:
+                resolved_entry = resolve_provider_instance_config(
+                    normalized_provider_type,
+                    normalized_instance_name,
+                    template_config=instance_config,
+                    runtime_context=runtime_context,
+                )
+            except ValueError:
+                continue
+
+            resolved_instances.setdefault(normalized_provider_type, {})[
+                normalized_instance_name
+            ] = resolved_entry
+
+    return {
+        provider_type: {
+            instance_name: dict(instance_config)
+            for instance_name, instance_config in sorted(instances.items())
+        }
+        for provider_type, instances in sorted(resolved_instances.items())
+    }
 
 
 def _default_user_setting_document() -> dict[str, object]:
@@ -132,6 +331,7 @@ def resolve_user_provider_instance(
     provider_type: str,
     instance_name: str,
     workspace_path: Optional[str] = None,
+    runtime_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Resolve a user-configured provider instance to a runtime-ready config."""
     binding_value = f"{provider_type}/{instance_name}"
@@ -151,27 +351,19 @@ def resolve_user_provider_instance(
             f"Provider binding '{binding_value}' is not configured for user '{user_id}'"
         )
 
-    try:
-        resolved_config = normalize_provider_config(
-            provider_type,
-            user_config,
-            existing_config=template_config,
-        )
-    except ValueError as exc:
-        raise ValueError(
-            f"Provider binding '{binding_value}' is invalid: {exc}"
-        ) from exc
-
-    return {
-        "provider_type": provider_type,
-        "instance_name": instance_name,
-        **resolved_config,
-    }
+    return resolve_provider_instance_config(
+        provider_type,
+        instance_name,
+        template_config=template_config,
+        user_config=user_config,
+        runtime_context=runtime_context,
+    )
 
 
 def build_user_provider_instances(
     user_id: str,
     workspace_path: Optional[str] = None,
+    runtime_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Return resolved provider instances configured for a user."""
     document = load_user_setting_document(user_id, workspace_path)
@@ -202,6 +394,7 @@ def build_user_provider_instances(
                     normalized_provider_type,
                     normalized_instance_name,
                     workspace_path,
+                    runtime_context=runtime_context,
                 )
             except ValueError:
                 continue
@@ -222,9 +415,14 @@ def build_user_provider_instances(
 def build_provider_binding_options(
     user_id: str,
     workspace_path: Optional[str] = None,
+    runtime_context: Optional[dict[str, Any]] = None,
 ) -> list[dict[str, str]]:
     """Build select options for channel provider bindings."""
-    resolved_instances = build_user_provider_instances(user_id, workspace_path)
+    resolved_instances = build_user_provider_instances(
+        user_id,
+        workspace_path,
+        runtime_context=runtime_context,
+    )
     options: list[dict[str, str]] = []
 
     for provider_type, instances in resolved_instances.items():
@@ -332,11 +530,18 @@ def build_provider_binding_runtime_context(
     user_id: str,
     binding_value: Any = "",
     workspace_path: Optional[str] = None,
+    runtime_context: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     """Build runtime context payload for a user's provider bindings."""
-    provider_instances = build_user_provider_instances(user_id, workspace_path)
+    normalized_runtime_context = normalize_provider_runtime_context(runtime_context)
+    provider_instances = build_user_provider_instances(
+        user_id,
+        workspace_path,
+        runtime_context=normalized_runtime_context,
+    )
     registry = ResolvedProviderInstanceRegistry(provider_instances)
     context: dict[str, Any] = {
+        **normalized_runtime_context,
         "available_providers": registry.get_available_providers_summary(),
         "provider_instances": registry.get_all_instance_configs(),
         "_service_provider_registry": registry,
@@ -352,6 +557,7 @@ def build_provider_binding_runtime_context(
         provider_type,
         instance_name,
         workspace_path,
+        runtime_context=normalized_runtime_context,
     )
     context.update(
         {

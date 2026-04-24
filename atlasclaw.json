@@ -86,8 +86,7 @@
     "smartcmp": {
       "default": {
         "base_url": "${CMP_URL}",
-        "auth_type": "cookie",
-        "cookie": "${CMP_COOKIE}",
+        "auth_type": ["cookie", "user_token"],
         "username": "${CMP_USERNAME}",
         "password": "${CMP_PASSWORD}"
       }

@@ -72,6 +72,8 @@ from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.api.service_provider_schemas import (
     get_provider_schema_definition,
     normalize_provider_config,
+    normalize_provider_auth_type_chain,
+    serialize_provider_auth_type,
 )
 from app.atlasclaw.bootstrap.startup_helpers import (
     build_provider_instances_from_db,
@@ -128,6 +130,7 @@ NON_ADMIN_ASSIGNABLE_PERMISSION_PATHS = frozenset({
 SENSITIVE_PROVIDER_CONFIG_KEYS = frozenset(
     {
         "cookie",
+        "provider_token",
         "password",
         "secret",
         "app_secret",
@@ -141,6 +144,16 @@ SENSITIVE_PROVIDER_CONFIG_KEYS = frozenset(
 
 def _is_local_auth_type(auth_type: str) -> bool:
     return str(auth_type or "").strip().lower() == "local"
+
+
+def _is_blank_value(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set)):
+        return not value or all(_is_blank_value(item) for item in value)
+    return False
 
 
 def _serialize_role_for_audit(role: object) -> dict[str, object]:
@@ -424,28 +437,99 @@ def _normalize_user_provider_config(
             detail=f"Provider template '{provider_type}.{instance_name}' not found",
         )
 
-    merged_config = dict(template_config)
-    if isinstance(existing_config, dict):
-        merged_config.update(existing_config)
-    merged_config.update(dict(config))
+    definition = get_provider_schema_definition(provider_type)
+    template_auth_source: object = template_config.get("auth_type")
+    if template_auth_source in (None, "") and definition is not None:
+        template_auth_source = definition.default_auth_type
+    if template_auth_source in (None, ""):
+        template_auth_source = config.get("auth_type")
 
     try:
-        normalized_config = normalize_provider_config(provider_type, merged_config)
+        # Account settings must follow the provider instance template. The
+        # request body cannot switch the provider to another auth mode.
+        authoritative_auth_chain = normalize_provider_auth_type_chain(
+            template_auth_source,
+            fallback=definition.default_auth_type if definition is not None else None,
+        )
+        authoritative_auth_type = serialize_provider_auth_type(authoritative_auth_chain)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if "user_token" not in authoritative_auth_chain:
+        raise HTTPException(
+            status_code=422,
+            detail="Provider template does not support user-owned user_token settings",
+        )
+
+    # Only user_token is user-owned. Platform fields such as base_url,
+    # provider_token, cookie, and credentials stay in the provider template.
+    merged_config = dict(template_config)
+    if isinstance(existing_config, dict):
+        merged_config.update(
+            {
+                key: value
+                for key, value in existing_config.items()
+                if key == "user_token"
+            }
+        )
+    merged_config.update(
+        {
+            key: value
+            for key, value in dict(config).items()
+            if key == "user_token"
+        }
+    )
+    merged_config["auth_type"] = authoritative_auth_type
+    existing_user_token = (
+        existing_config.get("user_token")
+        if isinstance(existing_config, dict)
+        else None
+    )
+    incoming_user_token = dict(config).get("user_token")
+    if _is_blank_value(existing_user_token) and _is_blank_value(incoming_user_token):
+        raise HTTPException(
+            status_code=422,
+            detail="user_token is required for user-owned provider settings",
+        )
+
+    try:
+        normalized_config = normalize_provider_config(
+            provider_type,
+            merged_config,
+            validate_auth_requirements=False,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    definition = get_provider_schema_definition(provider_type)
     allowed_fields = None
     if definition is not None:
         allowed_fields = {
             field.name
-            for field in definition.resolve_fields(normalized_config)
+            for field in definition.resolve_fields(
+                {"auth_type": authoritative_auth_type}
+            )
         }
+
+    persisted_keys = {"auth_type"}
+    # Blank updates preserve the existing token but never cause template fields
+    # to be copied into the user's settings document.
+    if isinstance(existing_config, dict):
+        persisted_keys.update(
+            key
+            for key in existing_config.keys()
+            if key == "user_token"
+        )
+    persisted_keys.update(
+        key
+        for key in dict(config).keys()
+        if key == "user_token"
+    )
 
     return {
         key: value
         for key, value in normalized_config.items()
-        if key != "base_url" and (allowed_fields is None or key in allowed_fields)
+        if key in persisted_keys
+        and key not in {"base_url", "provider_token"}
+        and (allowed_fields is None or key in allowed_fields)
     }
 
 

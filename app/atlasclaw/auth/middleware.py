@@ -118,7 +118,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     logger.debug("Atlas token verification failed in cmp mode: %s", exc)
                     return self._auth_failed_response(request)
 
-                request.state.user_info = self._build_user_info_from_payload(payload, atlas_token)
+                request.state.user_info = self._build_user_info_from_payload(
+                    payload,
+                    atlas_token,
+                )
                 return await call_next(request)
 
             if request.url.path in _CMP_PUBLIC_PATHS:
@@ -172,7 +175,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 logger.debug("Atlas token verification failed: %s", exc)
                 return self._auth_failed_response(request)
 
-            jwt_user_info = self._build_user_info_from_payload(payload, atlas_token)
+            provider_sso_token = ""
+            if provider_name not in {"local", "none", "cmp", ""}:
+                provider_sso_token = self._extract_oidc_token(request)
+
+            jwt_user_info = self._build_user_info_from_payload(
+                payload,
+                atlas_token,
+                provider_sso_token=provider_sso_token,
+            )
             if provider_name != "local":
                 self._strategy.ensure_user_workspace(jwt_user_info.user_id)
 
@@ -214,7 +225,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
             logger.debug("Auth failed for %s: %s", request.url.path, exc)
             return self._auth_failed_response(request)
 
-    def _build_user_info_from_payload(self, payload: dict, raw_token: str) -> UserInfo:
+    def _build_user_info_from_payload(
+        self,
+        payload: dict,
+        raw_token: str,
+        *,
+        provider_sso_token: str = "",
+    ) -> UserInfo:
         roles = payload.get("roles", [])
         if not isinstance(roles, list):
             roles = []
@@ -228,6 +245,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         extra = {
             "login_time": payload.get("login_time", ""),
             "is_admin": payload.get("is_admin", False),
+            "provider_sso_available": bool(str(provider_sso_token or "").strip()),
+            "provider_sso_token": str(provider_sso_token or "").strip(),
         }
         if external_subject:
             extra["external_subject"] = external_subject

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 
 from app.atlasclaw.core.provider_registry import ServiceProviderRegistry
 from app.atlasclaw.tools.providers.instance_tools import list_provider_instances_tool
@@ -33,6 +34,28 @@ def test_service_provider_registry_redacts_schema_sensitive_fields() -> None:
     assert redacted["cookie"] == "***"
     assert redacted["password"] == "***"
     assert redacted["user_token"] == "***"
+
+
+def test_service_provider_registry_skips_unknown_auth_type_and_logs_error(caplog) -> None:
+    registry = ServiceProviderRegistry()
+
+    with caplog.at_level(logging.ERROR):
+        registry.load_instances_from_config(
+            {
+                "smartcmp": {
+                    "legacy": {
+                        "base_url": "https://legacy.smartcmp.cloud",
+                        "auth_type": "cmp",
+                    },
+                    "default": _smartcmp_instance_config(),
+                }
+            }
+        )
+
+    assert registry.list_instances("smartcmp") == ["default"]
+    assert registry.get_instance_config("smartcmp", "legacy") is None
+    assert "Skipping provider instance smartcmp.legacy" in caplog.text
+    assert "Unsupported auth_type: cmp" in caplog.text
 
 
 def test_resolved_provider_instance_registry_redacts_schema_sensitive_fields() -> None:

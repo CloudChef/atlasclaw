@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
@@ -14,21 +15,22 @@ from pydantic import BaseModel as PydanticBaseModel
 from app.atlasclaw.api.service_provider_schemas import (
     get_provider_schema_catalog,
     get_provider_schema_definition,
+    normalize_provider_auth_type_chain,
+    serialize_provider_auth_type,
 )
 
 router = APIRouter(tags=["Provider API"])
+logger = logging.getLogger(__name__)
 
-_SENSITIVE_CONFIG_KEYS = frozenset(
-    {
+_SENSITIVE_CONFIG_KEY_FRAGMENTS = frozenset(
+    (
         "cookie",
+        "token",
         "password",
         "secret",
-        "app_secret",
-        "api_key",
-        "access_token",
-        "token",
+        "apikey",
         "credential",
-    }
+    )
 )
 
 
@@ -133,7 +135,7 @@ def _visible_config_keys(instance_config: dict[str, Any]) -> list[str]:
         normalized = str(key or "").strip()
         if not normalized:
             continue
-        if normalized.lower() in _SENSITIVE_CONFIG_KEYS:
+        if _is_sensitive_config_key(normalized):
             continue
         if normalized in {"base_url", "auth_type"}:
             continue
@@ -141,10 +143,21 @@ def _visible_config_keys(instance_config: dict[str, Any]) -> list[str]:
     return sorted(keys)
 
 
+def _is_sensitive_config_key(key: str) -> bool:
+    normalized = str(key or "").strip().lower()
+    compact = "".join(char for char in normalized if char.isalnum())
+    # Match fragments instead of exact names so variants like accessToken,
+    # provider_token, and api-key are redacted consistently.
+    return any(
+        fragment in normalized or fragment in compact
+        for fragment in _SENSITIVE_CONFIG_KEY_FRAGMENTS
+    )
+
+
 def _collect_provider_field_defaults(
     service_providers: dict[str, Any],
-) -> dict[str, dict[str, str]]:
-    defaults: dict[str, dict[str, str]] = {}
+) -> dict[str, dict[str, Any]]:
+    defaults: dict[str, dict[str, Any]] = {}
 
     for provider_type, instances in service_providers.items():
         if not isinstance(instances, dict):
@@ -157,9 +170,21 @@ def _collect_provider_field_defaults(
             base_url = str(instance_config.get("base_url", "") or "").strip()
             if base_url and "base_url" not in defaults.setdefault(provider_type, {}):
                 defaults[provider_type]["base_url"] = base_url
-            auth_type = str(instance_config.get("auth_type", "") or "").strip()
-            if auth_type and "auth_type" not in defaults.setdefault(provider_type, {}):
-                defaults[provider_type]["auth_type"] = auth_type
+            raw_auth_type = instance_config.get("auth_type")
+            if raw_auth_type and "auth_type" not in defaults.setdefault(provider_type, {}):
+                try:
+                    defaults[provider_type]["auth_type"] = serialize_provider_auth_type(
+                        normalize_provider_auth_type_chain(
+                            raw_auth_type,
+                            fallback=_get_schema_default(provider_type, "auth_type"),
+                        )
+                    )
+                except ValueError as exc:
+                    logger.error(
+                        "Skipping provider definition defaults for %s: %s",
+                        provider_type,
+                        exc,
+                    )
 
             if (
                 "base_url" in defaults.setdefault(provider_type, {})
@@ -170,7 +195,7 @@ def _collect_provider_field_defaults(
     return defaults
 
 
-def _get_schema_default(provider_type: str, field_name: str) -> str:
+def _get_schema_default(provider_type: str, field_name: str) -> Any:
     """Return a provider schema default when the configured instance leaves a field blank."""
     definition = get_provider_schema_definition(provider_type)
     if definition is None:
@@ -178,8 +203,33 @@ def _get_schema_default(provider_type: str, field_name: str) -> str:
 
     for field in definition.resolve_fields(filter_by_auth_type=False):
         if field.name == field_name and field.default is not None:
-            return str(field.default)
+            return field.default
     return ""
+
+
+def _normalize_instance_auth_type(
+    provider_type: str,
+    instance_name: str,
+    instance_config: dict[str, Any],
+) -> str | list[str] | None:
+    """Return the public auth_type payload or None when the instance is invalid."""
+    try:
+        # The available-instances API is the first frontend-facing validation
+        # boundary; bad auth_type values are logged and excluded from the UI.
+        return serialize_provider_auth_type(
+            normalize_provider_auth_type_chain(
+                instance_config.get("auth_type"),
+                fallback=_get_schema_default(provider_type, "auth_type"),
+            )
+        )
+    except ValueError as exc:
+        logger.error(
+            "Skipping provider instance %s.%s: %s",
+            provider_type,
+            instance_name,
+            exc,
+        )
+        return None
 
 
 @router.get("/service-providers/available-instances")
@@ -204,6 +254,13 @@ async def get_available_instances() -> dict[str, Any]:
         for instance_name, instance_config in instances.items():
             if not isinstance(instance_config, dict):
                 continue
+            auth_type = _normalize_instance_auth_type(
+                str(provider_type),
+                str(instance_name),
+                instance_config,
+            )
+            if auth_type is None:
+                continue
 
             providers.append(
                 {
@@ -211,8 +268,7 @@ async def get_available_instances() -> dict[str, Any]:
                     "instance_name": instance_name,
                     "base_url": str(instance_config.get("base_url", "") or "").strip()
                     or _get_schema_default(provider_type, "base_url"),
-                    "auth_type": str(instance_config.get("auth_type", "") or "").strip()
-                    or _get_schema_default(provider_type, "auth_type"),
+                    "auth_type": auth_type,
                     "config_keys": _visible_config_keys(instance_config),
                 }
             )

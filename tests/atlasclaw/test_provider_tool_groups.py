@@ -134,7 +134,7 @@ def test_build_scoped_deps_merges_user_provider_instances_over_template_config(t
 
     monkeypatch.setattr(
         "app.atlasclaw.api.deps_context.build_user_provider_instances",
-        lambda user_id, workspace_path=None: {
+        lambda user_id, workspace_path=None, runtime_context=None: {
             "github": {
                 "default": {
                     "provider_type": "github",
@@ -157,6 +157,84 @@ def test_build_scoped_deps_merges_user_provider_instances_over_template_config(t
 
     registry_adapter = deps.extra["_service_provider_registry"]
     assert registry_adapter.get_instance_config("github", "default")["user_token"] == "github_pat_user_123"
+
+
+def test_build_scoped_deps_exposes_provider_sso_context_and_resolves_template_instances(tmp_path) -> None:
+    registry = SkillRegistry()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    session_manager = SessionManager(str(workspace))
+    session_queue = SessionQueue()
+    ctx = APIContext(
+        session_manager=session_manager,
+        session_queue=session_queue,
+        skill_registry=registry,
+        provider_instances={
+            "generic": {
+                "default": {
+                    "base_url": "https://cmp.example.com",
+                    "auth_type": ["sso", "user_token"],
+                    "user_token": "saved-user-token",
+                }
+            }
+        },
+    )
+
+    user = UserInfo(
+        user_id="u1",
+        display_name="Admin",
+        raw_token="atlas-jwt",
+        roles=["admin"],
+        extra={
+            "provider_sso_available": True,
+            "provider_sso_token": "oidc-access-token",
+        },
+    )
+
+    deps = build_scoped_deps(ctx, user, "agent:main:user:u1:web:dm:peer-1:topic:thread-42")
+
+    assert deps.extra["provider_sso_available"] is True
+    assert deps.extra["provider_sso_token"] == "oidc-access-token"
+    generic_default = deps.extra["provider_instances"]["generic"]["default"]
+    assert generic_default["auth_type"] == "sso"
+    assert "user_token" not in generic_default
+
+
+def test_build_scoped_deps_resolves_cookie_auth_from_request_cookie(tmp_path) -> None:
+    registry = SkillRegistry()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    session_manager = SessionManager(str(workspace))
+    session_queue = SessionQueue()
+    ctx = APIContext(
+        session_manager=session_manager,
+        session_queue=session_queue,
+        skill_registry=registry,
+        provider_instances={
+            "smartcmp": {
+                "default": {
+                    "base_url": "https://cmp.example.com",
+                    "auth_type": ["cookie", "provider_token"],
+                    "provider_token": "shared-provider-token",
+                }
+            }
+        },
+    )
+
+    user = UserInfo(user_id="u1", display_name="Admin", raw_token="atlas-jwt", roles=["admin"])
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        request_cookies={"CloudChef-Authenticate": "request-cookie-token"},
+    )
+
+    assert deps.extra["provider_cookie_available"] is True
+    assert deps.extra["provider_cookie_token"] == "request-cookie-token"
+    smartcmp_default = deps.extra["provider_instances"]["smartcmp"]["default"]
+    assert smartcmp_default["auth_type"] == "cookie"
+    assert "provider_token" not in smartcmp_default
 
 
 def test_register_builtin_tools_exposes_explicit_runtime_metadata() -> None:

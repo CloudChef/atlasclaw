@@ -5,14 +5,26 @@
 /**
  * providers.js - Service Provider Authentication Configuration Page
  *
- * Personal provider credentials are managed against fixed provider instances.
- * The page groups instances by provider type and renders one table per provider.
+ * Personal provider tokens are managed against fixed provider instances.
+ * Ordinary users only see provider instances that allow user-owned user_token.
  */
 
 import { showToast } from '../components/toast.js'
 import { translateIfExists } from '../i18n.js'
 
 const PROVIDER_ORDER = ['smartcmp', 'dingtalk']
+const USER_TOKEN_AUTH_TYPE = 'user_token'
+const USER_TOKEN_FIELD = {
+  name: 'user_token',
+  type: 'password',
+  label: 'User Token',
+  label_i18n_key: 'provider.userToken',
+  placeholder: 'Enter user token',
+  placeholder_i18n_key: 'provider.userTokenPlaceholder',
+  required: true,
+  sensitive: true,
+  auth_types: [USER_TOKEN_AUTH_TYPE]
+}
 
 let pageContainer = null
 let clickHandler = null
@@ -171,7 +183,7 @@ function render() {
     <div class="pv-page">
       <div class="pv-page-header">
         <h1 data-i18n="provider.pageTitle">${tr('provider.pageTitle', 'Authentication Configuration')}</h1>
-        <p data-i18n="provider.subtitle">${tr('provider.subtitle', 'Review and manage your personal provider access configuration.')}</p>
+        <p data-i18n="provider.subtitle">${tr('provider.subtitle', 'Set your personal provider tokens for workspace-managed instances.')}</p>
       </div>
       ${renderProviderSections()}
       ${renderModal()}
@@ -194,8 +206,8 @@ function renderProviderSections() {
   if (!providerTypes.length) {
     return `
       <div class="pv-empty">
-        <strong data-i18n="provider.emptyTitle">${tr('provider.emptyTitle', 'No service providers found')}</strong>
-        ${tr('provider.emptyDescription', 'Define provider instances in')} <code>atlasclaw.json</code>.
+        <strong data-i18n="provider.emptyTitle">${tr('provider.emptyTitle', 'No personal token providers available')}</strong>
+        <span data-i18n="provider.emptyDescription">${tr('provider.emptyDescription', 'No provider instances currently allow user-owned user_token configuration.')}</span>
       </div>
     `
   }
@@ -241,8 +253,7 @@ function renderTemplatesTable(rows) {
         <thead>
           <tr>
             <th>${tr('provider.tableInstance', 'Instance')}</th>
-            <th>${tr('provider.tableBaseUrl', 'Base URL')}</th>
-            <th>${tr('provider.tableAccessConfig', 'Access Configuration')}</th>
+            <th>${tr('provider.tableToken', 'Personal Token')}</th>
             <th>${tr('provider.tableUpdated', 'Updated')}</th>
             <th></th>
           </tr>
@@ -267,8 +278,7 @@ function renderTemplateRow(row) {
           </div>
         </div>
       </td>
-      <td>${escapeHtml(row.baseUrl || tr('provider.notConfigured', 'Not configured'))}</td>
-      <td>${renderAccessConfigSummary(row.providerType, row.config, row.instanceName, row.configured)}</td>
+      <td>${renderUserTokenStatus(row.configured)}</td>
       <td><span class="${row.updatedLabel === '--' ? 'pv-cell-muted' : ''}">${escapeHtml(row.updatedLabel)}</span></td>
       <td class="pv-table-action-cell">
         <div class="pv-actions">
@@ -285,28 +295,12 @@ function renderTemplateRow(row) {
   `
 }
 
-function renderAccessConfigSummary(providerType, config = {}, instanceName = '', isConfigured = false) {
-  const visibleFields = getProviderCredentialFields(providerType, config, instanceName)
-    .filter((field) => field.type !== 'hidden')
-
-  if (!visibleFields.length) {
-    return `<span class="pv-cell-muted">${escapeHtml(tr('provider.noExtraSecret', 'No credential field'))}</span>`
-  }
-
-  return `
-    <div class="pv-config-stack">
-      ${visibleFields.map((field) => renderAccessConfigItem(field, config[field.name], isConfigured)).join('')}
-    </div>
-  `
-}
-
-function renderAccessConfigItem(field, rawValue, isConfigured) {
-  return `
-    <div class="pv-config-item">
-      <span class="pv-config-key">${escapeHtml(getSchemaFieldLabel(field))}</span>
-      <span class="pv-config-value ${String(formatConfigValue(field, rawValue, isConfigured) || '').trim() ? '' : 'is-muted'}">${escapeHtml(formatConfigValue(field, rawValue, isConfigured))}</span>
-    </div>
-  `
+function renderUserTokenStatus(isConfigured) {
+  const label = isConfigured
+    ? tr('provider.statusConfigured', 'Configured')
+    : tr('provider.notConfigured', 'Not configured')
+  const className = isConfigured ? 'is-configured' : 'is-missing'
+  return `<span class="pv-token-status ${className}">${escapeHtml(label)}</span>`
 }
 
 function renderModal() {
@@ -316,14 +310,11 @@ function renderModal() {
 
   const modal = state.modal
   const meta = getProviderMeta(modal.providerType)
-  const template = getTemplateByInstance(modal.providerType, modal.instanceName)
   const credentialFields = getProviderCredentialFields(modal.providerType, modal.values, modal.instanceName)
-  const hiddenFields = credentialFields.filter((field) => field.type === 'hidden')
-  const visibleFields = credentialFields.filter((field) => field.type !== 'hidden')
-  const modalTitle = tr('provider.modalConfigureTitleSpecific', `Configure ${meta.name}`, { provider: meta.name })
+  const modalTitle = tr('provider.modalConfigureTitleSpecific', `Set ${meta.name} User Token`, { provider: meta.name })
   const modalDescription = tr(
     'provider.modalConfigureDescription',
-    'Configure your personal credentials for the selected system instance.'
+    'Set the personal token AtlasClaw should use for this provider instance.'
   )
 
   return `
@@ -339,22 +330,11 @@ function renderModal() {
         </div>
         <form id="providerModalForm">
           <div class="pv-modal-body">
-            ${hiddenFields.map((field) => renderSchemaField(field, modal.values[field.name] || '', modal)).join('')}
             <div class="pv-modal-primary-fields">
-              <div class="pv-modal-grid">
-                ${renderStaticField(tr('provider.providerType', 'Provider Type'), meta.name)}
-                ${renderStaticField(tr('provider.instanceName', 'Instance'), modal.instanceName)}
-                ${renderStaticField(
-                  tr('provider.baseUrl', 'Base URL'),
-                  template?.baseUrl || tr('provider.notConfigured', 'Not configured')
-                )}
-              </div>
+              <span class="pv-modal-instance-label">${tr('provider.instanceName', 'Instance')}</span>
+              <strong class="pv-modal-instance-name">${escapeHtml(modal.instanceName)}</strong>
             </div>
-            <div class="pv-form-section-title">${tr('provider.connectionParameters', 'Access Configuration')}</div>
-            ${visibleFields.length
-              ? `<div class="pv-modal-stack">${visibleFields.map((field) => renderSchemaField(field, modal.values[field.name] || '', modal)).join('')}</div>`
-              : `<div class="pv-inline-note"><span class="pv-inline-note-label">${tr('provider.noExtraSecret', 'No credential field')}</span>${tr('provider.noExtraSecretDescription', 'This provider instance does not expose additional personal credential fields.')}</div>`
-            }
+            <div class="pv-modal-stack">${credentialFields.map((field) => renderSchemaField(field, modal.values[field.name] || '', modal)).join('')}</div>
             ${modal.error ? `<div class="pv-inline-note is-error"><span class="pv-inline-note-label">${tr('provider.saveFailedLabel', 'Save failed')}</span>${escapeHtml(modal.error)}</div>` : ''}
           </div>
           <div class="pv-modal-footer">
@@ -363,16 +343,6 @@ function renderModal() {
           </div>
         </form>
       </div>
-    </div>
-  `
-}
-
-function renderStaticField(label, value, className = '') {
-  const wrapperClass = ['pv-form-field', className].filter(Boolean).join(' ')
-  return `
-    <div class="${escapeHtml(wrapperClass)}">
-      <span class="pv-static-label">${escapeHtml(label)}</span>
-      <div class="pv-static-value">${escapeHtml(value)}</div>
     </div>
   `
 }
@@ -402,7 +372,7 @@ function renderSchemaField(field, value, modalContext = null) {
     return `
       <label class="pv-form-field">
         <span>${escapeHtml(label)}</span>
-        <input class="pv-form-input" type="text" name="${escapeHtml(fieldName)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" ${required}>
+        <input class="pv-form-input" type="password" name="${escapeHtml(fieldName)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" autocomplete="off" ${required}>
       </label>
     `
   }
@@ -470,12 +440,17 @@ async function saveModal() {
       return
     }
 
+    const existingEntry = getUserProviderEntry(state.modal.providerType, state.modal.instanceName)
+    const userToken = String(state.modal.values?.user_token ?? '').trim()
+    if (!existingEntry?.configured && !userToken) {
+      state.modal.error = tr('provider.requiredFields', 'User token is required.')
+      render()
+      return
+    }
+
     const config = {}
-    for (const field of getProviderCredentialFields(state.modal.providerType, state.modal.values, state.modal.instanceName)) {
-      const normalizedValue = String(state.modal.values?.[field.name] ?? '').trim()
-      if (normalizedValue || field.default != null) {
-        config[field.name] = normalizedValue || String(field.default)
-      }
+    if (userToken) {
+      config.user_token = userToken
     }
 
     const payload = {
@@ -510,7 +485,7 @@ function getProviderTypes() {
   const typeSet = new Set()
 
   for (const item of state.serviceProviders) {
-    if (item?.provider_type) {
+    if (item?.provider_type && authChainIncludesUserToken(item.auth_type)) {
       typeSet.add(item.provider_type)
     }
   }
@@ -556,13 +531,18 @@ function getProviderMeta(providerType) {
 function getConfigFileTemplates(providerType) {
   return state.serviceProviders
     .filter((entry) => entry.provider_type === providerType)
-    .map((entry) => ({
-      providerType,
-      instanceName: String(entry.instance_name || ''),
-      baseUrl: String(entry.base_url || ''),
-      authType: String(entry.auth_type || ''),
-      configKeys: Array.isArray(entry.config_keys) ? entry.config_keys : []
-    }))
+    .map((entry) => {
+      const authTypes = normalizeAuthTypeChain(entry.auth_type)
+      return {
+        providerType,
+        instanceName: String(entry.instance_name || ''),
+        baseUrl: String(entry.base_url || ''),
+        authType: authTypes[0] || '',
+        authTypes,
+        configKeys: Array.isArray(entry.config_keys) ? entry.config_keys : []
+      }
+    })
+    .filter((entry) => entry.authTypes.includes(USER_TOKEN_AUTH_TYPE))
 }
 
 function getTemplateByInstance(providerType, instanceName) {
@@ -584,7 +564,6 @@ function getTemplateRows(providerType) {
     return {
       providerType,
       instanceName: template.instanceName,
-      baseUrl: template.baseUrl,
       configured: Boolean(userEntry?.configured),
       updatedLabel: formatTimestamp(userEntry?.updated_at),
       config: userEntry?.config || {}
@@ -613,47 +592,25 @@ function getProviderSchemaFields(providerType) {
   return fields
 }
 
-function getEffectiveAuthType(providerType, instanceName = '', values = {}, fields = null) {
-  const schemaFields = Array.isArray(fields) ? fields : getProviderSchemaFields(providerType)
-  if (!schemaFields.length) {
-    return ''
-  }
-
-  const authTypeField = schemaFields.find((field) => field?.name === 'auth_type')
-  const templateAuthType = String(getTemplateByInstance(providerType, instanceName)?.authType || '').trim().toLowerCase()
-  const currentAuthType = String(values?.auth_type || '').trim().toLowerCase()
-  const defaultAuthType = String(authTypeField?.default || '').trim().toLowerCase()
-
-  return templateAuthType || currentAuthType || defaultAuthType
-}
-
-function getProviderCredentialFields(providerType, values = {}, instanceName = '') {
+function getProviderCredentialFields(providerType, _values = {}, _instanceName = '') {
   const fields = getProviderSchemaFields(providerType)
-  if (!fields.length) {
-    return []
-  }
-
-  const authType = getEffectiveAuthType(providerType, instanceName, values, fields)
-
-  return fields.filter((field) => {
-    if (field?.name === 'base_url') {
+  const userTokenField = fields.find((field) => {
+    if (field?.name !== USER_TOKEN_FIELD.name) {
       return false
     }
-    const authTypes = Array.isArray(field?.auth_types) ? field.auth_types : []
-    return !authTypes.length || authTypes.includes(authType)
+    const authTypes = normalizeAuthTypeChain(field?.auth_types || [])
+    return !authTypes.length || authTypes.includes(USER_TOKEN_AUTH_TYPE)
   })
+
+  return [userTokenField || USER_TOKEN_FIELD]
 }
 
 function getInitialCredentialValues(providerType, instanceName) {
   const savedConfig = getUserProviderEntry(providerType, instanceName)?.config || {}
-  const effectiveAuthType = getEffectiveAuthType(providerType, instanceName, savedConfig)
-  const resolvedValues = effectiveAuthType
-    ? { ...savedConfig, auth_type: effectiveAuthType }
-    : { ...savedConfig }
 
   return Object.fromEntries(
-    getProviderCredentialFields(providerType, resolvedValues, instanceName).map((field) => {
-      const currentValue = resolvedValues?.[field.name]
+    getProviderCredentialFields(providerType, savedConfig, instanceName).map((field) => {
+      const currentValue = savedConfig?.[field.name]
       if (currentValue !== undefined && currentValue !== null && String(currentValue) !== '') {
         if (field?.sensitive || field?.type === 'password') {
           return [field.name, '']
@@ -666,6 +623,22 @@ function getInitialCredentialValues(providerType, instanceName) {
       return [field.name, '']
     })
   )
+}
+
+function normalizeAuthTypeChain(value) {
+  const rawValues = Array.isArray(value) ? value : [value]
+  const chain = []
+  for (const item of rawValues) {
+    const normalized = String(item || '').trim().toLowerCase()
+    if (normalized && !chain.includes(normalized)) {
+      chain.push(normalized)
+    }
+  }
+  return chain
+}
+
+function authChainIncludesUserToken(value) {
+  return normalizeAuthTypeChain(value).includes(USER_TOKEN_AUTH_TYPE)
 }
 
 function getSchemaFieldLabel(field) {

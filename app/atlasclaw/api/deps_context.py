@@ -17,7 +17,9 @@ from ..core.security_guard import ensure_user_work_dir
 from ..core.trace import enrich_trace_metadata
 from ..core.user_provider_bindings import (
     ResolvedProviderInstanceRegistry,
+    build_resolved_provider_instances,
     build_user_provider_instances,
+    normalize_provider_runtime_context,
 )
 from ..memory.manager import MemoryManager
 from ..session.manager import SessionManager
@@ -205,6 +207,23 @@ def build_scoped_deps(
     provider_config: Optional[dict[str, Any]] = None,
     extra: Optional[dict[str, Any]] = None,
 ) -> SkillDeps:
+    runtime_context_source = (
+        dict(getattr(user_info, "extra", {}))
+        if isinstance(getattr(user_info, "extra", {}), dict)
+        else {}
+    )
+    # Bridge reverse-proxy/CMP cookies into the provider resolver for this
+    # request only; user settings continue to store only user-owned values.
+    request_cookie_token = ""
+    if isinstance(request_cookies, dict):
+        request_cookie_token = str(request_cookies.get("CloudChef-Authenticate", "") or "").strip()
+    if not request_cookie_token and str(getattr(user_info, "auth_type", "") or "").strip() == "cmp":
+        request_cookie_token = str(getattr(user_info, "raw_token", "") or "").strip()
+    if request_cookie_token:
+        runtime_context_source["provider_cookie_available"] = True
+        runtime_context_source["provider_cookie_token"] = request_cookie_token
+
+    runtime_context = normalize_provider_runtime_context(runtime_context_source)
     scoped_session_mgr = ctx.session_manager_router.for_user(user_info.user_id)
     scoped_memory_mgr: Optional[MemoryManager] = None
     if ctx.memory_manager is not None:
@@ -233,17 +252,14 @@ def build_scoped_deps(
         if isinstance(provider_config, dict) and provider_config
         else (ctx.provider_instances or {})
     )
-    merged_provider_instances = {
-        provider_type: {
-            instance_name: dict(instance_config)
-            for instance_name, instance_config in instances.items()
-        }
-        for provider_type, instances in base_provider_instances.items()
-        if isinstance(instances, dict)
-    }
+    merged_provider_instances = build_resolved_provider_instances(
+        base_provider_instances,
+        runtime_context=runtime_context,
+    )
     user_provider_instances = build_user_provider_instances(
         user_info.user_id,
         workspace_path=str(scoped_session_mgr.workspace_path),
+        runtime_context=runtime_context,
     )
     for provider_type, instances in user_provider_instances.items():
         provider_bucket = merged_provider_instances.setdefault(provider_type, {})
@@ -316,6 +332,7 @@ def build_scoped_deps(
         md_skills_snapshot = ctx.skill_registry.md_snapshot()
 
     deps_extra = {
+        **runtime_context,
         "_service_provider_registry": provider_registry,
         "available_providers": available_providers,
         "provider_instances": merged_provider_instances,

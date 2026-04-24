@@ -641,6 +641,232 @@ class TestUserProfileAPI:
 
         _cleanup_manager(manager)
 
+    def test_put_my_provider_settings_uses_template_auth_chain_for_multi_auth_templates(self, tmp_path):
+        """Multi-auth templates keep template auth chain authoritative over user-submitted auth_type."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "testuser", "testpass123")
+        workspace_path = tmp_path / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+
+        with patch(
+            "app.atlasclaw.api.api_routes.get_config",
+            return_value=SimpleNamespace(
+                workspace=SimpleNamespace(path=str(workspace_path)),
+                service_providers={
+                    "smartcmp": {
+                        "default": {
+                            "base_url": "https://console.smartcmp.cloud",
+                            "auth_type": ["cookie", "user_token"],
+                        }
+                    }
+                },
+            ),
+        ):
+            resp = client.put(
+                "/api/users/me/provider-settings",
+                json={
+                    "provider_type": "smartcmp",
+                    "instance_name": "default",
+                    "config": {
+                        "auth_type": "user_token",
+                        "user_token": "secret-token",
+                    },
+                },
+                headers={"AtlasClaw-Authenticate": token},
+            )
+
+        assert resp.status_code == 200
+        saved = json.loads(
+            (workspace_path / "users" / "testuser" / "user_setting.json").read_text(encoding="utf-8")
+        )
+        assert saved["providers"]["smartcmp"]["default"]["config"]["auth_type"] == [
+            "cookie",
+            "user_token",
+        ]
+        assert saved["providers"]["smartcmp"]["default"]["config"]["user_token"] == "secret-token"
+
+        _cleanup_manager(manager)
+
+    def test_put_my_provider_settings_does_not_persist_template_secrets_for_multi_auth_templates(self, tmp_path):
+        """User settings must not copy template-owned auth fields into the persisted user config."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "testuser", "testpass123")
+        workspace_path = tmp_path / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+
+        with patch(
+            "app.atlasclaw.api.api_routes.get_config",
+            return_value=SimpleNamespace(
+                workspace=SimpleNamespace(path=str(workspace_path)),
+                service_providers={
+                    "smartcmp": {
+                        "default": {
+                            "base_url": "https://console.smartcmp.cloud",
+                            "auth_type": ["cookie", "user_token"],
+                            "cookie": "CloudChef-Authenticate=template-cookie",
+                        }
+                    }
+                },
+            ),
+        ):
+            resp = client.put(
+                "/api/users/me/provider-settings",
+                json={
+                    "provider_type": "smartcmp",
+                    "instance_name": "default",
+                    "config": {
+                        "user_token": "secret-token",
+                    },
+                },
+                headers={"AtlasClaw-Authenticate": token},
+            )
+
+        assert resp.status_code == 200
+        saved = json.loads(
+            (workspace_path / "users" / "testuser" / "user_setting.json").read_text(encoding="utf-8")
+        )
+        persisted = saved["providers"]["smartcmp"]["default"]["config"]
+        assert persisted["auth_type"] == ["cookie", "user_token"]
+        assert persisted["user_token"] == "secret-token"
+        assert "cookie" not in persisted
+
+        _cleanup_manager(manager)
+
+    def test_put_my_provider_settings_does_not_allow_user_provider_token_override(self, tmp_path):
+        """Shared provider tokens are template-owned and cannot be persisted from user settings."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "testuser", "testpass123")
+        workspace_path = tmp_path / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+
+        with patch(
+            "app.atlasclaw.api.api_routes.get_config",
+            return_value=SimpleNamespace(
+                workspace=SimpleNamespace(path=str(workspace_path)),
+                service_providers={
+                    "smartcmp": {
+                        "default": {
+                            "base_url": "https://console.smartcmp.cloud",
+                            "auth_type": ["provider_token", "user_token"],
+                            "provider_token": "template-provider-token",
+                        }
+                    }
+                },
+            ),
+        ):
+            resp = client.put(
+                "/api/users/me/provider-settings",
+                json={
+                    "provider_type": "smartcmp",
+                    "instance_name": "default",
+                    "config": {
+                        "provider_token": "user-provider-token",
+                        "user_token": "secret-token",
+                    },
+                },
+                headers={"AtlasClaw-Authenticate": token},
+            )
+
+        assert resp.status_code == 200
+        saved = json.loads(
+            (workspace_path / "users" / "testuser" / "user_setting.json").read_text(encoding="utf-8")
+        )
+        persisted = saved["providers"]["smartcmp"]["default"]["config"]
+        assert persisted["auth_type"] == ["provider_token", "user_token"]
+        assert persisted["user_token"] == "secret-token"
+        assert "provider_token" not in persisted
+
+        _cleanup_manager(manager)
+
+    def test_put_my_provider_settings_rejects_template_without_user_token(self, tmp_path):
+        """Users can only save settings for provider templates that include user_token."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "testuser", "testpass123")
+        workspace_path = tmp_path / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+
+        with patch(
+            "app.atlasclaw.api.api_routes.get_config",
+            return_value=SimpleNamespace(
+                workspace=SimpleNamespace(path=str(workspace_path)),
+                service_providers={
+                    "smartcmp": {
+                        "default": {
+                            "base_url": "https://console.smartcmp.cloud",
+                            "auth_type": ["cookie", "provider_token"],
+                            "provider_token": "template-provider-token",
+                        }
+                    }
+                },
+            ),
+        ):
+            resp = client.put(
+                "/api/users/me/provider-settings",
+                json={
+                    "provider_type": "smartcmp",
+                    "instance_name": "default",
+                    "config": {
+                        "user_token": "secret-token",
+                    },
+                },
+                headers={"AtlasClaw-Authenticate": token},
+            )
+
+        assert resp.status_code == 422
+        assert "does not support user-owned user_token" in resp.json()["detail"]
+        saved = json.loads(
+            (workspace_path / "users" / "testuser" / "user_setting.json").read_text(encoding="utf-8")
+        )
+        assert saved["providers"] == {}
+
+        _cleanup_manager(manager)
+
+    def test_put_my_provider_settings_requires_initial_user_token(self, tmp_path):
+        """A first-time personal provider setting must include a user_token."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "testuser", "testpass123")
+        workspace_path = tmp_path / "workspace"
+        workspace_path.mkdir(parents=True, exist_ok=True)
+
+        with patch(
+            "app.atlasclaw.api.api_routes.get_config",
+            return_value=SimpleNamespace(
+                workspace=SimpleNamespace(path=str(workspace_path)),
+                service_providers={
+                    "smartcmp": {
+                        "default": {
+                            "base_url": "https://console.smartcmp.cloud",
+                            "auth_type": ["provider_token", "user_token"],
+                            "provider_token": "template-provider-token",
+                        }
+                    }
+                },
+            ),
+        ):
+            resp = client.put(
+                "/api/users/me/provider-settings",
+                json={
+                    "provider_type": "smartcmp",
+                    "instance_name": "default",
+                    "config": {},
+                },
+                headers={"AtlasClaw-Authenticate": token},
+            )
+
+        assert resp.status_code == 422
+        assert resp.json()["detail"] == "user_token is required for user-owned provider settings"
+        saved = json.loads(
+            (workspace_path / "users" / "testuser" / "user_setting.json").read_text(encoding="utf-8")
+        )
+        assert saved["providers"] == {}
+
+        _cleanup_manager(manager)
+
     def test_profile_not_accessible_when_unauthenticated(self, tmp_path):
         """Unauthenticated request to profile returns 401."""
         manager = _init_database_sync(tmp_path)
