@@ -20,7 +20,6 @@ import { getAgentInfo } from './api-client.js'
 import {
   canAccessChannelManagement,
   canAccessModelManagement,
-  canAccessProviderManagement,
   canAccessRoleManagement,
   canAccessUserManagement
 } from './permissions.js'
@@ -61,8 +60,6 @@ const routes = [
     path: '/providers',
     loader: () => import('./pages/providers.js'),
     auth: true,
-    accessCheck: canAccessProviderManagement,
-    accessDeniedMessage: 'Access denied. You do not have permission to manage providers.',
     title: 'provider.title'
   },
   {

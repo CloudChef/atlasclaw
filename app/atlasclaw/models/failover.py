@@ -309,8 +309,7 @@ profile
         elif profile.credential_type == CredentialType.OAUTH:
             return {"Authorization": f"Bearer {profile.credential}"}
         elif profile.credential_type == CredentialType.ACCESS_KEY:
-            # SmartCMP AccessKey format
-            return {"CloudChef-Authenticate": profile.credential}
+            return {"AtlasClaw-Host-Authenticate": profile.credential}
         return {}
     
     def _try_fallback(self) -> bool:

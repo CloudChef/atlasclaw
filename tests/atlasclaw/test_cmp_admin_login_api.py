@@ -40,6 +40,10 @@ def _build_cmp_local_admin_config(tmp_path: Path, db_path: Path) -> dict:
                 "default_admin_username": "admin",
                 "default_admin_password": "Admin@123",
             },
+            "host": {
+                "header_name": "AtlasClaw-Host-Authenticate",
+                "cookie_name": "AtlasClaw-Host-Authenticate",
+            },
         },
         "model": {
             "primary": "test-token",
@@ -132,7 +136,7 @@ def test_cmp_mode_auth_me_accepts_cmp_cookies(tmp_path: Path, monkeypatch) -> No
             me_response = client.get(
                 "/api/auth/me",
                 cookies={
-                    "CloudChef-Authenticate": "cmp-token",
+                    "AtlasClaw-Host-Authenticate": "host-token",
                     "userLoginId": "cmp-admin",
                     "username": "CMP%20Admin",
                     "tenant_id": "tenant-a",
@@ -143,7 +147,7 @@ def test_cmp_mode_auth_me_accepts_cmp_cookies(tmp_path: Path, monkeypatch) -> No
             assert body["user_id"]
             assert body["display_name"] == "CMP Admin"
             assert body["provider"] == "cmp"
-            assert body["auth_type"] == "cmp"
+            assert body["auth_type"] == "cookie"
             assert body["tenant_id"] == "tenant-a"
     finally:
         config_module._config_manager = old_manager

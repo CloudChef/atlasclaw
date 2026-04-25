@@ -102,7 +102,15 @@ def create_local_provider(config: AuthConfig) -> AuthProvider:
 
     if provider_type == "cmp":
         from app.atlasclaw.auth.providers.cmp import CMPAuthProvider
-        return CMPAuthProvider()
+        cmp_config = config.cmp.expanded()
+        host_config = config.host.expanded()
+        return CMPAuthProvider(
+            token_cookie_name=cmp_config.token_cookie_name or host_config.cookie_name,
+            login_id_cookie_name=cmp_config.login_id_cookie_name,
+            username_cookie_name=cmp_config.username_cookie_name,
+            user_id_cookie_name=cmp_config.user_id_cookie_name,
+            tenant_id_cookie_name=cmp_config.tenant_id_cookie_name,
+        )
 
     if provider_type == "local":
         from app.atlasclaw.auth.providers.local import LocalAuthProvider

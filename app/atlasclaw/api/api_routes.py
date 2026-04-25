@@ -20,12 +20,13 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.atlasclaw.core.config import get_config
+from app.atlasclaw.core.provider_catalog import get_provider_catalog_instances
 from app.atlasclaw.db import get_db_session_dependency as get_db_session
 from app.atlasclaw.db.schemas import (
     AgentCreate,
@@ -72,10 +73,8 @@ from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.api.service_provider_schemas import (
     get_provider_schema_definition,
     normalize_provider_config,
-)
-from app.atlasclaw.bootstrap.startup_helpers import (
-    build_provider_instances_from_db,
-    merge_provider_instances,
+    normalize_provider_auth_type_chain,
+    serialize_provider_auth_type,
 )
 from .deps_context import get_api_context
 from .services.auth_service import load_profile_snapshot
@@ -125,22 +124,30 @@ NON_ADMIN_ASSIGNABLE_PERMISSION_PATHS = frozenset({
     "users.view",
     "roles.view",
 })
-SENSITIVE_PROVIDER_CONFIG_KEYS = frozenset(
-    {
+SENSITIVE_PROVIDER_CONFIG_KEY_FRAGMENTS = frozenset(
+    (
         "cookie",
+        "token",
         "password",
         "secret",
-        "app_secret",
-        "api_key",
-        "access_token",
-        "token",
+        "apikey",
         "credential",
-    }
+    )
 )
 
 
 def _is_local_auth_type(auth_type: str) -> bool:
     return str(auth_type or "").strip().lower() == "local"
+
+
+def _is_blank_value(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return not value.strip()
+    if isinstance(value, (list, tuple, set)):
+        return not value or all(_is_blank_value(item) for item in value)
+    return False
 
 
 def _serialize_role_for_audit(role: object) -> dict[str, object]:
@@ -328,30 +335,17 @@ def _default_user_setting_document() -> dict[str, object]:
 async def _refresh_provider_instances_in_api_context(session: AsyncSession) -> None:
     """Refresh in-memory provider instances after config CRUD operations."""
     ctx = get_api_context()
-    config_provider_instances: dict[str, dict[str, dict[str, object]]] = {
-        provider_type: {
-            instance_name: dict(instance_config)
-            for instance_name, instance_config in instances.items()
-            if isinstance(instance_config, dict)
-        }
-        for provider_type, instances in (get_config().service_providers or {}).items()
-        if isinstance(instances, dict)
-    }
-    db_provider_instances = await build_provider_instances_from_db(session)
-    merged_provider_instances = merge_provider_instances(
-        db_provider_instances,
-        config_provider_instances,
-    ) if db_provider_instances else config_provider_instances
+    provider_instances = await get_provider_catalog_instances(session)
 
     if ctx.service_provider_registry is not None:
-        ctx.service_provider_registry.load_instances_from_config(merged_provider_instances)
+        ctx.service_provider_registry.load_instances_from_config(provider_instances)
         ctx.provider_instances = ctx.service_provider_registry.get_all_instance_configs()
         ctx.available_providers = ctx.service_provider_registry.get_available_providers_summary()
     else:
-        ctx.provider_instances = merged_provider_instances
+        ctx.provider_instances = provider_instances
         ctx.available_providers = {
             provider_type: sorted(instances.keys())
-            for provider_type, instances in merged_provider_instances.items()
+            for provider_type, instances in provider_instances.items()
             if isinstance(instances, dict)
         }
 
@@ -400,13 +394,13 @@ def _save_user_setting_document(workspace_path: str, user_id: str, document: dic
 def _get_provider_template_config(
     provider_type: str,
     instance_name: str,
+    provider_instances: dict[str, dict[str, dict[str, Any]]],
 ) -> Optional[dict[str, object]]:
-    """Resolve a configured system provider template instance from atlasclaw.json."""
-    service_providers = get_config().service_providers or {}
-    provider_instances = service_providers.get(provider_type)
-    if not isinstance(provider_instances, dict):
+    """Resolve a configured system provider template instance."""
+    provider_bucket = provider_instances.get(provider_type)
+    if not isinstance(provider_bucket, dict):
         return None
-    template_config = provider_instances.get(instance_name)
+    template_config = provider_bucket.get(instance_name)
     return dict(template_config) if isinstance(template_config, dict) else None
 
 
@@ -415,37 +409,114 @@ def _normalize_user_provider_config(
     instance_name: str,
     config: dict[str, object],
     existing_config: Optional[dict[str, object]] = None,
+    provider_instances: dict[str, dict[str, dict[str, Any]]] | None = None,
 ) -> dict[str, object]:
     """Validate user-owned provider config against a system template instance."""
-    template_config = _get_provider_template_config(provider_type, instance_name)
+    provider_instances = provider_instances or {}
+    template_config = _get_provider_template_config(
+        provider_type,
+        instance_name,
+        provider_instances=provider_instances,
+    )
     if template_config is None:
         raise HTTPException(
             status_code=404,
             detail=f"Provider template '{provider_type}.{instance_name}' not found",
         )
 
-    merged_config = dict(template_config)
-    if isinstance(existing_config, dict):
-        merged_config.update(existing_config)
-    merged_config.update(dict(config))
+    definition = get_provider_schema_definition(provider_type)
+    template_auth_source: object = template_config.get("auth_type")
+    if template_auth_source in (None, "") and definition is not None:
+        template_auth_source = definition.default_auth_type
+    if template_auth_source in (None, ""):
+        template_auth_source = config.get("auth_type")
 
     try:
-        normalized_config = normalize_provider_config(provider_type, merged_config)
+        # Account settings must follow the provider instance template. The
+        # request body cannot switch the provider to another auth mode.
+        authoritative_auth_chain = normalize_provider_auth_type_chain(
+            template_auth_source,
+            fallback=definition.default_auth_type if definition is not None else None,
+        )
+        authoritative_auth_type = serialize_provider_auth_type(authoritative_auth_chain)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if "user_token" not in authoritative_auth_chain:
+        raise HTTPException(
+            status_code=422,
+            detail="Provider template does not support user-owned user_token settings",
+        )
+
+    # Only user_token is user-owned. Platform fields such as base_url,
+    # provider_token, cookie, and credentials stay in the provider template.
+    merged_config = dict(template_config)
+    if isinstance(existing_config, dict):
+        merged_config.update(
+            {
+                key: value
+                for key, value in existing_config.items()
+                if key == "user_token"
+            }
+        )
+    merged_config.update(
+        {
+            key: value
+            for key, value in dict(config).items()
+            if key == "user_token"
+        }
+    )
+    merged_config["auth_type"] = authoritative_auth_type
+    existing_user_token = (
+        existing_config.get("user_token")
+        if isinstance(existing_config, dict)
+        else None
+    )
+    incoming_user_token = dict(config).get("user_token")
+    if _is_blank_value(existing_user_token) and _is_blank_value(incoming_user_token):
+        raise HTTPException(
+            status_code=422,
+            detail="user_token is required for user-owned provider settings",
+        )
+
+    try:
+        normalized_config = normalize_provider_config(
+            provider_type,
+            merged_config,
+            validate_auth_requirements=False,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    definition = get_provider_schema_definition(provider_type)
     allowed_fields = None
     if definition is not None:
         allowed_fields = {
             field.name
-            for field in definition.resolve_fields(normalized_config)
+            for field in definition.resolve_fields(
+                {"auth_type": authoritative_auth_type}
+            )
         }
+
+    persisted_keys = {"auth_type"}
+    # Blank updates preserve the existing token but never cause template fields
+    # to be copied into the user's settings document.
+    if isinstance(existing_config, dict):
+        persisted_keys.update(
+            key
+            for key in existing_config.keys()
+            if key == "user_token"
+        )
+    persisted_keys.update(
+        key
+        for key in dict(config).keys()
+        if key == "user_token"
+    )
 
     return {
         key: value
         for key, value in normalized_config.items()
-        if key != "base_url" and (allowed_fields is None or key in allowed_fields)
+        if key in persisted_keys
+        and key not in {"base_url", "provider_token"}
+        and (allowed_fields is None or key in allowed_fields)
     }
 
 
@@ -454,7 +525,13 @@ def _is_sensitive_provider_config_field(provider_type: str, field_name: str) -> 
     normalized_field_name = str(field_name or "").strip().lower()
     if not normalized_field_name:
         return False
-    if normalized_field_name in SENSITIVE_PROVIDER_CONFIG_KEYS:
+    compact_field_name = "".join(
+        char for char in normalized_field_name if char.isalnum()
+    )
+    if any(
+        fragment in normalized_field_name or fragment in compact_field_name
+        for fragment in SENSITIVE_PROVIDER_CONFIG_KEY_FRAGMENTS
+    ):
         return True
 
     definition = get_provider_schema_definition(provider_type)
@@ -1197,6 +1274,7 @@ async def get_my_provider_settings(
 async def update_my_provider_settings(
     provider_data: UserProviderSettingUpdate,
     current_user: UserInfo = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
 ) -> UserProviderSettingsResponse:
     """Create or update the authenticated user's provider credentials."""
     workspace_path = str(Path(get_config().workspace.path).resolve())
@@ -1218,11 +1296,13 @@ async def update_my_provider_settings(
         else {}
     )
 
+    provider_instances = await get_provider_catalog_instances(session)
     normalized_config = _normalize_user_provider_config(
         provider_data.provider_type,
         provider_data.instance_name,
         provider_data.config,
         existing_config=existing_config if isinstance(existing_config, dict) else None,
+        provider_instances=provider_instances,
     )
 
     provider_bucket[provider_data.instance_name] = {

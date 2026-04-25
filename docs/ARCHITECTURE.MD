@@ -565,9 +565,9 @@ Credential -> AuthProvider.authenticate() -> AuthResult
 ```
 
 **Credential Sources** (checked in order):
-1. `CloudChef-Authenticate` header
+1. `AtlasClaw-Host-Authenticate` header
 2. `Authorization: Bearer <token>` header
-3. `CloudChef-Authenticate` cookie
+3. `AtlasClaw-Host-Authenticate` cookie
 
 **Auth Providers** (configured in `auth.provider`):
 

@@ -8,13 +8,25 @@
  * Personal account profile and security settings for SPA architecture.
  */
 
-import { getCurrentLocale, t, translateIfExists, updateContainerTranslations } from '../i18n.js'
+import { getCurrentLocale, translateIfExists, updateContainerTranslations } from '../i18n.js'
 import { showToast } from '../components/toast.js'
 import { checkAuth } from '../auth.js'
-import { buildAppUrl, buildAssetUrl } from '../config.js'
-import { canAccessProviderManagement } from '../permissions.js'
+import { buildAssetUrl } from '../config.js'
 
 const ACCOUNT_UI_PREFS_KEY = 'atlasclaw_account_ui_preferences'
+const PROVIDER_ORDER = ['smartcmp', 'dingtalk']
+const USER_TOKEN_AUTH_TYPE = 'user_token'
+const USER_TOKEN_FIELD = {
+  name: 'user_token',
+  type: 'password',
+  label: 'User Token',
+  label_i18n_key: 'provider.userToken',
+  placeholder: 'Enter user token',
+  placeholder_i18n_key: 'provider.userTokenPlaceholder',
+  required: true,
+  sensitive: true,
+  auth_types: [USER_TOKEN_AUTH_TYPE]
+}
 
 const DEFAULT_UI_PREFS = {
   twoFactor: false,
@@ -29,6 +41,19 @@ let currentAuthInfo = null
 let currentUiPrefs = { ...DEFAULT_UI_PREFS }
 let eventCleanupFns = []
 let isProfileEditing = false
+let providerTokenState = createProviderTokenState()
+let providerTokenSaving = false
+
+function createProviderTokenState() {
+  return {
+    serviceProviders: [],
+    providerDefinitions: {},
+    userProviderConfigs: {},
+    loading: false,
+    error: '',
+    modal: null
+  }
+}
 
 const PAGE_HTML = `
 <div class="account-settings-page">
@@ -140,109 +165,35 @@ const PAGE_HTML = `
               </label>
             </div>
           </div>
+
+          <div class="account-identity-actions">
+            <p class="account-panel-note hidden" id="accountSecurityUnavailable" data-i18n="account.passwordUnavailableDescription">
+              This account uses federated sign-in. Update your password through the external identity provider instead.
+            </p>
+            <button type="button" class="account-link-action account-password-action" id="accountOpenPasswordBtn" data-i18n="account.changePasswordLink">
+              Update Password
+            </button>
+          </div>
         </article>
       </form>
 
-      <div class="account-detail-grid">
-        <article class="settings-card account-security-card">
-          <div class="settings-card-header">
-            <div class="settings-card-icon security-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
-              </svg>
-            </div>
-            <div>
-              <h2 data-i18n="account.securityTitle">Security</h2>
-              <p id="accountSecurityDescription" data-i18n="account.securityPanelDescription">Control local sign-in conveniences and password rotation for this account.</p>
-            </div>
+      <article class="settings-card account-provider-token-card" id="accountProviderTokenCard">
+        <div class="settings-card-header">
+          <div class="settings-card-icon provider-token-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 2l-2 2"></path>
+              <path d="M15.5 7.5l2 2"></path>
+              <circle cx="7.5" cy="16.5" r="5.5"></circle>
+              <path d="M12 12 22 2"></path>
+            </svg>
           </div>
-
-          <div class="account-toggle-list" id="accountSecurityToggleList">
-            <label class="account-toggle-row">
-              <span data-i18n="account.twoFactorAuth">Two-Factor Auth</span>
-              <span class="toggle-switch">
-                <input type="checkbox" id="accountPrefTwoFactor">
-                <span class="toggle-slider"></span>
-              </span>
-            </label>
-            <label class="account-toggle-row">
-              <span data-i18n="account.biometricSignin">Biometric Sign-in</span>
-              <span class="toggle-switch">
-                <input type="checkbox" id="accountPrefBiometric">
-                <span class="toggle-slider"></span>
-              </span>
-            </label>
+          <div>
+            <h2 data-i18n="account.providerTokensTitle">Provider Tokens</h2>
+            <p data-i18n="account.providerTokensDescription">Set personal tokens for provider instances that support user-owned user_token.</p>
           </div>
-
-          <p class="account-panel-note hidden" id="accountSecurityUnavailable" data-i18n="account.passwordUnavailableDescription">
-            This account uses federated sign-in. Update your password through the external identity provider instead.
-          </p>
-
-          <button type="button" class="account-link-action" id="accountOpenPasswordBtn" data-i18n="account.changePasswordLink">
-            Update password
-          </button>
-        </article>
-
-        <article class="settings-card account-preferences-card">
-          <div class="settings-card-header">
-            <div class="settings-card-icon preference-icon">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <circle cx="12" cy="12" r="3"></circle>
-                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.32 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
-              </svg>
-            </div>
-            <div>
-              <h2 data-i18n="account.preferencesTitle">Preferences</h2>
-              <p data-i18n="account.preferencesDescription">Store local workspace preferences for experiments and digest notifications.</p>
-            </div>
-          </div>
-
-          <div class="account-toggle-list">
-            <label class="account-toggle-row">
-              <span data-i18n="account.betaFeatures">Beta Features</span>
-              <span class="toggle-switch">
-                <input type="checkbox" id="accountPrefBetaFeatures">
-                <span class="toggle-slider"></span>
-              </span>
-            </label>
-            <label class="account-toggle-row">
-              <span data-i18n="account.emailReports">Email Reports</span>
-              <span class="toggle-switch">
-                <input type="checkbox" id="accountPrefEmailReports">
-                <span class="toggle-slider"></span>
-              </span>
-            </label>
-          </div>
-
-          <button type="button" class="account-link-action" id="accountNotificationBtn" data-i18n="account.notificationConfig">
-            Notification config
-          </button>
-        </article>
-
-        <article class="settings-card account-auth-config-card" id="accountAuthConfigCard" hidden>
-          <div class="account-auth-config-summary">
-            <div>
-              <h2 data-i18n="account.authConfigTitle">Authentication Configuration</h2>
-              <p class="account-auth-config-copy" data-i18n="account.authConfigSummary">
-                Review provider credentials and access parameters from one dedicated workspace.
-              </p>
-            </div>
-
-            <button type="button" class="account-link-action account-link-action-inline" id="accountOpenAuthConfigBtn" data-i18n="account.authConfigAction">
-              Open management
-            </button>
-          </div>
-
-          <div class="account-auth-config-meta">
-            <span class="account-auth-config-pill" data-i18n="account.authConfigStatus">
-              Dedicated workspace
-            </span>
-            <span class="account-auth-config-hint" data-i18n="account.authConfigHint">
-              Provider credentials, access parameters, and connection settings stay on the dedicated page.
-            </span>
-          </div>
-        </article>
-      </div>
+        </div>
+        <div class="account-provider-token-panel" id="accountProviderTokenPanel"></div>
+      </article>
 
       <article class="account-danger-zone">
         <div>
@@ -260,6 +211,8 @@ const PAGE_HTML = `
       </div>
     </section>
   </div>
+
+  <div id="accountProviderTokenModalHost"></div>
 
   <div id="accountPasswordModal" class="modal-overlay hidden">
     <div class="modal account-password-modal">
@@ -333,8 +286,7 @@ function isLocalAuth(authType) {
 }
 
 function translateOrFallback(key, fallback) {
-  const translated = t(key)
-  return translated === key ? fallback : translated
+  return translateIfExists(key) || fallback
 }
 
 function formatAuthType(authType) {
@@ -457,31 +409,23 @@ function buildProfileBio(profile) {
 }
 
 function syncUiToggles() {
-  containerRef.querySelector('#accountPrefTwoFactor').checked = Boolean(currentUiPrefs.twoFactor)
-  containerRef.querySelector('#accountPrefBiometric').checked = Boolean(currentUiPrefs.biometric)
-  containerRef.querySelector('#accountPrefBetaFeatures').checked = Boolean(currentUiPrefs.betaFeatures)
-  containerRef.querySelector('#accountPrefEmailReports').checked = Boolean(currentUiPrefs.emailReports)
-}
+  const twoFactorInput = containerRef.querySelector('#accountPrefTwoFactor')
+  const biometricInput = containerRef.querySelector('#accountPrefBiometric')
+  const betaInput = containerRef.querySelector('#accountPrefBetaFeatures')
+  const reportsInput = containerRef.querySelector('#accountPrefEmailReports')
 
-function hasProviderConfigAccess() {
-  return canAccessProviderManagement(currentAuthInfo)
-}
-
-function applyProviderConfigAccessState() {
-  const authConfigCard = containerRef?.querySelector('#accountAuthConfigCard')
-  if (!authConfigCard) {
-    return
-  }
-
-  authConfigCard.hidden = !hasProviderConfigAccess()
+  if (twoFactorInput) twoFactorInput.checked = Boolean(currentUiPrefs.twoFactor)
+  if (biometricInput) biometricInput.checked = Boolean(currentUiPrefs.biometric)
+  if (betaInput) betaInput.checked = Boolean(currentUiPrefs.betaFeatures)
+  if (reportsInput) reportsInput.checked = Boolean(currentUiPrefs.emailReports)
 }
 
 function collectUiToggles() {
   return {
-    twoFactor: containerRef.querySelector('#accountPrefTwoFactor').checked,
-    biometric: containerRef.querySelector('#accountPrefBiometric').checked,
-    betaFeatures: containerRef.querySelector('#accountPrefBetaFeatures').checked,
-    emailReports: containerRef.querySelector('#accountPrefEmailReports').checked
+    twoFactor: containerRef.querySelector('#accountPrefTwoFactor')?.checked ?? currentUiPrefs.twoFactor,
+    biometric: containerRef.querySelector('#accountPrefBiometric')?.checked ?? currentUiPrefs.biometric,
+    betaFeatures: containerRef.querySelector('#accountPrefBetaFeatures')?.checked ?? currentUiPrefs.betaFeatures,
+    emailReports: containerRef.querySelector('#accountPrefEmailReports')?.checked ?? currentUiPrefs.emailReports
   }
 }
 
@@ -555,15 +499,6 @@ function applyProfileEditState() {
     notificationBtn.classList.toggle('disabled', !isEditing)
   }
 
-}
-
-function openAuthenticationConfigPage() {
-  if (window.__spaRouter && typeof window.__spaRouter.navigate === 'function') {
-    window.__spaRouter.navigate('/providers')
-    return
-  }
-
-  window.location.href = buildAppUrl('/providers')
 }
 
 function enterProfileEditMode() {
@@ -662,6 +597,385 @@ async function changePassword(payload) {
   }
 
   return response.json()
+}
+
+async function requestJson(url, options = {}) {
+  const response = await fetch(url, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    },
+    ...options
+  })
+
+  if (!response.ok) {
+    let message = `Request failed: ${response.status}`
+    try {
+      const payload = await response.json()
+      message = payload.detail || payload.message || payload.error || message
+    } catch {
+      // Keep status fallback for non-JSON responses.
+    }
+    throw new Error(message)
+  }
+
+  if (response.status === 204) {
+    return {}
+  }
+
+  return response.json()
+}
+
+function translateProviderToken(key, fallback, params = {}) {
+  return translateIfExists(key, params) || fallback
+}
+
+async function loadProviderTokenSettings() {
+  providerTokenState.loading = true
+  providerTokenState.error = ''
+  renderProviderTokenSettings()
+
+  try {
+    const [serviceData, definitionData, userProviderData] = await Promise.all([
+      requestJson('/api/service-providers/available-instances'),
+      requestJson('/api/service-providers/definitions'),
+      requestJson('/api/users/me/provider-settings')
+    ])
+
+    providerTokenState.serviceProviders = Array.isArray(serviceData?.providers) ? serviceData.providers : []
+    providerTokenState.providerDefinitions = indexProviderDefinitions(definitionData?.providers)
+    providerTokenState.userProviderConfigs = typeof userProviderData?.providers === 'object' && userProviderData.providers
+      ? userProviderData.providers
+      : {}
+  } catch (error) {
+    providerTokenState.error = error?.message || translateOrFallback('provider.loadError', 'Failed to load providers')
+  } finally {
+    providerTokenState.loading = false
+    renderProviderTokenSettings()
+  }
+}
+
+function renderProviderTokenSettings() {
+  if (!containerRef) return
+
+  const panel = containerRef.querySelector('#accountProviderTokenPanel')
+  const modalHost = containerRef.querySelector('#accountProviderTokenModalHost')
+  if (panel) {
+    panel.innerHTML = renderProviderTokenPanel()
+  }
+  if (modalHost) {
+    modalHost.innerHTML = renderProviderTokenModal()
+  }
+}
+
+function renderProviderTokenPanel() {
+  if (providerTokenState.loading) {
+    return `
+      <div class="account-provider-token-empty">
+        <strong>${escapeHtml(translateOrFallback('account.providerTokensLoadingTitle', 'Loading provider tokens'))}</strong>
+        <span>${escapeHtml(translateOrFallback('account.providerTokensLoadingDescription', 'Checking provider instances that allow personal user tokens.'))}</span>
+      </div>
+    `
+  }
+
+  if (providerTokenState.error) {
+    return `
+      <div class="account-provider-token-empty is-error">
+        <strong>${escapeHtml(translateOrFallback('account.providerTokensErrorTitle', 'Unable to load provider tokens'))}</strong>
+        <span>${escapeHtml(providerTokenState.error)}</span>
+      </div>
+    `
+  }
+
+  const rows = getProviderTokenRows()
+  if (!rows.length) {
+    return `
+      <div class="account-provider-token-empty">
+        <strong>${escapeHtml(translateOrFallback('account.providerTokensEmptyTitle', 'No personal token providers available'))}</strong>
+        <span>${escapeHtml(translateOrFallback('account.providerTokensEmptyDescription', 'No provider instances currently allow user-owned user_token configuration.'))}</span>
+      </div>
+    `
+  }
+
+  return `
+    <div class="account-provider-token-table-wrap">
+      <table class="account-provider-token-table">
+        <thead>
+          <tr>
+            <th>${escapeHtml(translateOrFallback('account.providerTokensProvider', 'Provider'))}</th>
+            <th>${escapeHtml(translateOrFallback('account.providerTokensInstance', 'Instance'))}</th>
+            <th>${escapeHtml(translateOrFallback('account.providerTokensStatus', 'Personal Token'))}</th>
+            <th>${escapeHtml(translateOrFallback('account.providerTokensUpdated', 'Updated'))}</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(renderProviderTokenRow).join('')}
+        </tbody>
+      </table>
+    </div>
+  `
+}
+
+function renderProviderTokenRow(row) {
+  const statusLabel = row.configured
+    ? translateOrFallback('provider.statusConfigured', 'Configured')
+    : translateOrFallback('provider.notConfigured', 'Not configured')
+  const statusClass = row.configured ? 'is-configured' : 'is-missing'
+
+  return `
+    <tr>
+      <td>
+        <strong>${escapeHtml(row.providerName)}</strong>
+      </td>
+      <td>${escapeHtml(row.instanceName)}</td>
+      <td><span class="account-provider-token-status ${statusClass}">${escapeHtml(statusLabel)}</span></td>
+      <td><span class="${row.updatedLabel === '--' ? 'account-muted-cell' : ''}">${escapeHtml(row.updatedLabel)}</span></td>
+      <td class="account-provider-token-action-cell">
+        <button
+          type="button"
+          class="account-provider-token-configure-btn"
+          data-account-provider-token-configure
+          data-provider-type="${escapeHtml(row.providerType)}"
+          data-instance-name="${escapeHtml(row.instanceName)}"
+        >${escapeHtml(translateOrFallback('provider.configureCredentialsShort', 'Configure'))}</button>
+      </td>
+    </tr>
+  `
+}
+
+function renderProviderTokenModal() {
+  if (!providerTokenState.modal?.open) {
+    return ''
+  }
+
+  const modal = providerTokenState.modal
+  const meta = getProviderMeta(modal.providerType)
+  const field = getProviderUserTokenField(modal.providerType)
+  const hasStoredToken = Boolean(getUserProviderEntry(modal.providerType, modal.instanceName)?.configured)
+  const placeholder = hasStoredToken
+    ? translateOrFallback('provider.secretUpdatePlaceholder', 'Enter a new value to update')
+    : getSchemaFieldPlaceholder(field)
+  const required = field.required && !hasStoredToken ? 'required' : ''
+  const title = translateProviderToken('account.providerTokenModalTitle', `Set ${meta.name} User Token`, { provider: meta.name })
+
+  return `
+    <div id="accountProviderTokenModal" class="modal-overlay">
+      <div class="modal account-provider-token-modal">
+        <div class="modal-header">
+          <div>
+            <h2>${escapeHtml(title)}</h2>
+            <p class="modal-description">${escapeHtml(translateOrFallback('account.providerTokenModalDescription', 'Set the personal token AtlasClaw should use for this provider instance.'))}</p>
+          </div>
+          <button type="button" class="modal-close" data-account-provider-token-close aria-label="${escapeHtml(translateOrFallback('provider.close', 'Close'))}">&times;</button>
+        </div>
+        <form id="accountProviderTokenForm" novalidate>
+          <div class="modal-body">
+            <div class="account-provider-token-modal-context">
+              <span>${escapeHtml(translateOrFallback('account.providerTokensProvider', 'Provider'))}</span>
+              <strong>${escapeHtml(meta.name)}</strong>
+              <span>${escapeHtml(translateOrFallback('account.providerTokensInstance', 'Instance'))}</span>
+              <strong>${escapeHtml(modal.instanceName)}</strong>
+            </div>
+            <label class="account-field">
+              <span>${escapeHtml(getSchemaFieldLabel(field))}</span>
+              <input id="accountProviderTokenInput" type="password" name="user_token" value="" placeholder="${escapeHtml(placeholder)}" autocomplete="off" ${required}>
+            </label>
+            ${modal.error ? `<p class="account-provider-token-error">${escapeHtml(modal.error)}</p>` : ''}
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn-secondary" data-account-provider-token-close>${escapeHtml(translateOrFallback('provider.cancel', 'Cancel'))}</button>
+            <button type="submit" class="btn-primary" id="accountSaveProviderTokenBtn">${escapeHtml(translateOrFallback('provider.saveCredentials', 'Save'))}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  `
+}
+
+function openProviderTokenModal(providerType, instanceName) {
+  providerTokenState.modal = {
+    open: true,
+    providerType,
+    instanceName,
+    error: ''
+  }
+  renderProviderTokenSettings()
+  containerRef.querySelector('#accountProviderTokenInput')?.focus()
+}
+
+function closeProviderTokenModal() {
+  providerTokenState.modal = null
+  renderProviderTokenSettings()
+}
+
+async function saveProviderTokenModal() {
+  if (providerTokenSaving || !providerTokenState.modal) {
+    return
+  }
+
+  const modal = providerTokenState.modal
+  const input = containerRef.querySelector('#accountProviderTokenInput')
+  const saveBtn = containerRef.querySelector('#accountSaveProviderTokenBtn')
+  const userToken = String(input?.value || '').trim()
+  const existingEntry = getUserProviderEntry(modal.providerType, modal.instanceName)
+
+  if (!existingEntry?.configured && !userToken) {
+    providerTokenState.modal.error = translateOrFallback('provider.requiredFields', 'User token is required.')
+    renderProviderTokenSettings()
+    return
+  }
+
+  providerTokenSaving = true
+  if (saveBtn) {
+    saveBtn.disabled = true
+    saveBtn.textContent = translateOrFallback('account.providerTokensSaving', 'Saving...')
+  }
+
+  try {
+    await requestJson('/api/users/me/provider-settings', {
+      method: 'PUT',
+      body: JSON.stringify({
+        provider_type: modal.providerType,
+        instance_name: modal.instanceName,
+        config: userToken ? { user_token: userToken } : {}
+      })
+    })
+
+    providerTokenState.modal = null
+    await loadProviderTokenSettings()
+    showToast(translateOrFallback('account.providerTokenSaved', 'Provider token saved successfully'), 'success')
+  } catch (error) {
+    providerTokenState.modal = {
+      ...modal,
+      error: error?.message || translateOrFallback('account.providerTokenSaveFailed', 'Unable to save provider token')
+    }
+    showToast(providerTokenState.modal.error, 'error')
+    renderProviderTokenSettings()
+  } finally {
+    providerTokenSaving = false
+  }
+}
+
+function getProviderTokenRows() {
+  return providerTokenState.serviceProviders
+    .filter((entry) => entry?.provider_type && authChainIncludesUserToken(entry.auth_type))
+    .map((entry) => {
+      const providerType = String(entry.provider_type)
+      const instanceName = String(entry.instance_name || '')
+      const userEntry = getUserProviderEntry(providerType, instanceName)
+      const meta = getProviderMeta(providerType)
+      return {
+        providerType,
+        providerName: meta.name,
+        instanceName,
+        configured: Boolean(userEntry?.configured),
+        updatedLabel: formatProviderTimestamp(userEntry?.updated_at)
+      }
+    })
+    .sort((left, right) => {
+      const leftRank = PROVIDER_ORDER.indexOf(left.providerType)
+      const rightRank = PROVIDER_ORDER.indexOf(right.providerType)
+      if (leftRank !== -1 || rightRank !== -1) {
+        return (leftRank === -1 ? 999 : leftRank) - (rightRank === -1 ? 999 : rightRank)
+      }
+      const typeSort = left.providerType.localeCompare(right.providerType)
+      return typeSort || left.instanceName.localeCompare(right.instanceName)
+    })
+}
+
+function indexProviderDefinitions(definitions) {
+  if (!Array.isArray(definitions)) {
+    return {}
+  }
+
+  return Object.fromEntries(
+    definitions
+      .filter((item) => item?.provider_type)
+      .map((item) => [item.provider_type, item])
+  )
+}
+
+function getProviderMeta(providerType) {
+  const fallbackName = String(providerType || 'provider')
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, (segment) => segment.toUpperCase())
+
+  const definition = providerTokenState.providerDefinitions[providerType]
+  if (!definition) {
+    return { name: fallbackName }
+  }
+
+  return {
+    name: translateProviderToken(definition.name_i18n_key || '', definition.display_name || fallbackName)
+  }
+}
+
+function getUserProviderEntry(providerType, instanceName) {
+  const providerBucket = providerTokenState.userProviderConfigs?.[providerType]
+  if (!providerBucket || typeof providerBucket !== 'object') {
+    return null
+  }
+
+  const entry = providerBucket[instanceName]
+  return entry && typeof entry === 'object' ? entry : null
+}
+
+function getProviderSchemaFields(providerType) {
+  const fields = providerTokenState.providerDefinitions[providerType]?.schema?.fields
+  return Array.isArray(fields) ? fields : []
+}
+
+function getProviderUserTokenField(providerType) {
+  return getProviderSchemaFields(providerType).find((field) => {
+    if (field?.name !== USER_TOKEN_FIELD.name) {
+      return false
+    }
+    const authTypes = normalizeAuthTypeChain(field?.auth_types || [])
+    return !authTypes.length || authTypes.includes(USER_TOKEN_AUTH_TYPE)
+  }) || USER_TOKEN_FIELD
+}
+
+function normalizeAuthTypeChain(value) {
+  const rawValues = Array.isArray(value) ? value : [value]
+  const chain = []
+  for (const item of rawValues) {
+    const normalized = String(item || '').trim().toLowerCase()
+    if (normalized && !chain.includes(normalized)) {
+      chain.push(normalized)
+    }
+  }
+  return chain
+}
+
+function authChainIncludesUserToken(value) {
+  return normalizeAuthTypeChain(value).includes(USER_TOKEN_AUTH_TYPE)
+}
+
+function getSchemaFieldLabel(field) {
+  return translateProviderToken(field.label_i18n_key || '', field.label || field.name || '')
+}
+
+function getSchemaFieldPlaceholder(field) {
+  return translateProviderToken(field.placeholder_i18n_key || '', field.placeholder || '')
+}
+
+function formatProviderTimestamp(value) {
+  if (!value) {
+    return '--'
+  }
+
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return String(value)
+  }
+
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hours = String(date.getHours()).padStart(2, '0')
+  const minutes = String(date.getMinutes()).padStart(2, '0')
+  return `${year}-${month}-${day} ${hours}:${minutes}`
 }
 
 async function uploadAvatar(file) {
@@ -825,6 +1139,36 @@ async function handlePasswordSubmit(event) {
   }
 }
 
+function handleProviderTokenClick(event) {
+  const configureButton = event.target.closest('[data-account-provider-token-configure]')
+  if (configureButton) {
+    openProviderTokenModal(
+      configureButton.dataset.providerType || '',
+      configureButton.dataset.instanceName || ''
+    )
+    return
+  }
+
+  if (event.target.closest('[data-account-provider-token-close]')) {
+    closeProviderTokenModal()
+    return
+  }
+
+  const overlay = event.target.closest('#accountProviderTokenModal')
+  if (overlay && event.target === overlay) {
+    closeProviderTokenModal()
+  }
+}
+
+async function handleProviderTokenSubmit(event) {
+  if (!event.target.matches('#accountProviderTokenForm')) {
+    return
+  }
+
+  event.preventDefault()
+  await saveProviderTokenModal()
+}
+
 function setupEventListeners() {
   addTrackedListener(containerRef.querySelector('#accountEditPublicBtn'), 'click', () => {
     enterProfileEditMode()
@@ -862,10 +1206,6 @@ function setupEventListeners() {
     )
   })
 
-  addTrackedListener(containerRef.querySelector('#accountOpenAuthConfigBtn'), 'click', () => {
-    openAuthenticationConfigPage()
-  })
-
   addTrackedListener(containerRef.querySelector('#accountDeactivateBtn'), 'click', () => {
     showToast(
       translateOrFallback(
@@ -878,6 +1218,8 @@ function setupEventListeners() {
 
   addTrackedListener(containerRef.querySelector('#accountResetBtn'), 'click', resetDraftState)
   addTrackedListener(containerRef.querySelector('#accountSaveProfileBtn'), 'click', handleSaveAllChanges)
+  addTrackedListener(containerRef, 'click', handleProviderTokenClick)
+  addTrackedListener(containerRef, 'submit', handleProviderTokenSubmit)
   addTrackedListener(containerRef.querySelector('#accountOpenPasswordBtn'), 'click', openPasswordModal)
   addTrackedListener(containerRef.querySelector('#accountPasswordForm'), 'submit', handlePasswordSubmit)
   addTrackedListener(containerRef.querySelector('#accountPasswordClose'), 'click', closePasswordModal)
@@ -892,6 +1234,7 @@ function setupEventListeners() {
 
   const escapeHandler = (event) => {
     if (event.key === 'Escape') {
+      closeProviderTokenModal()
       closePasswordModal()
     }
   }
@@ -911,6 +1254,8 @@ export async function mount(container, { params, route } = {}) {
   currentAuthInfo = user
 
   currentUiPrefs = loadUiPreferences()
+  providerTokenState = createProviderTokenState()
+  providerTokenSaving = false
 
   if (!document.getElementById('account-settings-page-css')) {
     const cssLink = document.createElement('link')
@@ -922,12 +1267,14 @@ export async function mount(container, { params, route } = {}) {
 
   containerRef.innerHTML = PAGE_HTML
   updateContainerTranslations(containerRef)
-  applyProviderConfigAccessState()
   syncUiToggles()
   isProfileEditing = false
   applyProfileEditState()
   setupEventListeners()
-  await loadProfile()
+  await Promise.all([
+    loadProfile(),
+    loadProviderTokenSettings()
+  ])
 
   console.log('[AccountSettingsPage] Mounted')
 }
@@ -944,6 +1291,8 @@ export async function unmount() {
   currentAuthInfo = null
   currentUiPrefs = { ...DEFAULT_UI_PREFS }
   isProfileEditing = false
+  providerTokenState = createProviderTokenState()
+  providerTokenSaving = false
   containerRef = null
 
   console.log('[AccountSettingsPage] Unmounted')

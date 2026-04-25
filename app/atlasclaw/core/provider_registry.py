@@ -75,6 +75,27 @@ def _redact_config(config: dict[str, Any], *, provider_type: str = "") -> dict[s
     return redacted if isinstance(redacted, dict) else {}
 
 
+def _validate_instance_auth_type(
+    provider_type: str,
+    instance_name: str,
+    config: dict[str, Any],
+) -> None:
+    """Validate configured provider auth_type against the core auth type registry."""
+    from app.atlasclaw.api.service_provider_schemas import (
+        get_provider_schema_definition,
+        normalize_provider_auth_type_chain,
+    )
+
+    definition = get_provider_schema_definition(provider_type)
+    fallback = definition.default_auth_type if definition is not None else None
+    try:
+        normalize_provider_auth_type_chain(config.get("auth_type"), fallback=fallback)
+    except ValueError as exc:
+        raise ValueError(
+            f"Skipping provider instance {provider_type}.{instance_name}: {exc}"
+        ) from exc
+
+
 @dataclass
 class ProviderTemplate:
     name: str
@@ -259,7 +280,17 @@ class ServiceProviderRegistry:
                         type(params).__name__,
                     )
                     continue
-                resolved_instances[instance_name] = _resolve_env_recursive(params)
+                resolved_params = _resolve_env_recursive(params)
+                try:
+                    _validate_instance_auth_type(
+                        str(provider_type),
+                        str(instance_name),
+                        resolved_params,
+                    )
+                except ValueError as exc:
+                    logger.error("%s", exc)
+                    continue
+                resolved_instances[instance_name] = resolved_params
 
             self._instances[provider_type] = resolved_instances
             logger.info(

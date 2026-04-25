@@ -172,7 +172,7 @@ def test_sanitize_log_value_redacts_provider_schema_sensitive_fields() -> None:
         "instance_name": "default",
         "base_url": "https://cmp.example.com/platform-api",
         "auth_type": "user_token",
-        "cookie": "CloudChef-Authenticate=session-cookie",
+        "cookie": "AtlasClaw-Host-Authenticate=session-cookie",
         "password": "super-secret-password",
         "user_token": "fake-smartcmp-user-token",
     }

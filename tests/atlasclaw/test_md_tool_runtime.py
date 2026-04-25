@@ -186,9 +186,9 @@ def test_script_wrapper_hides_silent_lookup_output_when_internal_metadata_exists
             [
                 "import sys",
                 "print('Found 3 published catalog(s).')",
-                "sys.stderr.write('##SMARTCMP_META_START##\\n')",
+                "sys.stderr.write('##PROVIDER_META_START##\\n')",
                 "sys.stderr.write('{\"catalogs\": [{\"id\": \"catalog-1\", \"name\": \"Linux VM\"}]}\\n')",
-                "sys.stderr.write('##SMARTCMP_META_END##\\n')",
+                "sys.stderr.write('##PROVIDER_META_END##\\n')",
             ]
         ),
         encoding="utf-8",
@@ -196,7 +196,7 @@ def test_script_wrapper_hides_silent_lookup_output_when_internal_metadata_exists
 
     wrapper = create_script_wrapper(
         script,
-        tool_name="smartcmp_list_services",
+        tool_name="provider_list_services",
         result_mode="silent_ok",
         success_contract={},
     )
@@ -217,9 +217,9 @@ def test_script_wrapper_keeps_visible_output_for_non_lookup_tools_even_with_inte
             [
                 "import sys",
                 "print('Request submitted successfully.')",
-                "sys.stderr.write('##SMARTCMP_META_START##\\n')",
+                "sys.stderr.write('##PROVIDER_META_START##\\n')",
                 "sys.stderr.write('{\"requestId\": \"TIC20260422000001\"}\\n')",
-                "sys.stderr.write('##SMARTCMP_META_END##\\n')",
+                "sys.stderr.write('##PROVIDER_META_END##\\n')",
             ]
         ),
         encoding="utf-8",
@@ -227,7 +227,7 @@ def test_script_wrapper_keeps_visible_output_for_non_lookup_tools_even_with_inte
 
     wrapper = create_script_wrapper(
         script,
-        tool_name="smartcmp_submit_request",
+        tool_name="provider_submit_request",
         result_mode="silent_ok",
         success_contract={"required_fields": ["requestId"]},
     )
@@ -250,15 +250,15 @@ def test_script_wrapper_logs_tool_name_and_masks_sensitive_env_values(
         cookies = {}
         extra = {
             "provider_instances": {
-                "smartcmp": {
+                "provider": {
                     "default": {
-                        "provider_type": "smartcmp",
+                        "provider_type": "provider",
                         "instance_name": "default",
-                        "base_url": "https://cmp.example.com/platform-api",
+                        "base_url": "https://provider.example.com/platform-api",
                         "auth_type": "user_token",
-                        "cookie": "CloudChef-Authenticate=session-cookie",
+                        "cookie": "provider-session-cookie",
                         "password": "super-secret-password",
-                        "user_token": "fake-smartcmp-user-token",
+                        "user_token": "fake-provider-user-token",
                     }
                 }
             }
@@ -269,18 +269,227 @@ def test_script_wrapper_logs_tool_name_and_masks_sensitive_env_values(
 
     wrapper = create_script_wrapper(
         script,
-        provider_type="smartcmp",
-        tool_name="smartcmp_list_flavors",
+        provider_type="provider",
+        tool_name="provider_list_flavors",
     )
 
     result = asyncio.run(wrapper(ctx=_Ctx()))
     captured = capsys.readouterr()
 
     assert result["success"] is True
-    assert "tool_name=smartcmp_list_flavors, provider_type=smartcmp" in captured.out
+    assert "tool_name=provider_list_flavors, provider_type=provider" in captured.out
     assert "[DEBUG] Set env var: PASSWORD=***..." in captured.out
     assert "[DEBUG] Set env var: COOKIE=***..." in captured.out
     assert "[DEBUG] Set env var: USER_TOKEN=***..." in captured.out
     assert "super-secret-password" not in captured.out
-    assert "CloudChef-Authenticate=session-cookie" not in captured.out
-    assert "fake-smartcmp-user-token" not in captured.out
+    assert "provider-session-cookie" not in captured.out
+    assert "fake-provider-user-token" not in captured.out
+
+
+def test_script_wrapper_exposes_provider_sso_runtime_context_to_script_environment(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "echo_sso.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "print(json.dumps({",
+                "  'available': os.environ.get('ATLASCLAW_PROVIDER_SSO_AVAILABLE', ''),",
+                "  'token': os.environ.get('ATLASCLAW_PROVIDER_SSO_TOKEN', ''),",
+                "}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Deps:
+        cookies = {}
+        extra = {
+            "provider_sso_available": True,
+            "provider_sso_token": "oidc-access-token",
+            "provider_instance": {
+                "provider_type": "generic",
+                "instance_name": "default",
+                "base_url": "https://provider.example.com/platform-api",
+                "auth_type": "sso",
+            },
+        }
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(
+        script,
+        provider_type="generic",
+        tool_name="generic_list_catalogs",
+    )
+
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is True
+    payload = json.loads(result["output"].strip())
+    assert payload == {
+        "available": "1",
+        "token": "oidc-access-token",
+    }
+
+
+def test_script_wrapper_exposes_provider_cookie_runtime_context_to_script_environment(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "echo_cookie.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "print(json.dumps({",
+                "  'available': os.environ.get('ATLASCLAW_PROVIDER_COOKIE_AVAILABLE', ''),",
+                "  'token': os.environ.get('ATLASCLAW_PROVIDER_COOKIE_TOKEN', ''),",
+                "  'cookie': os.environ.get('COOKIE', ''),",
+                "}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Deps:
+        cookies = {}
+        extra = {
+            "provider_cookie_available": True,
+            "provider_cookie_token": "request-cookie-token",
+            "provider_instance": {
+                "provider_type": "generic",
+                "instance_name": "default",
+                "base_url": "https://provider.example.com/platform-api",
+                "auth_type": "cookie",
+                "cookie": "request-cookie-token",
+            },
+        }
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(
+        script,
+        provider_type="generic",
+        tool_name="generic_list_catalogs",
+    )
+
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is True
+    payload = json.loads(result["output"].strip())
+    assert payload == {
+        "available": "1",
+        "token": "request-cookie-token",
+        "cookie": "request-cookie-token",
+    }
+
+
+def test_script_wrapper_blocks_submit_request_without_explicit_confirmation(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "submit-ran.txt"
+    script = tmp_path / "submit.py"
+    script.write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
+                "print('submitted')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Deps:
+        user_message = "This is a UI automation check for provider user_token access."
+        cookies = {}
+        extra = {}
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(
+        script,
+        tool_name="provider_submit_request",
+    )
+
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is False
+    assert "explicit user confirmation is required" in result["error"].lower()
+    assert not marker.exists()
+
+
+def test_script_wrapper_allows_submit_request_with_explicit_confirmation(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "submit-ran.txt"
+    script = tmp_path / "submit.py"
+    script.write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
+                "print('submitted')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Deps:
+        user_message = "The parameters are correct. Please submit the request now."
+        cookies = {}
+        extra = {}
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(
+        script,
+        tool_name="provider_submit_request",
+    )
+
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is True
+    assert result["output"] == "submitted\n"
+    assert marker.read_text(encoding="utf-8") == "ran"
+
+
+def test_script_wrapper_blocks_submit_intent_without_explicit_confirmation(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "submit-ran.txt"
+    script = tmp_path / "submit.py"
+    script.write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
+                "print('submitted')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Deps:
+        user_message = "Submit now."
+        cookies = {}
+        extra = {}
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(
+        script,
+        tool_name="provider_submit_request",
+    )
+
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is False
+    assert "explicit user confirmation is required" in result["error"].lower()
+    assert not marker.exists()

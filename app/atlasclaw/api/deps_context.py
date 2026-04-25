@@ -12,12 +12,15 @@ from fastapi import HTTPException, Request, status
 
 from ..agent.routing import AgentRouter
 from ..auth.models import UserInfo
+from ..core.config import get_config
 from ..core.deps import SkillDeps
 from ..core.security_guard import ensure_user_work_dir
 from ..core.trace import enrich_trace_metadata
 from ..core.user_provider_bindings import (
     ResolvedProviderInstanceRegistry,
+    build_resolved_provider_instances,
     build_user_provider_instances,
+    normalize_provider_runtime_context,
 )
 from ..memory.manager import MemoryManager
 from ..session.manager import SessionManager
@@ -30,6 +33,83 @@ from ..hooks.runtime_store import HookStateStore
 from ..heartbeat.runtime import HeartbeatRuntime
 from .sse import SSEManager
 from .webhook_dispatch import WebhookDispatchManager
+
+_DEFAULT_ATLASCLAW_AUTH_COOKIE_NAME = "AtlasClaw-Authenticate"
+_DEFAULT_HOST_AUTH_COOKIE_NAME = "AtlasClaw-Host-Authenticate"
+
+
+def _normalize_cookie_name(value: Any) -> str:
+    return str(value or "").strip().lower()
+
+
+def _get_field(source: Any, field_name: str) -> Any:
+    if isinstance(source, dict):
+        return source.get(field_name)
+    return getattr(source, field_name, None)
+
+
+def _get_configured_auth_cookie_name(section_name: str) -> str:
+    try:
+        auth_config = _get_field(get_config(), "auth")
+    except Exception:
+        return ""
+
+    section_config = _get_field(auth_config, section_name)
+    if section_config is None:
+        return ""
+
+    expanded_builder = getattr(section_config, "expanded", None)
+    if callable(expanded_builder):
+        try:
+            section_config = expanded_builder()
+        except Exception:
+            pass
+
+    return str(_get_field(section_config, "cookie_name") or "").strip()
+
+
+def _get_cookie_name_candidates(*values: Any) -> tuple[str, ...]:
+    names: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        normalized_name = _normalize_cookie_name(value)
+        if normalized_name and normalized_name not in seen:
+            names.append(normalized_name)
+            seen.add(normalized_name)
+    return tuple(names)
+
+
+def _get_atlas_auth_cookie_names() -> tuple[str, ...]:
+    # Mirror AuthMiddleware._extract_atlas_token(): the configured JWT cookie
+    # name and the default fallback are both AtlasClaw session cookies.
+    return _get_cookie_name_candidates(
+        _get_configured_auth_cookie_name("jwt"),
+        _DEFAULT_ATLASCLAW_AUTH_COOKIE_NAME,
+    )
+
+
+def _get_host_auth_cookie_names() -> tuple[str, ...]:
+    configured_name = _get_configured_auth_cookie_name("host")
+    return _get_cookie_name_candidates(configured_name or _DEFAULT_HOST_AUTH_COOKIE_NAME)
+
+
+def _extract_provider_cookie_token(request_cookies: Optional[dict[str, str]]) -> str:
+    """Return an external browser auth cookie without exposing AtlasClaw's session."""
+    if not isinstance(request_cookies, dict):
+        return ""
+
+    atlas_auth_cookie_names = set(_get_atlas_auth_cookie_names())
+    request_cookie_tokens = {
+        _normalize_cookie_name(cookie_name): str(cookie_value or "").strip()
+        for cookie_name, cookie_value in request_cookies.items()
+    }
+    for normalized_name in _get_host_auth_cookie_names():
+        if normalized_name in atlas_auth_cookie_names:
+            continue
+        token = request_cookie_tokens.get(normalized_name, "")
+        if token:
+            return token
+    return ""
 
 
 @dataclass
@@ -205,6 +285,25 @@ def build_scoped_deps(
     provider_config: Optional[dict[str, Any]] = None,
     extra: Optional[dict[str, Any]] = None,
 ) -> SkillDeps:
+    runtime_context_source = (
+        dict(getattr(user_info, "extra", {}))
+        if isinstance(getattr(user_info, "extra", {}), dict)
+        else {}
+    )
+    # Bridge request-scoped provider cookies into the provider resolver for
+    # this request only; user settings continue to store only user-owned values.
+    request_cookie_token = str(
+        runtime_context_source.get("provider_cookie_token", "") or ""
+    ).strip()
+    if not request_cookie_token:
+        request_cookie_token = _extract_provider_cookie_token(request_cookies)
+    if not request_cookie_token and str(getattr(user_info, "auth_type", "") or "").strip() == "cookie":
+        request_cookie_token = str(getattr(user_info, "raw_token", "") or "").strip()
+    if request_cookie_token:
+        runtime_context_source["provider_cookie_available"] = True
+        runtime_context_source["provider_cookie_token"] = request_cookie_token
+
+    runtime_context = normalize_provider_runtime_context(runtime_context_source)
     scoped_session_mgr = ctx.session_manager_router.for_user(user_info.user_id)
     scoped_memory_mgr: Optional[MemoryManager] = None
     if ctx.memory_manager is not None:
@@ -233,24 +332,22 @@ def build_scoped_deps(
         if isinstance(provider_config, dict) and provider_config
         else (ctx.provider_instances or {})
     )
-    merged_provider_instances = {
-        provider_type: {
-            instance_name: dict(instance_config)
-            for instance_name, instance_config in instances.items()
-        }
-        for provider_type, instances in base_provider_instances.items()
-        if isinstance(instances, dict)
-    }
+    resolved_provider_instances = build_resolved_provider_instances(
+        base_provider_instances,
+        runtime_context=runtime_context,
+    )
     user_provider_instances = build_user_provider_instances(
         user_info.user_id,
         workspace_path=str(scoped_session_mgr.workspace_path),
+        runtime_context=runtime_context,
+        provider_templates=base_provider_instances,
     )
     for provider_type, instances in user_provider_instances.items():
-        provider_bucket = merged_provider_instances.setdefault(provider_type, {})
+        provider_bucket = resolved_provider_instances.setdefault(provider_type, {})
         for instance_name, instance_config in instances.items():
             provider_bucket[instance_name] = dict(instance_config)
 
-    provider_registry = ResolvedProviderInstanceRegistry(merged_provider_instances)
+    provider_registry = ResolvedProviderInstanceRegistry(resolved_provider_instances)
     available_providers = provider_registry.get_available_providers_summary()
 
     # Apply user skill permission filtering if provided via request context.
@@ -316,10 +413,11 @@ def build_scoped_deps(
         md_skills_snapshot = ctx.skill_registry.md_snapshot()
 
     deps_extra = {
+        **runtime_context,
         "_service_provider_registry": provider_registry,
         "available_providers": available_providers,
-        "provider_instances": merged_provider_instances,
-        "provider_config": merged_provider_instances,
+        "provider_instances": resolved_provider_instances,
+        "provider_config": resolved_provider_instances,
         "tools_snapshot": tools_snapshot,
         "tools_snapshot_authoritative": _rbac_active,
         "tool_groups_snapshot": tool_groups_snapshot,

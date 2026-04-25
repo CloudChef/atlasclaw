@@ -43,6 +43,54 @@ tool_get_priority: 180
     (skill_dir / "run.py").write_text(run_py, encoding="utf-8")
 
 
+def _patch_auth_cookie_names(
+    monkeypatch,
+    *,
+    atlas_cookie_name: str = "AtlasClaw-Authenticate",
+    host_cookie_name: str = "AtlasClaw-Host-Authenticate",
+) -> None:
+    jwt_config = SimpleNamespace(
+        expanded=lambda: SimpleNamespace(cookie_name=atlas_cookie_name),
+    )
+    host_config = SimpleNamespace(
+        expanded=lambda: SimpleNamespace(cookie_name=host_cookie_name),
+    )
+    monkeypatch.setattr(
+        "app.atlasclaw.api.deps_context.get_config",
+        lambda: SimpleNamespace(auth=SimpleNamespace(jwt=jwt_config, host=host_config)),
+    )
+
+
+def _build_provider_cookie_test_context(tmp_path: Path) -> APIContext:
+    registry = SkillRegistry()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    return APIContext(
+        session_manager=SessionManager(str(workspace)),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+        provider_instances={
+            "smartcmp": {
+                "default": {
+                    "base_url": "https://cmp.example.com",
+                    "auth_type": ["cookie", "user_token"],
+                    "user_token": "fallback-user-token",
+                }
+            }
+        },
+    )
+
+
+def _build_local_user() -> UserInfo:
+    return UserInfo(
+        user_id="u1",
+        display_name="Admin",
+        raw_token="atlas-jwt",
+        roles=["admin"],
+        auth_type="local",
+    )
+
+
 def test_registry_tools_snapshot_contains_provider_source_and_group_ids(tmp_path) -> None:
     _write_provider_skill(tmp_path)
     registry = SkillRegistry()
@@ -134,7 +182,7 @@ def test_build_scoped_deps_merges_user_provider_instances_over_template_config(t
 
     monkeypatch.setattr(
         "app.atlasclaw.api.deps_context.build_user_provider_instances",
-        lambda user_id, workspace_path=None: {
+        lambda user_id, workspace_path=None, runtime_context=None, provider_templates=None: {
             "github": {
                 "default": {
                     "provider_type": "github",
@@ -157,6 +205,238 @@ def test_build_scoped_deps_merges_user_provider_instances_over_template_config(t
 
     registry_adapter = deps.extra["_service_provider_registry"]
     assert registry_adapter.get_instance_config("github", "default")["user_token"] == "github_pat_user_123"
+
+
+def test_build_scoped_deps_exposes_provider_sso_context_and_resolves_template_instances(tmp_path) -> None:
+    registry = SkillRegistry()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    session_manager = SessionManager(str(workspace))
+    session_queue = SessionQueue()
+    ctx = APIContext(
+        session_manager=session_manager,
+        session_queue=session_queue,
+        skill_registry=registry,
+        provider_instances={
+            "generic": {
+                "default": {
+                    "base_url": "https://cmp.example.com",
+                    "auth_type": ["sso", "user_token"],
+                    "user_token": "saved-user-token",
+                }
+            }
+        },
+    )
+
+    user = UserInfo(
+        user_id="u1",
+        display_name="Admin",
+        raw_token="atlas-jwt",
+        roles=["admin"],
+        extra={
+            "provider_sso_available": True,
+            "provider_sso_token": "oidc-access-token",
+        },
+    )
+
+    deps = build_scoped_deps(ctx, user, "agent:main:user:u1:web:dm:peer-1:topic:thread-42")
+
+    assert deps.extra["provider_sso_available"] is True
+    assert deps.extra["provider_sso_token"] == "oidc-access-token"
+    generic_default = deps.extra["provider_instances"]["generic"]["default"]
+    assert generic_default["auth_type"] == "sso"
+    assert "user_token" not in generic_default
+
+
+def test_build_scoped_deps_resolves_cookie_auth_from_user_cookie_context(tmp_path) -> None:
+    registry = SkillRegistry()
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    session_manager = SessionManager(str(workspace))
+    session_queue = SessionQueue()
+    ctx = APIContext(
+        session_manager=session_manager,
+        session_queue=session_queue,
+        skill_registry=registry,
+        provider_instances={
+            "smartcmp": {
+                "default": {
+                    "base_url": "https://cmp.example.com",
+                    "auth_type": ["cookie", "provider_token"],
+                    "provider_token": "shared-provider-token",
+                }
+            }
+        },
+    )
+
+    user = UserInfo(
+        user_id="u1",
+        display_name="Admin",
+        raw_token="request-cookie-token",
+        roles=["admin"],
+        auth_type="cookie",
+    )
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+    )
+
+    assert deps.extra["provider_cookie_available"] is True
+    assert deps.extra["provider_cookie_token"] == "request-cookie-token"
+    smartcmp_default = deps.extra["provider_instances"]["smartcmp"]["default"]
+    assert smartcmp_default["auth_type"] == "cookie"
+    assert smartcmp_default["cookie"] == "request-cookie-token"
+    assert "provider_token" not in smartcmp_default
+
+
+def test_build_scoped_deps_resolves_cookie_auth_from_request_cookies(tmp_path, monkeypatch) -> None:
+    _patch_auth_cookie_names(monkeypatch)
+    ctx = _build_provider_cookie_test_context(tmp_path)
+    user = _build_local_user()
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        request_cookies={"AtlasClaw-Host-Authenticate": "browser-cookie-token"},
+    )
+
+    assert deps.extra["provider_cookie_available"] is True
+    assert deps.extra["provider_cookie_token"] == "browser-cookie-token"
+    smartcmp_default = deps.extra["provider_instances"]["smartcmp"]["default"]
+    assert smartcmp_default["auth_type"] == "cookie"
+    assert smartcmp_default["cookie"] == "browser-cookie-token"
+    assert "user_token" not in smartcmp_default
+
+
+def test_build_scoped_deps_excludes_default_atlas_auth_cookie(tmp_path, monkeypatch) -> None:
+    _patch_auth_cookie_names(monkeypatch)
+    ctx = _build_provider_cookie_test_context(tmp_path)
+    user = _build_local_user()
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        request_cookies={"AtlasClaw-Authenticate": "atlas-session-token"},
+    )
+
+    assert deps.extra["provider_cookie_available"] is False
+    assert deps.extra["provider_cookie_token"] == ""
+    smartcmp_default = deps.extra["provider_instances"]["smartcmp"]["default"]
+    assert smartcmp_default["auth_type"] == "user_token"
+    assert smartcmp_default["user_token"] == "fallback-user-token"
+    assert "cookie" not in smartcmp_default
+
+
+def test_build_scoped_deps_excludes_configured_atlas_auth_cookie(tmp_path, monkeypatch) -> None:
+    _patch_auth_cookie_names(
+        monkeypatch,
+        atlas_cookie_name="CloudChef-Authenticate",
+        host_cookie_name="Host-Token",
+    )
+    ctx = _build_provider_cookie_test_context(tmp_path)
+    user = _build_local_user()
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        request_cookies={"CloudChef-Authenticate": "atlas-session-token"},
+    )
+
+    assert deps.extra["provider_cookie_available"] is False
+    assert deps.extra["provider_cookie_token"] == ""
+    smartcmp_default = deps.extra["provider_instances"]["smartcmp"]["default"]
+    assert smartcmp_default["auth_type"] == "user_token"
+    assert smartcmp_default["user_token"] == "fallback-user-token"
+    assert "cookie" not in smartcmp_default
+
+
+def test_build_scoped_deps_uses_real_provider_cookie_with_custom_atlas_cookie(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _patch_auth_cookie_names(
+        monkeypatch,
+        atlas_cookie_name="CloudChef-Authenticate",
+        host_cookie_name="Host-Token",
+    )
+    ctx = _build_provider_cookie_test_context(tmp_path)
+    user = _build_local_user()
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        request_cookies={
+            "CloudChef-Authenticate": "atlas-session-token",
+            "Host-Token": "provider-cookie-token",
+        },
+    )
+
+    assert deps.extra["provider_cookie_available"] is True
+    assert deps.extra["provider_cookie_token"] == "provider-cookie-token"
+    smartcmp_default = deps.extra["provider_instances"]["smartcmp"]["default"]
+    assert smartcmp_default["auth_type"] == "cookie"
+    assert smartcmp_default["cookie"] == "provider-cookie-token"
+    assert "user_token" not in smartcmp_default
+
+
+def test_build_scoped_deps_ignores_default_host_cookie_when_host_cookie_is_custom(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _patch_auth_cookie_names(
+        monkeypatch,
+        atlas_cookie_name="AtlasClaw-Authenticate",
+        host_cookie_name="Host-Token",
+    )
+    ctx = _build_provider_cookie_test_context(tmp_path)
+    user = _build_local_user()
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        request_cookies={"AtlasClaw-Host-Authenticate": "provider-cookie-token"},
+    )
+
+    assert deps.extra["provider_cookie_available"] is False
+    assert deps.extra["provider_cookie_token"] == ""
+    smartcmp_default = deps.extra["provider_instances"]["smartcmp"]["default"]
+    assert smartcmp_default["auth_type"] == "user_token"
+    assert smartcmp_default["user_token"] == "fallback-user-token"
+    assert "cookie" not in smartcmp_default
+
+
+def test_build_scoped_deps_ignores_unconfigured_authenticate_cookie(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _patch_auth_cookie_names(
+        monkeypatch,
+        atlas_cookie_name="AtlasClaw-Authenticate",
+        host_cookie_name="Host-Token",
+    )
+    ctx = _build_provider_cookie_test_context(tmp_path)
+    user = _build_local_user()
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        request_cookies={"Provider-Authenticate": "provider-cookie-token"},
+    )
+
+    assert deps.extra["provider_cookie_available"] is False
+    assert deps.extra["provider_cookie_token"] == ""
+    smartcmp_default = deps.extra["provider_instances"]["smartcmp"]["default"]
+    assert smartcmp_default["auth_type"] == "user_token"
+    assert smartcmp_default["user_token"] == "fallback-user-token"
+    assert "cookie" not in smartcmp_default
 
 
 def test_register_builtin_tools_exposes_explicit_runtime_metadata() -> None:

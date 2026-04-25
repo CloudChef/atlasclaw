@@ -10,6 +10,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -57,6 +58,81 @@ def _format_log_value(
     if isinstance(sanitized, dict) and sanitized.get(str(key)) == "***...":
         return "***..."
     return f"{str(value)[:50]}..."
+
+
+_SUBMIT_CONFIRM_TOOL_SUFFIXES = ("submit_request",)
+_EXPLICIT_SUBMIT_CONFIRMATIONS = frozenset(
+    {
+        "y",
+        "yes",
+        "ok",
+        "okay",
+        "confirm",
+        "confirmed",
+        "proceed",
+        "approve",
+        "approved",
+        "是",
+        "确认",
+    }
+)
+_EXPLICIT_SUBMIT_REJECTIONS = frozenset(
+    {
+        "n",
+        "no",
+        "cancel",
+        "否",
+    }
+)
+_SUBMIT_CONFIRMATION_PHRASES = (
+    "confirm submit",
+    "confirm submission",
+    "parameters are correct",
+    "the parameters are correct",
+    "content is correct",
+    "looks correct",
+    "use defaults",
+    "use default values",
+    "确认提交",
+)
+_SUBMIT_REJECTION_PHRASES = (
+    "do not submit",
+    "don't submit",
+    "dont submit",
+    "do not proceed",
+    "cancel submission",
+    "cancel request",
+    "hold off",
+    "not submit",
+    "不要提交",
+    "不提交",
+    "取消提交",
+)
+
+
+def _tool_requires_explicit_submit_confirmation(tool_name: str) -> bool:
+    # submit_request tools can create external side effects, so the latest user
+    # message must be a clear confirmation before the script is allowed to run.
+    normalized = str(tool_name or "").strip().lower()
+    return normalized.endswith(_SUBMIT_CONFIRM_TOOL_SUFFIXES)
+
+
+def _is_explicit_submit_confirmation(message: Any) -> bool:
+    normalized = " ".join(str(message or "").split()).strip()
+    if not normalized:
+        return False
+
+    lowered = unicodedata.normalize("NFKC", normalized).lower()
+    compact = lowered.strip(" \t\r\n.,!?;:，。！？；：（）()[]{}<>\"'")
+    if not compact:
+        return False
+    if compact in _EXPLICIT_SUBMIT_REJECTIONS:
+        return False
+    if any(phrase in lowered for phrase in _SUBMIT_REJECTION_PHRASES):
+        return False
+    if compact in _EXPLICIT_SUBMIT_CONFIRMATIONS:
+        return True
+    return any(phrase in lowered for phrase in _SUBMIT_CONFIRMATION_PHRASES)
 
 
 def load_handler_from_file(
@@ -135,6 +211,23 @@ def create_script_wrapper(
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
         deps = getattr(ctx, "deps", None) if ctx is not None else None
+        normalized_tool_name = str(tool_name or py_file.stem).strip()
+        user_message = getattr(deps, "user_message", "") if deps is not None else ""
+
+        if (
+            deps is not None
+            and _tool_requires_explicit_submit_confirmation(normalized_tool_name)
+            and not _is_explicit_submit_confirmation(user_message)
+        ):
+            return {
+                "success": False,
+                "error": "Explicit user confirmation is required before submitting the request.",
+                "output": (
+                    "Submission blocked: explicit user confirmation is required before "
+                    "running this request. Ask the user to reply with a clear confirmation "
+                    "such as 'yes', 'confirm submit', or 'parameters are correct'."
+                ),
+            }
 
         user_info = getattr(deps, "user_info", None)
         user_id = str(getattr(user_info, "user_id", "") or "").strip()
@@ -178,12 +271,31 @@ def create_script_wrapper(
 
         if deps is not None and hasattr(deps, "extra"):
             extra = deps.extra
-            normalized_tool_name = str(tool_name or py_file.stem).strip()
             print(
                 "[DEBUG] Tool execution: "
                 f"tool_name={normalized_tool_name}, provider_type={provider_type}"
             )
             print(f"[DEBUG] ctx.deps.extra keys: {list(extra.keys())}")
+
+            provider_sso_token = str(extra.get("provider_sso_token", "") or "").strip()
+            provider_sso_available = bool(extra.get("provider_sso_available")) and bool(
+                provider_sso_token
+            )
+            env["ATLASCLAW_PROVIDER_SSO_AVAILABLE"] = "1" if provider_sso_available else "0"
+            if provider_sso_available:
+                env["ATLASCLAW_PROVIDER_SSO_TOKEN"] = provider_sso_token
+                print("[DEBUG] Set env var: ATLASCLAW_PROVIDER_SSO_TOKEN=***...")
+
+            provider_cookie_token = str(extra.get("provider_cookie_token", "") or "").strip()
+            provider_cookie_available = bool(extra.get("provider_cookie_available")) and bool(
+                provider_cookie_token
+            )
+            env["ATLASCLAW_PROVIDER_COOKIE_AVAILABLE"] = (
+                "1" if provider_cookie_available else "0"
+            )
+            if provider_cookie_available:
+                env["ATLASCLAW_PROVIDER_COOKIE_TOKEN"] = provider_cookie_token
+                print("[DEBUG] Set env var: ATLASCLAW_PROVIDER_COOKIE_TOKEN=***...")
 
             provider_instance = extra.get("provider_instance")
             if provider_instance:

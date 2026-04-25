@@ -10,6 +10,8 @@ const checkAuthMock = jest.fn(() => Promise.resolve({
   }
 }))
 
+let userProviderPayloads = []
+
 jest.mock('../../app/frontend/scripts/auth.js', () => ({
   checkAuth: checkAuthMock,
   installAuthFetchInterceptor: jest.fn(),
@@ -25,9 +27,11 @@ describe('account settings page', () => {
     jest.resetModules()
     document.head.innerHTML = ''
     document.body.innerHTML = '<div id="page-root"></div>'
+    userProviderPayloads = []
 
     global.fetch = jest.fn((url, options = {}) => {
       const target = String(url)
+      const method = String(options.method || 'GET').toUpperCase()
 
       if (target === '/api/users/me/profile' && (!options.method || options.method === 'GET')) {
         return Promise.resolve({
@@ -94,6 +98,122 @@ describe('account settings page', () => {
         })
       }
 
+      if (target === '/api/service-providers/available-instances') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            providers: [
+              {
+                provider_type: 'smartcmp',
+                instance_name: 'default',
+                auth_type: ['cookie', 'provider_token', 'user_token', 'credential'],
+                base_url: 'https://console.smartcmp.cloud'
+              },
+              {
+                provider_type: 'smartcmp',
+                instance_name: 'backup',
+                auth_type: 'cookie',
+                base_url: 'https://backup.smartcmp.cloud'
+              },
+              {
+                provider_type: 'dingtalk',
+                instance_name: 'ops',
+                auth_type: 'app_credentials',
+                base_url: 'https://oapi.dingtalk.com'
+              }
+            ]
+          })
+        })
+      }
+
+      if (target === '/api/service-providers/definitions') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            providers: [
+              {
+                provider_type: 'smartcmp',
+                display_name: 'SmartCMP',
+                schema: {
+                  fields: [
+                    {
+                      name: 'base_url',
+                      label: 'Base URL',
+                      type: 'text',
+                      required: true
+                    },
+                    {
+                      name: 'auth_type',
+                      type: 'hidden',
+                      default: ['cookie', 'provider_token', 'user_token', 'credential']
+                    },
+                    {
+                      name: 'provider_token',
+                      label: 'Provider Token',
+                      type: 'password',
+                      sensitive: true,
+                      auth_types: ['provider_token']
+                    },
+                    {
+                      name: 'user_token',
+                      label: 'User Token',
+                      placeholder: 'Enter user token',
+                      type: 'password',
+                      required: true,
+                      sensitive: true,
+                      auth_types: ['user_token']
+                    },
+                    {
+                      name: 'cookie',
+                      label: 'Cookie',
+                      type: 'password',
+                      sensitive: true,
+                      auth_types: ['cookie']
+                    }
+                  ]
+                }
+              }
+            ]
+          })
+        })
+      }
+
+      if (target === '/api/users/me/provider-settings' && method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            providers: {
+              smartcmp: {
+                default: {
+                  configured: true,
+                  config: {},
+                  updated_at: '2026-04-13T10:00:00Z'
+                }
+              }
+            }
+          })
+        })
+      }
+
+      if (target === '/api/users/me/provider-settings' && method === 'PUT') {
+        const payload = JSON.parse(options.body)
+        userProviderPayloads.push(payload)
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            providers: {
+              [payload.provider_type]: {
+                [payload.instance_name]: {
+                  configured: true,
+                  config: payload.config,
+                  updated_at: '2026-04-13T10:30:00Z'
+                }
+              }
+            }
+          })
+        })
+      }
+
       return Promise.resolve({
         ok: true,
         json: () => Promise.resolve({})
@@ -115,6 +235,9 @@ describe('account settings page', () => {
     expect(document.getElementById('accountSummaryRole').textContent).not.toBe('')
     expect(document.getElementById('accountMainActions').classList.contains('is-hidden')).toBe(true)
     expect(document.getElementById('accountPasswordForm').classList.contains('hidden')).toBe(false)
+    expect(container.querySelector('.account-security-card')).toBeNull()
+    expect(container.querySelector('.account-preferences-card')).toBeNull()
+    expect(container.querySelector('.account-identity-card #accountOpenPasswordBtn')).not.toBeNull()
   })
 
   test('mount formats timestamps with the active app locale', async () => {
@@ -259,7 +382,7 @@ describe('account settings page', () => {
     expect(document.getElementById('accountRoleValue').textContent).toBe('No explicit roles')
   })
 
-  test('provider management entry in account settings navigates to the authentication config page', async () => {
+  test('account settings embeds personal provider token management without a separate authentication menu', async () => {
     checkAuthMock.mockResolvedValue({
       username: 'ops-admin',
       is_admin: false,
@@ -268,41 +391,51 @@ describe('account settings page', () => {
       }
     })
 
-    const navigate = jest.fn()
-    window.__spaRouter = { navigate }
-
     const page = await import('../../app/frontend/scripts/pages/account-settings.js')
     const container = document.getElementById('page-root')
 
     await page.mount(container)
 
-    const button = document.getElementById('accountOpenAuthConfigBtn')
-    expect(button).not.toBeNull()
-
-    button.click()
-
-    expect(navigate).toHaveBeenCalledWith('/providers')
+    expect(document.getElementById('accountAuthConfigCard')).toBeNull()
+    expect(document.getElementById('accountOpenAuthConfigBtn')).toBeNull()
+    expect(container.textContent).not.toContain('Authentication Configuration')
+    expect(document.getElementById('accountProviderTokenCard')).not.toBeNull()
+    expect(container.textContent).toContain('Provider Tokens')
+    expect(container.textContent).toContain('SmartCMP')
+    expect(container.textContent).toContain('default')
+    expect(container.textContent).not.toContain('backup')
+    expect(container.textContent).not.toContain('Base URL')
+    expect(container.textContent).not.toContain('Cookie')
   })
 
-  test('provider management entry renders as a lightweight summary card', async () => {
-    checkAuthMock.mockResolvedValue({
-      username: 'ops-admin',
-      is_admin: false,
-      permissions: {
-        provider_configs: { view: true }
-      }
-    })
-
+  test('account provider token modal only saves the current user token', async () => {
     const page = await import('../../app/frontend/scripts/pages/account-settings.js')
     const container = document.getElementById('page-root')
 
     await page.mount(container)
 
-    const card = document.getElementById('accountAuthConfigCard')
-    expect(card).not.toBeNull()
-    expect(card.querySelector('.settings-card-header')).toBeNull()
-    expect(card.querySelector('.account-auth-config-summary')).not.toBeNull()
-    expect(card.querySelector('.account-auth-config-meta')).not.toBeNull()
-    expect(card.querySelector('#accountOpenAuthConfigBtn')).not.toBeNull()
+    document.querySelector('[data-account-provider-token-configure]').click()
+
+    expect(document.getElementById('accountProviderTokenModal')).not.toBeNull()
+    expect(document.querySelector('#accountProviderTokenForm input[name="user_token"]')).not.toBeNull()
+    expect(document.querySelector('#accountProviderTokenForm input[name="auth_type"]')).toBeNull()
+    expect(document.querySelector('#accountProviderTokenForm input[name="base_url"]')).toBeNull()
+    expect(document.querySelector('#accountProviderTokenForm input[name="provider_token"]')).toBeNull()
+    expect(document.querySelector('#accountProviderTokenForm input[name="cookie"]')).toBeNull()
+
+    document.querySelector('#accountProviderTokenForm input[name="user_token"]').value = 'user-secret-token'
+    document.getElementById('accountProviderTokenForm').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await new Promise(resolve => setTimeout(resolve, 0))
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(userProviderPayloads).toEqual([
+      {
+        provider_type: 'smartcmp',
+        instance_name: 'default',
+        config: {
+          user_token: 'user-secret-token'
+        }
+      }
+    ])
   })
 })

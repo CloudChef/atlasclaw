@@ -20,12 +20,19 @@ beforeEach(() => {
       return Promise.resolve({
         ok: true,
         json: () => Promise.resolve({
-          count: 2,
+          count: 4,
           providers: [
             {
               provider_type: 'smartcmp',
               instance_name: 'default',
               base_url: 'https://console.smartcmp.cloud',
+              auth_type: ['cookie', 'provider_token', 'user_token', 'credential'],
+              config_keys: ['username']
+            },
+            {
+              provider_type: 'smartcmp',
+              instance_name: 'personal',
+              base_url: 'https://personal.smartcmp.cloud',
               auth_type: 'user_token',
               config_keys: []
             },
@@ -78,7 +85,18 @@ beforeEach(() => {
                   {
                     name: 'auth_type',
                     type: 'hidden',
-                    default: 'user_token'
+                    default: ['cookie', 'provider_token', 'user_token', 'credential']
+                  },
+                  {
+                    name: 'provider_token',
+                    label_i18n_key: 'provider.providerToken',
+                    label: 'Provider Token',
+                    placeholder_i18n_key: 'provider.providerTokenPlaceholder',
+                    placeholder: 'Enter shared provider token',
+                    type: 'password',
+                    required: true,
+                    sensitive: true,
+                    auth_types: ['provider_token']
                   },
                   {
                     name: 'user_token',
@@ -101,6 +119,27 @@ beforeEach(() => {
                     required: true,
                     sensitive: true,
                     auth_types: ['cookie']
+                  },
+                  {
+                    name: 'username',
+                    label_i18n_key: 'provider.username',
+                    label: 'Username',
+                    placeholder_i18n_key: 'provider.usernamePlaceholder',
+                    placeholder: 'cmp-robot',
+                    type: 'text',
+                    required: true,
+                    auth_types: ['credential']
+                  },
+                  {
+                    name: 'password',
+                    label_i18n_key: 'provider.password',
+                    label: 'Password',
+                    placeholder_i18n_key: 'provider.passwordPlaceholder',
+                    placeholder: 'Enter password',
+                    type: 'password',
+                    required: true,
+                    sensitive: true,
+                    auth_types: ['credential']
                   }
                 ]
               }
@@ -176,7 +215,7 @@ beforeEach(() => {
               default: {
                 configured: true,
                 config: {
-                  auth_type: 'user_token'
+                  auth_type: ['cookie', 'provider_token', 'user_token', 'credential']
                 },
                 updated_at: '2026-04-13T10:00:00Z'
               },
@@ -247,7 +286,7 @@ describe('providers page', () => {
     expect(styles).toMatch(/\.pv-config-value\s*\{[^}]*font-size:\s*14px;[^}]*font-weight:\s*400;[^}]*line-height:\s*1\.5;[^}]*\}/s)
   })
 
-  test('mount renders one configuration table per provider without exposing sensitive values', async () => {
+  test('mount renders only user-token-capable provider instances without exposing auth details', async () => {
     const providersPage = await import('../../app/frontend/scripts/pages/providers.js')
     const container = document.getElementById('page-root')
 
@@ -256,97 +295,74 @@ describe('providers page', () => {
     const sectionTitles = [...container.querySelectorAll('[data-provider-section] .pv-panel-title')]
       .map((title) => title.textContent.trim())
 
-    expect(sectionTitles).toEqual(['SmartCMP', 'DingTalk'])
+    expect(sectionTitles).toEqual(['SmartCMP'])
     expect(container.textContent).toContain('Authentication Configuration')
+    expect(container.textContent).toContain('Set your personal provider tokens')
     expect(container.textContent).toContain('default')
-    expect(container.textContent).toContain('backup')
-    expect(container.textContent).toContain('https://console.smartcmp.cloud')
-    expect(container.textContent).toContain('User Token')
-    expect(container.textContent).toContain('Cookie')
-    expect(container.textContent).toContain('App Key')
-    expect(container.textContent).toContain('App Secret')
-    expect(container.textContent).toContain('Agent ID')
+    expect(container.textContent).toContain('personal')
+    expect(container.textContent).toContain('Personal Token')
     expect(container.textContent).toContain('Configured')
-    expect(container.textContent).toContain('ding-app-key')
-    expect(container.textContent).toContain('1000001')
+    expect(container.textContent).toContain('Not configured')
+    expect(container.textContent).not.toContain('backup')
+    expect(container.textContent).not.toContain('DingTalk')
+    expect(container.textContent).not.toContain('https://console.smartcmp.cloud')
+    expect(container.textContent).not.toContain('Base URL')
+    expect(container.textContent).not.toContain('Access Configuration')
+    expect(container.textContent).not.toContain('Provider Token')
+    expect(container.textContent).not.toContain('Cookie')
+    expect(container.textContent).not.toContain('Username')
+    expect(container.textContent).not.toContain('Password')
+    expect(container.textContent).not.toContain('App Key')
+    expect(container.textContent).not.toContain('App Secret')
+    expect(container.textContent).not.toContain('Agent ID')
+    expect(container.textContent).not.toContain('ding-app-key')
+    expect(container.textContent).not.toContain('1000001')
     expect(container.textContent).not.toContain('secret-token')
-    expect(container.textContent).not.toContain('session=backup-cookie')
-    expect(container.textContent).not.toContain('ding-app-secret')
-    expect(container.querySelectorAll('[data-provider-section] .pv-table')).toHaveLength(2)
-    expect(container.querySelector('.pv-card-stats')).toBeNull()
-    expect(container.querySelector('.pv-card-summary')).toBeNull()
-    expect(container.querySelector('.pv-card-instance-list')).toBeNull()
-    expect(container.querySelector('.pv-card-instance-chip')).toBeNull()
-    expect(container.querySelector('.pv-type-band')).toBeNull()
-    expect(container.querySelector('.pv-type-card')).toBeNull()
-    expect(container.textContent).toContain('Instance')
-    expect(container.textContent).toContain('Access Configuration')
-    expect(container.textContent).not.toContain('Templates')
-    expect(container.textContent).not.toContain('Template')
-    expect(container.textContent).not.toContain('Managed')
-    expect(container.textContent).not.toContain('New Provider Instance')
-    expect(container.querySelector('.pv-status')).toBeNull()
-    expect(container.querySelector('#btnCreateProviderInstance')).toBeNull()
-    expect(container.querySelector('.pv-panel-header .pv-eyebrow')).toBeNull()
-    expect(container.querySelector('.pv-counter')).toBeNull()
-    expect(container.querySelector('.pv-instance-readonly-badge')).toBeNull()
-    expect(container.querySelectorAll('[data-configure-template]')).toHaveLength(3)
+    expect(container.querySelectorAll('[data-provider-section] .pv-table')).toHaveLength(1)
+    expect(container.querySelectorAll('[data-configure-template]')).toHaveLength(2)
     expect(
-      [...container.querySelectorAll('[data-configure-template]')].map((button) => button.textContent.trim())
-    ).toEqual(['Configure', 'Configure', 'Configure'])
-
-    const defaultSmartCmpRow = container.querySelector(
-      '[data-configure-template][data-provider-type="smartcmp"][data-instance-name="default"]'
-    ).closest('tr')
-    expect(defaultSmartCmpRow.querySelector('.pv-instance-cell').textContent.trim()).toBe('default')
-    expect(defaultSmartCmpRow.querySelector('.pv-instance-cell > span')).toBeNull()
+      [...container.querySelectorAll('[data-configure-template]')].map((button) => button.dataset.instanceName)
+    ).toEqual(['default', 'personal'])
 
     await providersPage.unmount()
   })
 
-  test('configure modal leaves saved sensitive values blank and removes the reveal toggle', async () => {
+  test('configure modal only edits the user token and preserves saved values when blank', async () => {
     const providersPage = await import('../../app/frontend/scripts/pages/providers.js')
     const container = document.getElementById('page-root')
 
     await providersPage.mount(container)
 
-    container.querySelector('[data-configure-template][data-provider-type="smartcmp"][data-instance-name="backup"]').click()
+    container.querySelector('[data-configure-template][data-provider-type="smartcmp"][data-instance-name="default"]').click()
     expect(container.querySelector('#providerModal')).not.toBeNull()
-    expect(container.querySelector('#providerModal').textContent).not.toContain('My Credentials')
     expect(container.querySelector('#providerModal .pv-modal-kicker').textContent).toBe('Authentication Configuration')
-    expect(container.querySelector('#providerModal h2').textContent).toBe('Configure SmartCMP')
-    expect(container.querySelector('#providerModal .pv-modal-description').textContent).toContain('personal credentials')
-    expect(container.querySelector('#providerModal').textContent).toContain('Access Configuration')
+    expect(container.querySelector('#providerModal h2').textContent).toBe('Set SmartCMP User Token')
+    expect(container.querySelector('#providerModal .pv-modal-description').textContent).toContain('personal token')
     expect(container.querySelector('#providerModal button[type="submit"]').textContent).toBe('Save')
-    expect(container.querySelector('#providerModal .pv-modal-meta-row')).toBeNull()
 
-    const modalOverview = container.querySelector('.pv-modal-grid')
-    const modalLabels = [
-      ...container.querySelectorAll('#providerModal .pv-static-label, #providerModal .pv-form-field > span')
-    ].map((item) => item.textContent.trim())
-    const staticValues = [...container.querySelectorAll('#providerModal .pv-static-value')].map((item) => item.textContent.trim())
-
-    expect(container.querySelector('select[name="instance_name"]')).toBeNull()
-    expect(modalLabels).toContain('Instance')
-    expect(staticValues).toContain('backup')
+    const modalText = container.querySelector('#providerModal').textContent
+    expect(modalText).toContain('Instance')
+    expect(modalText).toContain('default')
+    expect(modalText).toContain('User Token')
+    expect(modalText).not.toContain('Base URL')
+    expect(modalText).not.toContain('Access Configuration')
+    expect(modalText).not.toContain('Provider Token')
+    expect(modalText).not.toContain('Cookie')
+    expect(modalText).not.toContain('Username')
+    expect(modalText).not.toContain('Password')
     expect(container.querySelector('input[name="base_url"]')).toBeNull()
-    expect(container.querySelector('.pv-modal-linked-field')).toBeNull()
-    expect(container.querySelector('.pv-instance-meta')).toBeNull()
-    expect(modalOverview).not.toBeNull()
-    expect(modalOverview.textContent).toContain('Base URL')
-    expect(modalOverview.textContent).toContain('https://backup.smartcmp.cloud')
-    expect(staticValues).toContain('https://backup.smartcmp.cloud')
-    expect(container.querySelector('.pv-readonly-pill')).toBeNull()
-    expect(container.querySelector('.pv-text-value')).toBeNull()
-    expect(container.querySelector('input[name="user_token"]')).toBeNull()
-    expect(container.querySelector('input[name="cookie"]')).not.toBeNull()
-    expect(container.querySelector('input[name="cookie"]').type).toBe('text')
-    expect(container.querySelector('input[name="cookie"]').required).toBe(false)
-    expect(container.querySelector('input[name="cookie"]').value).toBe('')
-    expect(container.querySelector('[data-toggle-secret="cookie"]')).toBeNull()
+    expect(container.querySelector('input[name="auth_type"]')).toBeNull()
+    expect(container.querySelector('input[name="provider_token"]')).toBeNull()
+    expect(container.querySelector('input[name="cookie"]')).toBeNull()
+    expect(container.querySelector('input[name="username"]')).toBeNull()
+    expect(container.querySelector('input[name="password"]')).toBeNull()
 
-    const cookieInput = container.querySelector('input[name="cookie"]')
-    cookieInput.value = 'session=next-cookie'
+    const tokenInput = container.querySelector('input[name="user_token"]')
+    expect(tokenInput).not.toBeNull()
+    expect(tokenInput.type).toBe('password')
+    expect(tokenInput.required).toBe(false)
+    expect(tokenInput.value).toBe('')
+    expect(container.querySelector('[data-toggle-secret="user_token"]')).toBeNull()
 
     container.querySelector('#providerModalForm').dispatchEvent(new Event('submit', {
       bubbles: true,
@@ -358,10 +374,39 @@ describe('providers page', () => {
     expect(userProviderPayloads).toHaveLength(1)
     expect(userProviderPayloads[0]).toEqual({
       provider_type: 'smartcmp',
-      instance_name: 'backup',
+      instance_name: 'default',
+      config: {}
+    })
+
+    await providersPage.unmount()
+  })
+
+  test('new user-token configuration submits only user_token', async () => {
+    const providersPage = await import('../../app/frontend/scripts/pages/providers.js')
+    const container = document.getElementById('page-root')
+
+    await providersPage.mount(container)
+
+    container.querySelector('[data-configure-template][data-provider-type="smartcmp"][data-instance-name="personal"]').click()
+    const tokenInput = container.querySelector('input[name="user_token"]')
+
+    expect(tokenInput).not.toBeNull()
+    expect(tokenInput.required).toBe(true)
+    tokenInput.value = 'personal-secret-token'
+
+    container.querySelector('#providerModalForm').dispatchEvent(new Event('submit', {
+      bubbles: true,
+      cancelable: true
+    }))
+
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(userProviderPayloads).toHaveLength(1)
+    expect(userProviderPayloads[0]).toEqual({
+      provider_type: 'smartcmp',
+      instance_name: 'personal',
       config: {
-        auth_type: 'cookie',
-        cookie: 'session=next-cookie'
+        user_token: 'personal-secret-token'
       }
     })
 

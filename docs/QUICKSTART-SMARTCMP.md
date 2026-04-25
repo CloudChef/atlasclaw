@@ -62,7 +62,7 @@ AtlasClaw supports 3 authentication modes for connecting to SmartCMP. The system
 
 | Mode | Scenario | How it works | Config fields needed |
 |------|----------|--------------|----------------------|
-| **SSO** | Embedded in CMP via Nginx reverse-proxy | Browser `CloudChef-Authenticate` cookie is automatically passed through | `base_url` only |
+| **SSO** | Embedded in CMP via Nginx reverse-proxy | Browser host authentication cookie is automatically passed through | `base_url` only |
 | **Cookie** | Have a valid CMP session cookie | Directly use a pre-obtained cookie value | `base_url` + `cookie` |
 | **Credential** | Username/password login | Auto-login to CMP API to obtain a session | `base_url` + `username` + `password` |
 
@@ -71,7 +71,7 @@ AtlasClaw supports 3 authentication modes for connecting to SmartCMP. The system
 
 ### Option A: SSO Mode (CMP Embedded)
 
-When AtlasClaw is deployed behind the same Nginx as CMP, the browser automatically sends `CloudChef-Authenticate` cookie. No static credentials are needed.
+When AtlasClaw is deployed behind the same Nginx as CMP, the browser automatically sends the configured host authentication cookie. No static credentials are needed.
 
 **`atlasclaw.json`:**
 ```json
@@ -303,7 +303,7 @@ For **Credential** mode:
 
 For **SSO** mode:
 1. Verify Nginx is correctly proxying cookies to AtlasClaw
-2. Check that `CloudChef-Authenticate` cookie is present in browser
+2. Check that the configured host authentication cookie is present in browser
 
 For **Cookie** mode:
 1. Verify the cookie value in `CMP_COOKIE` is still valid (not expired)

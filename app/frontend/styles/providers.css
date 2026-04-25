@@ -382,6 +382,36 @@
   line-height: 1.5;
 }
 
+.pv-token-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.pv-token-status::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  margin-right: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.pv-token-status.is-configured {
+  background: rgba(16, 185, 129, 0.1);
+  color: #047857;
+}
+
+.pv-token-status.is-missing {
+  background: rgba(148, 163, 184, 0.12);
+  color: #64748b;
+}
+
 .pv-config-stack {
   display: flex;
   flex-direction: column;
@@ -1119,7 +1149,30 @@
 }
 
 .pv-modal-primary-fields {
-  display: block;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 18px;
+  padding: 12px 14px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.9);
+}
+
+.pv-modal-instance-label {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pv-modal-instance-name {
+  color: var(--color-text);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+  word-break: break-word;
 }
 
 .pv-modal-footer {

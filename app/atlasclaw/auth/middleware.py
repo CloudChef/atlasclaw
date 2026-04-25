@@ -69,8 +69,15 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         jwt_cfg = self._auth_config.jwt.expanded()
         oidc_cfg = self._auth_config.oidc.expanded()
+        host_cfg = self._auth_config.host.expanded()
         self._atlas_header_name = (jwt_cfg.header_name or "AtlasClaw-Authenticate").strip()
         self._atlas_cookie_name = (jwt_cfg.cookie_name or "AtlasClaw-Authenticate").strip()
+        self._host_header_name = (
+            host_cfg.header_name or "AtlasClaw-Host-Authenticate"
+        ).strip()
+        self._host_cookie_name = (
+            host_cfg.cookie_name or "AtlasClaw-Host-Authenticate"
+        ).strip()
         self._atlas_issuer = jwt_cfg.issuer
         self._atlas_secret = jwt_cfg.secret_key
         self._ocbc_enabled = bool(oidc_cfg.ocbc_enabled)
@@ -118,7 +125,10 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     logger.debug("Atlas token verification failed in cmp mode: %s", exc)
                     return self._auth_failed_response(request)
 
-                request.state.user_info = self._build_user_info_from_payload(payload, atlas_token)
+                request.state.user_info = self._build_user_info_from_payload(
+                    payload,
+                    atlas_token,
+                )
                 return await call_next(request)
 
             if request.url.path in _CMP_PUBLIC_PATHS:
@@ -139,8 +149,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 )
                 logger.warning("CMP DEBUG: shadow user_id=%s", shadow.user_id)
                 self._strategy.ensure_user_workspace(shadow.user_id)
+                provider_cookie_context = {
+                    "provider_cookie_available": True,
+                    "provider_cookie_token": auth_result.raw_token,
+                }
                 request.state.user_info = shadow.to_user_info(
-                    raw_token=auth_result.raw_token
+                    raw_token=auth_result.raw_token,
+                    extra={**auth_result.extra, **provider_cookie_context},
                 )
                 logger.warning("CMP DEBUG: user_info set, proceeding")
                 return await call_next(request)
@@ -172,12 +187,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 logger.debug("Atlas token verification failed: %s", exc)
                 return self._auth_failed_response(request)
 
-            jwt_user_info = self._build_user_info_from_payload(payload, atlas_token)
+            provider_sso_token = ""
+            if provider_name not in {"local", "none", "cmp", ""}:
+                provider_sso_token = self._extract_host_token(request)
+
+            jwt_user_info = self._build_user_info_from_payload(
+                payload,
+                atlas_token,
+                provider_sso_token=provider_sso_token,
+            )
             if provider_name != "local":
                 self._strategy.ensure_user_workspace(jwt_user_info.user_id)
 
             if provider_name == "oidc" and self._ocbc_enabled:
-                oidc_token = self._extract_oidc_token(request)
+                oidc_token = self._extract_host_token(request)
                 if not oidc_token:
                     return self._auth_failed_response(request)
 
@@ -214,7 +237,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
             logger.debug("Auth failed for %s: %s", request.url.path, exc)
             return self._auth_failed_response(request)
 
-    def _build_user_info_from_payload(self, payload: dict, raw_token: str) -> UserInfo:
+    def _build_user_info_from_payload(
+        self,
+        payload: dict,
+        raw_token: str,
+        *,
+        provider_sso_token: str = "",
+    ) -> UserInfo:
         roles = payload.get("roles", [])
         if not isinstance(roles, list):
             roles = []
@@ -228,6 +257,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         extra = {
             "login_time": payload.get("login_time", ""),
             "is_admin": payload.get("is_admin", False),
+            "provider_sso_available": bool(str(provider_sso_token or "").strip()),
+            "provider_sso_token": str(provider_sso_token or "").strip(),
         }
         if external_subject:
             extra["external_subject"] = external_subject
@@ -288,23 +319,11 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         return ""
 
-    @staticmethod
-    def _extract_cmp_token(request: Request) -> str:
-        """Extract CloudChef-Authenticate token from header or cookie."""
-        token = request.headers.get("CloudChef-Authenticate", "").strip()
+    def _extract_host_token(self, request: Request) -> str:
+        token = request.headers.get(self._host_header_name, "").strip()
         if token:
             return token
-        token = request.cookies.get("CloudChef-Authenticate", "").strip()
-        if token:
-            return token
-        return ""
-
-    @staticmethod
-    def _extract_oidc_token(request: Request) -> str:
-        token = request.headers.get("CloudChef-Authenticate", "").strip()
-        if token:
-            return token
-        token = request.cookies.get("CloudChef-Authenticate", "").strip()
+        token = request.cookies.get(self._host_cookie_name, "").strip()
         if token:
             return token
         return ""
@@ -314,7 +333,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if token:
             return token
 
-        token = request.headers.get("CloudChef-Authenticate", "").strip()
+        token = request.headers.get(self._host_header_name, "").strip()
         if token:
             return token
 
@@ -326,7 +345,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if token:
             return token
 
-        token = request.cookies.get("CloudChef-Authenticate", "").strip()
+        token = request.cookies.get(self._host_cookie_name, "").strip()
         if token:
             return token
 

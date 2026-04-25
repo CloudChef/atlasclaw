@@ -70,12 +70,19 @@
     "_comment": "Enterprise system instances used by skills. Instance names like dev/prod are referenced at runtime.",
 
     "smartcmp": {
-      "_comment_auth_types": "Supported auth_type values: cmp | cookie | credential | user_token. Choose ONE that matches your deployment.",
+      "_comment_auth_types": "Supported auth_type values: cookie | provider_token | user_token | credential. Use a single value or an ordered fallback chain.",
 
       "default": {
-        "_comment": "auth_type=cmp — Embedded in CMP (Nginx reverse-proxy). AtlasClaw reads CloudChef-Authenticate cookie from the browser automatically. No static credentials needed.",
+        "_comment": "auth_type=cookie — Embedded behind a host system. AtlasClaw reads the configured host authentication cookie from the browser automatically. No static credentials needed.",
         "base_url": "https://172.16.0.81",
-        "auth_type": "cmp"
+        "auth_type": "cookie"
+      },
+
+      "_example_provider_token": {
+        "_comment": "auth_type=provider_token — Shared platform token configured once for all users.",
+        "base_url": "https://cmp.example.com",
+        "auth_type": "provider_token",
+        "provider_token": "${CMP_PROVIDER_TOKEN}"
       },
 
       "_example_cookie": {
@@ -134,6 +141,12 @@
     "_comment": "Optional API authentication config for normal REST/UI access. Webhook secret auth is configured separately above.",
     "provider": "none",
     "cache_ttl_seconds": 300,
+
+    "host": {
+      "_comment": "Header/cookie name used when an embedded host passes its own authenticated token into AtlasClaw.",
+      "header_name": "AtlasClaw-Host-Authenticate",
+      "cookie_name": "AtlasClaw-Host-Authenticate"
+    },
 
     "smartcmp": {
       "validate_url": "https://smartcmp.example.com/platform-api/auth/validate",

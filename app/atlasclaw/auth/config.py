@@ -15,6 +15,7 @@ from pydantic import BaseModel
 
 _ENV_RE = re.compile(r'\$\{([^}]+)\}')
 DEFAULT_JWT_SECRET = "atlasclaw-dev-secret"
+DEFAULT_HOST_AUTH_NAME = "AtlasClaw-Host-Authenticate"
 
 
 def expand_env(value: str) -> str:
@@ -85,9 +86,36 @@ class DingTalkAuthConfig(BaseModel):
         )
 
 
+class HostAuthConfig(BaseModel):
+    """Embedded host token names used for host system handoff."""
+
+    header_name: str = DEFAULT_HOST_AUTH_NAME
+    cookie_name: str = DEFAULT_HOST_AUTH_NAME
+
+    def expanded(self) -> "HostAuthConfig":
+        return HostAuthConfig(
+            header_name=expand_env(self.header_name),
+            cookie_name=expand_env(self.cookie_name),
+        )
+
+
 class CMPAuthConfig(BaseModel):
     """CMP platform cookie-based authentication configuration."""
-    pass
+
+    token_cookie_name: str = ""
+    login_id_cookie_name: str = "userLoginId"
+    username_cookie_name: str = "username"
+    user_id_cookie_name: str = "userId"
+    tenant_id_cookie_name: str = "tenant_id"
+
+    def expanded(self) -> "CMPAuthConfig":
+        return CMPAuthConfig(
+            token_cookie_name=expand_env(self.token_cookie_name),
+            login_id_cookie_name=expand_env(self.login_id_cookie_name),
+            username_cookie_name=expand_env(self.username_cookie_name),
+            user_id_cookie_name=expand_env(self.user_id_cookie_name),
+            tenant_id_cookie_name=expand_env(self.tenant_id_cookie_name),
+        )
 
 
 class NoneAuthConfig(BaseModel):
@@ -144,6 +172,7 @@ class AuthConfig(BaseModel):
 
     oidc: OIDCAuthConfig = OIDCAuthConfig()
     dingtalk: DingTalkAuthConfig = DingTalkAuthConfig()
+    host: HostAuthConfig = HostAuthConfig()
     cmp: CMPAuthConfig = CMPAuthConfig()
     none: NoneAuthConfig = NoneAuthConfig()
     local: LocalAuthConfig = LocalAuthConfig()

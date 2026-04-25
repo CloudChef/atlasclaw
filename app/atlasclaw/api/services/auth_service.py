@@ -52,6 +52,16 @@ def _delete_cookie(response: Response, request: Request, key: str) -> None:
         response.delete_cookie(key, path="/")
 
 
+def _host_auth_cookie_name(auth_config: Any) -> str:
+    host_config = getattr(auth_config, "host", None)
+    expanded_builder = getattr(host_config, "expanded", None)
+    if callable(expanded_builder):
+        host_config = expanded_builder()
+    return str(
+        getattr(host_config, "cookie_name", "") or "AtlasClaw-Host-Authenticate"
+    ).strip()
+
+
 def get_auth_config_or_400(request: Request, providers: tuple[str, ...]):
     from ...auth.config import AuthConfig
 
@@ -344,7 +354,7 @@ async def complete_sso_login(
     )
     if auth_result.raw_token:
         response.set_cookie(
-            key="CloudChef-Authenticate",
+            key=_host_auth_cookie_name(auth_config),
             value=auth_result.raw_token,
             path=_cookie_path(request),
             httponly=True,
@@ -507,7 +517,7 @@ async def get_current_user_payload(request: Request) -> dict[str, Any]:
                 "user_id": user_info.user_id,
                 "display_name": user_info.display_name,
                 "provider": "cmp",
-                "auth_type": "cmp",
+                "auth_type": user_info.auth_type or "cookie",
                 "tenant_id": user_info.tenant_id,
             }
         raise HTTPException(
@@ -647,7 +657,8 @@ async def logout_user(request: Request, redirect: bool = True) -> Response:
     if auth_config and getattr(auth_config, "jwt", None):
         _delete_cookie(response, request, auth_config.jwt.expanded().cookie_name)
     _delete_cookie(response, request, "AtlasClaw-Authenticate")
-    _delete_cookie(response, request, "CloudChef-Authenticate")
+    if auth_config:
+        _delete_cookie(response, request, _host_auth_cookie_name(auth_config))
     _delete_cookie(response, request, "oidc_id_token")
     _delete_cookie(response, request, "sso_state")
     _delete_cookie(response, request, "pkce_verifier")
