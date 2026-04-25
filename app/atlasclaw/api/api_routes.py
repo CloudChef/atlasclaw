@@ -968,26 +968,15 @@ async def update_role(
 
     if "permissions" in role_data.model_fields_set:
         if old_role.is_builtin and is_system_managed_builtin_role(old_role.identifier):
-            # System-managed built-in role (admin, user): allow skills permission
-            # changes only.  Reject if the client explicitly submitted any
-            # non-skills module in the payload (before normalization fills in
-            # defaults for missing keys).
-            raw_submitted = role_data.permissions or {}
-            explicitly_submitted_non_skills = sorted(
-                k for k in raw_submitted.keys() if k != "skills"
-            )
-            if explicitly_submitted_non_skills:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "System-managed built-in role permissions cannot be modified "
-                        "outside the skills module"
-                    ),
-                )
-            # Normalize and force-restore non-skills modules from the existing
-            # record so that partial updates never overwrite protected modules.
+            # System-managed built-in role (admin, user): only the skills
+            # module may be changed.  The frontend typically sends a full
+            # permissions shape, so we cannot reject based on key presence
+            # alone.  Instead we normalize, force-restore non-skills modules
+            # from the DB record, then detect if anything outside skills
+            # actually differs from the stored values.
             old_perms = RoleService.normalize_permissions(old_role.permissions)
             new_perms = RoleService.normalize_permissions(role_data.permissions)
+            # Force-restore non-skills modules from the existing record.
             for module_id in list(new_perms.keys()):
                 if module_id != "skills":
                     new_perms[module_id] = old_perms.get(module_id, new_perms[module_id])

@@ -87,6 +87,11 @@ def register_agent_routes(router: APIRouter) -> None:
                     print(
                         f"[SkillFilter] user={user_info.user_id} total_perms={len(user_skill_permissions)} disabled={disabled_skills}"
                     )
+                    # Admin with empty skill_permissions retains open access;
+                    # signal this downstream by leaving the sentinel as None
+                    # ("no RBAC filtering") instead of [] ("deny-all").
+                    if authz.is_admin and not user_skill_permissions:
+                        user_skill_permissions = None
                     await db_session.commit()
                 except Exception as exc:
                     await db_session.rollback()

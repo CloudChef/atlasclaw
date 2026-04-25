@@ -621,6 +621,13 @@ class TestRoleCRUDAPI:
         _cleanup_manager(manager)
 
     def test_builtin_admin_permissions_cannot_be_modified_via_api(self, tmp_path):
+        """Non-skills modules on system-managed roles are silently preserved.
+
+        The frontend sends a full permissions shape.  The backend accepts it
+        (200) but force-restores non-skills modules from the stored record,
+        so the effective tokens.view value remains True even though the
+        client sent False.
+        """
         manager = _init_database_sync(tmp_path)
         client = _build_client(tmp_path, _get_auth_config())
         token = _login_as(client, 'admin', 'adminpass123')
@@ -628,6 +635,7 @@ class TestRoleCRUDAPI:
 
         roles_response = client.get('/api/roles', headers=headers)
         admin_role = next(role for role in roles_response.json()['roles'] if role['identifier'] == 'admin')
+        original_tokens_view = admin_role['permissions']['tokens']['view']
 
         update_response = client.put(
             f"/api/roles/{admin_role['id']}",
@@ -641,8 +649,9 @@ class TestRoleCRUDAPI:
             headers=headers,
         )
 
-        assert update_response.status_code == 400
-        assert 'cannot be modified' in update_response.json()['detail'].lower()
+        # Accepted, but non-skills modules are silently restored.
+        assert update_response.status_code == 200
+        assert update_response.json()['permissions']['tokens']['view'] == original_tokens_view
 
         _cleanup_manager(manager)
 
