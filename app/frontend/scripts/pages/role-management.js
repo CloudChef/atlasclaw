@@ -17,9 +17,6 @@ const MODULES = [
   ['rbac', 'governance', 'roles.modules.rbac', 'Permission Governance', 'roles.modules.rbacDescription', 'Control who may edit permission models across workspace modules.'],
   ['skills', 'skills', 'roles.modules.skills', 'Skills', 'roles.modules.skillsDescription', 'Manage which skills this role can enable and use.'],
   ['channels', 'channels', 'roles.modules.channels', 'Channels', 'roles.modules.channelsDescription', 'Manage access to connection configuration and lifecycle actions.'],
-  ['tokens', 'key', 'roles.modules.tokens', 'Tokens', 'roles.modules.tokensDescription', 'Control visibility and maintenance rights for provider credentials.'],
-  ['agent_configs', 'agent', 'roles.modules.agentConfigs', 'Agent Templates', 'roles.modules.agentConfigsDescription', 'Manage reusable agent definitions, persona blocks, and runtime defaults.'],
-  ['provider_configs', 'provider', 'roles.modules.providerConfigs', 'Provider Instances', 'roles.modules.providerConfigsDescription', 'Manage service provider instances and their configuration lifecycle.'],
   ['model_configs', 'model', 'roles.modules.modelConfigs', 'Model Configs', 'roles.modules.modelConfigsDescription', 'Control model catalog visibility and maintenance rights.'],
   ['users', 'users', 'roles.modules.users', 'Users', 'roles.modules.usersDescription', 'Define how this role may browse and administer workspace users.'],
   ['roles', 'roles', 'roles.modules.roles', 'Roles', 'roles.modules.rolesDescription', 'Set whether this role can create, edit, and retire other roles.']
@@ -536,27 +533,51 @@ function renderRoleList() {
   }).join('')
 }
 
-function renderPermissionCards(moduleId) {
-  const definitions = MODULE_PERMISSION_DEFINITIONS[moduleId] || []
-  const permissionState = draftRoleState.permissions[moduleId] || {}
-  const canManageCurrentModule = canManageModule(moduleId) && !isSystemManagedBuiltinRole(draftRoleState)
+function renderModulePermissionTable(moduleId, permissionState, options = {}) {
+  const definitions = [...(MODULE_PERMISSION_DEFINITIONS[moduleId] || [])].sort(([leftId], [rightId]) => {
+    if (leftId === 'manage_permissions') return -1
+    if (rightId === 'manage_permissions') return 1
+    return 0
+  })
+  const canManageCurrentModule = options.canManage ?? (canManageModule(moduleId) && !isSystemManagedBuiltinRole(draftRoleState))
   return `
-    <div class="role-permission-grid">
+    <div class="role-permission-table-wrap">
+      <table class="role-permission-table">
+        <thead>
+          <tr>
+            <th scope="col" data-i18n="roles.permissionTable.permission">Permission</th>
+            <th scope="col" data-i18n="roles.permissionTable.description">Description</th>
+            <th scope="col" data-i18n="roles.permissionTable.enabled">Enabled</th>
+          </tr>
+        </thead>
+        <tbody>
       ${definitions.map(([id, titleKey, fallbackTitle, descriptionKey, fallbackDescription]) => `
-        <label class="role-permission-card">
-          <div class="role-permission-card-copy">
-            <span class="role-permission-badge" data-i18n="roles.permissionBadge">Permission</span>
-            <strong>${escapeHtml(translateOrFallback(titleKey, fallbackTitle))}</strong>
-            <p>${escapeHtml(translateOrFallback(descriptionKey, fallbackDescription))}</p>
-          </div>
-          <span class="toggle-switch">
-            <input type="checkbox" data-module-toggle="${escapeHtml(moduleId)}" data-permission-toggle="${escapeHtml(id)}" ${permissionState[id] ? 'checked' : ''} ${canManageCurrentModule ? '' : 'disabled'}>
-            <span></span>
-          </span>
-        </label>
+          <tr class="${permissionState[id] ? 'enabled' : ''}">
+            <th scope="row">
+              <span class="role-permission-name">${escapeHtml(translateOrFallback(titleKey, fallbackTitle))}</span>
+            </th>
+            <td>
+              <span class="role-permission-description">${escapeHtml(translateOrFallback(descriptionKey, fallbackDescription))}</span>
+            </td>
+            <td>
+              <label class="role-permission-table-toggle">
+                <span class="role-permission-toggle-label">${escapeHtml(translateOrFallback('roles.permissionTable.enabled', 'Enabled'))}</span>
+                <span class="toggle-switch">
+                  <input type="checkbox" data-module-toggle="${escapeHtml(moduleId)}" data-permission-toggle="${escapeHtml(id)}" ${permissionState[id] ? 'checked' : ''} ${canManageCurrentModule ? '' : 'disabled'}>
+                  <span></span>
+                </span>
+              </label>
+            </td>
+          </tr>
       `).join('')}
+        </tbody>
+      </table>
     </div>
   `
+}
+
+function renderPermissionTable(moduleId) {
+  return renderModulePermissionTable(moduleId, draftRoleState.permissions[moduleId] || {})
 }
 
 function getFilteredSkillRows(skillPermissions = []) {
@@ -594,21 +615,7 @@ function renderSkillsModule() {
   const canManageSkills = canManageModule('skills')
 
   return `
-    <div class="role-permission-grid role-permission-grid-skills">
-      ${MODULE_PERMISSION_DEFINITIONS.skills.map(([id, titleKey, fallbackTitle, descriptionKey, fallbackDescription]) => `
-        <label class="role-permission-card">
-          <div class="role-permission-card-copy">
-            <span class="role-permission-badge" data-i18n="roles.permissionBadge">Permission</span>
-            <strong>${escapeHtml(translateOrFallback(titleKey, fallbackTitle))}</strong>
-            <p>${escapeHtml(translateOrFallback(descriptionKey, fallbackDescription))}</p>
-          </div>
-          <span class="toggle-switch">
-            <input type="checkbox" data-module-toggle="skills" data-permission-toggle="${escapeHtml(id)}" ${permissions.module_permissions?.[id] ? 'checked' : ''} ${canManageSkills ? '' : 'disabled'}>
-            <span></span>
-          </span>
-        </label>
-      `).join('')}
-    </div>
+    ${renderModulePermissionTable('skills', permissions.module_permissions || {}, { canManage: canManageSkills })}
     <section class="role-skill-section">
       <div class="role-skill-toolbar">
         <div>
@@ -678,7 +685,7 @@ function renderEditor() {
   }
 
   const module = MODULES.find(item => item.id === activeModuleId) || MODULES[0]
-  const moduleMarkup = activeModuleId === 'skills' ? renderSkillsModule() : renderPermissionCards(activeModuleId)
+  const moduleMarkup = activeModuleId === 'skills' ? renderSkillsModule() : renderPermissionTable(activeModuleId)
   const roleDisplayName = getRoleDisplayName(draftRoleState) || translateOrFallback('roles.untitledRole', 'Untitled Role')
   const roleDisplayDescription = getRoleDisplayDescription(draftRoleState)
   const roleNameValue = draftRoleState.is_builtin ? roleDisplayName : draftRoleState.name
@@ -1158,10 +1165,15 @@ function setupEventListeners() {
 
 export async function mount(containerEl) {
   container = containerEl
+  document.body.classList.add('role-management-active')
   const user = getAuthInfo() || await checkAuth({ redirect: true })
-  if (!user) return
+  if (!user) {
+    document.body.classList.remove('role-management-active')
+    return
+  }
   currentUserAuthInfo = user
   if (!canAccessRoleManagement(user)) {
+    document.body.classList.remove('role-management-active')
     showToast(translateOrFallback('roles.accessDenied', 'Access denied. You do not have permission to manage roles.'), 'error')
     window.location.href = buildAppUrl('/')
     return
@@ -1188,6 +1200,7 @@ export async function mount(containerEl) {
 export async function unmount() {
   eventCleanupFns.forEach(fn => fn())
   eventCleanupFns = []
+  document.body.classList.remove('role-management-active')
   container = null
   rolesListEl = null
   editorEl = null

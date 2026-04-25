@@ -159,6 +159,11 @@
     "authorizeToggle": "授权",
     "enableToggle": "启用",
     "permissionBadge": "权限",
+    "permissionTable": {
+      "permission": "权限",
+      "description": "说明",
+      "enabled": "启用"
+    },
     "permissions": {
       "view": "查看",
       "create": "创建",

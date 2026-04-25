@@ -159,6 +159,11 @@
     "authorizeToggle": "Authorize",
     "enableToggle": "Enable",
     "permissionBadge": "Permission",
+    "permissionTable": {
+      "permission": "Permission",
+      "description": "Description",
+      "enabled": "Enabled"
+    },
     "permissions": {
       "view": "View",
       "create": "Create",
