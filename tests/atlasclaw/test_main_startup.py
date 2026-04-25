@@ -11,10 +11,21 @@ main.py 启动流程测试
 import json
 import os
 import time
-import pytest
 from pathlib import Path
 
+import pytest
+
 from fastapi.testclient import TestClient
+
+
+SMARTCMP_REQUEST_SKILL_ID = "smartcmp:request"
+SMARTCMP_REQUEST_TOOL_NAMES = (
+    "smartcmp_list_services",
+    "smartcmp_list_available_bgs",
+    "smartcmp_list_flavors",
+    "smartcmp_list_facets",
+    "smartcmp_submit_request",
+)
 
 
 def _write_md_skill(path: Path, *, name: str, description: str) -> None:
@@ -260,6 +271,62 @@ class TestMainStartup:
         )
 
         assert user_ids == ["admin", "channel-user", "shadow-user", "workspace-user"]
+
+    @pytest.mark.asyncio
+    async def test_builtin_role_skill_permission_bootstrap_seeds_admin_and_user(self, tmp_path):
+        """Startup bootstrap should seed system-managed admin and user role skills."""
+        import importlib
+
+        from app.atlasclaw.db.database import DatabaseConfig, init_database
+        from app.atlasclaw.db.orm.role import RoleService
+        import app.atlasclaw.main as main_module
+
+        importlib.reload(main_module)
+
+        db_path = tmp_path / "startup-skill-bootstrap.db"
+        manager = await init_database(
+            DatabaseConfig(db_type="sqlite", sqlite_path=str(db_path)),
+        )
+        await manager.create_tables()
+
+        class _FakeRegistry:
+            def tools_snapshot(self):
+                return [
+                    {
+                        "name": tool_name,
+                        "description": f"{tool_name} description",
+                    }
+                    for tool_name in SMARTCMP_REQUEST_TOOL_NAMES
+                ]
+
+            def md_snapshot(self):
+                return [
+                    {
+                        "name": "request",
+                        "qualified_name": SMARTCMP_REQUEST_SKILL_ID,
+                        "description": "SmartCMP request helper",
+                    },
+                ]
+
+        try:
+            await main_module._ensure_builtin_role_skill_permissions(_FakeRegistry())
+
+            async with manager.get_session() as session:
+                admin_role = await RoleService.get_by_identifier(session, "admin")
+                user_role = await RoleService.get_by_identifier(session, "user")
+                viewer_role = await RoleService.get_by_identifier(session, "viewer")
+
+            expected_ids = {SMARTCMP_REQUEST_SKILL_ID, *SMARTCMP_REQUEST_TOOL_NAMES}
+            for role in (admin_role, user_role):
+                skill_ids = {
+                    entry["skill_id"]
+                    for entry in role.permissions["skills"]["skill_permissions"]
+                }
+                assert expected_ids.issubset(skill_ids)
+
+            assert viewer_role.permissions["skills"]["skill_permissions"] == []
+        finally:
+            await manager.close()
 
 
 

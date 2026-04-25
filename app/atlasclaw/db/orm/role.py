@@ -19,7 +19,7 @@ from app.atlasclaw.db.schemas import RoleCreate, RoleUpdate
 logger = logging.getLogger(__name__)
 
 
-SYSTEM_MANAGED_BUILTIN_ROLE_IDENTIFIERS = frozenset({"admin"})
+SYSTEM_MANAGED_BUILTIN_ROLE_IDENTIFIERS = frozenset({"admin", "user"})
 
 
 def _normalize_skill_permissions(entries: Any) -> List[Dict[str, Any]]:

@@ -27,7 +27,11 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, FunctionModel
-from pptx import Presentation
+
+try:
+    from pptx import Presentation
+except ImportError:  # pragma: no cover - optional dependency in lightweight test envs
+    Presentation = None
 
 
 pytestmark = pytest.mark.e2e
@@ -197,11 +201,11 @@ def _build_e2e_config(tmp_path: Path, db_path: Path, cmp_base_url: str) -> dict[
     }
 
 
-def _login(client: TestClient) -> dict[str, Any]:
+def _login_as(client: TestClient, username: str, password: str) -> dict[str, Any]:
     """Login with local auth and return the JSON body."""
     response = client.post(
         "/api/auth/local/login",
-        json={"username": ATLAS_ADMIN_USER, "password": ATLAS_ADMIN_PASS},
+        json={"username": username, "password": password},
     )
     assert response.status_code == 200, response.text
     payload = response.json()
@@ -209,11 +213,42 @@ def _login(client: TestClient) -> dict[str, Any]:
     return payload
 
 
+def _login(client: TestClient) -> dict[str, Any]:
+    """Login as the default local admin and return the JSON body."""
+    return _login_as(client, ATLAS_ADMIN_USER, ATLAS_ADMIN_PASS)
+
+
 def _auth_headers(login_body: dict[str, Any]) -> dict[str, str]:
     """Build auth headers from login response."""
     token = str(login_body.get("token", "")).strip()
     assert token, f"login token missing: {login_body}"
     return {"AtlasClaw-Authenticate": token}
+
+
+def _create_local_user(
+    client: TestClient,
+    headers: dict[str, str],
+    *,
+    username: str,
+    password: str,
+    roles: Optional[dict[str, bool]] = None,
+) -> dict[str, Any]:
+    """Create a local workspace user for deterministic RBAC tests."""
+    response = client.post(
+        "/api/users",
+        json={
+            "username": username,
+            "password": password,
+            "display_name": username,
+            "email": f"{username}@example.com",
+            "roles": roles or {"user": True},
+            "auth_type": "local",
+            "is_active": True,
+        },
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
 
 
 def _run_agent_and_collect_events(
@@ -573,6 +608,10 @@ def _decide_model_action(messages: list[ModelMessage], agent_info: AgentInfo) ->
         raise AssertionError(f"Unexpected tool continuation: {last_tool_return.tool_name}")
 
     user_text = _extract_latest_user_text(messages)
+    lowered_user_text = user_text.lower()
+    if "云主机" in user_text or "linux vm" in lowered_user_text:
+        _require_tool(available_tools, "smartcmp_list_services", user_text)
+        return "tool", "smartcmp_list_services", {}, "call-request-services-1"
     if "待审批" in user_text or "审批数据" in user_text:
         _require_tool(available_tools, "smartcmp_list_pending", user_text)
         return "tool", "smartcmp_list_pending", {}, "call-pending-1"
@@ -840,6 +879,8 @@ def test_public_park_query_answers_directly_without_tool(agent_harness: AgentHar
 
 
 def test_pending_then_ppt_follow_up_creates_real_pptx(agent_harness: AgentHarness) -> None:
+    if Presentation is None:
+        pytest.skip("python-pptx is not installed in this test environment")
     session_key = agent_harness.create_thread()
     first = _run_round(agent_harness, "查一个 cmp 所有待审批的申请", session_key)
     _assert_completed(first)
@@ -866,6 +907,8 @@ def test_pending_then_ppt_follow_up_creates_real_pptx(agent_harness: AgentHarnes
 
 
 def test_pending_then_english_ppt_follow_up_creates_real_pptx(agent_harness: AgentHarness) -> None:
+    if Presentation is None:
+        pytest.skip("python-pptx is not installed in this test environment")
     session_key = agent_harness.create_thread()
     first = _run_round(agent_harness, "查下CMP现在的审批数据", session_key)
     _assert_completed(first)
@@ -888,3 +931,34 @@ def test_pending_then_english_ppt_follow_up_creates_real_pptx(agent_harness: Age
 
     presentation = Presentation(str(pptx_path))
     assert len(presentation.slides) == 5
+
+
+@pytest.mark.parametrize("account_kind", ["admin", "user"])
+def test_cmp_request_query_enters_request_toolchain_for_admin_and_builtin_user(
+    agent_harness: AgentHarness,
+    account_kind: str,
+) -> None:
+    active_harness = agent_harness
+    if account_kind == "user":
+        _create_local_user(
+            agent_harness.client,
+            agent_harness.headers,
+            username="user",
+            password="user",
+            roles={"user": True},
+        )
+        user_headers = _auth_headers(_login_as(agent_harness.client, "user", "user"))
+        active_harness = AgentHarness(
+            client=agent_harness.client,
+            headers=user_headers,
+            workspace_path=agent_harness.workspace_path,
+            cmp_state=agent_harness.cmp_state,
+        )
+
+    session_key = active_harness.create_thread()
+    outcome = _run_round(active_harness, "我想申请一台云主机", session_key)
+
+    _assert_completed(outcome)
+    assert outcome.tool_starts == ["smartcmp_list_services"]
+    assert "Machine Service" in outcome.assistant_text
+    assert active_harness.cmp_state["catalog_requests"] >= 1

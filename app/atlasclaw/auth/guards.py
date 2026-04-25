@@ -259,7 +259,7 @@ def has_skill_access(authz: AuthorizationContext, skill_name: str) -> bool:
 
     skill_permissions = authz.permissions.get("skills", {}).get("skill_permissions", [])
     if not isinstance(skill_permissions, list) or not skill_permissions:
-        return True
+        return False
 
     matching_entries = [
         entry
