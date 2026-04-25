@@ -529,3 +529,58 @@ class TestManagementConfigPermissionsAPI:
         assert "channels.view" in blocked_channel_resp.json()["detail"].lower()
 
         _cleanup_manager(manager)
+
+    def test_builtin_user_role_can_manage_own_channel_connections(self, tmp_path):
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        admin_headers = {"AtlasClaw-Authenticate": _login_as(client, "admin", "adminpass123")}
+
+        create_user_resp = client.post(
+            "/api/users",
+            json={
+                "username": "standarduser",
+                "password": "standardpass123",
+                "display_name": "Standard User",
+                "email": "standarduser@test.com",
+                "roles": {"user": True},
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_user_resp.status_code == 201
+
+        user_headers = {"AtlasClaw-Authenticate": _login_as(client, "standarduser", "standardpass123")}
+        list_types_resp = client.get("/api/channels", headers=user_headers)
+        assert list_types_resp.status_code == 200
+        assert any(item["type"] == "websocket" for item in list_types_resp.json())
+
+        create_connection_resp = client.post(
+            "/api/channels/websocket/connections",
+            json={"name": "User Channel", "config": {"path": "/standard"}, "enabled": True},
+            headers=user_headers,
+        )
+        assert create_connection_resp.status_code == 200
+        connection_id = create_connection_resp.json()["id"]
+
+        list_connections_resp = client.get("/api/channels/websocket/connections", headers=user_headers)
+        assert list_connections_resp.status_code == 200
+        assert [item["id"] for item in list_connections_resp.json()["connections"]] == [connection_id]
+
+        update_connection_resp = client.patch(
+            f"/api/channels/websocket/connections/{connection_id}",
+            json={"name": "User Channel Updated"},
+            headers=user_headers,
+        )
+        assert update_connection_resp.status_code == 200
+        assert update_connection_resp.json()["name"] == "User Channel Updated"
+
+        delete_connection_resp = client.delete(
+            f"/api/channels/websocket/connections/{connection_id}",
+            headers=user_headers,
+        )
+        assert delete_connection_resp.status_code == 200
+
+        role_catalog_resp = client.get("/api/roles", headers=user_headers)
+        assert role_catalog_resp.status_code == 403
+
+        _cleanup_manager(manager)

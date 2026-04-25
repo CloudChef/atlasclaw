@@ -3,15 +3,14 @@
  */
 
 const buildAdminPermissions = () => ({
-  rbac: { manage_permissions: true },
   skills: { module_permissions: { view: true, enable_disable: true, manage_permissions: true }, skill_permissions: [] },
   channels: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
   tokens: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
   agent_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
   provider_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
   model_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
-  users: { view: true, create: true, edit: true, delete: true, reset_password: true, assign_roles: true, manage_permissions: true },
-  roles: { view: true, create: true, edit: true, delete: true }
+  users: { view: true, create: true, edit: true, delete: true, assign_roles: true, manage_permissions: true },
+  roles: { view: true, create: true, edit: true, delete: true, manage_permissions: true }
 })
 
 const buildAdminAuthInfo = () => ({
@@ -50,7 +49,7 @@ describe('role management page', () => {
         return Promise.resolve({
           ok: true,
           status: 200,
-          json: () => Promise.resolve(buildAdminAuthInfo())
+          json: () => Promise.resolve(mockCheckAuthUser)
         })
       }
 
@@ -82,15 +81,32 @@ describe('role management page', () => {
                 is_builtin: true,
                 is_active: true,
                 permissions: {
-                  rbac: { manage_permissions: true },
                   skills: { module_permissions: { view: true, enable_disable: true, manage_permissions: true }, skill_permissions: [] },
                   channels: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
                   tokens: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
                   agent_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
                   provider_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
                   model_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
-                  users: { view: true, create: true, edit: true, delete: true, reset_password: true, assign_roles: true, manage_permissions: true },
-                  roles: { view: true, create: true, edit: true, delete: true }
+                  users: { view: true, create: true, edit: true, delete: true, assign_roles: true, manage_permissions: true },
+                  roles: { view: true, create: true, edit: true, delete: true, manage_permissions: true }
+                }
+              },
+              {
+                id: 'role-user',
+                name: 'Standard User',
+                identifier: 'user',
+                description: 'Built-in user role',
+                is_builtin: true,
+                is_active: true,
+                permissions: {
+                  skills: { module_permissions: { view: true, enable_disable: false, manage_permissions: false }, skill_permissions: [] },
+                  channels: { view: true, create: true, edit: true, delete: true, manage_permissions: false },
+                  tokens: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
+                  agent_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
+                  provider_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
+                  model_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
+                  users: { view: false, create: false, edit: false, delete: false, assign_roles: false, manage_permissions: false },
+                  roles: { view: false, create: false, edit: false, delete: false, manage_permissions: false }
                 }
               },
               {
@@ -101,7 +117,6 @@ describe('role management page', () => {
                 is_builtin: false,
                 is_active: true,
                 permissions: {
-                  rbac: { manage_permissions: false },
                   skills: {
                     module_permissions: { view: true, enable_disable: true, manage_permissions: false },
                     skill_permissions: [
@@ -114,8 +129,8 @@ describe('role management page', () => {
                   agent_configs: { view: true, create: false, edit: false, delete: false, manage_permissions: false },
                   provider_configs: { view: true, create: false, edit: false, delete: false, manage_permissions: false },
                   model_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
-                  users: { view: true, create: false, edit: false, delete: false, reset_password: false, assign_roles: false, manage_permissions: false },
-                  roles: { view: true, create: false, edit: false, delete: false }
+                  users: { view: true, create: false, edit: false, delete: false, assign_roles: false, manage_permissions: false },
+                  roles: { view: true, create: false, edit: false, delete: false, manage_permissions: false }
                 }
               }
             ]
@@ -153,6 +168,25 @@ describe('role management page', () => {
         })
       }
 
+      if (target === '/api/roles/role-ops' && options.method === 'PUT') {
+        const body = JSON.parse(options.body)
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            id: 'role-ops',
+            name: 'Operations',
+            identifier: 'operations',
+            description: 'Operations role',
+            is_builtin: false,
+            is_active: true,
+            created_at: '2026-04-03T12:00:00Z',
+            updated_at: '2026-04-03T12:00:00Z',
+            ...body
+          })
+        })
+      }
+
       return Promise.resolve({
         ok: true,
         status: 200,
@@ -169,7 +203,7 @@ describe('role management page', () => {
 
     expect(container.querySelector('#roleList .role-list-card')).not.toBeNull()
     expect(container.querySelector('#roleEditor .role-summary-card')).not.toBeNull()
-    expect(container.querySelector('#roleEditor [data-module-id="rbac"]')).not.toBeNull()
+    expect(container.querySelector('#roleEditor [data-module-id="rbac"]')).toBeNull()
     expect(container.querySelector('#roleEditor [data-module-id="skills"]')).not.toBeNull()
     expect(container.querySelector('#roleEditor [data-module-id="tokens"]')).toBeNull()
     expect(container.querySelector('#roleEditor [data-module-id="agent_configs"]')).toBeNull()
@@ -249,7 +283,7 @@ describe('role management page', () => {
       username: 'auditor',
       is_admin: false,
       permissions: {
-        roles: { view: true, create: false, edit: false, delete: false }
+        roles: { view: true, create: false, edit: false, delete: false, manage_permissions: false }
       }
     }
     const { canAccessRoleManagement, hasPermission } = await import('../../app/frontend/scripts/permissions.js')
@@ -257,6 +291,100 @@ describe('role management page', () => {
     expect(canAccessRoleManagement(readOnlyViewer)).toBe(true)
     expect(hasPermission(readOnlyViewer, 'roles.create')).toBe(false)
     expect(hasPermission(readOnlyViewer, 'roles.edit')).toBe(false)
+  })
+
+  test('page access guard rejects users without role management permissions', async () => {
+    mockCheckAuthUser = {
+      username: 'plain-user',
+      is_admin: false,
+      permissions: {
+        channels: {
+          view: true,
+          create: true,
+          edit: true,
+          delete: true,
+          manage_permissions: true
+        },
+        users: {
+          view: true,
+          create: true,
+          edit: true,
+          delete: true,
+          assign_roles: true,
+          manage_permissions: true
+        },
+        roles: { view: false, create: false, edit: false, delete: false, manage_permissions: false }
+      }
+    }
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+
+    expect(container.querySelector('.role-management-page')).toBeNull()
+  })
+
+  test('roles.view users can inspect roles but cannot create save or delete', async () => {
+    mockCheckAuthUser = {
+      username: 'role-viewer',
+      is_admin: false,
+      permissions: {
+        roles: { view: true, create: false, edit: false, delete: false, manage_permissions: false }
+      }
+    }
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+
+    expect(container.querySelector('#createRoleBtn').disabled).toBe(true)
+    expect(container.querySelector('#saveRoleChanges').disabled).toBe(true)
+    expect(container.querySelector('#deleteRoleTrigger')).toBeNull()
+    expect(container.querySelector('[data-role-field="name"]').readOnly).toBe(true)
+    container.querySelector('[data-module-id="roles"]').click()
+    expect(container.querySelector('[data-module-toggle="roles"][data-permission-toggle="manage_permissions"]').disabled).toBe(true)
+  })
+
+  test('module permission managers can only edit governed modules', async () => {
+    mockCheckAuthUser = {
+      username: 'channel-governor',
+      is_admin: false,
+      permissions: {
+        roles: { view: true, create: false, edit: false, delete: false, manage_permissions: false },
+        channels: { manage_permissions: true }
+      }
+    }
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+    container.querySelector('[data-role-select="role-ops"]').click()
+
+    container.querySelector('[data-module-id="channels"]').click()
+    expect(container.querySelector('[data-module-toggle="channels"][data-permission-toggle="manage_permissions"]').disabled).toBe(false)
+
+    container.querySelector('[data-module-id="roles"]').click()
+    expect(container.querySelector('[data-module-toggle="roles"][data-permission-toggle="view"]').disabled).toBe(true)
+    expect(container.querySelector('[data-module-toggle="roles"][data-permission-toggle="manage_permissions"]').disabled).toBe(true)
+  })
+
+  test('system-managed builtin user role keeps metadata and non-skill permissions locked', async () => {
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+    container.querySelector('[data-role-select="role-user"]').click()
+
+    expect(container.querySelector('[data-role-field="name"]').readOnly).toBe(true)
+    expect(container.querySelector('[data-role-field="description"]').readOnly).toBe(true)
+    expect(container.querySelector('[data-role-field="is_active"]').disabled).toBe(true)
+
+    container.querySelector('[data-module-id="channels"]').click()
+    expect(container.querySelector('[data-module-toggle="channels"][data-permission-toggle="view"]').disabled).toBe(true)
+    expect(container.querySelector('[data-module-action="select-all"]').disabled).toBe(true)
+
+    container.querySelector('[data-module-id="skills"]').click()
+    expect(container.querySelector('[data-skill-master-toggle="enabled"]').disabled).toBe(false)
   })
 
   test('admin badge alone does not bypass permission helpers', async () => {
@@ -302,11 +430,11 @@ describe('role management page', () => {
 
     document.getElementById('createRoleBtn').click()
 
-    const rbacModule = container.querySelector('[data-module-id="rbac"]')
-    rbacModule.click()
-    const rbacManageToggle = container.querySelector('[data-module-toggle="rbac"][data-permission-toggle="manage_permissions"]')
-    rbacManageToggle.checked = true
-    rbacManageToggle.dispatchEvent(new Event('change', { bubbles: true }))
+    const rolesModule = container.querySelector('[data-module-id="roles"]')
+    rolesModule.click()
+    const rolesManageToggle = container.querySelector('[data-module-toggle="roles"][data-permission-toggle="manage_permissions"]')
+    rolesManageToggle.checked = true
+    rolesManageToggle.dispatchEvent(new Event('change', { bubbles: true }))
 
     const nameInput = container.querySelector('[data-role-field="name"]')
     const identifierInput = container.querySelector('[data-role-field="identifier"]')
@@ -343,9 +471,9 @@ describe('role management page', () => {
 
     const [, options] = postCall
     const payload = JSON.parse(options.body)
-    expect(payload.permissions.rbac).toEqual({
-      manage_permissions: true
-    })
+    expect(payload.permissions.users).not.toHaveProperty('reset_password')
+    expect(payload.permissions).not.toHaveProperty('rbac')
+    expect(payload.permissions.roles.manage_permissions).toBe(true)
     expect(payload.permissions.skills.module_permissions).toEqual({
       view: true,
       enable_disable: true,
@@ -370,6 +498,54 @@ describe('role management page', () => {
     ]))
     expect(payload.permissions.users.assign_roles).toBe(true)
     expect(payload.permissions.users.manage_permissions).toBe(true)
+  })
+
+  test('new role identifier is generated from the role name', async () => {
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+
+    document.getElementById('createRoleBtn').click()
+    const nameInput = container.querySelector('[data-role-field="name"]')
+    nameInput.value = 'Finance Operators'
+    nameInput.dispatchEvent(new Event('change', { bubbles: true }))
+
+    expect(container.querySelector('[data-role-field="identifier"]').value).toBe('finance-operators')
+  })
+
+  test('saving a custom role preserves skill and module permissions', async () => {
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+    container.querySelector('[data-role-select="role-ops"]').click()
+    container.querySelector('#saveRoleChanges').click()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const putCall = global.fetch.mock.calls.find(([url, options]) => (
+      url === '/api/roles/role-ops' && options?.method === 'PUT'
+    ))
+    expect(putCall).toBeDefined()
+
+    const payload = JSON.parse(putCall[1].body)
+    expect(payload.permissions.skills.module_permissions).toEqual({
+      view: true,
+      enable_disable: true,
+      manage_permissions: false
+    })
+    expect(payload.permissions.skills.skill_permissions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ skill_id: 'jira-manager', authorized: true, enabled: true }),
+      expect.objectContaining({ skill_id: 'confluence', authorized: false, enabled: false }),
+      expect.objectContaining({ skill_id: 'pdf', authorized: false, enabled: false })
+    ]))
+    expect(payload.permissions.channels).toEqual({
+      view: true,
+      create: false,
+      edit: true,
+      delete: false,
+      manage_permissions: false
+    })
   })
 
   test('delete modal stays hidden until a custom role opens it', async () => {

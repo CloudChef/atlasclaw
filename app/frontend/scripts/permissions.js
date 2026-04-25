@@ -9,14 +9,7 @@ export const ROLE_MANAGEMENT_ACCESS_PERMISSIONS = [
   'roles.create',
   'roles.edit',
   'roles.delete',
-  'rbac.manage_permissions',
-  'skills.manage_permissions',
-  'channels.manage_permissions',
-  'tokens.manage_permissions',
-  'agent_configs.manage_permissions',
-  'provider_configs.manage_permissions',
-  'model_configs.manage_permissions',
-  'users.manage_permissions'
+  'roles.manage_permissions'
 ]
 
 export const USER_MANAGEMENT_ACCESS_PERMISSIONS = [
@@ -24,7 +17,6 @@ export const USER_MANAGEMENT_ACCESS_PERMISSIONS = [
   'users.create',
   'users.edit',
   'users.delete',
-  'users.reset_password',
   'users.assign_roles'
 ]
 
@@ -81,10 +73,10 @@ export function hasAnyPermission(authInfo, permissionPaths = []) {
 }
 
 export function canManagePermissionModule(authInfo, moduleId) {
-  if (hasPermission(authInfo, 'rbac.manage_permissions')) {
+  if (hasPermission(authInfo, 'roles.manage_permissions')) {
     return true
   }
-  if (moduleId === 'rbac' || moduleId === 'roles') {
+  if (moduleId === 'roles') {
     return false
   }
   return hasPermission(authInfo, `${moduleId}.manage_permissions`)

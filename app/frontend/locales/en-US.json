@@ -177,16 +177,11 @@
       "manageDescription": "Manage which skills this role can enable and use.",
       "managePermissionsDescription": "Edit the skill permission model, including which roles may configure and enable skills."
     },
-    "rbacPermissions": {
-      "managePermissionsDescription": "Edit the global role permission model and module governance boundaries."
-    },
     "userPermissions": {
       "viewDescription": "Browse users, status, and the roles currently assigned to them.",
       "createDescription": "Invite or create new users directly from the admin workspace.",
       "editDescription": "Change profiles, assigned roles, and authentication options.",
       "deleteDescription": "Remove user accounts that no longer need workspace access.",
-      "resetPassword": "Reset Password",
-      "resetPasswordDescription": "Reset local account passwords during support and onboarding.",
       "assignRolesDescription": "Assign roles to users or revoke roles they currently hold.",
       "managePermissionsDescription": "Edit the user permission model without directly granting those permissions."
     },
@@ -229,11 +224,10 @@
       "viewDescription": "Inspect existing roles, summaries, and saved permission sets.",
       "createDescription": "Create new custom roles for teams and projects.",
       "editDescription": "Adjust permission bundles and module defaults.",
-      "deleteDescription": "Retire roles that are no longer assigned anywhere."
+      "deleteDescription": "Retire roles that are no longer assigned anywhere.",
+      "managePermissionsDescription": "Edit permission models and role governance boundaries across modules."
     },
     "modules": {
-      "rbac": "Permission Governance",
-      "rbacDescription": "Control who may edit permission models and role governance boundaries across modules.",
       "skills": "Skills",
       "skillsDescription": "Manage which skills this role can enable and use.",
       "channels": "Channels",

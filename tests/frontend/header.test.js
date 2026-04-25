@@ -80,6 +80,169 @@ describe('header.js', () => {
     expect(container.querySelector('a[href="/channels"]')).toBeNull()
   })
 
+  test('renderHeader opens channel menu only for standard user channel permissions', async () => {
+    const { renderHeader } = await import('../../app/frontend/scripts/components/header.js')
+
+    const container = document.getElementById('header')
+    renderHeader(container, {
+      authInfo: {
+        username: 'user',
+        is_admin: false,
+        permissions: {
+          channels: {
+            view: true,
+            create: true,
+            edit: true,
+            delete: true,
+            manage_permissions: false
+          },
+          users: {
+            view: false,
+            create: false,
+            edit: false,
+            delete: false,
+            assign_roles: false,
+            manage_permissions: false
+          },
+          roles: {
+            view: false,
+            create: false,
+            edit: false,
+            delete: false
+          },
+          model_configs: {
+            view: false,
+            create: false,
+            edit: false,
+            delete: false,
+            manage_permissions: false
+          }
+        }
+      }
+    })
+
+    expect(container.querySelector('a[href="/account"]')).not.toBeNull()
+    expect(container.querySelector('a[href="/channels"]')).not.toBeNull()
+    expect(container.querySelector('a[href="/admin/users"]')).toBeNull()
+    expect(container.querySelector('a[href="/admin/roles"]')).toBeNull()
+    expect(container.querySelector('a[href="/models"]')).toBeNull()
+  })
+
+  test('renderHeader keeps admin navigation group closed when user has no governed menus', async () => {
+    const { renderHeader } = await import('../../app/frontend/scripts/components/header.js')
+
+    const container = document.getElementById('header')
+    renderHeader(container, {
+      authInfo: {
+        username: 'limited',
+        is_admin: false,
+        permissions: {
+          skills: {
+            module_permissions: {
+              view: true,
+              enable_disable: false,
+              manage_permissions: false
+            }
+          },
+          channels: {
+            view: false,
+            create: false,
+            edit: false,
+            delete: false,
+            manage_permissions: false
+          }
+        }
+      }
+    })
+
+    expect(container.querySelector('a[href="/account"]')).not.toBeNull()
+    expect(container.querySelector('[data-admin-only]')).toBeNull()
+    expect(container.querySelector('a[href="/channels"]')).toBeNull()
+    expect(container.querySelector('a[href="/admin/users"]')).toBeNull()
+    expect(container.querySelector('a[href="/admin/roles"]')).toBeNull()
+    expect(container.querySelector('a[href="/models"]')).toBeNull()
+  })
+
+  test('renderHeader keeps role menu closed for module permission governors without role permissions', async () => {
+    const { renderHeader } = await import('../../app/frontend/scripts/components/header.js')
+
+    const container = document.getElementById('header')
+    renderHeader(container, {
+      authInfo: {
+        username: 'channel-governor',
+        is_admin: false,
+        permissions: {
+          channels: {
+            view: true,
+            create: false,
+            edit: false,
+            delete: false,
+            manage_permissions: true
+          },
+          users: {
+            view: false,
+            create: false,
+            edit: false,
+            delete: false,
+            assign_roles: false,
+            manage_permissions: false
+          },
+          roles: {
+            view: false,
+            create: false,
+            edit: false,
+            delete: false
+          }
+        }
+      }
+    })
+
+    expect(container.querySelector('a[href="/admin/roles"]')).toBeNull()
+    expect(container.querySelector('a[href="/channels"]')).not.toBeNull()
+    expect(container.querySelector('a[href="/admin/users"]')).toBeNull()
+    expect(container.querySelector('a[href="/models"]')).toBeNull()
+  })
+
+  test('renderHeader opens user menu for assign-role permission without opening role menu', async () => {
+    const { renderHeader } = await import('../../app/frontend/scripts/components/header.js')
+
+    const container = document.getElementById('header')
+    renderHeader(container, {
+      authInfo: {
+        username: 'user-assigner',
+        is_admin: false,
+        permissions: {
+          users: {
+            view: false,
+            create: false,
+            edit: false,
+            delete: false,
+            assign_roles: true,
+            manage_permissions: false
+          },
+          roles: {
+            view: false,
+            create: false,
+            edit: false,
+            delete: false
+          },
+          channels: {
+            view: false,
+            create: false,
+            edit: false,
+            delete: false,
+            manage_permissions: false
+          }
+        }
+      }
+    })
+
+    expect(container.querySelector('a[href="/admin/users"]')).not.toBeNull()
+    expect(container.querySelector('a[href="/admin/roles"]')).toBeNull()
+    expect(container.querySelector('a[href="/channels"]')).toBeNull()
+    expect(container.querySelector('a[href="/models"]')).toBeNull()
+  })
+
   test('renderHeader hides provider management link even when provider permissions are granted', async () => {
     const { renderHeader } = await import('../../app/frontend/scripts/components/header.js')
 

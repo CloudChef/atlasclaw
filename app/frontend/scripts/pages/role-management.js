@@ -14,7 +14,6 @@ import {
 } from '../permissions.js'
 
 const MODULES = [
-  ['rbac', 'governance', 'roles.modules.rbac', 'Permission Governance', 'roles.modules.rbacDescription', 'Control who may edit permission models across workspace modules.'],
   ['skills', 'skills', 'roles.modules.skills', 'Skills', 'roles.modules.skillsDescription', 'Manage which skills this role can enable and use.'],
   ['channels', 'channels', 'roles.modules.channels', 'Channels', 'roles.modules.channelsDescription', 'Manage access to connection configuration and lifecycle actions.'],
   ['model_configs', 'model', 'roles.modules.modelConfigs', 'Model Configs', 'roles.modules.modelConfigsDescription', 'Control model catalog visibility and maintenance rights.'],
@@ -30,9 +29,6 @@ const MODULES = [
 }))
 
 const MODULE_PERMISSION_DEFINITIONS = {
-  rbac: [
-    ['manage_permissions', 'roles.permissions.managePermissions', 'Manage Permissions', 'roles.rbacPermissions.managePermissionsDescription', 'Edit permission models across role-governed modules.']
-  ],
   skills: [
     ['manage_permissions', 'roles.permissions.managePermissions', 'Manage Permissions', 'roles.skillPermissions.managePermissionsDescription', 'Edit which skill permissions roles may receive.']
   ],
@@ -76,7 +72,6 @@ const MODULE_PERMISSION_DEFINITIONS = {
     ['create', 'roles.permissions.create', 'Create', 'roles.userPermissions.createDescription', 'Invite or create new users directly from the admin workspace.'],
     ['edit', 'roles.permissions.edit', 'Edit', 'roles.userPermissions.editDescription', 'Change profiles, assigned roles, and authentication options.'],
     ['delete', 'roles.permissions.delete', 'Delete', 'roles.userPermissions.deleteDescription', 'Remove user accounts that no longer need workspace access.'],
-    ['reset_password', 'roles.userPermissions.resetPassword', 'Reset Password', 'roles.userPermissions.resetPasswordDescription', 'Reset local account passwords during support and onboarding.'],
     ['assign_roles', 'roles.permissions.assignRoles', 'Assign Roles', 'roles.userPermissions.assignRolesDescription', 'Assign or remove roles for workspace users.'],
     ['manage_permissions', 'roles.permissions.managePermissions', 'Manage Permissions', 'roles.userPermissions.managePermissionsDescription', 'Edit the user permission model available to other roles.']
   ],
@@ -84,7 +79,8 @@ const MODULE_PERMISSION_DEFINITIONS = {
     ['view', 'roles.permissions.view', 'View', 'roles.rolePermissions.viewDescription', 'Inspect existing roles, summaries, and saved permission sets.'],
     ['create', 'roles.permissions.create', 'Create', 'roles.rolePermissions.createDescription', 'Create new custom roles for teams and projects.'],
     ['edit', 'roles.permissions.edit', 'Edit', 'roles.rolePermissions.editDescription', 'Adjust permission bundles and module defaults.'],
-    ['delete', 'roles.permissions.delete', 'Delete', 'roles.rolePermissions.deleteDescription', 'Retire roles that are no longer assigned anywhere.']
+    ['delete', 'roles.permissions.delete', 'Delete', 'roles.rolePermissions.deleteDescription', 'Retire roles that are no longer assigned anywhere.'],
+    ['manage_permissions', 'roles.permissions.managePermissions', 'Manage Permissions', 'roles.rolePermissions.managePermissionsDescription', 'Edit permission models and role governance boundaries across modules.']
   ]
 }
 
@@ -232,25 +228,20 @@ function slugifyIdentifier(value) {
 
 function buildDefaultPermissions() {
   return {
-    rbac: { manage_permissions: false },
     skills: { module_permissions: { view: false, enable_disable: false, manage_permissions: false }, skill_permissions: [] },
     channels: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
     tokens: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
     agent_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
     provider_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
     model_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
-    users: { view: false, create: false, edit: false, delete: false, reset_password: false, assign_roles: false, manage_permissions: false },
-    roles: { view: false, create: false, edit: false, delete: false }
+    users: { view: false, create: false, edit: false, delete: false, assign_roles: false, manage_permissions: false },
+    roles: { view: false, create: false, edit: false, delete: false, manage_permissions: false }
   }
 }
 
 function buildAllEnabledPermissions() {
   const permissions = buildDefaultPermissions()
   Object.entries(permissions).forEach(([moduleId, config]) => {
-    if (moduleId === 'rbac') {
-      config.manage_permissions = true
-      return
-    }
     if (moduleId === 'skills') {
       config.module_permissions.view = true
       config.module_permissions.enable_disable = true
@@ -318,6 +309,10 @@ function shouldPersistImplicitAdminSkillAccess(role) {
 
 function buildPermissionsPayload(role) {
   const permissions = cloneData(role?.permissions || buildDefaultPermissions())
+  delete permissions.rbac
+  if (permissions.users && typeof permissions.users === 'object') {
+    delete permissions.users.reset_password
+  }
 
   if (shouldPersistImplicitAdminSkillAccess(role)) {
     permissions.skills = {
@@ -455,7 +450,7 @@ function canManageModule(moduleId) {
 }
 
 function isSystemManagedBuiltinRole(role = draftRoleState) {
-  return role?.is_builtin === true && role?.identifier === 'admin'
+  return role?.is_builtin === true && ['admin', 'user'].includes(role?.identifier)
 }
 
 function canManageAnyPermissions() {
@@ -875,7 +870,7 @@ function updateDraftField(field, value, shouldRender = true) {
 
 function toggleModulePermission(moduleId, permissionId, checked) {
   if (!draftRoleState) return
-  if (isSystemManagedBuiltinRole(draftRoleState)) return
+  if (isSystemManagedBuiltinRole(draftRoleState) && moduleId !== 'skills') return
   if (!canManageModule(moduleId)) return
   if (moduleId === 'skills') {
     draftRoleState.permissions.skills.module_permissions[permissionId] = checked

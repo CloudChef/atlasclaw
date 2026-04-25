@@ -177,16 +177,11 @@
       "manageDescription": "管理这个角色可启用和使用的技能。",
       "managePermissionsDescription": "管理技能模块的权限模型，包括哪些角色可以配置和启用技能。"
     },
-    "rbacPermissions": {
-      "managePermissionsDescription": "管理整套角色权限模型，包括各模块的权限配置边界。"
-    },
     "userPermissions": {
       "viewDescription": "查看用户、状态以及他们当前被分配的角色。",
       "createDescription": "在管理后台中邀请或创建新用户。",
       "editDescription": "修改资料、角色分配和认证方式。",
       "deleteDescription": "移除不再需要访问工作区的用户账号。",
-      "resetPassword": "重置密码",
-      "resetPasswordDescription": "在支持和入职场景中重置本地账号密码。",
       "assignRolesDescription": "将角色分配给用户，或回收用户已有的角色。",
       "managePermissionsDescription": "管理用户模块的权限模型，但不直接授予这些权限。"
     },
@@ -229,11 +224,10 @@
       "viewDescription": "查看现有角色、摘要和已保存的权限集。",
       "createDescription": "为团队和项目创建新的自定义角色。",
       "editDescription": "调整权限组合和模块默认值。",
-      "deleteDescription": "回收已不再被任何人使用的角色。"
+      "deleteDescription": "回收已不再被任何人使用的角色。",
+      "managePermissionsDescription": "管理各模块的权限模型与角色权限边界。"
     },
     "modules": {
-      "rbac": "权限治理",
-      "rbacDescription": "控制谁可以编辑各模块的权限模型与角色权限边界。",
       "skills": "技能",
       "skillsDescription": "管理这个角色可启用和使用的技能。",
       "channels": "渠道",

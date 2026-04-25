@@ -117,7 +117,7 @@ def test_role_management_full_lifecycle(
             builtin_identifiers = {role["identifier"] for role in builtin_roles}
             assert {"admin", "user", "viewer"}.issubset(builtin_identifiers)
             admin_role = next(role for role in builtin_roles if role["identifier"] == "admin")
-            assert admin_role["permissions"]["rbac"]["manage_permissions"] is True
+            assert admin_role["permissions"]["roles"]["manage_permissions"] is True
             assert admin_role["permissions"]["users"]["assign_roles"] is True
             assert admin_role["permissions"]["channels"]["manage_permissions"] is True
 
@@ -160,9 +160,6 @@ def test_role_management_full_lifecycle(
                     "identifier": "ops_manager",
                     "description": "Manage operational skills and channels.",
                     "permissions": {
-                        "rbac": {
-                            "manage_permissions": False,
-                        },
                         "skills": {
                             "module_permissions": {
                                 "view": True,
@@ -198,7 +195,6 @@ def test_role_management_full_lifecycle(
                             "create": False,
                             "edit": False,
                             "delete": False,
-                            "reset_password": False,
                             "assign_roles": True,
                             "manage_permissions": True,
                         },
@@ -207,6 +203,7 @@ def test_role_management_full_lifecycle(
                             "create": False,
                             "edit": False,
                             "delete": False,
+                            "manage_permissions": False,
                         },
                     },
                     "is_active": True,
@@ -226,9 +223,6 @@ def test_role_management_full_lifecycle(
                     "description": "Updated operations manager role.",
                     "is_active": True,
                     "permissions": {
-                        "rbac": {
-                            "manage_permissions": True,
-                        },
                         "skills": {
                             "module_permissions": {
                                 "view": True,
@@ -264,7 +258,6 @@ def test_role_management_full_lifecycle(
                             "create": False,
                             "edit": False,
                             "delete": False,
-                            "reset_password": False,
                             "assign_roles": True,
                             "manage_permissions": False,
                         },
@@ -273,6 +266,7 @@ def test_role_management_full_lifecycle(
                             "create": False,
                             "edit": True,
                             "delete": False,
+                            "manage_permissions": True,
                         },
                     },
                 },
@@ -282,7 +276,7 @@ def test_role_management_full_lifecycle(
             updated_role = update_role_resp.json()
             assert updated_role["description"] == "Updated operations manager role."
             assert updated_role["is_active"] is True
-            assert updated_role["permissions"]["rbac"]["manage_permissions"] is True
+            assert updated_role["permissions"]["roles"]["manage_permissions"] is True
             assert updated_role["permissions"]["skills"]["skill_permissions"][0]["enabled"] is False
             assert updated_role["permissions"]["roles"]["edit"] is True
 

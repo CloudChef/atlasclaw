@@ -487,7 +487,22 @@ class TestUserCRUDAPI:
 
         role_catalog_resp = client.get("/api/roles?page=1&page_size=100", headers=assigner_headers)
         assert role_catalog_resp.status_code == 200
-        assert any(role["identifier"] == "viewer" for role in role_catalog_resp.json()["roles"])
+        role_catalog = role_catalog_resp.json()["roles"]
+        assert [role["identifier"] for role in role_catalog] == ["role_assigner"]
+        assert role_catalog[0]["permissions"] == {}
+
+        own_role_resp = client.get(f"/api/roles/{create_role_resp.json()['id']}", headers=assigner_headers)
+        assert own_role_resp.status_code == 200
+        assert own_role_resp.json()["identifier"] == "role_assigner"
+        assert own_role_resp.json()["permissions"] == {}
+
+        admin_role = next(
+            role
+            for role in client.get("/api/roles?page=1&page_size=100", headers=admin_headers).json()["roles"]
+            if role["identifier"] == "admin"
+        )
+        other_role_resp = client.get(f"/api/roles/{admin_role['id']}", headers=assigner_headers)
+        assert other_role_resp.status_code == 403
 
         list_users_resp = client.get("/api/users?search=regularuser", headers=assigner_headers)
         assert list_users_resp.status_code == 200
@@ -508,6 +523,75 @@ class TestUserCRUDAPI:
         )
         assert edit_profile_resp.status_code == 403
         assert "users.edit" in edit_profile_resp.json()["detail"].lower()
+
+        reset_password_resp = client.put(
+            f"/api/users/{regular_user_id}",
+            json={"password": "shouldnotwork123"},
+            headers=assigner_headers,
+        )
+        assert reset_password_resp.status_code == 403
+        assert "users.edit" in reset_password_resp.json()["detail"].lower()
+
+        _cleanup_manager(manager)
+
+    def test_user_with_edit_permission_can_reset_another_user_password(self, tmp_path):
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        admin_headers = {"AtlasClaw-Authenticate": _login_as(client, "admin", "adminpass123")}
+
+        create_editor_resp = client.post(
+            "/api/users",
+            json={
+                "username": "usereditor",
+                "password": "editorpass123",
+                "display_name": "User Editor",
+                "email": "usereditor@test.com",
+                "roles": {},
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_editor_resp.status_code == 201
+        editor_id = create_editor_resp.json()["id"]
+
+        create_role_resp = client.post(
+            "/api/roles",
+            json={
+                "name": "User Editor",
+                "identifier": "user_editor",
+                "description": "Can edit users.",
+                "permissions": {
+                    "users": {
+                        "view": True,
+                        "edit": True,
+                    },
+                },
+                "is_active": True,
+            },
+            headers=admin_headers,
+        )
+        assert create_role_resp.status_code == 201
+
+        assign_role_resp = client.put(
+            f"/api/users/{editor_id}",
+            json={"roles": {"user_editor": True}},
+            headers=admin_headers,
+        )
+        assert assign_role_resp.status_code == 200
+
+        list_users_resp = client.get("/api/users?search=regularuser", headers=admin_headers)
+        assert list_users_resp.status_code == 200
+        regular_user_id = list_users_resp.json()["users"][0]["id"]
+
+        editor_headers = {"AtlasClaw-Authenticate": _login_as(client, "usereditor", "editorpass123")}
+        reset_password_resp = client.put(
+            f"/api/users/{regular_user_id}",
+            json={"password": "newregularpass123"},
+            headers=editor_headers,
+        )
+        assert reset_password_resp.status_code == 200
+
+        assert _login_as(client, "regularuser", "newregularpass123")
 
         _cleanup_manager(manager)
 

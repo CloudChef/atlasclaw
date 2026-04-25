@@ -207,7 +207,7 @@ class TestRoleCRUDAPI:
                     'skills': {'module_permissions': {'view': True, 'enable_disable': False}, 'skill_permissions': []},
                     'channels': {'view': True, 'create': True, 'edit': False, 'delete': False},
                     'tokens': {'view': False, 'create': False, 'edit': False, 'delete': False},
-                    'users': {'view': True, 'create': False, 'edit': False, 'delete': False, 'reset_password': False},
+                    'users': {'view': True, 'create': False, 'edit': False, 'delete': False},
                     'roles': {'view': False, 'create': False, 'edit': False, 'delete': False},
                 },
                 'is_active': True,
@@ -300,7 +300,7 @@ class TestRoleCRUDAPI:
 
         _cleanup_manager(manager)
 
-    def test_module_governor_can_access_role_catalog(self, tmp_path):
+    def test_module_governor_cannot_access_role_catalog_without_role_permissions(self, tmp_path):
         manager = _init_database_sync(tmp_path)
         client = _build_client(tmp_path, _get_auth_config())
         admin_token = _login_as(client, 'admin', 'adminpass123')
@@ -338,8 +338,7 @@ class TestRoleCRUDAPI:
         regular_token = _login_as(client, 'regularuser', 'userpass123')
 
         response = client.get('/api/roles', headers={'AtlasClaw-Authenticate': regular_token})
-        assert response.status_code == 200
-        assert any(role['identifier'] == 'skill-governor' for role in response.json()['roles'])
+        assert response.status_code == 403
 
         _cleanup_manager(manager)
 
@@ -476,7 +475,11 @@ class TestRoleCRUDAPI:
 
         assert update_response.status_code == 200
         payload = update_response.json()
-        assert payload['permissions']['channels']['view'] is False
+        assert payload['permissions']['channels']['view'] is True
+        assert payload['permissions']['channels']['create'] is True
+        assert payload['permissions']['channels']['edit'] is True
+        assert payload['permissions']['channels']['delete'] is True
+        assert payload['permissions']['channels']['manage_permissions'] is False
         assert payload['permissions']['skills']['module_permissions']['view'] is True
         assert payload['permissions']['skills']['skill_permissions'] == [
             {

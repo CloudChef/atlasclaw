@@ -166,7 +166,7 @@ def register_skills_memory_routes(router: APIRouter) -> None:
     ) -> dict[str, Any]:
         ensure_any_permission(
             authz,
-            ("skills.view", "skills.manage_permissions", "rbac.manage_permissions"),
+            ("skills.view", "skills.manage_permissions", "roles.manage_permissions"),
             detail="Missing permission: skills.view or skills.manage_permissions",
         )
 

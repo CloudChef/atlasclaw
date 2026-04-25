@@ -67,6 +67,7 @@ from app.atlasclaw.auth.guards import (
     ensure_permission,
     get_current_user,
     get_authorization_context,
+    has_permission,
     is_same_workspace_user,
 )
 from app.atlasclaw.auth.models import UserInfo
@@ -93,24 +94,13 @@ ROLE_MANAGEMENT_ACCESS_PERMISSIONS = (
     "roles.create",
     "roles.edit",
     "roles.delete",
-    "rbac.manage_permissions",
-    "skills.manage_permissions",
-    "channels.manage_permissions",
-    "tokens.manage_permissions",
-    "agent_configs.manage_permissions",
-    "provider_configs.manage_permissions",
-    "model_configs.manage_permissions",
-    "users.manage_permissions",
-)
-ROLE_CATALOG_ACCESS_PERMISSIONS = ROLE_MANAGEMENT_ACCESS_PERMISSIONS + (
-    "users.assign_roles",
+    "roles.manage_permissions",
 )
 USER_MANAGEMENT_ACCESS_PERMISSIONS = (
     "users.view",
     "users.create",
     "users.edit",
     "users.delete",
-    "users.reset_password",
     "users.assign_roles",
 )
 SENSITIVE_ROLE_IDENTIFIERS = frozenset({"admin"})
@@ -157,10 +147,55 @@ def _serialize_role_for_audit(role: object) -> dict[str, object]:
         "name": getattr(role, "name", None),
         "identifier": getattr(role, "identifier", None),
         "description": getattr(role, "description", None),
-        "permissions": getattr(role, "permissions", None),
+        "permissions": RoleService.normalize_permissions(getattr(role, "permissions", None)),
         "is_builtin": getattr(role, "is_builtin", None),
         "is_active": getattr(role, "is_active", None),
     })
+
+
+def _role_to_response(role: object) -> RoleResponse:
+    """Serialize roles with the canonical permission shape."""
+    response = RoleResponse.model_validate(role)
+    return response.model_copy(
+        update={"permissions": RoleService.normalize_permissions(response.permissions)}
+    )
+
+
+def _role_to_restricted_response(role: object) -> RoleResponse:
+    """Serialize role metadata without exposing the permission definition."""
+    response = RoleResponse.model_validate(role)
+    return response.model_copy(update={"permissions": {}})
+
+
+def _has_role_management_access(authz: AuthorizationContext) -> bool:
+    return any(
+        has_permission(authz, permission_path)
+        for permission_path in ROLE_MANAGEMENT_ACCESS_PERMISSIONS
+    )
+
+
+def _filter_and_page_roles(
+    roles: list[object],
+    *,
+    search: Optional[str],
+    page: int,
+    page_size: int,
+) -> tuple[list[object], int]:
+    filtered_roles = roles
+    if search:
+        normalized_search = search.strip().lower()
+        if normalized_search:
+            filtered_roles = [
+                role for role in filtered_roles
+                if normalized_search in str(getattr(role, "name", "") or "").lower()
+                or normalized_search in str(getattr(role, "identifier", "") or "").lower()
+                or normalized_search in str(getattr(role, "description", "") or "").lower()
+            ]
+
+    total = len(filtered_roles)
+    start = (page - 1) * page_size
+    end = start + page_size
+    return filtered_roles[start:end], total
 
 
 def _has_truthy_role_assignments(raw_roles: Optional[dict[str, object]]) -> bool:
@@ -967,7 +1002,7 @@ async def create_role(
         user_id=authz.user.user_id,
         new_value=_serialize_role_for_audit(role),
     )
-    return RoleResponse.model_validate(role)
+    return _role_to_response(role)
 
 
 @router.get("/roles", response_model=RoleListResponse)
@@ -980,11 +1015,30 @@ async def list_roles(
     authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> RoleListResponse:
     """List all Roles with optional filtering."""
-    ensure_any_permission(
-        authz,
-        ROLE_CATALOG_ACCESS_PERMISSIONS,
-        detail="Missing permission to access role catalog",
-    )
+    if not _has_role_management_access(authz):
+        ensure_permission(
+            authz,
+            "users.assign_roles",
+            detail="Missing permission to access role catalog",
+        )
+        await RoleService.ensure_builtin_roles(session)
+        own_role_identifiers = sorted(set(authz.role_identifiers))
+        own_roles = await RoleService.list_by_identifiers(
+            session,
+            own_role_identifiers,
+            is_active=is_active,
+        )
+        roles, total = _filter_and_page_roles(
+            own_roles,
+            search=search,
+            page=page,
+            page_size=page_size,
+        )
+        return RoleListResponse(
+            roles=[_role_to_restricted_response(role) for role in roles],
+            total=total,
+        )
+
     roles, total = await RoleService.list_all(
         session,
         search=search,
@@ -993,7 +1047,7 @@ async def list_roles(
         page_size=page_size,
     )
     return RoleListResponse(
-        roles=[RoleResponse.model_validate(role) for role in roles],
+        roles=[_role_to_response(role) for role in roles],
         total=total,
     )
 
@@ -1005,16 +1059,26 @@ async def get_role(
     authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> RoleResponse:
     """Get Role by ID."""
-    ensure_any_permission(
-        authz,
-        ROLE_CATALOG_ACCESS_PERMISSIONS,
-        detail="Missing permission to access role catalog",
-    )
+    has_role_management_access = _has_role_management_access(authz)
+    if not has_role_management_access:
+        ensure_permission(
+            authz,
+            "users.assign_roles",
+            detail="Missing permission to access role catalog",
+        )
     await RoleService.ensure_builtin_roles(session)
     role = await RoleService.get_by_id(session, role_id)
     if role is None:
         raise HTTPException(status_code=404, detail="Role not found")
-    return RoleResponse.model_validate(role)
+
+    if not has_role_management_access:
+        own_role_identifiers = {identifier.lower() for identifier in authz.role_identifiers}
+        role_identifier = str(getattr(role, "identifier", "") or "").strip().lower()
+        if role_identifier not in own_role_identifiers:
+            raise HTTPException(status_code=403, detail="Missing permission to access role")
+        return _role_to_restricted_response(role)
+
+    return _role_to_response(role)
 
 
 @router.put("/roles/{role_id}", response_model=RoleResponse)
@@ -1097,7 +1161,7 @@ async def update_role(
         old_value=old_value,
         new_value=_serialize_role_for_audit(role),
     )
-    return RoleResponse.model_validate(role)
+    return _role_to_response(role)
 
 
 @router.delete("/roles/{role_id}", status_code=204)
@@ -1434,11 +1498,7 @@ async def update_user(
         ensure_permission(authz, "users.edit", detail="Missing permission: users.edit")
 
     if "password" in user_data.model_fields_set:
-        ensure_permission(
-            authz,
-            "users.reset_password",
-            detail="Missing permission: users.reset_password",
-        )
+        ensure_permission(authz, "users.edit", detail="Missing permission: users.edit")
 
     if "roles" in user_data.model_fields_set and (user_data.roles or {}) != (old_user.roles or {}):
         await _ensure_can_assign_roles(

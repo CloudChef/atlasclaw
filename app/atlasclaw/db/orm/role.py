@@ -68,9 +68,6 @@ def _merge_permission_dicts(base: Dict[str, Any], overrides: Dict[str, Any]) -> 
 def build_default_permissions() -> Dict[str, Any]:
     """Build the default role permissions shape used by the editor."""
     return {
-        "rbac": {
-            "manage_permissions": False,
-        },
         "skills": {
             "module_permissions": {
                 "view": False,
@@ -119,7 +116,6 @@ def build_default_permissions() -> Dict[str, Any]:
             "create": False,
             "edit": False,
             "delete": False,
-            "reset_password": False,
             "assign_roles": False,
             "manage_permissions": False,
         },
@@ -128,6 +124,7 @@ def build_default_permissions() -> Dict[str, Any]:
             "create": False,
             "edit": False,
             "delete": False,
+            "manage_permissions": False,
         },
     }
 
@@ -136,10 +133,6 @@ def _build_all_enabled_permissions() -> Dict[str, Any]:
     permissions = build_default_permissions()
 
     for module_id, config in permissions.items():
-        if module_id == "rbac":
-            config["manage_permissions"] = True
-            continue
-
         if module_id == "skills":
             config["module_permissions"]["view"] = True
             config["module_permissions"]["enable_disable"] = True
@@ -172,6 +165,13 @@ BUILTIN_ROLE_DEFINITIONS: tuple[Dict[str, Any], ...] = (
                     "manage_permissions": False,
                 },
                 "skill_permissions": [],
+            },
+            "channels": {
+                "view": True,
+                "create": True,
+                "edit": True,
+                "delete": True,
+                "manage_permissions": False,
             },
         },
     },
@@ -208,7 +208,6 @@ BUILTIN_ROLE_DEFINITIONS: tuple[Dict[str, Any], ...] = (
                 "create": False,
                 "edit": False,
                 "delete": False,
-                "reset_password": False,
                 "assign_roles": False,
                 "manage_permissions": False,
             },

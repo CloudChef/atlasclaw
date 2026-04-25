@@ -342,9 +342,9 @@ def is_same_workspace_user(authz: AuthorizationContext, candidate_user: UserMode
 
 def can_manage_permission_module(authz: AuthorizationContext, module_id: str) -> bool:
     """Check whether the current user can govern a permission module."""
-    if has_permission(authz, "rbac.manage_permissions"):
+    if has_permission(authz, "roles.manage_permissions"):
         return True
-    if module_id in {"rbac", "roles"}:
+    if module_id == "roles":
         return False
     return has_permission(authz, f"{module_id}.manage_permissions")
 
@@ -367,7 +367,7 @@ def ensure_can_manage_permission_modules(
     if not changed_modules:
         return
 
-    if has_permission(authz, "rbac.manage_permissions"):
+    if has_permission(authz, "roles.manage_permissions"):
         return
 
     unauthorized_modules = [

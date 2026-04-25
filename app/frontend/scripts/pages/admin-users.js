@@ -232,15 +232,14 @@ function buildFallbackRolePermissions(identifier) {
 
   if (identifier === 'admin') {
     return {
-      rbac: { manage_permissions: true },
       skills: { module_permissions: { view: true, enable_disable: true, manage_permissions: true }, skill_permissions: [] },
       channels: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
       tokens: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
       agent_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
       provider_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
       model_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
-      users: { view: true, create: true, edit: true, delete: true, reset_password: true, assign_roles: true, manage_permissions: true },
-      roles: { view: true, create: true, edit: true, delete: true }
+      users: { view: true, create: true, edit: true, delete: true, assign_roles: true, manage_permissions: true },
+      roles: { view: true, create: true, edit: true, delete: true, manage_permissions: true }
     }
   }
 
@@ -760,7 +759,7 @@ export function buildUserPayloadForSubmission({
     formData.username = values.username || ''
   }
 
-  if (values.password) {
+  if (values.password && (!isEdit || canEditProfileFields)) {
     formData.password = values.password
   }
 
@@ -774,7 +773,6 @@ function canCreateUsers() {
 function canEditUsers() {
   return (
     hasPermission(currentViewerAuthInfo, 'users.edit')
-    || hasPermission(currentViewerAuthInfo, 'users.reset_password')
     || hasPermission(currentViewerAuthInfo, 'users.assign_roles')
   )
 }
@@ -792,7 +790,7 @@ function canEditUserProfileFields() {
 }
 
 function canResetUserPasswords() {
-  return hasPermission(currentViewerAuthInfo, 'users.reset_password')
+  return hasPermission(currentViewerAuthInfo, 'users.edit')
 }
 
 function canAssignUserRoles() {

@@ -420,6 +420,46 @@ describe('Permission-aware create flow', () => {
     expect(payload.roles).toEqual({ viewer: true, catalog_manager: true })
   })
 
+  test('edit payload only includes password when viewer can edit users', async () => {
+    const { buildUserPayloadForSubmission } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    const blockedPayload = buildUserPayloadForSubmission({
+      isEdit: true,
+      authInfo: {
+        is_admin: false,
+        permissions: {
+          users: {
+            assign_roles: true,
+            edit: false
+          }
+        }
+      },
+      values: {
+        password: 'password123',
+        roles: { viewer: true }
+      }
+    })
+
+    expect(blockedPayload.password).toBeUndefined()
+
+    const allowedPayload = buildUserPayloadForSubmission({
+      isEdit: true,
+      authInfo: {
+        is_admin: false,
+        permissions: {
+          users: {
+            edit: true
+          }
+        }
+      },
+      values: {
+        password: 'password123'
+      }
+    })
+
+    expect(allowedPayload.password).toBe('password123')
+  })
+
   test('legacy root admins are mapped to the admin role in the form model', async () => {
     const { getAssignableRoleIdentifiersForUser } = await import('../../app/frontend/scripts/pages/admin-users.js')
 
