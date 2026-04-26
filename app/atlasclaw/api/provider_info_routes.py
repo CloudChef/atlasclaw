@@ -9,9 +9,16 @@ import logging
 from typing import Any
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel as PydanticBaseModel
 
+from app.atlasclaw.auth.guards import (
+    AuthorizationContext,
+    filter_provider_instances_for_authz,
+    has_permission,
+    resolve_authorization_context,
+)
+from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.api.service_provider_schemas import (
     get_provider_schema_catalog,
     get_provider_schema_definition,
@@ -19,6 +26,7 @@ from app.atlasclaw.api.service_provider_schemas import (
     serialize_provider_auth_type,
 )
 from app.atlasclaw.core.provider_catalog import get_provider_catalog_instances
+from app.atlasclaw.db.database import get_db_manager
 
 router = APIRouter(tags=["Provider API"])
 logger = logging.getLogger(__name__)
@@ -233,8 +241,71 @@ def _normalize_instance_auth_type(
         return None
 
 
+async def _get_optional_authorization_context(request: Request) -> AuthorizationContext | None:
+    """Resolve authz opportunistically for provider catalog endpoints.
+
+    The catalog is also used during bootstrap/no-DB flows, so missing auth
+    middleware state or an uninitialized DB means "no RBAC context" rather than
+    an authentication failure.
+    """
+    cached = getattr(request.state, "authorization_context", None)
+    if isinstance(cached, AuthorizationContext):
+        return cached
+
+    user_info = getattr(request.state, "user_info", None)
+    if not isinstance(user_info, UserInfo) or user_info.user_id == "anonymous":
+        return None
+
+    manager = get_db_manager()
+    if manager is None or not manager.is_initialized:
+        return None
+
+    async with manager.get_session() as session:
+        authz = await resolve_authorization_context(session, user_info)
+    request.state.authorization_context = authz
+    return authz
+
+
+def _has_provider_catalog_governance(authz: AuthorizationContext) -> bool:
+    """Return whether the caller may see denied instances for governance UI."""
+    return (
+        has_permission(authz, "roles.manage_permissions")
+        or has_permission(authz, "providers.manage_permissions")
+    )
+
+
+def _get_provider_display_name(provider_type: str) -> str:
+    """Prefer runtime provider metadata, then schema metadata, then raw type."""
+    normalized_provider_type = str(provider_type or "").strip()
+    if not normalized_provider_type:
+        return ""
+
+    try:
+        from app.atlasclaw.api.deps_context import get_api_context
+
+        registry = getattr(get_api_context(), "service_provider_registry", None)
+        context_getter = getattr(registry, "get_provider_context", None)
+        if callable(context_getter):
+            provider_context = context_getter(normalized_provider_type)
+            display_name = str(getattr(provider_context, "display_name", "") or "").strip()
+            if display_name:
+                return display_name
+    except Exception:
+        pass
+
+    definition = get_provider_schema_definition(normalized_provider_type)
+    schema_display_name = str(getattr(definition, "display_name", "") or "").strip()
+    if schema_display_name:
+        return schema_display_name
+
+    return normalized_provider_type
+
+
 @router.get("/service-providers/available-instances")
-async def get_available_instances() -> dict[str, Any]:
+async def get_available_instances(
+    request: Request,
+    include_all: bool = Query(False, description="Return the full catalog for permission governance"),
+) -> dict[str, Any]:
     """Return configured service provider instances.
 
     The response is intentionally safe for frontend display: it exposes provider
@@ -242,6 +313,17 @@ async def get_available_instances() -> dict[str, Any]:
     non-sensitive config keys only.
     """
     service_providers = await get_provider_catalog_instances()
+    authz = await _get_optional_authorization_context(request)
+    # Role Management needs the full catalog to edit rules for denied
+    # instances; ordinary callers receive the role-filtered catalog.
+    if include_all:
+        if authz is None or not _has_provider_catalog_governance(authz):
+            raise HTTPException(
+                status_code=403,
+                detail="Missing permission to access full provider catalog",
+            )
+    elif authz is not None:
+        service_providers = filter_provider_instances_for_authz(authz, service_providers)
 
     providers: list[dict[str, Any]] = []
 
@@ -263,6 +345,7 @@ async def get_available_instances() -> dict[str, Any]:
             providers.append(
                 {
                     "provider_type": provider_type,
+                    "display_name": _get_provider_display_name(str(provider_type)),
                     "instance_name": instance_name,
                     "base_url": str(instance_config.get("base_url", "") or "").strip()
                     or _get_schema_default(provider_type, "base_url"),

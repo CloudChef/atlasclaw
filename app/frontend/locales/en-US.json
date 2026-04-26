@@ -135,6 +135,7 @@
     "deleteButton": "Delete Role",
     "searchPlaceholder": "Search roles...",
     "skillSearchPlaceholder": "Search skills...",
+    "providerSearchPlaceholder": "Search providers...",
     "roleName": "Role Name",
     "roleNamePlaceholder": "Role name",
     "roleDescription": "Description",
@@ -158,6 +159,7 @@
     "notAuthorized": "Not Authorized",
     "authorizeToggle": "Authorize",
     "enableToggle": "Enable",
+    "allowToggle": "Allow",
     "permissionBadge": "Permission",
     "permissionTable": {
       "permission": "Permission",
@@ -176,6 +178,9 @@
       "manage": "Manage Permission",
       "manageDescription": "Manage which skills this role can enable and use.",
       "managePermissionsDescription": "Edit the skill permission model, including which roles may configure and enable skills."
+    },
+    "providerPermissions": {
+      "managePermissionsDescription": "Edit which registered provider instances this role may access at runtime."
     },
     "userPermissions": {
       "viewDescription": "Browse users, status, and the roles currently assigned to them.",
@@ -230,6 +235,8 @@
     "modules": {
       "skills": "Skills",
       "skillsDescription": "Manage which skills this role can enable and use.",
+      "providers": "Providers",
+      "providersDescription": "Manage which registered provider instances this role can access at runtime.",
       "channels": "Channels",
       "channelsDescription": "Manage access to connection configuration and lifecycle actions.",
       "tokens": "Tokens",
@@ -363,10 +370,18 @@
     "skillBehaviorDescription": "Use the master switch to enable or disable all visible skills below at once.",
     "enableAllToggle": "Enable all",
     "defaultSkillDescription": "Workspace skill available to AtlasClaw agents.",
+    "providersListTitle": "Provider Access",
+    "providersListDescription": "Search registered provider instances and decide which ones this role can use.",
+    "providerBehaviorTitle": "Default allow behavior",
+    "providerBehaviorDescription": "Provider instances are allowed unless this role explicitly turns access off.",
+    "allowAllProvidersToggle": "Allow all",
+    "defaultProviderDescription": "Registered service provider instance.",
     "noRolesTitle": "No roles found",
     "noRolesDescription": "Try a different search term or create a new custom role.",
     "noSkillsTitle": "No skills match",
     "noSkillsDescription": "Adjust the search term to review more skills.",
+    "noProvidersTitle": "No providers match",
+    "noProvidersDescription": "Adjust the search term or register provider instances first.",
     "emptyTitle": "Select a role to begin",
     "emptyDescription": "Choose a built-in role or create a new one to edit the right-side permission designer.",
     "selectAll": "Select All",

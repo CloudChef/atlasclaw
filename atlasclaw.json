@@ -90,6 +90,14 @@
         "username": "${CMP_USERNAME}",
         "password": "${CMP_PASSWORD}"
       }
+    },
+    "jira": {
+      "jira-env": {
+        "base_url": "${CMP_URL}",
+        "auth_type": ["cookie", "user_token"],
+        "username": "${CMP_USERNAME}",
+        "password": "${CMP_PASSWORD}"
+      }
     }
   },
   "auth": {

@@ -122,3 +122,33 @@ def test_list_provider_instances_tool_masks_schema_sensitive_params() -> None:
     assert params["cookie"] == "***"
     assert params["password"] == "***"
     assert params["user_token"] == "***"
+
+
+def test_provider_skill_wrapper_uses_request_scoped_filtered_registry() -> None:
+    from app.atlasclaw.core.user_provider_bindings import ResolvedProviderInstanceRegistry
+
+    registry = ServiceProviderRegistry()
+    registry.load_instances_from_config({"smartcmp": {"default": _smartcmp_instance_config()}})
+
+    async def handler(ctx, **kwargs):
+        return {
+            "provider_type": ctx.deps.extra.get("provider_type"),
+            "provider_instance_name": ctx.deps.extra.get("provider_instance_name"),
+        }
+
+    wrapped = registry._make_handler_wrapper(handler=handler, provider_type="smartcmp")
+
+    class _Deps:
+        extra = {
+            "provider_instances": {},
+            "available_providers": {},
+            "_service_provider_registry": ResolvedProviderInstanceRegistry({}),
+        }
+
+    class _Ctx:
+        deps = _Deps()
+
+    result = asyncio.run(wrapped(_Ctx()))
+
+    assert result["is_error"] is True
+    assert "no configured instances" in result["content"][0]["text"]

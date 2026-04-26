@@ -66,6 +66,7 @@ def register_agent_routes(router: APIRouter) -> None:
         #   user_skill_permissions = []    -> RBAC resolved, no grants (deny-all)
         #   user_skill_permissions = [...]  -> RBAC resolved, per-skill grants
         user_skill_permissions: list[dict] | None = None
+        user_provider_permissions: list[dict] | None = None
         try:
             from app.atlasclaw.db.database import get_db_manager
             db_mgr = get_db_manager()
@@ -79,6 +80,9 @@ def register_agent_routes(router: APIRouter) -> None:
                     authz = await resolve_authorization_context(db_session, user_info)
                     user_skill_permissions = (
                         authz.permissions.get("skills", {}).get("skill_permissions", [])
+                    )
+                    user_provider_permissions = (
+                        authz.permissions.get("providers", {}).get("provider_permissions", [])
                     )
                     disabled_skills = [
                         s.get("skill_id") for s in user_skill_permissions
@@ -119,6 +123,11 @@ def register_agent_routes(router: APIRouter) -> None:
             request_context = {
                 **(request_context or {}),
                 "_user_skill_permissions": user_skill_permissions,
+            }
+        if user_provider_permissions is not None:
+            request_context = {
+                **(request_context or {}),
+                "_provider_permissions": user_provider_permissions,
             }
 
         background_tasks.add_task(

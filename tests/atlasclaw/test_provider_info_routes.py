@@ -81,6 +81,7 @@ def test_available_instances_exposes_auth_type_and_safe_config_keys(tmp_path, mo
 
     assert providers[("smartcmp", "default")] == {
         "provider_type": "smartcmp",
+        "display_name": "SmartCMP",
         "instance_name": "default",
         "base_url": "https://console.smartcmp.cloud",
         "auth_type": "credential",
@@ -88,6 +89,7 @@ def test_available_instances_exposes_auth_type_and_safe_config_keys(tmp_path, mo
     }
     assert providers[("dingtalk", "default")] == {
         "provider_type": "dingtalk",
+        "display_name": "DingTalk",
         "instance_name": "default",
         "base_url": "https://oapi.dingtalk.com",
         "auth_type": "app_credentials",
@@ -126,6 +128,7 @@ def test_available_instances_fall_back_to_schema_defaults_when_base_url_missing(
     assert payload["count"] == 1
     assert payload["providers"][0] == {
         "provider_type": "smartcmp",
+        "display_name": "SmartCMP",
         "instance_name": "default",
         "base_url": "https://console.smartcmp.cloud",
         "auth_type": "user_token",
@@ -291,6 +294,7 @@ def test_available_instances_include_db_managed_provider_configs(tmp_path, monke
         assert instances_payload["providers"] == [
             {
                 "provider_type": "smartcmp",
+                "display_name": "SmartCMP",
                 "instance_name": "db-managed",
                 "base_url": "https://db.smartcmp.cloud",
                 "auth_type": ["provider_token", "user_token"],

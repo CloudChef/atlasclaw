@@ -22,9 +22,12 @@ from app.atlasclaw.auth.middleware import setup_auth_middleware
 from app.atlasclaw.db import get_db_session
 from app.atlasclaw.db.database import DatabaseConfig, DatabaseManager, init_database
 from app.atlasclaw.db.models import RoleModel
+from app.atlasclaw.auth.guards import resolve_authorization_context
+from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.db.orm.role import RoleService
+from app.atlasclaw.db.orm.service_provider_config import ServiceProviderConfigService
 from app.atlasclaw.db.orm.user import UserService
-from app.atlasclaw.db.schemas import UserCreate, UserUpdate
+from app.atlasclaw.db.schemas import RoleCreate, ServiceProviderConfigCreate, UserCreate, UserUpdate
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
@@ -143,6 +146,8 @@ class TestRoleCRUDAPI:
         assert {'admin', 'user', 'viewer'}.issubset(identifiers)
         roles_by_identifier = {role['identifier']: role for role in payload['roles']}
         assert roles_by_identifier['admin']['permissions']['agent_configs']['view'] is True
+        assert roles_by_identifier['admin']['permissions']['providers']['module_permissions']['manage_permissions'] is True
+        assert roles_by_identifier['user']['permissions']['providers']['provider_permissions'] == []
         assert roles_by_identifier['user']['permissions']['agent_configs']['view'] is False
         assert roles_by_identifier['viewer']['permissions']['agent_configs']['view'] is False
         assert roles_by_identifier['viewer']['permissions']['provider_configs']['view'] is False
@@ -504,6 +509,267 @@ class TestRoleCRUDAPI:
                 'enabled': True,
             },
         ]
+
+        _cleanup_manager(manager)
+
+    def test_builtin_user_provider_permissions_can_be_modified_via_api(self, tmp_path):
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, 'admin', 'adminpass123')
+        headers = {'AtlasClaw-Authenticate': token}
+
+        roles_response = client.get('/api/roles', headers=headers)
+        assert roles_response.status_code == 200
+        user_role = next(role for role in roles_response.json()['roles'] if role['identifier'] == 'user')
+
+        skill_update_response = client.put(
+            f"/api/roles/{user_role['id']}",
+            json={
+                'permissions': {
+                    'skills': {
+                        'module_permissions': {
+                            'view': True,
+                        },
+                        'skill_permissions': [
+                            {
+                                'skill_id': 'echo-skill',
+                                'skill_name': 'echo-skill',
+                                'description': 'Echo test skill',
+                                'authorized': True,
+                                'enabled': True,
+                            },
+                        ],
+                    },
+                },
+            },
+            headers=headers,
+        )
+        assert skill_update_response.status_code == 200
+
+        update_response = client.put(
+            f"/api/roles/{user_role['id']}",
+            json={
+                'permissions': {
+                    'providers': {
+                        'module_permissions': {
+                            'manage_permissions': False,
+                        },
+                        'provider_permissions': [
+                            {
+                                'provider_type': 'smartcmp',
+                                'instance_name': 'default',
+                                'allowed': False,
+                            },
+                        ],
+                    },
+                },
+            },
+            headers=headers,
+        )
+
+        assert update_response.status_code == 200
+        assert update_response.json()['permissions']['providers']['provider_permissions'] == [
+            {
+                'provider_type': 'smartcmp',
+                'instance_name': 'default',
+                'allowed': False,
+            },
+        ]
+        assert update_response.json()['permissions']['channels']['view'] is True
+        assert update_response.json()['permissions']['skills']['skill_permissions'] == [
+            {
+                'skill_id': 'echo-skill',
+                'skill_name': 'echo-skill',
+                'description': 'Echo test skill',
+                'authorized': True,
+                'enabled': True,
+            },
+        ]
+
+        refreshed_roles_response = client.get('/api/roles', headers=headers)
+        refreshed_user_role = next(
+            role for role in refreshed_roles_response.json()['roles'] if role['identifier'] == 'user'
+        )
+        assert refreshed_user_role['permissions']['providers']['provider_permissions'] == [
+            {
+                'provider_type': 'smartcmp',
+                'instance_name': 'default',
+                'allowed': False,
+            },
+        ]
+        assert refreshed_user_role['permissions']['skills']['skill_permissions'] == [
+            {
+                'skill_id': 'echo-skill',
+                'skill_name': 'echo-skill',
+                'description': 'Echo test skill',
+                'authorized': True,
+                'enabled': True,
+            },
+        ]
+
+        _cleanup_manager(manager)
+
+    def test_provider_permissions_default_allow_and_multi_role_allow_priority(self, tmp_path):
+        manager = _init_database_sync(tmp_path)
+
+        async def _seed_roles_and_resolve():
+            async with _test_db_manager.get_session() as session:
+                await RoleService.ensure_builtin_roles(session)
+                deny_role = await RoleService.create(
+                    session,
+                    RoleCreate(
+                        name='Provider Deny',
+                        identifier='provider_deny',
+                        description='Denies one provider instance.',
+                        permissions={
+                            'providers': {
+                                'provider_permissions': [
+                                    {
+                                        'provider_type': 'smartcmp',
+                                        'instance_name': 'default',
+                                        'allowed': False,
+                                    },
+                                ],
+                            },
+                        },
+                        is_active=True,
+                    ),
+                )
+                allow_role = await RoleService.create(
+                    session,
+                    RoleCreate(
+                        name='Provider Default Allow',
+                        identifier='provider_default_allow',
+                        description='Omits provider rules.',
+                        permissions={},
+                        is_active=True,
+                    ),
+                )
+                user = await UserService.get_by_username(session, 'regularuser')
+                await UserService.update(
+                    session,
+                    user.id,
+                    UserUpdate(roles={deny_role.identifier: True, allow_role.identifier: True}),
+                )
+                authz = await resolve_authorization_context(
+                    session,
+                    UserInfo(
+                        user_id='regularuser',
+                        display_name='Regular User',
+                        roles=[],
+                        auth_type='local',
+                    ),
+                )
+                return authz.permissions['providers']['provider_permissions']
+
+        effective_provider_permissions = asyncio.run(_seed_roles_and_resolve())
+        assert effective_provider_permissions == []
+
+        _cleanup_manager(manager)
+
+    def test_provider_catalog_and_settings_respect_provider_permissions(self, tmp_path):
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        admin_token = _login_as(client, 'admin', 'adminpass123')
+        admin_headers = {'AtlasClaw-Authenticate': admin_token}
+
+        async def _seed_provider_and_deny_role():
+            async with _test_db_manager.get_session() as session:
+                await ServiceProviderConfigService.create(
+                    session,
+                    ServiceProviderConfigCreate(
+                        provider_type='smartcmp',
+                        instance_name='default',
+                        config={
+                            'base_url': 'https://cmp.example.com',
+                            'auth_type': 'user_token',
+                        },
+                        is_active=True,
+                    ),
+                )
+                deny_role = await RoleService.create(
+                    session,
+                    RoleCreate(
+                        name='Provider Deny Runtime',
+                        identifier='provider_deny_runtime',
+                        description='Cannot use smartcmp default.',
+                        permissions={
+                            'providers': {
+                                'provider_permissions': [
+                                    {
+                                        'provider_type': 'smartcmp',
+                                        'instance_name': 'default',
+                                        'allowed': False,
+                                    },
+                                ],
+                            },
+                        },
+                        is_active=True,
+                    ),
+                )
+                user = await UserService.get_by_username(session, 'regularuser')
+                await UserService.update(
+                    session,
+                    user.id,
+                    UserUpdate(roles={deny_role.identifier: True}),
+                )
+
+        asyncio.run(_seed_provider_and_deny_role())
+
+        regular_token = _login_as(client, 'regularuser', 'userpass123')
+        regular_headers = {'AtlasClaw-Authenticate': regular_token}
+        denied_catalog_resp = client.get('/api/service-providers/available-instances', headers=regular_headers)
+        assert denied_catalog_resp.status_code == 200
+        assert denied_catalog_resp.json()['providers'] == []
+
+        denied_settings_resp = client.put(
+            '/api/users/me/provider-settings',
+            json={
+                'provider_type': 'smartcmp',
+                'instance_name': 'default',
+                'config': {'user_token': 'user-token'},
+            },
+            headers=regular_headers,
+        )
+        assert denied_settings_resp.status_code == 403
+
+        full_catalog_resp = client.get(
+            '/api/service-providers/available-instances?include_all=true',
+            headers=admin_headers,
+        )
+        assert full_catalog_resp.status_code == 200
+        assert full_catalog_resp.json()['providers'][0]['provider_type'] == 'smartcmp'
+
+        async def _add_default_allow_role():
+            async with _test_db_manager.get_session() as session:
+                allow_role = await RoleService.create(
+                    session,
+                    RoleCreate(
+                        name='Provider Runtime Default Allow',
+                        identifier='provider_runtime_default_allow',
+                        description='Omits provider access rules.',
+                        permissions={},
+                        is_active=True,
+                    ),
+                )
+                user = await UserService.get_by_username(session, 'regularuser')
+                await UserService.update(
+                    session,
+                    user.id,
+                    UserUpdate(
+                        roles={
+                            'provider_deny_runtime': True,
+                            allow_role.identifier: True,
+                        },
+                    ),
+                )
+
+        asyncio.run(_add_default_allow_role())
+        regular_token = _login_as(client, 'regularuser', 'userpass123')
+        regular_headers = {'AtlasClaw-Authenticate': regular_token}
+        allowed_catalog_resp = client.get('/api/service-providers/available-instances', headers=regular_headers)
+        assert allowed_catalog_resp.status_code == 200
+        assert allowed_catalog_resp.json()['providers'][0]['provider_type'] == 'smartcmp'
 
         _cleanup_manager(manager)
 

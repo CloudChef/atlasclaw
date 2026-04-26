@@ -4,6 +4,7 @@
 
 const buildAdminPermissions = () => ({
   skills: { module_permissions: { view: true, enable_disable: true, manage_permissions: true }, skill_permissions: [] },
+  providers: { module_permissions: { manage_permissions: true }, provider_permissions: [] },
   channels: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
   tokens: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
   agent_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
@@ -67,6 +68,33 @@ describe('role management page', () => {
         })
       }
 
+      if (target === '/api/service-providers/available-instances?include_all=true') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            providers: [
+              {
+                provider_type: 'smartcmp',
+                display_name: 'SmartCMP',
+                instance_name: 'default',
+                base_url: 'https://cmp.example.com',
+                auth_type: ['provider_token', 'user_token'],
+                config_keys: []
+              },
+              {
+                provider_type: 'jira',
+                display_name: 'Jira',
+                instance_name: 'prod',
+                base_url: 'https://jira.example.com',
+                auth_type: 'user_token',
+                config_keys: []
+              }
+            ]
+          })
+        })
+      }
+
       if (target === '/api/roles?page=1&page_size=100' && (!options.method || options.method === 'GET')) {
         return Promise.resolve({
           ok: true,
@@ -82,6 +110,7 @@ describe('role management page', () => {
                 is_active: true,
                 permissions: {
                   skills: { module_permissions: { view: true, enable_disable: true, manage_permissions: true }, skill_permissions: [] },
+                  providers: { module_permissions: { manage_permissions: true }, provider_permissions: [] },
                   channels: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
                   tokens: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
                   agent_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
@@ -100,6 +129,7 @@ describe('role management page', () => {
                 is_active: true,
                 permissions: {
                   skills: { module_permissions: { view: true, enable_disable: false, manage_permissions: false }, skill_permissions: [] },
+                  providers: { module_permissions: { manage_permissions: false }, provider_permissions: [] },
                   channels: { view: true, create: true, edit: true, delete: true, manage_permissions: false },
                   tokens: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
                   agent_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
@@ -122,6 +152,12 @@ describe('role management page', () => {
                     skill_permissions: [
                       { skill_id: 'jira-manager', skill_name: 'jira-manager', description: 'Jira integration', authorized: true, enabled: true },
                       { skill_id: 'confluence', skill_name: 'confluence', description: 'Confluence integration', authorized: false, enabled: false }
+                    ]
+                  },
+                  providers: {
+                    module_permissions: { manage_permissions: false },
+                    provider_permissions: [
+                      { provider_type: 'jira', instance_name: 'prod', allowed: false }
                     ]
                   },
                   channels: { view: true, create: false, edit: true, delete: false, manage_permissions: false },
@@ -168,6 +204,25 @@ describe('role management page', () => {
         })
       }
 
+      if (target === '/api/roles/role-user' && options.method === 'PUT') {
+        const body = JSON.parse(options.body)
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            id: 'role-user',
+            name: 'Standard User',
+            identifier: 'user',
+            description: 'Built-in user role',
+            is_builtin: true,
+            is_active: true,
+            created_at: '2026-04-03T12:00:00Z',
+            updated_at: '2026-04-03T12:00:00Z',
+            ...body
+          })
+        })
+      }
+
       if (target === '/api/roles/role-ops' && options.method === 'PUT') {
         const body = JSON.parse(options.body)
         return Promise.resolve({
@@ -205,6 +260,7 @@ describe('role management page', () => {
     expect(container.querySelector('#roleEditor .role-summary-card')).not.toBeNull()
     expect(container.querySelector('#roleEditor [data-module-id="rbac"]')).toBeNull()
     expect(container.querySelector('#roleEditor [data-module-id="skills"]')).not.toBeNull()
+    expect(container.querySelector('#roleEditor [data-module-id="providers"]')).not.toBeNull()
     expect(container.querySelector('#roleEditor [data-module-id="tokens"]')).toBeNull()
     expect(container.querySelector('#roleEditor [data-module-id="agent_configs"]')).toBeNull()
     expect(container.querySelector('#roleEditor [data-module-id="provider_configs"]')).toBeNull()
@@ -368,7 +424,7 @@ describe('role management page', () => {
     expect(container.querySelector('[data-module-toggle="roles"][data-permission-toggle="manage_permissions"]').disabled).toBe(true)
   })
 
-  test('system-managed builtin user role keeps metadata and non-skill permissions locked', async () => {
+  test('system-managed builtin user role keeps metadata and locked module permissions read-only', async () => {
     const page = await import('../../app/frontend/scripts/pages/role-management.js')
     const container = document.getElementById('page-root')
 
@@ -385,6 +441,67 @@ describe('role management page', () => {
 
     container.querySelector('[data-module-id="skills"]').click()
     expect(container.querySelector('[data-skill-master-toggle="enabled"]').disabled).toBe(false)
+
+    container.querySelector('[data-module-id="providers"]').click()
+    expect(container.querySelector('[data-provider-master-toggle="allowed"]').disabled).toBe(false)
+  })
+
+  test('providers module defaults instances to allowed and saves explicit denials only', async () => {
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+    container.querySelector('[data-role-select="role-ops"]').click()
+    container.querySelector('[data-module-id="providers"]').click()
+
+    const smartcmpToggle = container.querySelector('[data-provider-key="smartcmp::default"]')
+    const jiraToggle = container.querySelector('[data-provider-key="jira::prod"]')
+    expect(smartcmpToggle.checked).toBe(true)
+    expect(jiraToggle.checked).toBe(false)
+    expect(container.querySelector('.role-provider-card strong').textContent).toContain('SmartCMP / default')
+
+    smartcmpToggle.checked = false
+    smartcmpToggle.dispatchEvent(new Event('change', { bubbles: true }))
+
+    container.querySelector('#saveRoleChanges').click()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const putCall = global.fetch.mock.calls.find(([url, options]) => (
+      url === '/api/roles/role-ops' && options?.method === 'PUT'
+    ))
+    expect(putCall).toBeDefined()
+    const payload = JSON.parse(putCall[1].body)
+    expect(payload.permissions.providers.provider_permissions).toEqual(expect.arrayContaining([
+      { provider_type: 'smartcmp', instance_name: 'default', allowed: false },
+      { provider_type: 'jira', instance_name: 'prod', allowed: false }
+    ]))
+    expect(payload.permissions.providers.provider_permissions).toHaveLength(2)
+  })
+
+  test('builtin user role provider access can be edited and saved', async () => {
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+    container.querySelector('[data-role-select="role-user"]').click()
+    container.querySelector('[data-module-id="providers"]').click()
+
+    const jiraToggle = container.querySelector('[data-provider-key="jira::prod"]')
+    expect(jiraToggle.checked).toBe(true)
+    jiraToggle.checked = false
+    jiraToggle.dispatchEvent(new Event('change', { bubbles: true }))
+
+    container.querySelector('#saveRoleChanges').click()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const putCall = global.fetch.mock.calls.find(([url, options]) => (
+      url === '/api/roles/role-user' && options?.method === 'PUT'
+    ))
+    expect(putCall).toBeDefined()
+    const payload = JSON.parse(putCall[1].body)
+    expect(payload.permissions.providers.provider_permissions).toEqual([
+      { provider_type: 'jira', instance_name: 'prod', allowed: false }
+    ])
   })
 
   test('admin badge alone does not bypass permission helpers', async () => {

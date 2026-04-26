@@ -118,7 +118,8 @@
 }
 
 .role-management-list,
-.role-skill-list {
+.role-skill-list,
+.role-provider-list {
   display: flex;
   flex-direction: column;
   gap: 14px;
@@ -153,7 +154,8 @@
 .role-module-panel,
 .role-module-nav,
 .role-skill-note,
-.role-skill-card {
+.role-skill-card,
+.role-provider-card {
   border-radius: 22px;
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid rgba(226, 232, 240, 0.94);
@@ -352,7 +354,8 @@
 .role-module-panel,
 .role-module-nav,
 .role-skill-note,
-.role-skill-card {
+.role-skill-card,
+.role-provider-card {
   padding: 22px;
   overflow: hidden;
 }
@@ -652,7 +655,8 @@
   margin-top: 6px;
 }
 
-.role-skill-section {
+.role-skill-section,
+.role-provider-section {
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -691,7 +695,8 @@
   white-space: nowrap;
 }
 
-.role-skill-card {
+.role-skill-card,
+.role-provider-card {
   display: flex;
   justify-content: space-between;
   gap: 18px;
@@ -788,6 +793,10 @@
 
 .role-skill-card {
   align-items: flex-start;
+}
+
+.role-provider-card {
+  align-items: center;
 }
 
 .role-skill-copy {
@@ -959,6 +968,7 @@
   .role-skill-toolbar,
   .role-skill-note,
   .role-skill-card,
+  .role-provider-card,
   .role-editor-footer {
     flex-direction: column;
   }

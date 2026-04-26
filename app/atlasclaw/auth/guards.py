@@ -26,6 +26,7 @@ from app.atlasclaw.db.orm.user import UserService
 
 
 SKILL_MODULE_PERMISSION_KEYS = {"view", "enable_disable", "manage_permissions"}
+PROVIDER_MODULE_PERMISSION_KEYS = {"manage_permissions"}
 
 
 @dataclass
@@ -134,6 +135,57 @@ def _merge_skill_permissions(
     return list(merged.values())
 
 
+def _provider_rule_key(entry: dict[str, Any]) -> tuple[str, str]:
+    return (
+        str(entry.get("provider_type") or "").strip(),
+        str(entry.get("instance_name") or "").strip(),
+    )
+
+
+def _merge_effective_provider_permissions(
+    role_permissions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge provider-instance permissions using allow-priority semantics.
+
+    Missing provider entries are treated as allowed, so an effective denial is
+    present only when every active role explicitly denies the same instance.
+    """
+    role_rule_maps: list[dict[tuple[str, str], bool]] = []
+    all_keys: set[tuple[str, str]] = set()
+
+    for permissions in role_permissions:
+        entries = (
+            permissions.get("providers", {}).get("provider_permissions", [])
+            if isinstance(permissions, dict)
+            else []
+        )
+        rule_map: dict[tuple[str, str], bool] = {}
+        if isinstance(entries, list):
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                key = _provider_rule_key(entry)
+                if not key[0] or not key[1]:
+                    continue
+                rule_map[key] = entry.get("allowed") is not False
+                all_keys.add(key)
+        role_rule_maps.append(rule_map)
+
+    if not role_rule_maps:
+        return []
+
+    effective_denials: list[dict[str, Any]] = []
+    for provider_type, instance_name in sorted(all_keys):
+        if all(rule_map.get((provider_type, instance_name), True) is False for rule_map in role_rule_maps):
+            effective_denials.append({
+                "provider_type": provider_type,
+                "instance_name": instance_name,
+                "allowed": False,
+            })
+
+    return effective_denials
+
+
 def _merge_permissions(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
     """Merge role permissions with recursive OR semantics."""
     merged = dict(current)
@@ -160,6 +212,8 @@ def _normalize_permission_path(permission_path: str) -> list[str]:
     parts = [segment.strip() for segment in permission_path.split(".") if segment.strip()]
     if len(parts) == 2 and parts[0] == "skills" and parts[1] in SKILL_MODULE_PERMISSION_KEYS:
         return ["skills", "module_permissions", parts[1]]
+    if len(parts) == 2 and parts[0] == "providers" and parts[1] in PROVIDER_MODULE_PERMISSION_KEYS:
+        return ["providers", "module_permissions", parts[1]]
     return parts
 
 
@@ -278,6 +332,56 @@ def has_skill_access(authz: AuthorizationContext, skill_name: str) -> bool:
     return any(bool(entry.get("authorized", False)) and bool(entry.get("enabled", False)) for entry in matching_entries)
 
 
+def has_provider_instance_access(
+    authz: AuthorizationContext,
+    provider_type: str,
+    instance_name: str,
+) -> bool:
+    """Return whether the user may use a provider instance at runtime."""
+    normalized_provider_type = str(provider_type or "").strip()
+    normalized_instance_name = str(instance_name or "").strip()
+    if not normalized_provider_type or not normalized_instance_name:
+        return False
+
+    provider_permissions = (
+        authz.permissions.get("providers", {}).get("provider_permissions", [])
+        if isinstance(authz.permissions, dict)
+        else []
+    )
+    if not isinstance(provider_permissions, list):
+        return True
+
+    for entry in provider_permissions:
+        if not isinstance(entry, dict):
+            continue
+        if (
+            str(entry.get("provider_type") or "").strip() == normalized_provider_type
+            and str(entry.get("instance_name") or "").strip() == normalized_instance_name
+        ):
+            return entry.get("allowed") is not False
+    return True
+
+
+def filter_provider_instances_for_authz(
+    authz: AuthorizationContext,
+    provider_instances: dict[str, dict[str, dict[str, Any]]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Return provider instances visible to the current authorization context."""
+    filtered: dict[str, dict[str, dict[str, Any]]] = {}
+    for provider_type, instances in (provider_instances or {}).items():
+        if not isinstance(instances, dict):
+            continue
+        visible_instances: dict[str, dict[str, Any]] = {}
+        for instance_name, instance_config in instances.items():
+            if not isinstance(instance_config, dict):
+                continue
+            if has_provider_instance_access(authz, str(provider_type), str(instance_name)):
+                visible_instances[str(instance_name)] = dict(instance_config)
+        if visible_instances:
+            filtered[str(provider_type)] = visible_instances
+    return filtered
+
+
 def ensure_permission(
     authz: AuthorizationContext,
     permission_path: str,
@@ -314,6 +418,22 @@ def ensure_skill_access(
     raise HTTPException(
         status_code=403,
         detail=detail or f"Missing permission to execute skill: {skill_name}",
+    )
+
+
+def ensure_provider_instance_access(
+    authz: AuthorizationContext,
+    provider_type: str,
+    instance_name: str,
+    *,
+    detail: Optional[str] = None,
+) -> None:
+    """Raise 403 if the user cannot access a provider instance."""
+    if has_provider_instance_access(authz, provider_type, instance_name):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=detail or f"Missing permission to access provider instance: {provider_type}.{instance_name}",
     )
 
 
@@ -420,11 +540,18 @@ async def resolve_authorization_context(
     effective_permissions = build_default_permissions()
     if role_identifiers:
         roles = await RoleService.list_by_identifiers(session, role_identifiers, is_active=True)
+        normalized_role_permissions: list[dict[str, Any]] = []
         for role in roles:
+            normalized_permissions = RoleService.normalize_permissions(role.permissions)
+            normalized_role_permissions.append(normalized_permissions)
             effective_permissions = _merge_permissions(
                 effective_permissions,
-                RoleService.normalize_permissions(role.permissions),
+                normalized_permissions,
             )
+        effective_permissions.setdefault("providers", {})
+        effective_permissions["providers"]["provider_permissions"] = (
+            _merge_effective_provider_permissions(normalized_role_permissions)
+        )
 
     is_admin = any(identifier.lower() == "admin" for identifier in role_identifiers)
 

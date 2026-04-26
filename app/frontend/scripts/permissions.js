@@ -3,6 +3,7 @@
  */
 
 const SKILL_MODULE_PERMISSION_KEYS = new Set(['view', 'enable_disable', 'manage_permissions'])
+const PROVIDER_MODULE_PERMISSION_KEYS = new Set(['manage_permissions'])
 
 export const ROLE_MANAGEMENT_ACCESS_PERMISSIONS = [
   'roles.view',
@@ -49,6 +50,9 @@ function normalizePermissionPath(permissionPath) {
 
   if (parts.length === 2 && parts[0] === 'skills' && SKILL_MODULE_PERMISSION_KEYS.has(parts[1])) {
     return ['skills', 'module_permissions', parts[1]]
+  }
+  if (parts.length === 2 && parts[0] === 'providers' && PROVIDER_MODULE_PERMISSION_KEYS.has(parts[1])) {
+    return ['providers', 'module_permissions', parts[1]]
   }
 
   return parts

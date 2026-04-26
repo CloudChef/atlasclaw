@@ -15,6 +15,7 @@ import {
 
 const MODULES = [
   ['skills', 'skills', 'roles.modules.skills', 'Skills', 'roles.modules.skillsDescription', 'Manage which skills this role can enable and use.'],
+  ['providers', 'provider', 'roles.modules.providers', 'Providers', 'roles.modules.providersDescription', 'Manage which provider instances this role can access at runtime.'],
   ['channels', 'channels', 'roles.modules.channels', 'Channels', 'roles.modules.channelsDescription', 'Manage access to connection configuration and lifecycle actions.'],
   ['model_configs', 'model', 'roles.modules.modelConfigs', 'Model Configs', 'roles.modules.modelConfigsDescription', 'Control model catalog visibility and maintenance rights.'],
   ['users', 'users', 'roles.modules.users', 'Users', 'roles.modules.usersDescription', 'Define how this role may browse and administer workspace users.'],
@@ -31,6 +32,9 @@ const MODULES = [
 const MODULE_PERMISSION_DEFINITIONS = {
   skills: [
     ['manage_permissions', 'roles.permissions.managePermissions', 'Manage Permissions', 'roles.skillPermissions.managePermissionsDescription', 'Edit which skill permissions roles may receive.']
+  ],
+  providers: [
+    ['manage_permissions', 'roles.permissions.managePermissions', 'Manage Permissions', 'roles.providerPermissions.managePermissionsDescription', 'Edit which provider instances roles may access at runtime.']
   ],
   channels: [
     ['view', 'roles.permissions.view', 'View', 'roles.channelPermissions.viewDescription', 'Review connected channels, owners, and health status.'],
@@ -106,9 +110,11 @@ let deleteModal = null
 let roles = []
 let skills = []
 let providerSkills = []
+let providerInstances = []
 let selectedRoleId = null
 let roleSearch = ''
 let skillSearch = ''
+let providerSearch = ''
 let activeModuleId = 'skills'
 let draftRoleState = null
 let identifierTouched = false
@@ -229,6 +235,7 @@ function slugifyIdentifier(value) {
 function buildDefaultPermissions() {
   return {
     skills: { module_permissions: { view: false, enable_disable: false, manage_permissions: false }, skill_permissions: [] },
+    providers: { module_permissions: { manage_permissions: false }, provider_permissions: [] },
     channels: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
     tokens: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
     agent_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
@@ -245,6 +252,10 @@ function buildAllEnabledPermissions() {
     if (moduleId === 'skills') {
       config.module_permissions.view = true
       config.module_permissions.enable_disable = true
+      config.module_permissions.manage_permissions = true
+      return
+    }
+    if (moduleId === 'providers') {
       config.module_permissions.manage_permissions = true
       return
     }
@@ -307,11 +318,81 @@ function shouldPersistImplicitAdminSkillAccess(role) {
   )
 }
 
+function providerPermissionKey(providerType, instanceName) {
+  return `${String(providerType || '').trim()}::${String(instanceName || '').trim()}`
+}
+
+function getProviderDisplayName(provider) {
+  return provider?.display_name || provider?.provider_type || ''
+}
+
+function getProviderDisplayDescription(provider) {
+  return provider?.base_url || translateOrFallback('roles.defaultProviderDescription', 'Registered service provider instance.')
+}
+
+function normalizeProviderPermissions(storedPermissions = [], providerCatalog = []) {
+  // Provider access is default-allow; stored entries only override catalog rows
+  // when they explicitly deny an instance.
+  const storedByKey = new Map()
+  for (const entry of Array.isArray(storedPermissions) ? storedPermissions : []) {
+    const providerType = String(entry?.provider_type || '').trim()
+    const instanceName = String(entry?.instance_name || '').trim()
+    if (!providerType || !instanceName) continue
+    storedByKey.set(providerPermissionKey(providerType, instanceName), {
+      provider_type: providerType,
+      display_name: String(entry?.display_name || providerType),
+      instance_name: instanceName,
+      base_url: String(entry?.base_url || ''),
+      auth_type: entry?.auth_type || '',
+      allowed: entry.allowed !== false
+    })
+  }
+
+  const normalized = []
+  const seen = new Set()
+  for (const provider of providerCatalog) {
+    const providerType = String(provider?.provider_type || '').trim()
+    const instanceName = String(provider?.instance_name || '').trim()
+    if (!providerType || !instanceName) continue
+    const key = providerPermissionKey(providerType, instanceName)
+    const existing = storedByKey.get(key)
+    seen.add(key)
+    normalized.push({
+      provider_type: providerType,
+      display_name: String(provider?.display_name || existing?.display_name || providerType),
+      instance_name: instanceName,
+      base_url: String(provider?.base_url || existing?.base_url || ''),
+      auth_type: provider?.auth_type || existing?.auth_type || '',
+      allowed: existing ? existing.allowed !== false : true
+    })
+  }
+
+  for (const [key, entry] of storedByKey.entries()) {
+    if (seen.has(key)) continue
+    normalized.push(entry)
+  }
+
+  return normalized
+}
+
 function buildPermissionsPayload(role) {
   const permissions = cloneData(role?.permissions || buildDefaultPermissions())
   delete permissions.rbac
   if (permissions.users && typeof permissions.users === 'object') {
     delete permissions.users.reset_password
+  }
+  if (permissions.providers && typeof permissions.providers === 'object') {
+    // Persist only explicit denies. Missing provider rows are intentional and
+    // mean "allowed" for existing roles and newly registered provider instances.
+    permissions.providers.provider_permissions = Array.isArray(permissions.providers.provider_permissions)
+      ? permissions.providers.provider_permissions
+        .filter(provider => provider?.allowed === false)
+        .map(provider => ({
+          provider_type: provider.provider_type,
+          instance_name: provider.instance_name,
+          allowed: false
+        }))
+      : []
   }
 
   if (shouldPersistImplicitAdminSkillAccess(role)) {
@@ -349,6 +430,18 @@ function normalizeRole(role, skillCatalog = []) {
       skill_permissions: Array.isArray(normalized.permissions.skills?.skill_permissions)
         ? normalized.permissions.skills.skill_permissions
         : []
+    },
+    providers: {
+      ...basePermissions.providers,
+      ...(normalized.permissions.providers || {}),
+      module_permissions: {
+        ...basePermissions.providers.module_permissions,
+        ...(normalized.permissions.providers?.module_permissions || {})
+      },
+      provider_permissions: normalizeProviderPermissions(
+        normalized.permissions.providers?.provider_permissions,
+        providerInstances
+      )
     }
   }
   const storedSkillPermissions = new Map(
@@ -430,6 +523,11 @@ function countEnabledPermissions(role, moduleId) {
     const skillFlags = (permissions.skill_permissions || []).filter(skill => skill.enabled && !skill.is_provider_skill).length
     return moduleFlags + skillFlags
   }
+  if (moduleId === 'providers') {
+    const moduleFlags = permissions.module_permissions?.manage_permissions ? 1 : 0
+    const allowedProviders = (permissions.provider_permissions || []).filter(provider => provider.allowed !== false).length
+    return moduleFlags + allowedProviders
+  }
   return Object.values(permissions).filter(Boolean).length
 }
 
@@ -471,6 +569,9 @@ function countModuleSummaryEnabledPermissions(role, moduleId) {
     const governanceFlags = permissions.module_permissions?.manage_permissions ? 1 : 0
     const skillFlags = (permissions.skill_permissions || []).filter(skill => skill.enabled && !skill.is_provider_skill).length
     return governanceFlags + skillFlags
+  }
+  if (moduleId === 'providers') {
+    return (permissions.provider_permissions || []).filter(provider => provider.allowed !== false).length
   }
   return countEnabledPermissions(role, moduleId)
 }
@@ -590,6 +691,21 @@ function getFilteredSkillRows(skillPermissions = []) {
   })
 }
 
+function getFilteredProviderRows(providerPermissions = []) {
+  const search = providerSearch.trim().toLowerCase()
+  return providerPermissions.filter(provider => {
+    if (!search) return true
+    const searchContent = [
+      provider.provider_type,
+      provider.instance_name,
+      provider.base_url || '',
+      getProviderDisplayName(provider),
+      getProviderDisplayDescription(provider)
+    ].join(' ').toLowerCase()
+    return searchContent.includes(search)
+  })
+}
+
 function syncSkillModulePermissions() {
   if (!draftRoleState) return
   const modulePermissions = draftRoleState.permissions.skills.module_permissions || {}
@@ -668,6 +784,70 @@ function renderSkillsModule() {
   `
 }
 
+function renderProvidersModule() {
+  const permissions = draftRoleState.permissions.providers || { module_permissions: {}, provider_permissions: [] }
+  const providerRows = getFilteredProviderRows(permissions.provider_permissions || [])
+  const allVisibleProvidersAllowed = providerRows.length > 0 && providerRows.every(provider => provider.allowed !== false)
+  const canManageProviders = canManageModule('providers')
+
+  return `
+    ${renderModulePermissionTable('providers', permissions.module_permissions || {}, { canManage: canManageProviders })}
+    <section class="role-provider-section">
+      <div class="role-skill-toolbar">
+        <div>
+          <h3 data-i18n="roles.providersListTitle">Provider Access</h3>
+          <p data-i18n="roles.providersListDescription">Search registered provider instances and decide which ones this role can use.</p>
+        </div>
+        <label class="role-skill-search" for="providersSearchInput">
+          ${ICONS.search}
+          <input type="text" id="providersSearchInput" value="${escapeHtml(providerSearch)}" data-i18n-placeholder="roles.providerSearchPlaceholder" placeholder="Search providers...">
+        </label>
+      </div>
+      <div class="role-skill-note">
+        <div class="role-skill-note-copy">
+          <strong data-i18n="roles.providerBehaviorTitle">Default allow behavior</strong>
+          <p data-i18n="roles.providerBehaviorDescription">Provider instances are allowed unless this role explicitly turns access off.</p>
+        </div>
+        <label class="role-skill-master-toggle">
+          <span class="role-skill-master-label" data-i18n="roles.allowAllProvidersToggle">Allow all</span>
+          <span class="toggle-switch">
+            <input type="checkbox" data-provider-master-toggle="allowed" ${allVisibleProvidersAllowed ? 'checked' : ''} ${canManageProviders ? '' : 'disabled'}>
+            <span></span>
+          </span>
+        </label>
+      </div>
+      <div class="role-provider-list">
+        ${providerRows.length ? providerRows.map(provider => {
+          const providerKey = providerPermissionKey(provider.provider_type, provider.instance_name)
+          return `
+          <div class="role-provider-card">
+            <div class="role-skill-copy">
+              <div class="role-skill-header">
+                <strong>${escapeHtml(getProviderDisplayName(provider))} / ${escapeHtml(provider.instance_name)}</strong>
+              </div>
+              <p>${escapeHtml(getProviderDisplayDescription(provider))}</p>
+            </div>
+            <div class="role-skill-controls">
+              <label class="role-inline-toggle">
+                <span data-i18n="roles.allowToggle">Allow</span>
+                <span class="toggle-switch compact">
+                  <input type="checkbox" data-provider-key="${escapeHtml(providerKey)}" data-provider-toggle="allowed" ${provider.allowed !== false ? 'checked' : ''} ${canManageProviders ? '' : 'disabled'}>
+                  <span></span>
+                </span>
+              </label>
+            </div>
+          </div>
+        `}).join('') : `
+          <div class="role-list-empty role-list-empty-compact">
+            <strong data-i18n="roles.noProvidersTitle">No providers match</strong>
+            <p data-i18n="roles.noProvidersDescription">Adjust the search term or register provider instances first.</p>
+          </div>
+        `}
+      </div>
+    </section>
+  `
+}
+
 function renderEditor() {
   if (!draftRoleState) {
     editorEl.innerHTML = `
@@ -680,7 +860,9 @@ function renderEditor() {
   }
 
   const module = MODULES.find(item => item.id === activeModuleId) || MODULES[0]
-  const moduleMarkup = activeModuleId === 'skills' ? renderSkillsModule() : renderPermissionTable(activeModuleId)
+  const moduleMarkup = activeModuleId === 'skills'
+    ? renderSkillsModule()
+    : (activeModuleId === 'providers' ? renderProvidersModule() : renderPermissionTable(activeModuleId))
   const roleDisplayName = getRoleDisplayName(draftRoleState) || translateOrFallback('roles.untitledRole', 'Untitled Role')
   const roleDisplayDescription = getRoleDisplayDescription(draftRoleState)
   const roleNameValue = draftRoleState.is_builtin ? roleDisplayName : draftRoleState.name
@@ -692,7 +874,9 @@ function renderEditor() {
   const statusDisabledAttr = draftRoleState.is_builtin || !canEditRoleMetadata() ? 'disabled' : ''
   const canDeleteCurrentRole = canDeleteRoles() && !draftRoleState.is_builtin && !draftRoleState.isNew
   const canSaveCurrentRole = canSaveRole()
-  const canManageActiveModule = canManageModule(activeModuleId) && (!isSystemManagedBuiltinRole(draftRoleState) || activeModuleId === 'skills')
+  const canManageActiveModule = canManageModule(activeModuleId) && (
+    !isSystemManagedBuiltinRole(draftRoleState) || ['skills', 'providers'].includes(activeModuleId)
+  )
 
   editorEl.innerHTML = `
     <div class="role-editor-shell">
@@ -795,6 +979,16 @@ async function loadSkills() {
   }
 }
 
+async function loadProviders() {
+  try {
+    const data = await fetchJson('/api/service-providers/available-instances?include_all=true')
+    providerInstances = Array.isArray(data?.providers) ? data.providers : []
+  } catch (error) {
+    providerInstances = []
+    console.warn('[RoleManagement] Failed to load provider instances:', error)
+  }
+}
+
 async function loadRoles(preserveRoleId = selectedRoleId) {
   const data = await fetchJson('/api/roles?page=1&page_size=100')
   const rawRoles = Array.isArray(data?.roles) ? data.roles : []
@@ -837,6 +1031,7 @@ function selectRole(roleId) {
   selectedRoleId = role.id
   activeModuleId = 'skills'
   skillSearch = ''
+  providerSearch = ''
   draftRoleState = normalizeRole(role, skills)
   identifierTouched = true
   renderPage()
@@ -870,10 +1065,12 @@ function updateDraftField(field, value, shouldRender = true) {
 
 function toggleModulePermission(moduleId, permissionId, checked) {
   if (!draftRoleState) return
-  if (isSystemManagedBuiltinRole(draftRoleState) && moduleId !== 'skills') return
+  if (isSystemManagedBuiltinRole(draftRoleState) && !['skills', 'providers'].includes(moduleId)) return
   if (!canManageModule(moduleId)) return
   if (moduleId === 'skills') {
     draftRoleState.permissions.skills.module_permissions[permissionId] = checked
+  } else if (moduleId === 'providers') {
+    draftRoleState.permissions.providers.module_permissions[permissionId] = checked
   } else {
     draftRoleState.permissions[moduleId][permissionId] = checked
   }
@@ -927,14 +1124,48 @@ function toggleAllVisibleSkills(checked) {
   renderPage()
 }
 
+function toggleProviderPermission(providerKey, checked) {
+  if (!draftRoleState) return
+  if (!canManageModule('providers')) return
+  const provider = draftRoleState.permissions.providers.provider_permissions.find(item => (
+    providerPermissionKey(item.provider_type, item.instance_name) === providerKey
+  ))
+  if (!provider) return
+  provider.allowed = checked
+  renderPage()
+}
+
+function toggleAllVisibleProviders(checked) {
+  if (!draftRoleState) return
+  if (!canManageModule('providers')) return
+  const visibleProviderKeys = new Set(
+    getFilteredProviderRows(draftRoleState.permissions.providers.provider_permissions)
+      .map(provider => providerPermissionKey(provider.provider_type, provider.instance_name))
+  )
+  draftRoleState.permissions.providers.provider_permissions = draftRoleState.permissions.providers.provider_permissions.map(provider => {
+    if (!visibleProviderKeys.has(providerPermissionKey(provider.provider_type, provider.instance_name))) {
+      return provider
+    }
+    return {
+      ...provider,
+      allowed: checked
+    }
+  })
+  renderPage()
+}
+
 function applyModuleAction(action) {
   if (!draftRoleState) return
-  if (isSystemManagedBuiltinRole(draftRoleState) && activeModuleId !== 'skills') return
+  if (isSystemManagedBuiltinRole(draftRoleState) && !['skills', 'providers'].includes(activeModuleId)) return
   if (!canManageModule(activeModuleId)) return
   if (action === 'restore-defaults') {
     const template = getRoleTemplate(draftRoleState.identifier)
     if (activeModuleId === 'skills') {
       draftRoleState.permissions.skills = normalizeRole({ permissions: { skills: template.skills } }, skills).permissions.skills
+    } else if (activeModuleId === 'providers') {
+      draftRoleState.permissions.providers = normalizeRole({
+        permissions: { providers: template.providers }
+      }, skills).permissions.providers
     } else {
       draftRoleState.permissions[activeModuleId] = cloneData(template[activeModuleId])
     }
@@ -950,6 +1181,14 @@ function applyModuleAction(action) {
         enabled: skill.runtime_enabled !== false
       }))
       syncSkillModulePermissions()
+    } else if (activeModuleId === 'providers') {
+      Object.keys(draftRoleState.permissions.providers.module_permissions).forEach(key => {
+        draftRoleState.permissions.providers.module_permissions[key] = true
+      })
+      draftRoleState.permissions.providers.provider_permissions = draftRoleState.permissions.providers.provider_permissions.map(provider => ({
+        ...provider,
+        allowed: true
+      }))
     } else {
       Object.keys(draftRoleState.permissions[activeModuleId]).forEach(key => {
         draftRoleState.permissions[activeModuleId][key] = true
@@ -964,6 +1203,7 @@ function createNewRole() {
   selectedRoleId = 'new-role'
   activeModuleId = 'skills'
   skillSearch = ''
+  providerSearch = ''
   identifierTouched = false
   draftRoleState = createEmptyRole()
   renderPage()
@@ -986,6 +1226,7 @@ function cancelDraftChanges() {
     if (original) draftRoleState = normalizeRole(original, skills)
   }
   skillSearch = ''
+  providerSearch = ''
   identifierTouched = true
   renderPage()
 }
@@ -1087,6 +1328,7 @@ function handleEditorClick(event) {
   if (moduleButton) {
     activeModuleId = moduleButton.getAttribute('data-module-id')
     skillSearch = ''
+    providerSearch = ''
     renderPage()
     return
   }
@@ -1105,6 +1347,10 @@ function handleEditorInput(event) {
   }
   if (event.target.id === 'skillsSearchInput') {
     skillSearch = event.target.value
+    renderPage()
+  }
+  if (event.target.id === 'providersSearchInput') {
+    providerSearch = event.target.value
     renderPage()
   }
 }
@@ -1133,6 +1379,19 @@ function handleEditorChange(event) {
   const masterSkillToggle = event.target.getAttribute('data-skill-master-toggle')
   if (masterSkillToggle === 'enabled') {
     toggleAllVisibleSkills(event.target.checked)
+    return
+  }
+
+  const providerKey = event.target.getAttribute('data-provider-key')
+  const providerToggle = event.target.getAttribute('data-provider-toggle')
+  if (providerKey && providerToggle === 'allowed') {
+    toggleProviderPermission(providerKey, event.target.checked)
+    return
+  }
+
+  const masterProviderToggle = event.target.getAttribute('data-provider-master-toggle')
+  if (masterProviderToggle === 'allowed') {
+    toggleAllVisibleProviders(event.target.checked)
   }
 }
 
@@ -1188,6 +1447,7 @@ export async function mount(containerEl) {
   deleteModal = container.querySelector('#deleteRoleModal')
   setupEventListeners()
   await loadSkills()
+  await loadProviders()
   await loadRoles()
   renderPage()
 }
@@ -1203,9 +1463,11 @@ export async function unmount() {
   roles = []
   skills = []
   providerSkills = []
+  providerInstances = []
   selectedRoleId = null
   roleSearch = ''
   skillSearch = ''
+  providerSearch = ''
   activeModuleId = 'skills'
   draftRoleState = null
   identifierTouched = false

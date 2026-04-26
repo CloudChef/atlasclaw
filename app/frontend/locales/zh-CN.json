@@ -135,6 +135,7 @@
     "deleteButton": "删除角色",
     "searchPlaceholder": "搜索角色...",
     "skillSearchPlaceholder": "搜索技能...",
+    "providerSearchPlaceholder": "搜索 Provider...",
     "roleName": "角色名称",
     "roleNamePlaceholder": "请输入角色名称",
     "roleDescription": "角色说明",
@@ -158,6 +159,7 @@
     "notAuthorized": "未授权",
     "authorizeToggle": "授权",
     "enableToggle": "启用",
+    "allowToggle": "允许",
     "permissionBadge": "权限",
     "permissionTable": {
       "permission": "权限",
@@ -176,6 +178,9 @@
       "manage": "管理权限",
       "manageDescription": "管理这个角色可启用和使用的技能。",
       "managePermissionsDescription": "管理技能模块的权限模型，包括哪些角色可以配置和启用技能。"
+    },
+    "providerPermissions": {
+      "managePermissionsDescription": "管理这个角色运行时可以访问哪些已注册 Provider 实例。"
     },
     "userPermissions": {
       "viewDescription": "查看用户、状态以及他们当前被分配的角色。",
@@ -230,6 +235,8 @@
     "modules": {
       "skills": "技能",
       "skillsDescription": "管理这个角色可启用和使用的技能。",
+      "providers": "Providers",
+      "providersDescription": "管理这个角色运行时可以访问哪些已注册 Provider 实例。",
       "channels": "渠道",
       "channelsDescription": "管理渠道配置和生命周期操作的访问权限。",
       "tokens": "令牌",
@@ -363,10 +370,18 @@
     "skillBehaviorDescription": "使用右侧总开关可以一键启用或关闭下方所有可见技能。",
     "enableAllToggle": "全部启用",
     "defaultSkillDescription": "AtlasClaw Agent 可用的工作区技能。",
+    "providersListTitle": "Provider 访问",
+    "providersListDescription": "搜索已注册 Provider 实例，并决定这个角色可以使用哪些实例。",
+    "providerBehaviorTitle": "默认允许访问",
+    "providerBehaviorDescription": "Provider 实例默认允许访问，只有显式关闭才会禁止。",
+    "allowAllProvidersToggle": "全部允许",
+    "defaultProviderDescription": "已注册的服务 Provider 实例。",
     "noRolesTitle": "没有找到角色",
     "noRolesDescription": "试试其他搜索词，或者新建一个自定义角色。",
     "noSkillsTitle": "没有匹配的技能",
     "noSkillsDescription": "调整搜索词后再查看更多技能。",
+    "noProvidersTitle": "没有匹配的 Provider",
+    "noProvidersDescription": "调整搜索词，或先注册 Provider 实例。",
     "emptyTitle": "先选择一个角色",
     "emptyDescription": "请选择内置角色或新建角色，然后在右侧编辑器中配置权限。",
     "selectAll": "全部选中",

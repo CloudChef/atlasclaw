@@ -48,12 +48,45 @@ def _normalize_skill_permissions(entries: Any) -> List[Dict[str, Any]]:
     return normalized
 
 
+def _normalize_provider_permissions(entries: Any) -> List[Dict[str, Any]]:
+    """Normalize per-provider-instance permissions into a predictable list shape."""
+    if not isinstance(entries, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+
+        provider_type = str(entry.get("provider_type") or "").strip()
+        instance_name = str(entry.get("instance_name") or "").strip()
+        if not provider_type or not instance_name:
+            continue
+
+        key = (provider_type, instance_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        normalized.append({
+            "provider_type": provider_type,
+            "instance_name": instance_name,
+            "allowed": entry.get("allowed") is not False,
+        })
+
+    return normalized
+
+
 def _merge_permission_dicts(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
     """Deep-merge role permissions while preserving the known default shape."""
     merged = copy.deepcopy(base)
     for key, value in overrides.items():
         if key == "skill_permissions":
             merged[key] = _normalize_skill_permissions(value)
+            continue
+
+        if key == "provider_permissions":
+            merged[key] = _normalize_provider_permissions(value)
             continue
 
         if isinstance(value, dict) and isinstance(merged.get(key), dict):
@@ -75,6 +108,12 @@ def build_default_permissions() -> Dict[str, Any]:
                 "manage_permissions": False,
             },
             "skill_permissions": [],
+        },
+        "providers": {
+            "module_permissions": {
+                "manage_permissions": False,
+            },
+            "provider_permissions": [],
         },
         "channels": {
             "view": False,
@@ -136,6 +175,9 @@ def _build_all_enabled_permissions() -> Dict[str, Any]:
         if module_id == "skills":
             config["module_permissions"]["view"] = True
             config["module_permissions"]["enable_disable"] = True
+            config["module_permissions"]["manage_permissions"] = True
+            continue
+        if module_id == "providers":
             config["module_permissions"]["manage_permissions"] = True
             continue
 
@@ -254,12 +296,18 @@ class RoleService:
             if current:
                 normalized_current_permissions = RoleService.normalize_permissions(current.permissions)
                 if is_system_managed_builtin_role(identifier):
-                    # Reset non-skills modules to canonical defaults,
-                    # but preserve user-managed skills permissions from DB.
+                    # Reset locked modules to canonical defaults, but preserve
+                    # user-managed runtime access permissions from DB.
                     target_permissions = dict(normalized_definition_permissions)
                     current_skills = normalized_current_permissions.get("skills")
                     if isinstance(current_skills, dict) and current_skills.get("skill_permissions"):
                         target_permissions["skills"] = current_skills
+                    current_providers = normalized_current_permissions.get("providers")
+                    if (
+                        isinstance(current_providers, dict)
+                        and current_providers.get("provider_permissions")
+                    ):
+                        target_permissions["providers"] = current_providers
                 else:
                     target_permissions = normalized_current_permissions
                 if current.is_builtin and (

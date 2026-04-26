@@ -43,6 +43,26 @@ tool_get_priority: 180
     (skill_dir / "run.py").write_text(run_py, encoding="utf-8")
 
 
+def _write_standalone_md_tool_skill(base: Path) -> None:
+    skill_dir = base / "vm-request"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    skill_md = """---
+name: vm-request
+description: VM request helper workflow
+group: request
+tool_prepare_name: vm_request_prepare
+tool_prepare_entrypoint: run.py:prepare
+---
+# VM request
+"""
+    (skill_dir / "SKILL.md").write_text(skill_md, encoding="utf-8")
+    run_py = (
+        "async def prepare(ctx=None, **kwargs):\n"
+        "    return {'ok': True, 'op': 'prepare', 'kwargs': kwargs}\n"
+    )
+    (skill_dir / "run.py").write_text(run_py, encoding="utf-8")
+
+
 def _patch_auth_cookie_names(
     monkeypatch,
     *,
@@ -205,6 +225,200 @@ def test_build_scoped_deps_merges_user_provider_instances_over_template_config(t
 
     registry_adapter = deps.extra["_service_provider_registry"]
     assert registry_adapter.get_instance_config("github", "default")["user_token"] == "github_pat_user_123"
+
+
+def test_build_scoped_deps_filters_provider_instances_by_runtime_permissions(tmp_path) -> None:
+    _write_provider_skill(tmp_path)
+    registry = SkillRegistry()
+    registry.load_from_directory(str(tmp_path), location="external", provider="smartcmp")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    session_manager = SessionManager(str(workspace))
+    session_queue = SessionQueue()
+    ctx = APIContext(
+        session_manager=session_manager,
+        session_queue=session_queue,
+        skill_registry=registry,
+        provider_instances={
+            "smartcmp": {
+                "default": {
+                    "base_url": "https://cmp.example.com",
+                    "auth_type": "user_token",
+                    "user_token": "cmp-user-token",
+                }
+            },
+            "jira": {
+                "prod": {
+                    "base_url": "https://jira.example.com",
+                    "auth_type": "user_token",
+                    "user_token": "jira-user-token",
+                }
+            },
+        },
+    )
+
+    user = UserInfo(
+        user_id="u1",
+        display_name="User",
+        raw_token="token",
+        roles=["user"],
+    )
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        extra={
+            "context": {
+                "_provider_permissions": [
+                    {
+                        "provider_type": "smartcmp",
+                        "instance_name": "default",
+                        "allowed": False,
+                    }
+                ]
+            }
+        },
+    )
+
+    assert "smartcmp" not in deps.extra["provider_instances"]
+    assert deps.extra["available_providers"] == {"jira": ["prod"]}
+    assert deps.extra["tools_snapshot_authoritative"] is True
+    assert "cmp_list_pending" not in {
+        tool["name"] for tool in deps.extra["tools_snapshot"]
+    }
+    assert "cmp_get_ticket" not in {
+        tool["name"] for tool in deps.extra["tools_snapshot"]
+    }
+    assert all(
+        (skill.get("metadata") or {}).get("provider_type") != "smartcmp"
+        for skill in deps.extra["md_skills_snapshot"]
+    )
+    assert "group:smartcmp" not in deps.extra["tool_groups_snapshot"]
+    registry_adapter = deps.extra["_service_provider_registry"]
+    assert registry_adapter.get_instance_config("smartcmp", "default") is None
+    assert registry_adapter.get_instance_config("jira", "prod")["base_url"] == "https://jira.example.com"
+
+
+def test_build_scoped_deps_keeps_provider_tools_when_instance_is_allowed(tmp_path) -> None:
+    _write_provider_skill(tmp_path)
+    registry = SkillRegistry()
+    registry.load_from_directory(str(tmp_path), location="external", provider="smartcmp")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    session_manager = SessionManager(str(workspace))
+    session_queue = SessionQueue()
+    ctx = APIContext(
+        session_manager=session_manager,
+        session_queue=session_queue,
+        skill_registry=registry,
+        provider_instances={
+            "smartcmp": {
+                "default": {
+                    "base_url": "https://cmp.example.com",
+                    "auth_type": "user_token",
+                    "user_token": "cmp-user-token",
+                }
+            },
+        },
+    )
+
+    user = UserInfo(
+        user_id="u1",
+        display_name="User",
+        raw_token="token",
+        roles=["user"],
+    )
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        extra={
+            "context": {
+                "_provider_permissions": []
+            }
+        },
+    )
+
+    tool_names = {tool["name"] for tool in deps.extra["tools_snapshot"]}
+    assert {"cmp_list_pending", "cmp_get_ticket"}.issubset(tool_names)
+    assert "group:smartcmp" in deps.extra["tool_groups_snapshot"]
+    assert deps.extra["available_providers"] == {"smartcmp": ["default"]}
+
+
+def test_build_scoped_deps_reload_markdown_skill_tools_after_skill_permission_toggle(tmp_path) -> None:
+    _write_standalone_md_tool_skill(tmp_path)
+    registry = SkillRegistry()
+    registry.load_from_directory(str(tmp_path), location="external")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    ctx = APIContext(
+        session_manager=SessionManager(str(workspace)),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+    )
+    user = UserInfo(
+        user_id="u1",
+        display_name="User",
+        raw_token="token",
+        roles=["user"],
+    )
+    session_key = "agent:main:user:u1:web:dm:peer-1:topic:thread-42"
+
+    denied_deps = build_scoped_deps(
+        ctx,
+        user,
+        session_key,
+        extra={
+            "context": {
+                "_user_skill_permissions": [
+                    {
+                        "skill_id": "vm-request",
+                        "skill_name": "vm-request",
+                        "authorized": True,
+                        "enabled": False,
+                    }
+                ]
+            }
+        },
+    )
+    assert "vm_request_prepare" not in {
+        tool["name"] for tool in denied_deps.extra["tools_snapshot"]
+    }
+    assert all(
+        skill.get("name") != "vm-request"
+        for skill in denied_deps.extra["md_skills_snapshot"]
+    )
+    assert "group:request" not in denied_deps.extra["tool_groups_snapshot"]
+
+    allowed_deps = build_scoped_deps(
+        ctx,
+        user,
+        session_key,
+        extra={
+            "context": {
+                "_user_skill_permissions": [
+                    {
+                        "skill_id": "vm-request",
+                        "skill_name": "vm-request",
+                        "authorized": True,
+                        "enabled": True,
+                    }
+                ]
+            }
+        },
+    )
+    assert "vm_request_prepare" in {
+        tool["name"] for tool in allowed_deps.extra["tools_snapshot"]
+    }
+    assert any(
+        skill.get("name") == "vm-request"
+        for skill in allowed_deps.extra["md_skills_snapshot"]
+    )
+    assert allowed_deps.extra["tool_groups_snapshot"]["group:request"] == [
+        "vm_request_prepare"
+    ]
 
 
 def test_build_scoped_deps_exposes_provider_sso_context_and_resolves_template_instances(tmp_path) -> None:

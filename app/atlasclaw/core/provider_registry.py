@@ -407,8 +407,10 @@ class ServiceProviderRegistry:
                 else {}
             )
 
-            # Always expose all provider instances to skills via deps.extra.
-            extra.setdefault("provider_instances", registry.get_all_instance_configs())
+            runtime_registry = extra.get("_service_provider_registry") or registry
+
+            # Expose provider instances to skills without widening a request-scoped filter.
+            extra.setdefault("provider_instances", runtime_registry.get_all_instance_configs())
 
             selected_type = str(extra.get("provider_type", ""))
             selected_name = str(extra.get("provider_instance_name", ""))
@@ -422,7 +424,7 @@ class ServiceProviderRegistry:
             ):
                 return await handler(ctx, **kwargs)
 
-            instances = registry.list_instances(provider_type)
+            instances = runtime_registry.list_instances(provider_type)
             if len(instances) == 0:
                 return {
                     "is_error": True,
@@ -433,7 +435,7 @@ class ServiceProviderRegistry:
 
             # Keep an explicitly chosen instance name if present.
             if selected_type == provider_type and selected_name in instances:
-                cfg = registry.get_instance_config(provider_type, selected_name) or {}
+                cfg = runtime_registry.get_instance_config(provider_type, selected_name) or {}
                 extra["provider_type"] = provider_type
                 extra["provider_instance_name"] = selected_name
                 extra["provider_instance"] = cfg
@@ -442,7 +444,7 @@ class ServiceProviderRegistry:
             # Auto-select if exactly one instance exists.
             if len(instances) == 1:
                 instance_name = instances[0]
-                cfg = registry.get_instance_config(provider_type, instance_name) or {}
+                cfg = runtime_registry.get_instance_config(provider_type, instance_name) or {}
                 extra["provider_type"] = provider_type
                 extra["provider_instance_name"] = instance_name
                 extra["provider_instance"] = cfg

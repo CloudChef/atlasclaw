@@ -65,9 +65,11 @@ from app.atlasclaw.auth.guards import (
     ensure_any_permission,
     ensure_can_manage_permission_modules,
     ensure_permission,
+    ensure_provider_instance_access,
     get_current_user,
     get_authorization_context,
     has_permission,
+    has_provider_instance_access,
     is_same_workspace_user,
 )
 from app.atlasclaw.auth.models import UserInfo
@@ -625,6 +627,26 @@ def _redact_user_provider_settings(
     return redacted
 
 
+def _filter_user_provider_settings_for_authz(
+    authz: AuthorizationContext,
+    providers: dict[str, dict[str, dict[str, object]]],
+) -> dict[str, dict[str, dict[str, object]]]:
+    """Return saved provider settings visible to the current user."""
+    filtered: dict[str, dict[str, dict[str, object]]] = {}
+    for provider_type, instances in (providers or {}).items():
+        if not isinstance(instances, dict):
+            continue
+        visible_instances: dict[str, dict[str, object]] = {}
+        for instance_name, entry in instances.items():
+            if not isinstance(entry, dict):
+                continue
+            if has_provider_instance_access(authz, str(provider_type), str(instance_name)):
+                visible_instances[str(instance_name)] = dict(entry)
+        if visible_instances:
+            filtered[str(provider_type)] = visible_instances
+    return filtered
+
+
 router = APIRouter(prefix="/api", tags=["Database API"])
 router.include_router(model_config_router)
 router.include_router(provider_info_router)
@@ -1109,17 +1131,22 @@ async def update_role(
 
     if "permissions" in role_data.model_fields_set:
         if old_role.is_builtin and is_system_managed_builtin_role(old_role.identifier):
-            # System-managed built-in role (admin, user): only the skills
-            # module may be changed.  The frontend typically sends a full
-            # permissions shape, so we cannot reject based on key presence
-            # alone.  Instead we normalize, force-restore non-skills modules
-            # from the DB record, then detect if anything outside skills
-            # actually differs from the stored values.
+            # System-managed built-in roles keep most modules locked, but
+            # runtime access modules are editable. Partial API updates must
+            # preserve omitted editable modules so a providers-only update does
+            # not reset skills, and vice versa.
             old_perms = RoleService.normalize_permissions(old_role.permissions)
             new_perms = RoleService.normalize_permissions(role_data.permissions)
-            # Force-restore non-skills modules from the existing record.
+            requested_modules = (
+                set(role_data.permissions.keys())
+                if isinstance(role_data.permissions, dict)
+                else set()
+            )
+            user_managed_modules = {"skills", "providers"}
+            # Force-restore locked modules and omitted user-managed modules on
+            # partial permission updates for system roles.
             for module_id in list(new_perms.keys()):
-                if module_id != "skills":
+                if module_id not in user_managed_modules or module_id not in requested_modules:
                     new_perms[module_id] = old_perms.get(module_id, new_perms[module_id])
             role_data.permissions = new_perms
         ensure_can_manage_permission_modules(
@@ -1328,13 +1355,15 @@ async def update_my_profile(
 @router.get("/users/me/provider-settings", response_model=UserProviderSettingsResponse, status_code=200)
 async def get_my_provider_settings(
     current_user: UserInfo = Depends(get_current_user),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> UserProviderSettingsResponse:
     """Get the authenticated user's provider credentials bound to system templates."""
     workspace_path = str(Path(get_config().workspace.path).resolve())
     document = _load_user_setting_document(workspace_path, current_user.user_id)
     providers = document.get("providers", {})
+    redacted_providers = _redact_user_provider_settings(providers)
     return UserProviderSettingsResponse(
-        providers=_redact_user_provider_settings(providers)
+        providers=_filter_user_provider_settings_for_authz(authz, redacted_providers)
     )
 
 
@@ -1343,8 +1372,14 @@ async def update_my_provider_settings(
     provider_data: UserProviderSettingUpdate,
     current_user: UserInfo = Depends(get_current_user),
     session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> UserProviderSettingsResponse:
     """Create or update the authenticated user's provider credentials."""
+    ensure_provider_instance_access(
+        authz,
+        provider_data.provider_type,
+        provider_data.instance_name,
+    )
     workspace_path = str(Path(get_config().workspace.path).resolve())
     document = _load_user_setting_document(workspace_path, current_user.user_id)
     providers = document.setdefault("providers", {})
@@ -1380,8 +1415,9 @@ async def update_my_provider_settings(
     }
 
     _save_user_setting_document(workspace_path, current_user.user_id, document)
+    redacted_providers = _redact_user_provider_settings(providers)
     return UserProviderSettingsResponse(
-        providers=_redact_user_provider_settings(providers)
+        providers=_filter_user_provider_settings_for_authz(authz, redacted_providers)
     )
 
 

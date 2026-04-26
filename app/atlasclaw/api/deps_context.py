@@ -11,6 +11,7 @@ from typing import Any, Optional
 from fastapi import HTTPException, Request, status
 
 from ..agent.routing import AgentRouter
+from ..auth.guards import has_provider_instance_access
 from ..auth.models import UserInfo
 from ..core.config import get_config
 from ..core.deps import SkillDeps
@@ -110,6 +111,126 @@ def _extract_provider_cookie_token(request_cookies: Optional[dict[str, str]]) ->
         if token:
             return token
     return ""
+
+
+def _get_provider_permissions_from_extra(extra: dict[str, Any]) -> list[dict[str, Any]] | None:
+    """Read request-scoped provider rules from either direct or nested context."""
+    raw_permissions = extra.get("_provider_permissions")
+    if raw_permissions is None:
+        context = extra.get("context")
+        if isinstance(context, dict):
+            raw_permissions = context.get("_provider_permissions")
+
+    return raw_permissions if isinstance(raw_permissions, list) else None
+
+
+def _filter_provider_instances_by_permissions(
+    provider_instances: dict[str, dict[str, dict[str, Any]]],
+    provider_permissions: list[dict[str, Any]] | None,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Filter instances using the same default-allow rule as authorization guards."""
+    if provider_permissions is None:
+        return provider_instances
+
+    from ..auth.guards import AuthorizationContext
+
+    authz = AuthorizationContext(
+        user=UserInfo(user_id="provider-permission-filter"),
+        permissions={
+            "providers": {
+                "provider_permissions": provider_permissions,
+            },
+        },
+    )
+    filtered: dict[str, dict[str, dict[str, Any]]] = {}
+    for provider_type, instances in (provider_instances or {}).items():
+        if not isinstance(instances, dict):
+            continue
+        visible_instances: dict[str, dict[str, Any]] = {}
+        for instance_name, instance_config in instances.items():
+            if not isinstance(instance_config, dict):
+                continue
+            if has_provider_instance_access(authz, str(provider_type), str(instance_name)):
+                visible_instances[str(instance_name)] = dict(instance_config)
+        if visible_instances:
+            filtered[str(provider_type)] = visible_instances
+    return filtered
+
+
+def _visible_provider_types(
+    provider_instances: dict[str, dict[str, dict[str, Any]]],
+) -> set[str]:
+    return {
+        str(provider_type or "").strip().lower()
+        for provider_type, instances in (provider_instances or {}).items()
+        if str(provider_type or "").strip() and isinstance(instances, dict) and instances
+    }
+
+
+def _provider_type_from_tool_snapshot(tool: dict[str, Any]) -> str:
+    provider_type = str(tool.get("provider_type", "") or "").strip().lower()
+    if provider_type:
+        return provider_type
+
+    capability_class = str(tool.get("capability_class", "") or "").strip().lower()
+    if capability_class.startswith("provider:"):
+        inferred_provider = capability_class.split(":", 1)[1].strip()
+        if inferred_provider and inferred_provider != "generic":
+            return inferred_provider
+    return ""
+
+
+def _provider_type_from_md_skill_snapshot(skill: dict[str, Any]) -> str:
+    metadata = skill.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+    return str(
+        metadata.get("provider_type", "")
+        or skill.get("provider_type", "")
+        or skill.get("provider", "")
+        or ""
+    ).strip().lower()
+
+
+def _filter_provider_bound_snapshots(
+    tools_snapshot: list[dict[str, Any]],
+    md_skills_snapshot: list[dict[str, Any]],
+    provider_instances: dict[str, dict[str, dict[str, Any]]],
+    *,
+    enforce: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Hide provider-bound tools/skills when no visible instance remains.
+
+    Provider permissions are instance-scoped, but provider tools are routed at
+    provider type level. If every instance for a provider type is hidden, the
+    corresponding tools must leave the request toolset as well; otherwise
+    routing caches can keep treating a denied provider as available.
+    """
+    visible_providers = _visible_provider_types(provider_instances)
+    if not visible_providers and not enforce:
+        return tools_snapshot, md_skills_snapshot
+    if not tools_snapshot and not md_skills_snapshot:
+        return tools_snapshot, md_skills_snapshot
+
+    filtered_tools: list[dict[str, Any]] = []
+    for tool in tools_snapshot or []:
+        if not isinstance(tool, dict):
+            continue
+        provider_type = _provider_type_from_tool_snapshot(tool)
+        if provider_type and provider_type not in visible_providers:
+            continue
+        filtered_tools.append(tool)
+
+    filtered_md_skills: list[dict[str, Any]] = []
+    for skill in md_skills_snapshot or []:
+        if not isinstance(skill, dict):
+            continue
+        provider_type = _provider_type_from_md_skill_snapshot(skill)
+        if provider_type and provider_type not in visible_providers:
+            continue
+        filtered_md_skills.append(skill)
+
+    return filtered_tools, filtered_md_skills
 
 
 @dataclass
@@ -246,15 +367,86 @@ def _is_skill_enabled(skill_permissions: list[dict], skill_name: str) -> bool:
     return False
 
 
+def _skill_permission_matches_any(
+    skill_permissions: list[dict],
+    skill_names: list[str],
+) -> bool:
+    for skill_name in skill_names:
+        if _is_skill_enabled(skill_permissions, skill_name):
+            return True
+    return False
+
+
+def _build_md_skill_lookup(md_skills_snapshot: list[dict]) -> dict[str, dict[str, Any]]:
+    lookup: dict[str, dict[str, Any]] = {}
+    for md in md_skills_snapshot or []:
+        if not isinstance(md, dict):
+            continue
+        identifiers = {
+            _normalize_skill_id(md.get("qualified_name") or ""),
+            _normalize_skill_id(md.get("name") or ""),
+        }
+        identifiers.discard("")
+        for identifier in identifiers:
+            lookup[identifier] = md
+    return lookup
+
+
+def _build_md_tool_skill_refs(
+    skill_registry: SkillRegistry,
+    md_skills_snapshot: list[dict],
+) -> dict[str, list[str]]:
+    """Return tool name -> markdown skill identifiers for permission expansion."""
+    md_lookup = _build_md_skill_lookup(md_skills_snapshot)
+    tool_refs: dict[str, list[str]] = {}
+
+    md_skill_tools_map = getattr(skill_registry, "_md_skill_tools", {})
+    if not isinstance(md_skill_tools_map, dict):
+        return tool_refs
+
+    for qualified_name, tool_names in md_skill_tools_map.items():
+        qualified_ref = _normalize_skill_id(qualified_name)
+        if not qualified_ref:
+            continue
+        md_entry = md_lookup.get(qualified_ref, {})
+        refs = [
+            ref for ref in (
+                qualified_ref,
+                _normalize_skill_id(md_entry.get("qualified_name") if isinstance(md_entry, dict) else ""),
+                _normalize_skill_id(md_entry.get("name") if isinstance(md_entry, dict) else ""),
+                qualified_ref.split(":")[-1],
+            )
+            if ref
+        ]
+        seen_refs: set[str] = set()
+        normalized_refs = [
+            ref for ref in refs
+            if not (ref in seen_refs or seen_refs.add(ref))
+        ]
+        for tool_name in tool_names or set():
+            normalized_tool = _normalize_skill_id(tool_name)
+            if not normalized_tool:
+                continue
+            bucket = tool_refs.setdefault(normalized_tool, [])
+            for ref in normalized_refs:
+                if ref not in bucket:
+                    bucket.append(ref)
+
+    return tool_refs
+
+
 def _filter_snapshot_by_permissions(
     tools_snapshot: list[dict],
     md_skills_snapshot: list[dict],
     skill_permissions: list[dict],
+    md_tool_skill_refs: dict[str, list[str]] | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """Filter tools and md_skills snapshots based on user role permissions.
 
     When skill_permissions is empty (no grants), returns empty lists (deny-all).
     """
+
+    parent_refs_by_tool = md_tool_skill_refs or {}
 
     filtered_tools = []
     for tool in tools_snapshot:
@@ -264,7 +456,11 @@ def _filter_snapshot_by_permissions(
             or tool.get("skill_name")
             or tool.get("name", "")
         )
-        if _is_skill_enabled(skill_permissions, skill_ref):
+        candidate_refs = [skill_ref]
+        tool_name = _normalize_skill_id(tool.get("name", ""))
+        if tool_name:
+            candidate_refs.extend(parent_refs_by_tool.get(tool_name, []))
+        if _skill_permission_matches_any(skill_permissions, candidate_refs):
             filtered_tools.append(tool)
 
     filtered_md = []
@@ -285,6 +481,7 @@ def build_scoped_deps(
     provider_config: Optional[dict[str, Any]] = None,
     extra: Optional[dict[str, Any]] = None,
 ) -> SkillDeps:
+    _extra = extra or {}
     runtime_context_source = (
         dict(getattr(user_info, "extra", {}))
         if isinstance(getattr(user_info, "extra", {}), dict)
@@ -347,12 +544,16 @@ def build_scoped_deps(
         for instance_name, instance_config in instances.items():
             provider_bucket[instance_name] = dict(instance_config)
 
+    provider_permissions = _get_provider_permissions_from_extra(_extra)
+    resolved_provider_instances = _filter_provider_instances_by_permissions(
+        resolved_provider_instances,
+        provider_permissions,
+    )
     provider_registry = ResolvedProviderInstanceRegistry(resolved_provider_instances)
     available_providers = provider_registry.get_available_providers_summary()
 
     # Apply user skill permission filtering if provided via request context.
     # Sentinel: None = no RBAC (no-DB mode), list = RBAC resolved.
-    _extra = extra or {}
     user_skill_permissions = _extra.get("_user_skill_permissions")
     if user_skill_permissions is None:
         _ctx = _extra.get("context")
@@ -366,10 +567,12 @@ def build_scoped_deps(
     disabled_tool_names: set[str] = set()
     if _rbac_active:
         _all_md = ctx.skill_registry.md_snapshot()
+        md_tool_skill_refs = _build_md_tool_skill_refs(ctx.skill_registry, _all_md)
         tools_snapshot, md_skills_snapshot = _filter_snapshot_by_permissions(
             tools_snapshot,
             _all_md,
             user_skill_permissions,
+            md_tool_skill_refs,
         )
         # Collect ALL disabled skill IDs (both md and executable)
         _disabled_skill_ids: set[str] = set()
@@ -412,6 +615,44 @@ def build_scoped_deps(
     else:
         md_skills_snapshot = ctx.skill_registry.md_snapshot()
 
+    provider_snapshot_filter_active = provider_permissions is not None or bool(base_provider_instances)
+    tool_count_before_provider_filter = len(tools_snapshot or [])
+    md_count_before_provider_filter = len(md_skills_snapshot or [])
+    tools_snapshot, md_skills_snapshot = _filter_provider_bound_snapshots(
+        tools_snapshot,
+        md_skills_snapshot,
+        resolved_provider_instances,
+        enforce=provider_snapshot_filter_active,
+    )
+    provider_snapshot_filtered = (
+        provider_snapshot_filter_active
+        and (
+            len(tools_snapshot or []) != tool_count_before_provider_filter
+            or len(md_skills_snapshot or []) != md_count_before_provider_filter
+        )
+    )
+    visible_tool_names = {
+        str(tool.get("name", "") or "").strip()
+        for tool in tools_snapshot
+        if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+    }
+    if visible_tool_names:
+        tool_groups_snapshot = {
+            str(group_id): [
+                str(tool_name).strip()
+                for tool_name in (tool_names or [])
+                if str(tool_name).strip() in visible_tool_names
+            ]
+            for group_id, tool_names in (tool_groups_snapshot or {}).items()
+        }
+        tool_groups_snapshot = {
+            group_id: tool_names
+            for group_id, tool_names in tool_groups_snapshot.items()
+            if tool_names
+        }
+    else:
+        tool_groups_snapshot = {}
+
     deps_extra = {
         **runtime_context,
         "_service_provider_registry": provider_registry,
@@ -419,7 +660,9 @@ def build_scoped_deps(
         "provider_instances": resolved_provider_instances,
         "provider_config": resolved_provider_instances,
         "tools_snapshot": tools_snapshot,
-        "tools_snapshot_authoritative": _rbac_active,
+        # When provider filtering removes snapshots, keep this request snapshot
+        # authoritative so the runner does not re-add denied provider tools.
+        "tools_snapshot_authoritative": _rbac_active or provider_snapshot_filtered,
         "tool_groups_snapshot": tool_groups_snapshot,
         "skills_snapshot": ctx.skill_registry.snapshot_builtins(),
         "md_skills_snapshot": md_skills_snapshot,
