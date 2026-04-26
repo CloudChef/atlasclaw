@@ -816,6 +816,8 @@ class RunnerToolGateModelMixin:
             return explicit_classifier
         return None
     def _select_tool_gate_classifier_agent(self, runtime_agent: Any) -> Optional[Any]:
+        if hasattr(runtime_agent, "run"):
+            return runtime_agent
         if self.agent_factory is not None and self.token_policy is not None:
             classifier_token = self._select_tool_gate_classifier_token()
             if classifier_token is not None:
@@ -826,8 +828,6 @@ class RunnerToolGateModelMixin:
                     return built if hasattr(built, "run") else None
 
                 return _resolver
-        if hasattr(runtime_agent, "run"):
-            return runtime_agent
         return None
     def _build_metadata_short_circuit_decision(
         self,
@@ -1028,7 +1028,8 @@ class RunnerToolGateModelMixin:
                 system_prompt=classifier_prompt,
                 allowed_tool_names=[],
             )
-        except Exception:
+        except Exception as exc:
+            logger.warning("tool_gate_classifier_failed: %s", exc)
             return None
         parsed = self._extract_json_object(raw_output)
         if not parsed:
@@ -1473,7 +1474,14 @@ class RunnerToolGateModelMixin:
             "Do not answer the user. Do not call tools. Return a single JSON object only.\n\n"
             "Policy rubric:\n"
             "- Decide based on clear capability fit, not freshness alone.\n"
+            "- Classify the current User request. Use Recent history only when the current request explicitly continues, confirms, answers requested fields for, or modifies that prior task.\n"
+            "- Do not require tools solely because Recent history contains an unresolved provider or tool request.\n"
+            "- When no runtime tools are available, still use answer_direct for ordinary conversation or requests that can be answered without runtime capabilities.\n"
+            "- Do not set must_use_tool unless needs_external_system, needs_private_context, needs_browser_interaction, or suggested_tool_classes is also true/non-empty.\n"
             "- Use must_use_tool only when the request truly requires private/provider/browser execution and cannot be satisfied safely without it.\n"
+            "- Classify intent across languages. If the user asks AtlasClaw to perform, submit, request, provision, modify, approve, delete, start, stop, or verify an operation in an external environment, set needs_external_system=true even when no matching tools are listed.\n"
+            "- If there are no runtime tools and the request is an external-system operation, keep policy=must_use_tool; the no-tools prompt must explain that the capability is unavailable.\n"
+            "- For status checks, verification, audit evidence, records, or other facts that live in a private or provider-backed system, set needs_external_system=true or needs_private_context=true instead of only needs_grounded_verification=true.\n"
             "- If the user asks to query or operate enterprise systems or provider-backed skills, set needs_external_system=true and prefer provider/skill classes over web classes.\n"
             "- Use prefer_tool when the request clearly matches available tools and trying them first would materially help.\n"
             "- Public questions about prices, schedules, recommendations, or opening status may still use answer_direct when no clear capability match is required.\n"
@@ -1568,6 +1576,13 @@ class RunnerToolGateModelMixin:
         purpose: str = "tool_gate_model_pass",
         allowed_tool_names: Optional[list[str]] = None,
     ) -> str:
+        if callable(agent) and not hasattr(agent, "run"):
+            agent = agent()
+            if inspect.isawaitable(agent):
+                agent = await agent
+        if agent is None or not hasattr(agent, "run"):
+            return ""
+
         override_factory = getattr(agent, "override", None)
         override_tools = resolve_override_tools(
             agent=agent,

@@ -71,26 +71,58 @@ def _parse_frontmatter_mapping_legacy(frontmatter: str) -> dict[str, Any]:
     """
     metadata: dict[str, Any] = {}
     current_key = ""
-    current_list: list[str] = []
+    current_list: list[str] | None = None
+    current_map: dict[str, str] | None = None
+
+    def _strip_quotes(value: str) -> str:
+        if len(value) >= 2 and (
+            (value[0] == "'" and value[-1] == "'") or (value[0] == '"' and value[-1] == '"')
+        ):
+            return value[1:-1]
+        return value
+
+    def _flush_current() -> None:
+        nonlocal current_key, current_list, current_map
+        if current_key:
+            if current_list is not None:
+                metadata[current_key] = current_list
+            elif current_map is not None:
+                metadata[current_key] = current_map
+        current_key = ""
+        current_list = None
+        current_map = None
 
     for line in frontmatter.splitlines():
-        stripped = line.strip()
+        raw = line.rstrip()
+        stripped = raw.strip()
         if not stripped or stripped.startswith("#"):
+            continue
+        indent = len(raw) - len(raw.lstrip(" "))
+        if indent > 0 and current_key and stripped.startswith("- "):
+            if current_map is not None:
+                continue
+            if current_list is None:
+                current_list = []
+            current_list.append(_strip_quotes(stripped[2:].strip()))
+            continue
+        if indent > 0 and current_key and ":" in stripped:
+            if current_list is not None:
+                continue
+            if current_map is None:
+                current_map = {}
+            nested_key, nested_value = stripped.split(":", 1)
+            nested_key = nested_key.strip()
+            nested_value = _strip_quotes(nested_value.strip())
+            if nested_key:
+                current_map[nested_key] = nested_value
             continue
         if stripped.startswith("- "):
             if current_key:
-                item_value = stripped[2:].strip()
-                if len(item_value) >= 2 and (
-                    (item_value[0] == "'" and item_value[-1] == "'")
-                    or (item_value[0] == '"' and item_value[-1] == '"')
-                ):
-                    item_value = item_value[1:-1]
-                current_list.append(item_value)
+                if current_list is None:
+                    current_list = []
+                current_list.append(_strip_quotes(stripped[2:].strip()))
             continue
-        if current_key and current_list:
-            metadata[current_key] = current_list
-            current_key = ""
-            current_list = []
+        _flush_current()
         colon_pos = stripped.find(":")
         if colon_pos == -1:
             continue
@@ -98,15 +130,9 @@ def _parse_frontmatter_mapping_legacy(frontmatter: str) -> dict[str, Any]:
         value = stripped[colon_pos + 1 :].strip()
         if not value:
             current_key = key
-            current_list = []
             continue
-        if len(value) >= 2 and (
-            (value[0] == "'" and value[-1] == "'") or (value[0] == '"' and value[-1] == '"')
-        ):
-            value = value[1:-1]
         if key:
-            metadata[key] = value
+            metadata[key] = _strip_quotes(value)
 
-    if current_key and current_list:
-        metadata[current_key] = current_list
+    _flush_current()
     return metadata

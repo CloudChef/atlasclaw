@@ -43,7 +43,6 @@ from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.agent.thinking_stream import ThinkingStreamEmitter
 from app.atlasclaw.agent.tool_gate import CapabilityMatcher
 from app.atlasclaw.agent.tool_gate_models import (
-    CapabilityMatchResult,
     ToolGateDecision,
     ToolIntentAction,
     ToolIntentPlan,

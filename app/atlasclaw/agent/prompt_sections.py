@@ -287,8 +287,55 @@ def build_tool_policy(tool_policy: Optional[dict]) -> str:
                 "Do not call generic web tools just because they are visible. Use them only when the user explicitly asks to search/verify/browse, or when a visible web capability is the clearest fit for the request."
             )
         else:
-            lines.append("You may answer directly when the request is stable and does not require tool execution.")
             lines.append("No tools are available in this turn.")
+            lines.append(
+                "Important terminology: `provider`, `skill`, and `tool` are runtime nouns. "
+                "MUST NOT translate, paraphrase, or replace these three words."
+            )
+            lines.append(
+                "Answer normally for ordinary conversation, greetings, identity or capability "
+                "questions, general knowledge, explanations, writing, brainstorming, and other "
+                "requests that do not depend on unavailable runtime capability."
+            )
+            lines.append(
+                "For those direct conversation requests, answer immediately in one or two "
+                "sentences; do not analyze provider capability, wait for tools, or continue a "
+                "prior external-system workflow unless the current request explicitly asks for it."
+            )
+            lines.append(
+                "If the user asks for an action or fact that depends on an external provider, "
+                "private system, or unavailable capability, say you cannot perform or verify it "
+                "because no provider, skill, or tool is available."
+            )
+            lines.append(
+                "For that unavailable-capability answer, use the user's language and keep it "
+                "to one concise sentence. It must explicitly include the runtime words "
+                "`provider`, `skill`, and `tool`, and say AtlasClaw cannot perform or verify "
+                "the requested operation."
+            )
+            lines.append(
+                "For unavailable runtime capability, be concise: explicitly name the missing "
+                "boundary as provider, skill, or tool, and do not list example systems, invent "
+                "alternate channels, or ask the user which external system to use."
+            )
+            lines.append(
+                "Do not expose internal evidence terms such as `same-run tool evidence`; the "
+                "user-facing reason is simply that no provider, skill, or tool is available."
+            )
+            lines.append(
+                "Do not mention deployment modes, role identifiers, external-system categories, "
+                "or out-of-band places where the user might perform the operation."
+            )
+            lines.append(
+                "Never present unavailable external-system state, evidence, or side effects as "
+                "real unless tool output from this turn explicitly proves them."
+            )
+            lines.append(
+                "Do not turn missing capability into an external-system fact: without explicit "
+                "tool output from this turn, do not say records are absent, results are empty, "
+                "an object does not exist, an operation succeeded or failed, or logs, "
+                "timestamps, statuses, and verification evidence exist."
+            )
             lines.append(
                 "Do not emit tool-call markup, XML tags, or pseudo tool invocations like "
                 "`<tool_call>` or `<web_search>`."

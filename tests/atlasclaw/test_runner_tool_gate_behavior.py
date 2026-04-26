@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from types import SimpleNamespace
 
 import pytest
@@ -33,6 +35,58 @@ class _GateRunner(RunnerToolGateModelMixin, RunnerToolGateRoutingMixin):
 
 class _PrepareRunner(RunnerExecutionPreparePhaseMixin):
     pass
+
+
+class _ClassifierAgent:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    async def run(self, user_message, *, deps):
+        self.messages.append(str(user_message))
+        return SimpleNamespace(
+            output=json.dumps(
+                {
+                    "needs_tool": False,
+                    "needs_external_system": False,
+                    "needs_grounded_verification": False,
+                    "suggested_tool_classes": [],
+                    "confidence": 0.9,
+                    "reason": "Current request can be answered directly.",
+                    "policy": "answer_direct",
+                }
+            )
+        )
+
+
+def test_tool_gate_classifier_resolves_async_agent_factory() -> None:
+    runner = _GateRunner()
+    classifier = _ClassifierAgent()
+
+    async def resolver():
+        return classifier
+
+    decision = asyncio.run(
+        runner._classify_tool_gate_with_model(
+            agent=resolver,
+            deps=SimpleNamespace(extra={}),
+            user_message="hi",
+            recent_history=[],
+            available_tools=[],
+        )
+    )
+
+    assert decision is not None
+    assert decision.policy is ToolPolicyMode.ANSWER_DIRECT
+    assert classifier.messages
+
+
+def test_tool_gate_classifier_prefers_runtime_agent_over_factory() -> None:
+    runner = _GateRunner()
+    runtime_agent = _ClassifierAgent()
+    runner.agent_factory = lambda *_args: pytest.fail("factory should not be used")
+    runner.token_policy = SimpleNamespace(token_pool=SimpleNamespace(tokens={}))
+
+    assert runner._select_tool_gate_classifier_agent(runtime_agent) is runtime_agent
 
 
 def test_prune_auto_selected_provider_instance_tools_removes_provider_coordination_tools_by_metadata() -> None:

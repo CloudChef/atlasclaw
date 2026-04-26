@@ -25,8 +25,14 @@ from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
     select_explicit_tool_execution_target,
     should_resolve_target_md_skill,
 )
+from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
+    build_direct_answer_recovery_payload,
+)
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import sanitize_workflow_only_text
-from app.atlasclaw.agent.tool_gate_models import ToolIntentAction, ToolIntentPlan
+from app.atlasclaw.agent.tool_gate_models import (
+    ToolIntentAction,
+    ToolIntentPlan,
+)
 
 
 def test_collect_tools_snapshot_prefers_deps_extra_snapshot() -> None:
@@ -1067,3 +1073,31 @@ def test_build_explicit_tool_execution_prompt_ignores_resolved_workflow_argument
     assert "Resolved workflow arguments:" not in prompt
     assert '"source_key": "resource.iaas.machine.instance.abstract"' not in prompt
     assert "using those exact values" not in prompt
+
+
+def test_no_tools_prompt_policy_forbids_external_system_success_claims() -> None:
+    prompt = prompt_sections.build_tool_policy(
+        {"mode": "llm_first", "preferred_tools": []}
+    )
+
+    assert "No tools are available in this turn." in prompt
+    assert "no provider, skill, or tool is available" in prompt
+    assert "Never present unavailable external-system state" in prompt
+    assert "Do not turn missing capability into an external-system fact" in prompt
+    assert "records are absent" in prompt
+    assert "results are empty" in prompt
+    assert "logs, timestamps, statuses" in prompt
+
+
+def test_direct_answer_recovery_forbids_external_system_success_claims() -> None:
+    payload = build_direct_answer_recovery_payload(
+        user_message="申请 Linux VM",
+        invalid_output="<tool_call name='create_vm' />",
+    )
+
+    assert "No tools are available in this turn." in payload["system_prompt"]
+    assert "no provider, skill, or tool is available" in payload["system_prompt"]
+    assert "Never present unavailable external-system state" in payload["system_prompt"]
+    assert "Do not turn missing capability into an external-system fact" in payload["system_prompt"]
+    assert "records are absent" in payload["system_prompt"]
+    assert "results are empty" in payload["system_prompt"]

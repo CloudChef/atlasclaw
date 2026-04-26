@@ -75,6 +75,14 @@ def test_build_tool_failure_fallback_payload_forbids_inferred_side_effect_claims
     )
 
     assert "Never infer that a side-effecting action" in payload["system_prompt"]
+    assert "Never infer that an unavailable external or private-system action" in payload["system_prompt"]
+    assert "service the user is trying to use is currently unavailable" in payload["system_prompt"]
+    assert "personal provider access credential (`user_token`) is not configured" in payload["system_prompt"]
+    assert "personal account settings" in payload["system_prompt"]
+    assert "contact an administrator" in payload["system_prompt"]
+    assert "diagnostic questions about backend setup" in payload["system_prompt"]
+    assert "paste access credentials into chat" in payload["system_prompt"]
+    assert "atlasclaw.json" not in payload["system_prompt"]
     assert "Authoritative workflow notes" not in payload["user_prompt"]
 
 
@@ -2057,6 +2065,13 @@ def test_build_finalize_payload_is_minimal_for_tool_backed_answer() -> None:
     )
 
     assert "bootstrap" not in payload["system_prompt"].lower()
+    assert "service the user is trying to use is currently unavailable" in payload["system_prompt"]
+    assert "personal provider access credential (`user_token`) is not configured" in payload["system_prompt"]
+    assert "personal account settings" in payload["system_prompt"]
+    assert "contact an administrator" in payload["system_prompt"]
+    assert "diagnostic questions about backend setup" in payload["system_prompt"]
+    assert "paste access credentials into chat" in payload["system_prompt"]
+    assert "atlasclaw.json" not in payload["system_prompt"]
     assert "明天上海天气如何" in payload["user_prompt"]
     assert "openmeteo_weather" in payload["user_prompt"]
 

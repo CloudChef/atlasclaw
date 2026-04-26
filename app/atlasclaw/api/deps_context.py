@@ -459,6 +459,7 @@ def build_scoped_deps(
     )
     provider_registry = ResolvedProviderInstanceRegistry(resolved_provider_instances)
     available_providers = provider_registry.get_available_providers_summary()
+    all_md_skills_snapshot = ctx.skill_registry.md_snapshot()
 
     # Apply user skill permission filtering if provided via request context.
     # Sentinel: None = no RBAC (no-DB mode), list = RBAC resolved.
@@ -474,11 +475,10 @@ def build_scoped_deps(
     _rbac_active = isinstance(user_skill_permissions, list)
     disabled_tool_names: set[str] = set()
     if _rbac_active:
-        _all_md = ctx.skill_registry.md_snapshot()
-        md_tool_skill_refs = _build_md_tool_skill_refs(ctx.skill_registry, _all_md)
+        md_tool_skill_refs = _build_md_tool_skill_refs(ctx.skill_registry, all_md_skills_snapshot)
         tools_snapshot, md_skills_snapshot = _filter_snapshot_by_permissions(
             tools_snapshot,
-            _all_md,
+            all_md_skills_snapshot,
             user_skill_permissions,
             md_tool_skill_refs,
         )
@@ -491,8 +491,10 @@ def build_scoped_deps(
                     _disabled_skill_ids.add(_sid)
 
         # 1. Extract handler tool names from disabled md_skills metadata
-        for md_entry in _all_md:
-            _qname = skill_permission_service.normalize_key(md_entry.get("qualified_name") or md_entry.get("name") or "")
+        for md_entry in all_md_skills_snapshot:
+            _qname = skill_permission_service.normalize_key(
+                md_entry.get("qualified_name") or md_entry.get("name") or ""
+            )
             _bare = _qname.split(":")[-1] if _qname else ""
             if _bare in _disabled_skill_ids or _qname in _disabled_skill_ids:
                 _md_meta = md_entry.get("metadata") or {}
@@ -516,29 +518,34 @@ def build_scoped_deps(
                         if _tname:
                             disabled_tool_names.add(_tname)
 
-        print(
-            f"[SkillFilter] perms={len(user_skill_permissions)} disabled_skills={sorted(_disabled_skill_ids)}"
-            f" disabled_tools={sorted(disabled_tool_names)} tools_after={len(tools_snapshot)} md_after={len(md_skills_snapshot)}"
-        )
     else:
-        md_skills_snapshot = ctx.skill_registry.md_snapshot()
+        md_skills_snapshot = all_md_skills_snapshot
 
-    provider_snapshot_filter_active = provider_permissions is not None or bool(visible_provider_instances)
     tool_count_before_provider_filter = len(tools_snapshot or [])
     md_count_before_provider_filter = len(md_skills_snapshot or [])
     tools_snapshot, md_skills_snapshot = skill_permission_service.filter_provider_bound_snapshots(
         tools_snapshot,
         md_skills_snapshot,
         visible_provider_instances,
-        enforce=provider_snapshot_filter_active,
+        enforce=True,
     )
     provider_snapshot_filtered = (
-        provider_snapshot_filter_active
-        and (
-            len(tools_snapshot or []) != tool_count_before_provider_filter
-            or len(md_skills_snapshot or []) != md_count_before_provider_filter
-        )
+        len(tools_snapshot or []) != tool_count_before_provider_filter
+        or len(md_skills_snapshot or []) != md_count_before_provider_filter
     )
+    builtin_skills_snapshot = [
+        skill
+        for skill in ctx.skill_registry.snapshot_builtins()
+        if isinstance(skill, dict)
+    ]
+    builtin_count_before_provider_filter = len(builtin_skills_snapshot)
+    skills_snapshot, _ = skill_permission_service.filter_provider_bound_snapshots(
+        builtin_skills_snapshot,
+        [],
+        visible_provider_instances,
+        enforce=True,
+    )
+    skills_snapshot_filtered = len(skills_snapshot or []) != builtin_count_before_provider_filter
     visible_tool_names = {
         str(tool.get("name", "") or "").strip()
         for tool in tools_snapshot
@@ -568,11 +575,13 @@ def build_scoped_deps(
         "provider_instances": resolved_provider_instances,
         "provider_config": resolved_provider_instances,
         "tools_snapshot": tools_snapshot,
-        # When provider filtering removes snapshots, keep this request snapshot
-        # authoritative so the runner does not re-add denied provider tools.
-        "tools_snapshot_authoritative": _rbac_active or provider_snapshot_filtered,
+        # The request-scoped snapshot is authoritative for provider-bound
+        # capability availability after role and provider filters run.
+        "tools_snapshot_authoritative": (
+            _rbac_active or provider_snapshot_filtered or skills_snapshot_filtered
+        ),
         "tool_groups_snapshot": tool_groups_snapshot,
-        "skills_snapshot": ctx.skill_registry.snapshot_builtins(),
+        "skills_snapshot": skills_snapshot,
         "md_skills_snapshot": md_skills_snapshot,
         "work_dir": str(
             ensure_user_work_dir(

@@ -12,7 +12,7 @@ from app.atlasclaw.api.deps_context import APIContext, build_scoped_deps
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
-from app.atlasclaw.skills.registry import SkillRegistry
+from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
 from app.atlasclaw.tools.catalog import GROUP_ATLASCLAW, GROUP_CATALOG, GROUP_WEB
 from app.atlasclaw.tools.registration import register_builtin_tools
 
@@ -61,6 +61,10 @@ tool_prepare_entrypoint: run.py:prepare
         "    return {'ok': True, 'op': 'prepare', 'kwargs': kwargs}\n"
     )
     (skill_dir / "run.py").write_text(run_py, encoding="utf-8")
+
+
+async def _dummy_provider_skill(ctx=None, **kwargs):
+    return {"ok": True, "kwargs": kwargs}
 
 
 def _patch_auth_cookie_names(
@@ -155,6 +159,15 @@ def test_build_scoped_deps_exposes_tool_group_snapshot(tmp_path) -> None:
         session_manager=session_manager,
         session_queue=session_queue,
         skill_registry=registry,
+        provider_instances={
+            "smartcmp": {
+                "default": {
+                    "base_url": "https://cmp.example.test",
+                    "auth_type": "user_token",
+                    "user_token": "provider-token",
+                }
+            }
+        },
     )
 
     user = UserInfo(
@@ -170,6 +183,219 @@ def test_build_scoped_deps_exposes_tool_group_snapshot(tmp_path) -> None:
     assert set(groups["group:cmp"]) == {"cmp_get_ticket", "cmp_list_pending"}
     assert deps.extra.get("thread_id") == "thread-42"
     assert deps.extra.get("trace_id") == "thread-42"
+
+
+def test_build_scoped_deps_hides_provider_tools_without_provider_instance_when_rbac_active(tmp_path) -> None:
+    _write_provider_skill(tmp_path)
+    registry = SkillRegistry()
+    registry.load_from_directory(str(tmp_path), location="external", provider="smartcmp")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    ctx = APIContext(
+        session_manager=SessionManager(str(workspace)),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+        provider_instances={},
+    )
+    user = UserInfo(user_id="u1", display_name="User", raw_token="token", roles=["custom"])
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        extra={
+            "context": {
+                "_user_skill_permissions": [
+                    {
+                        "skill_id": "smartcmp-helper",
+                        "skill_name": "smartcmp-helper",
+                        "authorized": True,
+                        "enabled": True,
+                    }
+                ]
+            }
+        },
+    )
+
+    tool_names = {tool["name"] for tool in deps.extra["tools_snapshot"]}
+    md_names = {skill["qualified_name"] for skill in deps.extra["md_skills_snapshot"]}
+    assert "cmp_list_pending" not in tool_names
+    assert "cmp_get_ticket" not in tool_names
+    assert "smartcmp:smartcmp-helper" not in md_names
+    assert deps.extra["tool_groups_snapshot"] == {}
+
+
+def test_build_scoped_deps_keeps_generic_provider_coordination_tools_without_provider_instance(tmp_path) -> None:
+    registry = SkillRegistry()
+    register_builtin_tools(registry)
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    ctx = APIContext(
+        session_manager=SessionManager(str(workspace)),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+        provider_instances={},
+    )
+    user = UserInfo(user_id="u1", display_name="User", raw_token="token", roles=["custom"])
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+    )
+
+    tools = {tool["name"]: tool for tool in deps.extra["tools_snapshot"]}
+    assert "list_provider_instances" in tools
+    assert "select_provider_instance" in tools
+    assert tools["list_provider_instances"]["capability_class"] == "provider:generic"
+    assert tools["select_provider_instance"]["coordination_only"] is True
+    assert deps.extra["tools_snapshot_authoritative"] is False
+
+
+def test_build_scoped_deps_provider_filter_is_authoritative_without_rbac(tmp_path) -> None:
+    _write_provider_skill(tmp_path)
+    registry = SkillRegistry()
+    registry.load_from_directory(str(tmp_path), location="external", provider="smartcmp")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    ctx = APIContext(
+        session_manager=SessionManager(str(workspace)),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+        provider_instances={},
+    )
+    user = UserInfo(user_id="u1", display_name="User", raw_token="token", roles=["custom"])
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+    )
+
+    tool_names = {tool["name"] for tool in deps.extra["tools_snapshot"]}
+    assert "cmp_list_pending" not in tool_names
+    assert "cmp_get_ticket" not in tool_names
+    assert deps.extra["tools_snapshot_authoritative"] is True
+
+
+def test_build_scoped_deps_filters_provider_source_builtin_skills_without_provider_instance(tmp_path) -> None:
+    registry = SkillRegistry()
+    registry.register(
+        SkillMetadata(
+            name="provider_builtin_request",
+            description="Provider-backed executable helper",
+            source="provider",
+            provider_type="smartcmp",
+            capability_class="provider:smartcmp",
+        ),
+        _dummy_provider_skill,
+    )
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    ctx = APIContext(
+        session_manager=SessionManager(str(workspace)),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+        provider_instances={},
+    )
+    user = UserInfo(user_id="u1", display_name="User", raw_token="token", roles=["custom"])
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+    )
+
+    skill_names = {skill["name"] for skill in deps.extra["skills_snapshot"]}
+    assert "provider_builtin_request" not in skill_names
+
+
+def test_build_scoped_deps_keeps_provider_tools_with_provider_instance_when_rbac_active(tmp_path) -> None:
+    _write_provider_skill(tmp_path)
+    registry = SkillRegistry()
+    registry.load_from_directory(str(tmp_path), location="external", provider="smartcmp")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    ctx = APIContext(
+        session_manager=SessionManager(str(workspace)),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+        provider_instances={
+            "smartcmp": {
+                "default": {
+                    "base_url": "https://cmp.example.test",
+                    "auth_type": "user_token",
+                    "user_token": "provider-token",
+                }
+            }
+        },
+    )
+    user = UserInfo(user_id="u1", display_name="User", raw_token="token", roles=["custom"])
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        extra={
+            "context": {
+                "_user_skill_permissions": [
+                    {
+                        "skill_id": "smartcmp-helper",
+                        "skill_name": "smartcmp-helper",
+                        "authorized": True,
+                        "enabled": True,
+                    }
+                ]
+            }
+        },
+    )
+
+    tool_names = {tool["name"] for tool in deps.extra["tools_snapshot"]}
+    md_names = {skill["qualified_name"] for skill in deps.extra["md_skills_snapshot"]}
+    assert {"cmp_list_pending", "cmp_get_ticket"}.issubset(tool_names)
+    assert "smartcmp:smartcmp-helper" in md_names
+    assert set(deps.extra["tool_groups_snapshot"]["group:cmp"]) == {
+        "cmp_get_ticket",
+        "cmp_list_pending",
+    }
+
+
+def test_build_scoped_deps_keeps_non_provider_skill_without_provider_instance_when_rbac_active(tmp_path) -> None:
+    _write_standalone_md_tool_skill(tmp_path)
+    registry = SkillRegistry()
+    registry.load_from_directory(str(tmp_path), location="external")
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    ctx = APIContext(
+        session_manager=SessionManager(str(workspace)),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+        provider_instances={},
+    )
+    user = UserInfo(user_id="u1", display_name="User", raw_token="token", roles=["custom"])
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        extra={
+            "context": {
+                "_user_skill_permissions": [
+                    {
+                        "skill_id": "vm-request",
+                        "skill_name": "vm-request",
+                        "authorized": True,
+                        "enabled": True,
+                    }
+                ]
+            }
+        },
+    )
+
+    tools = {tool["name"]: tool for tool in deps.extra["tools_snapshot"]}
+    md_names = {skill["qualified_name"] for skill in deps.extra["md_skills_snapshot"]}
+    assert "vm_request_prepare" in tools
+    assert "vm-request" in md_names
 
 
 def test_build_scoped_deps_merges_user_provider_instances_over_template_config(tmp_path, monkeypatch) -> None:
