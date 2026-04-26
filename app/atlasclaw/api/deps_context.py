@@ -11,6 +11,11 @@ from typing import Any, Optional
 from fastapi import HTTPException, Request, status
 
 from ..agent.routing import AgentRouter
+from ..agent.selected_capability import (
+    SELECTED_CAPABILITY_KEY,
+    get_selected_capability_from_extra,
+    selected_capability_provider_instance_ref,
+)
 from ..auth.guards import has_provider_instance_access
 from ..auth.models import UserInfo
 from ..core.config import get_config
@@ -690,6 +695,18 @@ def build_scoped_deps(
             deps_extra["_disabled_skill_ids"] = _d_ids
     if extra:
         deps_extra.update(extra)
+    selected_capability = get_selected_capability_from_extra(deps_extra)
+    if selected_capability:
+        deps_extra[SELECTED_CAPABILITY_KEY] = dict(selected_capability)
+        provider_type, instance_name = selected_capability_provider_instance_ref(
+            selected_capability
+        )
+        if provider_type and instance_name:
+            provider_instance = provider_registry.get_instance_config(provider_type, instance_name)
+            if isinstance(provider_instance, dict):
+                deps_extra["provider_type"] = provider_type
+                deps_extra["provider_instance_name"] = instance_name
+                deps_extra["provider_instance"] = provider_instance
     deps_extra = enrich_trace_metadata(session_key, extra=deps_extra)
 
     return SkillDeps(

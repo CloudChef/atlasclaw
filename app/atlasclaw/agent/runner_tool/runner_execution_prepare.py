@@ -26,6 +26,12 @@ from app.atlasclaw.agent.runner_tool.runner_llm_routing import (
     resolve_artifact_goal_from_intent_plan,
     selected_capability_ids_from_intent_plan,
 )
+from app.atlasclaw.agent.selected_capability import (
+    SELECTED_CAPABILITY_KEY,
+    get_selected_capability_from_deps,
+    selected_capability_provider_instance_ref,
+    selected_capability_targets,
+)
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import normalize_tool_result_mode
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
     compress_candidate_toolset,
@@ -89,6 +95,26 @@ def should_resolve_target_md_skill(intent_plan: ToolIntentPlan | None) -> bool:
     if any(str(item).strip() for item in (intent_plan.target_tool_names or [])):
         return True
     return turn_action_requires_tool_execution(intent_plan)
+
+
+def build_user_selected_tool_intent_plan(deps: SkillDeps) -> ToolIntentPlan | None:
+    """Translate a validated slash capability into a runtime tool plan."""
+    selected = get_selected_capability_from_deps(deps)
+    if not selected:
+        return None
+
+    targets = selected_capability_targets(selected)
+    if not targets.has_any():
+        return None
+
+    return ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_provider_types=targets.provider_types,
+        target_skill_names=targets.skill_names,
+        target_group_ids=targets.group_ids,
+        target_tool_names=targets.tool_names,
+        reason="user_selected_capability",
+    )
 
 
 def select_explicit_tool_execution_target(
@@ -943,12 +969,14 @@ def prune_auto_selected_provider_instance_tools(
     deps: Optional[SkillDeps],
     intent_plan: ToolIntentPlan | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Remove redundant provider-selector tools when the target provider has one instance."""
+    """Remove provider-selector tools once the provider instance is fixed."""
     trace: dict[str, Any] = {
         "enabled": False,
         "removed_tools": [],
         "target_provider_types": [],
         "auto_selected_provider_types": [],
+        "explicit_selected_provider_types": [],
+        "explicit_selected_instances": [],
     }
     if not available_tools:
         return list(available_tools or []), trace
@@ -960,12 +988,28 @@ def prune_auto_selected_provider_instance_tools(
     if not isinstance(provider_instances, dict) or not provider_instances:
         return list(available_tools), trace
 
+    explicit_selected_provider_types: list[str] = []
+    explicit_selected_instances: list[str] = []
+    selected_capability = extra.get(SELECTED_CAPABILITY_KEY)
+    if isinstance(selected_capability, dict):
+        selected_provider_type, selected_instance_name = selected_capability_provider_instance_ref(
+            selected_capability
+        )
+        selected_provider_type = selected_provider_type.lower()
+        if selected_provider_type and selected_instance_name:
+            explicit_selected_provider_types.append(selected_provider_type)
+            explicit_selected_instances.append(selected_instance_name)
+
     target_provider_types: list[str] = []
     if intent_plan is not None:
         for item in (intent_plan.target_provider_types or []):
             provider_type = str(item or "").strip().lower()
             if provider_type and provider_type not in target_provider_types:
                 target_provider_types.append(provider_type)
+
+    for provider_type in explicit_selected_provider_types:
+        if provider_type not in target_provider_types:
+            target_provider_types.append(provider_type)
 
     if not target_provider_types:
         selected_provider_type = ""
@@ -1003,7 +1047,9 @@ def prune_auto_selected_provider_instance_tools(
             and len(provider_instances.get(provider_type) or {}) == 1
         )
     ]
-    if not auto_selected_provider_types:
+    prune_provider_types = set(auto_selected_provider_types)
+    prune_provider_types.update(explicit_selected_provider_types)
+    if not prune_provider_types:
         return list(available_tools), trace
 
     filtered_tools: list[dict[str, Any]] = []
@@ -1032,6 +1078,8 @@ def prune_auto_selected_provider_instance_tools(
             "removed_tools": removed_tools,
             "target_provider_types": list(target_provider_types),
             "auto_selected_provider_types": auto_selected_provider_types,
+            "explicit_selected_provider_types": explicit_selected_provider_types,
+            "explicit_selected_instances": explicit_selected_instances,
         }
     )
     if not removed_tools:
@@ -1309,17 +1357,37 @@ class RunnerExecutionPreparePhaseMixin:
                 raw_user_message=user_message,
                 resolved_tool_request=tool_request_message,
             )
-            metadata_candidates = self._recall_provider_skill_candidates_from_metadata(
-                user_message=tool_request_message,
-                recent_history=message_history,
-                used_follow_up_context=used_follow_up_context,
-                available_tools=available_tools,
-                provider_hint_docs=provider_hint_docs,
-                skill_hint_docs=skill_hint_docs,
-                tool_hint_docs=tool_hint_docs,
-                top_k_provider=self.TOOL_METADATA_PROVIDER_TOP_K,
-                top_k_skill=self.TOOL_METADATA_SKILL_TOP_K,
-            )
+            selected_tool_intent_plan = build_user_selected_tool_intent_plan(deps)
+            if selected_tool_intent_plan is not None:
+                metadata_candidates = {
+                    "reason": "user_selected_capability",
+                    "confidence": 1.0,
+                    "preferred_provider_types": list(selected_tool_intent_plan.target_provider_types),
+                    "preferred_group_ids": list(selected_tool_intent_plan.target_group_ids),
+                    "preferred_capability_classes": list(
+                        selected_tool_intent_plan.target_capability_classes
+                    ),
+                    "preferred_tool_names": list(selected_tool_intent_plan.target_tool_names),
+                    "preferred_skill_names": list(selected_tool_intent_plan.target_skill_names),
+                }
+                _log_step(
+                    "user_selected_capability_applied",
+                    target_provider_types=list(selected_tool_intent_plan.target_provider_types),
+                    target_skill_names=list(selected_tool_intent_plan.target_skill_names),
+                    target_tool_names=list(selected_tool_intent_plan.target_tool_names),
+                )
+            else:
+                metadata_candidates = self._recall_provider_skill_candidates_from_metadata(
+                    user_message=tool_request_message,
+                    recent_history=message_history,
+                    used_follow_up_context=used_follow_up_context,
+                    available_tools=available_tools,
+                    provider_hint_docs=provider_hint_docs,
+                    skill_hint_docs=skill_hint_docs,
+                    tool_hint_docs=tool_hint_docs,
+                    top_k_provider=self.TOOL_METADATA_PROVIDER_TOP_K,
+                    top_k_skill=self.TOOL_METADATA_SKILL_TOP_K,
+                )
             ranking_trace = {
                 "status": "metadata_recall",
                 "reason": str(metadata_candidates.get("reason", "") or "metadata_recall"),
@@ -1356,25 +1424,28 @@ class RunnerExecutionPreparePhaseMixin:
                     metadata_candidates.get("preferred_tool_names", []) or []
                 ),
             )
-            metadata_tool_intent_plan = self._build_metadata_fallback_tool_intent_plan(
-                metadata_candidates=metadata_candidates,
-                available_tools=available_tools,
-            )
-            retry_missing_tools = []
-            if isinstance(getattr(deps, "extra", None), dict):
-                candidate_retry_tools = deps.extra.get("tool_execution_retry_missing_tools")
-                if isinstance(candidate_retry_tools, list):
-                    retry_missing_tools = [
-                        str(name).strip()
-                        for name in candidate_retry_tools
-                        if str(name).strip()
-                    ]
-            retry_tool_intent_plan = build_retry_tool_intent_plan(
-                retry_missing_tools=retry_missing_tools,
-                available_tools=available_tools,
-            )
-            if retry_tool_intent_plan is not None:
-                metadata_tool_intent_plan = retry_tool_intent_plan
+            if selected_tool_intent_plan is not None:
+                metadata_tool_intent_plan = selected_tool_intent_plan
+            else:
+                metadata_tool_intent_plan = self._build_metadata_fallback_tool_intent_plan(
+                    metadata_candidates=metadata_candidates,
+                    available_tools=available_tools,
+                )
+                retry_missing_tools = []
+                if isinstance(getattr(deps, "extra", None), dict):
+                    candidate_retry_tools = deps.extra.get("tool_execution_retry_missing_tools")
+                    if isinstance(candidate_retry_tools, list):
+                        retry_missing_tools = [
+                            str(name).strip()
+                            for name in candidate_retry_tools
+                            if str(name).strip()
+                        ]
+                retry_tool_intent_plan = build_retry_tool_intent_plan(
+                    retry_missing_tools=retry_missing_tools,
+                    available_tools=available_tools,
+                )
+                if retry_tool_intent_plan is not None:
+                    metadata_tool_intent_plan = retry_tool_intent_plan
             if metadata_tool_intent_plan is not None:
                 _log_step(
                     "tool_metadata_hint_resolved",
@@ -1385,13 +1456,26 @@ class RunnerExecutionPreparePhaseMixin:
                     target_tool_names=list(metadata_tool_intent_plan.target_tool_names),
                 )
             pre_compression_tools = list(available_tools)
-            available_tools, candidate_compression_trace = compress_candidate_toolset(
-                allowed_tools=available_tools,
-                metadata_candidates=metadata_candidates,
-                used_follow_up_context=used_follow_up_context,
-            )
+            if selected_tool_intent_plan is not None:
+                candidate_compression_trace = {
+                    "enabled": False,
+                    "reason": "user_selected_capability",
+                    "before_count": len(pre_compression_tools),
+                    "after_count": len(available_tools),
+                    "coordination_tools": [],
+                }
+            else:
+                available_tools, candidate_compression_trace = compress_candidate_toolset(
+                    allowed_tools=available_tools,
+                    metadata_candidates=metadata_candidates,
+                    used_follow_up_context=used_follow_up_context,
+                )
             # Group co-retention after compression (same logic as projection)
-            if available_tools and len(available_tools) < len(pre_compression_tools):
+            if (
+                selected_tool_intent_plan is None
+                and available_tools
+                and len(available_tools) < len(pre_compression_tools)
+            ):
                 _cg_ids: set[str] = set()
                 for _ct in available_tools:
                     for _g in (_ct.get("group_ids", []) or []):
@@ -1423,16 +1507,20 @@ class RunnerExecutionPreparePhaseMixin:
                 reason=str(candidate_compression_trace.get("reason", "") or ""),
                 coordination_tools=list(candidate_compression_trace.get("coordination_tools", []) or []),
             )
-            explicit_capability_match = self._metadata_plan_represents_explicit_capability_match(
-                metadata_candidates=metadata_candidates,
-                metadata_plan=metadata_tool_intent_plan,
-                available_tools=available_tools,
-            )
-            tool_intent_plan = build_llm_first_guidance_plan(
-                user_message=tool_request_message,
-                metadata_plan=metadata_tool_intent_plan,
-                explicit_capability_match=explicit_capability_match,
-            )
+            if selected_tool_intent_plan is not None:
+                explicit_capability_match = True
+                tool_intent_plan = selected_tool_intent_plan
+            else:
+                explicit_capability_match = self._metadata_plan_represents_explicit_capability_match(
+                    metadata_candidates=metadata_candidates,
+                    metadata_plan=metadata_tool_intent_plan,
+                    available_tools=available_tools,
+                )
+                tool_intent_plan = build_llm_first_guidance_plan(
+                    user_message=tool_request_message,
+                    metadata_plan=metadata_tool_intent_plan,
+                    explicit_capability_match=explicit_capability_match,
+                )
             artifact_goal = resolve_artifact_goal_from_intent_plan(tool_intent_plan)
             if isinstance(deps.extra, dict):
                 if artifact_goal is not None:

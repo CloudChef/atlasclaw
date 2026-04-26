@@ -15,10 +15,9 @@ from pydantic import BaseModel as PydanticBaseModel
 from app.atlasclaw.auth.guards import (
     AuthorizationContext,
     filter_provider_instances_for_authz,
+    get_optional_authorization_context,
     has_permission,
-    resolve_authorization_context,
 )
-from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.api.service_provider_schemas import (
     get_provider_schema_catalog,
     get_provider_schema_definition,
@@ -26,7 +25,6 @@ from app.atlasclaw.api.service_provider_schemas import (
     serialize_provider_auth_type,
 )
 from app.atlasclaw.core.provider_catalog import get_provider_catalog_instances
-from app.atlasclaw.db.database import get_db_manager
 
 router = APIRouter(tags=["Provider API"])
 logger = logging.getLogger(__name__)
@@ -241,31 +239,6 @@ def _normalize_instance_auth_type(
         return None
 
 
-async def _get_optional_authorization_context(request: Request) -> AuthorizationContext | None:
-    """Resolve authz opportunistically for provider catalog endpoints.
-
-    The catalog is also used during bootstrap/no-DB flows, so missing auth
-    middleware state or an uninitialized DB means "no RBAC context" rather than
-    an authentication failure.
-    """
-    cached = getattr(request.state, "authorization_context", None)
-    if isinstance(cached, AuthorizationContext):
-        return cached
-
-    user_info = getattr(request.state, "user_info", None)
-    if not isinstance(user_info, UserInfo) or user_info.user_id == "anonymous":
-        return None
-
-    manager = get_db_manager()
-    if manager is None or not manager.is_initialized:
-        return None
-
-    async with manager.get_session() as session:
-        authz = await resolve_authorization_context(session, user_info)
-    request.state.authorization_context = authz
-    return authz
-
-
 def _has_provider_catalog_governance(authz: AuthorizationContext) -> bool:
     """Return whether the caller may see denied instances for governance UI."""
     return (
@@ -313,7 +286,7 @@ async def get_available_instances(
     non-sensitive config keys only.
     """
     service_providers = await get_provider_catalog_instances()
-    authz = await _get_optional_authorization_context(request)
+    authz = await get_optional_authorization_context(request)
     # Role Management needs the full catalog to edit rules for denied
     # instances; ordinary callers receive the role-filtered catalog.
     if include_all:

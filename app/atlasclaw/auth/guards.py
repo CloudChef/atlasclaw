@@ -19,7 +19,7 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.atlasclaw.auth.models import UserInfo
-from app.atlasclaw.db import get_db_session_dependency as get_db_session
+from app.atlasclaw.db import get_db_manager, get_db_session_dependency as get_db_session
 from app.atlasclaw.db.models import UserModel
 from app.atlasclaw.db.orm.role import RoleService, build_default_permissions
 from app.atlasclaw.db.orm.user import UserService
@@ -514,6 +514,34 @@ async def get_authorization_context(
         return cached
 
     authz = await resolve_authorization_context(session, user)
+    request.state.authorization_context = authz
+    return authz
+
+
+async def get_optional_authorization_context(request: Request) -> AuthorizationContext | None:
+    """Resolve request permissions when RBAC storage is available.
+
+    Catalog-style endpoints also run during bootstrap/no-DB flows, where missing
+    auth state or an uninitialized database means "no RBAC context".
+    """
+    user_info = getattr(request.state, "user_info", None)
+    cached = getattr(request.state, "authorization_context", None)
+    if (
+        isinstance(user_info, UserInfo)
+        and isinstance(cached, AuthorizationContext)
+        and cached.user.user_id == user_info.user_id
+    ):
+        return cached
+
+    if not isinstance(user_info, UserInfo) or user_info.user_id == "anonymous":
+        return None
+
+    db_mgr = get_db_manager()
+    if db_mgr is None or not db_mgr.is_initialized:
+        return None
+
+    async with db_mgr.get_session() as session:
+        authz = await resolve_authorization_context(session, user_info)
     request.state.authorization_context = authz
     return authz
 

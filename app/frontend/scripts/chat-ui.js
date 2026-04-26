@@ -12,6 +12,7 @@ import { getAgentInfo, getSessionHistory } from './api-client.js?v=19'
 import { createStreamHandler } from './stream-handler.js?v=19'
 import { buildApiUrl } from './config.js?v=19'
 import { translateIfExists, getCurrentLocale } from './i18n.js'
+import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=19'
 
 let chatElement = null
 let currentStreamHandler = null
@@ -255,6 +256,7 @@ export async function initChat(element, callbacks = {}) {
   
   // Set up IME composition handling for macOS/Asian input
   setupCompositionListeners()
+  setupSlashCapabilityPicker(element)
   
   await activateSession(getSessionKey())
 
@@ -353,8 +355,11 @@ function mapTranscriptMessageToHistory(message) {
 
 function configureHandler(element) {
   const handlerFn = async (body, signals) => {
-    const messageText = extractMessageFromBody(body)
-    if (!messageText) {
+    const rawMessageText = extractMessageFromBody(body)
+    const slashMessage = prepareSlashCapabilityMessage(rawMessageText)
+    const messageText = slashMessage.messageText
+    const selectedCapability = slashMessage.selectedCapability
+    if (!messageText && !selectedCapability) {
       signals.onClose()
       return
     }
@@ -369,6 +374,13 @@ function configureHandler(element) {
 
     let runId
     try {
+      const requestContext = {
+        ui_locale: getCurrentLocale(),
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+      }
+      if (selectedCapability) {
+        requestContext.selected_capability = selectedCapability
+      }
       const response = await fetch(buildApiUrl('/api/agent/run'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -376,10 +388,7 @@ function configureHandler(element) {
           session_key: sessionKey || '',
           message: messageText || '',
           timeout_seconds: 600,
-          context: {
-            ui_locale: getCurrentLocale(),
-            timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || ''
-          }
+          context: requestContext
         })
       })
 

@@ -68,6 +68,22 @@ export async function getAgentInfo() {
 }
 
 /**
+ * List request-visible chat slash capabilities.
+ * @returns {Promise<object>} Capability catalog payload
+ */
+export async function listAgentCapabilities() {
+    const response = await fetch(buildApiUrl('/api/agent/capabilities'), {
+        credentials: 'include'
+    });
+
+    if (!response.ok) {
+        throw new Error(`Failed to list agent capabilities: ${response.status}`);
+    }
+
+    return response.json();
+}
+
+/**
  * Create a new independent chat thread
  * @param {object} params - Thread parameters
  * @returns {Promise<object>} Session info { session_key, ... }

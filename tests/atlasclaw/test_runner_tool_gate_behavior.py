@@ -76,6 +76,54 @@ def test_prune_auto_selected_provider_instance_tools_removes_provider_coordinati
     assert trace["auto_selected_provider_types"] == ["smartcmp"]
 
 
+def test_prune_selected_provider_instance_tools_removes_selector_with_multiple_instances() -> None:
+    filtered_tools, trace = prune_auto_selected_provider_instance_tools(
+        available_tools=[
+            {
+                "name": "smartcmp_submit_request",
+                "description": "Submit SmartCMP request",
+                "provider_type": "smartcmp",
+                "capability_class": "provider:smartcmp",
+            },
+            {
+                "name": "select_provider_instance",
+                "description": "Select provider instance",
+                "capability_class": "provider:generic",
+                "group_ids": ["group:providers"],
+                "coordination_only": True,
+            },
+        ],
+        deps=SimpleNamespace(
+            extra={
+                "provider_instances": {
+                    "smartcmp": {
+                        "default": {"provider_type": "smartcmp"},
+                        "secondary": {"provider_type": "smartcmp"},
+                    }
+                },
+                "_selected_capability": {
+                    "kind": "provider_skill",
+                    "provider_type": "smartcmp",
+                    "instance_name": "default",
+                    "qualified_skill_name": "smartcmp:request",
+                },
+            }
+        ),
+        intent_plan=ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_tool_names=["smartcmp_submit_request"],
+            target_provider_types=["smartcmp"],
+        ),
+    )
+
+    assert {tool["name"] for tool in filtered_tools} == {"smartcmp_submit_request"}
+    assert trace["enabled"] is True
+    assert trace["removed_tools"] == ["select_provider_instance"]
+    assert trace["auto_selected_provider_types"] == []
+    assert trace["explicit_selected_provider_types"] == ["smartcmp"]
+    assert trace["explicit_selected_instances"] == ["default"]
+
+
 def test_prune_auto_selected_provider_instance_tools_keeps_non_provider_coordination_tools() -> None:
     filtered_tools, trace = prune_auto_selected_provider_instance_tools(
         available_tools=[

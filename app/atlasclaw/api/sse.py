@@ -301,21 +301,30 @@ create SSE
             self._subscribers[run_id] = []
         self._subscribers[run_id].append(queue)
         was_closed_on_subscribe = stream.closed
-        
+        sent_lifecycle_end = False
+
+        def _is_lifecycle_end(event: SSEEvent) -> bool:
+            return (
+                event.event_type == SSEEventType.LIFECYCLE
+                and event.data.get("phase") == "end"
+            )
+
         try:
             replay_events = self._get_missed_events(stream, last_event_id)
             for event in replay_events:
                 yield event.to_sse_format()
+                sent_lifecycle_end = sent_lifecycle_end or _is_lifecycle_end(event)
                 # Maintain streaming effect for thinking delta events during replay
                 if (event.event_type == SSEEventType.THINKING
                         and event.data.get("phase") == "delta"):
                     await asyncio.sleep(0.015)
 
             if was_closed_on_subscribe:
-                yield SSEEvent(
-                    event_type=SSEEventType.LIFECYCLE,
-                    data={"phase": "end"}
-                ).to_sse_format()
+                if not sent_lifecycle_end:
+                    yield SSEEvent(
+                        event_type=SSEEventType.LIFECYCLE,
+                        data={"phase": "end"}
+                    ).to_sse_format()
                 return
 
             # 
@@ -339,13 +348,15 @@ create SSE
                     
                     if event is None:
                         # 
-                        yield SSEEvent(
-                            event_type=SSEEventType.LIFECYCLE,
-                            data={"phase": "end"}
-                        ).to_sse_format()
+                        if not sent_lifecycle_end:
+                            yield SSEEvent(
+                                event_type=SSEEventType.LIFECYCLE,
+                                data={"phase": "end"}
+                            ).to_sse_format()
                         break
                         
                     yield event.to_sse_format()
+                    sent_lifecycle_end = sent_lifecycle_end or _is_lifecycle_end(event)
                     
                 except asyncio.TimeoutError:
                     # heartbeat

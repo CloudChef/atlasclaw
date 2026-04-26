@@ -10,8 +10,10 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
 
 from ..auth.models import ANONYMOUS_USER, UserInfo
-from ..auth.guards import get_authorization_context, AuthorizationContext
+from ..auth.guards import AuthorizationContext, get_optional_authorization_context
+from ..agent.selected_capability import SELECTED_CAPABILITY_KEY
 from ..session.context import SessionKey
+from .agent_capabilities import build_agent_capabilities, resolve_selected_capability
 from .deps_context import APIContext, get_api_context
 from .schemas import AgentRunRequest, AgentRunResponse, AgentStatusResponse
 from .services.run_service import (
@@ -42,6 +44,28 @@ async def _ensure_runnable_session(ctx: APIContext, auth_user: UserInfo, session
 
 
 def register_agent_routes(router: APIRouter) -> None:
+    @router.get("/agent/capabilities")
+    async def list_agent_capabilities(
+        request_obj: Request,
+        ctx: APIContext = Depends(get_api_context),
+    ) -> dict[str, Any]:
+        user_info: UserInfo = getattr(request_obj.state, "user_info", ANONYMOUS_USER)
+        if user_info.user_id == "anonymous":
+            return {"count": 0, "capabilities": []}
+        try:
+            authz = await get_optional_authorization_context(request_obj)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to resolve permissions for agent capabilities.",
+            ) from exc
+        provider_config = build_provider_config(ctx) or (ctx.provider_instances or {})
+        return build_agent_capabilities(
+            ctx=ctx,
+            authz=authz,
+            provider_instances=provider_config,
+        )
+
     @router.post("/agent/run", response_model=AgentRunResponse)
     async def start_agent_run(
         request_obj: Request,
@@ -67,6 +91,7 @@ def register_agent_routes(router: APIRouter) -> None:
         #   user_skill_permissions = [...]  -> RBAC resolved, per-skill grants
         user_skill_permissions: list[dict] | None = None
         user_provider_permissions: list[dict] | None = None
+        resolved_authz: AuthorizationContext | None = None
         try:
             from app.atlasclaw.db.database import get_db_manager
             db_mgr = get_db_manager()
@@ -78,6 +103,7 @@ def register_agent_routes(router: APIRouter) -> None:
                 try:
                     from ..auth.guards import resolve_authorization_context
                     authz = await resolve_authorization_context(db_session, user_info)
+                    resolved_authz = authz
                     user_skill_permissions = (
                         authz.permissions.get("skills", {}).get("skill_permissions", [])
                     )
@@ -115,7 +141,23 @@ def register_agent_routes(router: APIRouter) -> None:
                 detail="Failed to resolve skill permissions for this run.",
             ) from exc
 
-        request_context = request.context or {}
+        request_context = dict(request.context or {})
+        request_context.pop(SELECTED_CAPABILITY_KEY, None)
+        selected_capability = request_context.pop("selected_capability", None)
+        if selected_capability is not None:
+            canonical_capability = resolve_selected_capability(
+                ctx=ctx,
+                selected=selected_capability,
+                authz=resolved_authz,
+                provider_instances=provider_config or (ctx.provider_instances or {}),
+            )
+            if canonical_capability is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Selected skill or provider capability is not available.",
+                )
+            request_context[SELECTED_CAPABILITY_KEY] = canonical_capability
+
         # Always pass RBAC result to runtime when DB is available (including
         # empty list which means deny-all).  Only skip when RBAC is not
         # enabled at all (None sentinel).

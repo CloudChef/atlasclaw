@@ -131,6 +131,17 @@ function createDomChatElementWithMessages() {
     return { element, input, messages };
 }
 
+function setEditableText(input, text) {
+    input.textContent = text;
+    const range = document.createRange();
+    range.selectNodeContents(input);
+    range.collapse(false);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
 describe('chat-ui.js handler mode', () => {
     test('composition commit enter is blocked once before normal submit resumes', async () => {
         sessionStorage.setItem('atlasclaw_session_key', 'session-123');
@@ -349,6 +360,471 @@ describe('chat-ui.js handler mode', () => {
         await handlerPromise;
 
         expect(signals.onClose).toHaveBeenCalled();
+    });
+
+    test('handler sends selected provider skill capability from slash picker', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, input } = createDomChatElement();
+        const signals = createMockSignals();
+        sessionStorage.setItem('atlasclaw_auth_token', 'token-provider');
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ session_key: 'session-123' })
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({
+                capabilities: [
+                    {
+                        id: 'provider-skill',
+                        kind: 'provider_skill',
+                        command: '/default.linux-vm-request',
+                        label: 'default.linux-vm-request',
+                        provider_type: 'smartcmp',
+                        provider_display_name: 'SmartCMP',
+                        instance_name: 'default',
+                        skill_name: 'linux-vm-request',
+                        qualified_skill_name: 'smartcmp:linux-vm-request',
+                        target_provider_types: ['smartcmp'],
+                        target_skill_names: ['smartcmp:linux-vm-request', 'linux-vm-request'],
+                        target_tool_names: ['smartcmp_linux_vm_request']
+                    }
+                ]
+            })
+        });
+
+        setEditableText(input, '/def');
+        await new Promise(r => setTimeout(r, 80));
+        document.querySelector('.slash-picker-row').click();
+
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-provider-selection' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: `${input.textContent}申请 1C2G Linux`, role: 'user' }] },
+            signals
+        );
+        await new Promise(r => setTimeout(r, 80));
+
+        const [, requestOptions] = global.fetch.mock.calls[0];
+        const parsedBody = JSON.parse(requestOptions.body);
+        expect(parsedBody.message).toBe('申请 1C2G Linux');
+        expect(parsedBody.context.selected_capability).toMatchObject({
+            kind: 'provider_skill',
+            provider_type: 'smartcmp',
+            instance_name: 'default',
+            qualified_skill_name: 'smartcmp:linux-vm-request',
+            target_tool_names: ['smartcmp_linux_vm_request']
+        });
+
+        MockEventSource.instances[0].simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler does not consume selected capability after command prefix edit', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, input } = createDomChatElement();
+        const signals = createMockSignals();
+        sessionStorage.setItem('atlasclaw_auth_token', 'token-prefix-edit');
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ session_key: 'session-123' })
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({
+                capabilities: [
+                    {
+                        id: 'foo-skill',
+                        kind: 'skill',
+                        command: '/foo',
+                        label: 'foo',
+                        skill_name: 'foo',
+                        qualified_skill_name: 'foo',
+                        target_skill_names: ['foo'],
+                        target_tool_names: ['foo_tool']
+                    }
+                ]
+            })
+        });
+
+        setEditableText(input, '/fo');
+        await new Promise(r => setTimeout(r, 80));
+        document.querySelector('.slash-picker-row').click();
+
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-prefix-edit' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: '/foobar do x', role: 'user' }] },
+            signals
+        );
+        await new Promise(r => setTimeout(r, 80));
+
+        const [, requestOptions] = global.fetch.mock.calls[0];
+        const parsedBody = JSON.parse(requestOptions.body);
+        expect(parsedBody.message).toBe('/foobar do x');
+        expect(parsedBody.context.selected_capability).toBeUndefined();
+
+        MockEventSource.instances[0].simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler sends selected standalone skill capability from slash picker', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, input } = createDomChatElement();
+        const signals = createMockSignals();
+        sessionStorage.setItem('atlasclaw_auth_token', 'token-skill');
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ session_key: 'session-123' })
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({
+                capabilities: [
+                    {
+                        id: 'standalone-skill',
+                        kind: 'skill',
+                        command: '/no-provider-vm-request',
+                        label: 'no-provider-vm-request',
+                        skill_name: 'no-provider-vm-request',
+                        qualified_skill_name: 'no-provider-vm-request',
+                        target_skill_names: ['no-provider-vm-request'],
+                        target_tool_names: ['no_provider_vm_request']
+                    }
+                ]
+            })
+        });
+
+        setEditableText(input, '/no-provider');
+        await new Promise(r => setTimeout(r, 80));
+        document.querySelector('.slash-picker-row').click();
+
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-skill-selection' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: `${input.textContent}申请 Linux VM`, role: 'user' }] },
+            signals
+        );
+        await new Promise(r => setTimeout(r, 80));
+
+        const [, requestOptions] = global.fetch.mock.calls[0];
+        const parsedBody = JSON.parse(requestOptions.body);
+        expect(parsedBody.message).toBe('申请 Linux VM');
+        expect(parsedBody.context.selected_capability).toMatchObject({
+            kind: 'skill',
+            qualified_skill_name: 'no-provider-vm-request',
+            target_tool_names: ['no_provider_vm_request']
+        });
+
+        MockEventSource.instances[0].simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('slash picker does not reuse cached capabilities after auth token changes', async () => {
+        const { setupSlashCapabilityPicker } = await import('../../app/frontend/scripts/slash-picker.js');
+        const { element, input } = createDomChatElement();
+
+        sessionStorage.setItem('atlasclaw_auth_token', 'token-a');
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({
+                capabilities: [
+                    {
+                        id: 'old-skill',
+                        kind: 'skill',
+                        command: '/old-skill',
+                        label: 'old-skill',
+                        skill_name: 'old-skill',
+                        qualified_skill_name: 'old-skill',
+                        target_skill_names: ['old-skill'],
+                        target_tool_names: ['old_skill']
+                    }
+                ]
+            })
+        });
+
+        setupSlashCapabilityPicker(element);
+        setEditableText(input, '/old');
+        await new Promise(r => setTimeout(r, 80));
+        expect(document.querySelector('.slash-picker-row')?.textContent).toContain('/old-skill');
+
+        sessionStorage.setItem('atlasclaw_auth_token', 'token-b');
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({
+                capabilities: [
+                    {
+                        id: 'new-skill',
+                        kind: 'skill',
+                        command: '/new-skill',
+                        label: 'new-skill',
+                        skill_name: 'new-skill',
+                        qualified_skill_name: 'new-skill',
+                        target_skill_names: ['new-skill'],
+                        target_tool_names: ['new_skill']
+                    }
+                ]
+            })
+        });
+
+        setEditableText(input, '/new');
+        await new Promise(r => setTimeout(r, 80));
+
+        const popupText = document.querySelector('.slash-picker-popup')?.textContent || '';
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(popupText).toContain('/new-skill');
+        expect(popupText).not.toContain('/old-skill');
+    });
+
+    test('slash picker bypasses shared cache when no AtlasClaw auth token is present', async () => {
+        const { setupSlashCapabilityPicker } = await import('../../app/frontend/scripts/slash-picker.js');
+        const { element, input } = createDomChatElement();
+
+        global.fetch.mockResolvedValue({
+            ok: true,
+            json: () => Promise.resolve({
+                capabilities: [
+                    {
+                        id: 'old-skill',
+                        kind: 'skill',
+                        command: '/old-skill',
+                        label: 'old-skill',
+                        skill_name: 'old-skill',
+                        qualified_skill_name: 'old-skill',
+                        target_skill_names: ['old-skill'],
+                        target_tool_names: ['old_skill']
+                    }
+                ]
+            })
+        });
+
+        setupSlashCapabilityPicker(element);
+        setEditableText(input, '/old');
+        await new Promise(r => setTimeout(r, 80));
+        expect(document.querySelector('.slash-picker-row')?.textContent).toContain('/old-skill');
+
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({
+                capabilities: [
+                    {
+                        id: 'new-skill',
+                        kind: 'skill',
+                        command: '/new-skill',
+                        label: 'new-skill',
+                        skill_name: 'new-skill',
+                        qualified_skill_name: 'new-skill',
+                        target_skill_names: ['new-skill'],
+                        target_tool_names: ['new_skill']
+                    }
+                ]
+            })
+        });
+
+        setEditableText(input, '/new');
+        await new Promise(r => setTimeout(r, 80));
+
+        const popupText = document.querySelector('.slash-picker-popup')?.textContent || '';
+        expect(global.fetch).toHaveBeenCalledTimes(1);
+        expect(popupText).toContain('/new-skill');
+        expect(popupText).not.toContain('/old-skill');
+    });
+
+    test('slash picker restores first active row after navigating an empty result set', async () => {
+        const { setupSlashCapabilityPicker } = await import('../../app/frontend/scripts/slash-picker.js');
+        const { element, input } = createDomChatElement();
+
+        sessionStorage.setItem('atlasclaw_auth_token', 'token-a');
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({
+                capabilities: [
+                    {
+                        id: 'new-skill',
+                        kind: 'skill',
+                        command: '/new-skill',
+                        label: 'new-skill',
+                        skill_name: 'new-skill',
+                        qualified_skill_name: 'new-skill',
+                        target_skill_names: ['new-skill'],
+                        target_tool_names: ['new_skill']
+                    }
+                ]
+            })
+        });
+
+        setupSlashCapabilityPicker(element);
+        setEditableText(input, '/zzz');
+        await new Promise(r => setTimeout(r, 80));
+        expect(document.querySelector('.slash-picker-empty')?.textContent).toBe('No matching skills');
+
+        input.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'ArrowDown',
+            bubbles: true,
+            cancelable: true
+        }));
+        setEditableText(input, '/new');
+        await new Promise(r => setTimeout(r, 80));
+
+        input.dispatchEvent(new KeyboardEvent('keydown', {
+            key: 'Enter',
+            bubbles: true,
+            cancelable: true
+        }));
+
+        expect(input.textContent).toContain('/new-skill');
+    });
+
+    test('slash picker scrolls active row into view during keyboard navigation', async () => {
+        const { setupSlashCapabilityPicker } = await import('../../app/frontend/scripts/slash-picker.js');
+        const { element, input } = createDomChatElement();
+        const originalClientHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight');
+        const originalOffsetHeight = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+        const originalOffsetTop = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetTop');
+
+        Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+            configurable: true,
+            get() {
+                return this.classList?.contains('slash-picker-popup') ? 60 : 0;
+            }
+        });
+        Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+            configurable: true,
+            get() {
+                return this.classList?.contains('slash-picker-row') ? 24 : 0;
+            }
+        });
+        Object.defineProperty(HTMLElement.prototype, 'offsetTop', {
+            configurable: true,
+            get() {
+                if (!this.classList?.contains('slash-picker-row') || !this.parentElement) return 0;
+                return Array.from(this.parentElement.querySelectorAll('.slash-picker-row')).indexOf(this) * 24;
+            }
+        });
+
+        try {
+            sessionStorage.setItem('atlasclaw_auth_token', 'token-scroll');
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({
+                    capabilities: Array.from({ length: 12 }, (_, index) => ({
+                        id: `skill-${index}`,
+                        kind: 'skill',
+                        command: `/skill-${String(index).padStart(2, '0')}`,
+                        label: `skill-${index}`,
+                        skill_name: `skill-${index}`,
+                        qualified_skill_name: `skill-${index}`,
+                        target_skill_names: [`skill-${index}`],
+                        target_tool_names: [`skill_${index}`]
+                    }))
+                })
+            });
+
+            setupSlashCapabilityPicker(element);
+            setEditableText(input, '/');
+            await new Promise(r => setTimeout(r, 80));
+
+            const popup = document.querySelector('.slash-picker-popup');
+            expect(popup.scrollTop).toBe(0);
+
+            for (let i = 0; i < 5; i += 1) {
+                input.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: 'ArrowDown',
+                    bubbles: true,
+                    cancelable: true
+                }));
+            }
+
+            expect(document.querySelector('.slash-picker-row.active')?.textContent).toContain('/skill-05');
+            expect(popup.scrollTop).toBeGreaterThan(0);
+        } finally {
+            if (originalClientHeight) {
+                Object.defineProperty(HTMLElement.prototype, 'clientHeight', originalClientHeight);
+            } else {
+                delete HTMLElement.prototype.clientHeight;
+            }
+            if (originalOffsetHeight) {
+                Object.defineProperty(HTMLElement.prototype, 'offsetHeight', originalOffsetHeight);
+            } else {
+                delete HTMLElement.prototype.offsetHeight;
+            }
+            if (originalOffsetTop) {
+                Object.defineProperty(HTMLElement.prototype, 'offsetTop', originalOffsetTop);
+            } else {
+                delete HTMLElement.prototype.offsetTop;
+            }
+        }
+    });
+
+    test('slash picker renders every matching capability in the scroll list', async () => {
+        const { setupSlashCapabilityPicker } = await import('../../app/frontend/scripts/slash-picker.js');
+        const { element, input } = createDomChatElement();
+
+        sessionStorage.setItem('atlasclaw_auth_token', 'token-all-matches');
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({
+                capabilities: Array.from({ length: 12 }, (_, index) => ({
+                    id: `skill-${index}`,
+                    kind: 'skill',
+                    command: `/skill-${String(index).padStart(2, '0')}`,
+                    label: `skill-${index}`,
+                    skill_name: `skill-${index}`,
+                    qualified_skill_name: `skill-${index}`,
+                    target_skill_names: [`skill-${index}`],
+                    target_tool_names: [`skill_${index}`]
+                }))
+            })
+        });
+
+        setupSlashCapabilityPicker(element);
+        setEditableText(input, '/');
+        await new Promise(r => setTimeout(r, 80));
+
+        const rows = Array.from(document.querySelectorAll('.slash-picker-row'));
+        expect(rows).toHaveLength(12);
+        expect(rows.at(-1)?.textContent).toContain('/skill-11');
     });
 
     test('handler uses signals.onResponse with overwrite for stream updates', async () => {
