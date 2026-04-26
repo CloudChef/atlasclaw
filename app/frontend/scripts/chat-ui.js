@@ -28,7 +28,6 @@ let blockNextEnterAfterComposition = false
 let blockNextEnterStartedAt = 0
 
 const IME_ENTER_GUARD_MS = 150
-
 const SCROLL_THRESHOLD = 50
 
 function clearImeEnterGuard() {
@@ -65,6 +64,65 @@ function shouldBlockImeEnter(event) {
   return activelyComposing || hasActiveImeEnterGuard()
 }
 
+function isDeepChatInputElement(element) {
+  return !!element &&
+    typeof element.matches === 'function' &&
+    // Deep Chat can recreate its editor as a textarea, text input, or contenteditable node.
+    element.matches('textarea, input[type="text"], [contenteditable="true"]')
+}
+
+// Resolve the real input from a composed event path so delegated listeners still
+// work when the event crosses Deep Chat's shadow DOM boundary.
+function getDeepChatInputFromEvent(event) {
+  const path = typeof event?.composedPath === 'function' ? event.composedPath() : []
+  const pathInput = path.find((node) => isDeepChatInputElement(node))
+  if (pathInput) return pathInput
+
+  return isDeepChatInputElement(event?.target) ? event.target : null
+}
+
+// Track IME state only for events that originate from Deep Chat's editable input.
+function handleImeCompositionStart(event) {
+  if (!getDeepChatInputFromEvent(event)) return
+  isComposing = true
+  clearImeEnterGuard()
+  console.debug('[ChatUI] IME composition started')
+}
+
+function handleImeCompositionEnd(event) {
+  if (!getDeepChatInputFromEvent(event)) return
+  isComposing = false
+  armImeEnterGuard()
+  console.debug('[ChatUI] IME composition ended')
+}
+
+function handleImeKeyDown(event) {
+  if (!getDeepChatInputFromEvent(event) || !shouldBlockImeEnter(event)) {
+    return
+  }
+
+  if (hasActiveImeEnterGuard() && !isComposing && event.isComposing !== true) {
+    clearImeEnterGuard()
+  }
+
+  event.preventDefault()
+  event.stopPropagation()
+  event.stopImmediatePropagation()
+  console.debug('[ChatUI] Enter key blocked during IME composition')
+}
+
+// Attach in capture phase to intercept Enter before Deep Chat submits, and attach
+// to stable containers so the guard survives internal input replacement.
+function attachImeGuardListeners(target) {
+  if (!target || target._imeCompositionGuardAttached) return false
+
+  target.addEventListener('compositionstart', handleImeCompositionStart, true)
+  target.addEventListener('compositionend', handleImeCompositionEnd, true)
+  target.addEventListener('keydown', handleImeKeyDown, true)
+  target._imeCompositionGuardAttached = true
+  return true
+}
+
 function getMessageContainer() {
   const dc = document.querySelector('deep-chat')
   if (!dc?.shadowRoot) return null
@@ -85,56 +143,12 @@ function setupCompositionListeners() {
     setTimeout(setupCompositionListeners, 500)
     return
   }
-  
-  // Find the input element (textarea, input, or contenteditable)
-  const inputElement = dc.shadowRoot.querySelector('textarea') ||
-                      dc.shadowRoot.querySelector('input[type="text"]') ||
-                      dc.shadowRoot.querySelector('[contenteditable="true"]')
-  
-  if (!inputElement) {
-    console.warn('[ChatUI] No input element found for composition listeners, retrying...')
-    setTimeout(setupCompositionListeners, 500)
-    return
-  }
-  
-  // Check if already attached
-  if (inputElement._compositionListenersAttached) {
-    return
-  }
-  
-  // Track composition state
-  inputElement.addEventListener('compositionstart', () => {
-    isComposing = true
-    clearImeEnterGuard()
-    console.debug('[ChatUI] IME composition started')
-  })
-  
-  inputElement.addEventListener('compositionend', () => {
-    isComposing = false
-    armImeEnterGuard()
-    console.debug('[ChatUI] IME composition ended')
-  })
-  
-  // Intercept Enter both during composition and for the first macOS commit Enter
-  inputElement.addEventListener('keydown', (e) => {
-    if (!shouldBlockImeEnter(e)) {
-      return
-    }
 
-    if (hasActiveImeEnterGuard() && !isComposing && e.isComposing !== true) {
-      clearImeEnterGuard()
-    }
-
-    if (e.key === 'Enter') {
-      e.preventDefault()
-      e.stopPropagation()
-      e.stopImmediatePropagation()
-      console.debug('[ChatUI] Enter key blocked during IME composition')
-    }
-  }, true) // Use capture phase to intercept before Deep Chat
-  
-  inputElement._compositionListenersAttached = true
-  console.log('[ChatUI] IME composition listeners attached to:', inputElement.tagName)
+  const attachedToRoot = attachImeGuardListeners(dc.shadowRoot)
+  const attachedToHost = attachImeGuardListeners(dc)
+  if (attachedToRoot || attachedToHost) {
+    console.log('[ChatUI] IME composition guard attached to Deep Chat')
+  }
 }
 
 function getLatestRuntimePanel(container) {

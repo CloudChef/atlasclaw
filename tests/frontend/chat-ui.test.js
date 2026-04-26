@@ -143,6 +143,31 @@ function setEditableText(input, text) {
 }
 
 describe('chat-ui.js handler mode', () => {
+    test('enter is blocked while IME composition is still active', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, input } = createDomChatElement();
+
+        await initChat(element);
+
+        const deepChatSubmitListener = jest.fn();
+        input.addEventListener('keydown', deepChatSubmitListener);
+
+        input.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+
+        const composingEnter = new KeyboardEvent('keydown', {
+            key: 'Enter',
+            bubbles: true,
+            cancelable: true
+        });
+        const dispatchResult = input.dispatchEvent(composingEnter);
+
+        expect(dispatchResult).toBe(false);
+        expect(composingEnter.defaultPrevented).toBe(true);
+        expect(deepChatSubmitListener).not.toHaveBeenCalled();
+    });
+
     test('composition commit enter is blocked once before normal submit resumes', async () => {
         sessionStorage.setItem('atlasclaw_session_key', 'session-123');
 
@@ -204,6 +229,36 @@ describe('chat-ui.js handler mode', () => {
         expect(dispatchResult).toBe(true);
         expect(shiftEnter.defaultPrevented).toBe(false);
         expect(deepChatSubmitListener).toHaveBeenCalledTimes(1);
+    });
+
+    test('composition guard still blocks enter after Deep Chat replaces the input', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, input } = createDomChatElement();
+
+        await initChat(element);
+
+        const replacementInput = document.createElement('div');
+        replacementInput.setAttribute('contenteditable', 'true');
+        element.shadowRoot.replaceChild(replacementInput, input);
+
+        const deepChatSubmitListener = jest.fn();
+        replacementInput.addEventListener('keydown', deepChatSubmitListener);
+
+        replacementInput.dispatchEvent(new Event('compositionstart', { bubbles: true }));
+        replacementInput.dispatchEvent(new Event('compositionend', { bubbles: true }));
+
+        const commitEnter = new KeyboardEvent('keydown', {
+            key: 'Enter',
+            bubbles: true,
+            cancelable: true
+        });
+        const dispatchResult = replacementInput.dispatchEvent(commitEnter);
+
+        expect(dispatchResult).toBe(false);
+        expect(commitEnter.defaultPrevented).toBe(true);
+        expect(deepChatSubmitListener).not.toHaveBeenCalled();
     });
 
     test('initChat configures handler on element', async () => {
