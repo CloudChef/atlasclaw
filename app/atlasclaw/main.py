@@ -37,6 +37,7 @@ from app.atlasclaw.api.api_routes import router as db_api_router
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.session.router import SessionManagerRouter
+from app.atlasclaw.skills.permission_service import skill_permission_service
 from app.atlasclaw.skills.registry import SkillRegistry
 from app.atlasclaw.tools.registration import register_builtin_tools
 from app.atlasclaw.tools.catalog import ToolProfile
@@ -197,8 +198,9 @@ async def _collect_runtime_user_ids(
         if user_id and user_id not in {"default", "anonymous"}
     )
 
-# Roles in this set receive the FULL skill catalog (built-in + provider +
-# standalone).  All other system-managed roles only receive provider skills.
+# Roles in this set receive the core skill catalog (built-in tools +
+# standalone markdown skills). Provider capabilities are governed by provider
+# permissions and are not duplicated into role skill_permissions.
 _FULL_CATALOG_ROLE_IDENTIFIERS = frozenset({"admin"})
 
 
@@ -206,11 +208,10 @@ async def _ensure_builtin_role_skill_permissions(skill_registry) -> None:
     """Seed / incrementally merge skill_permissions for system-managed
     built-in roles from the skill catalog.
 
-    - **admin** receives the *complete* catalog (built-in tools, provider
-      skills, standalone skills) so it never loses any capability.
-    - **user** receives *only* provider-originated skills so that high-
-      privilege built-in tools (exec, fs, browser, web_search …) are not
-      granted by default.
+    - **admin** receives the core catalog (built-in tools and standalone
+      markdown skills) so it never loses platform capabilities.
+    - **user** receives no default skill entries here; provider skills/tools are
+      controlled by provider permissions instead of skills.skill_permissions.
 
     Behaviour:
       - Fresh install (no stored permissions): write the role-appropriate catalog.
@@ -253,46 +254,33 @@ async def _ensure_builtin_role_skill_permissions(skill_registry) -> None:
                     "enabled": True,
                 }
 
-            # Full catalog: every tool + every md skill (for admin).
+            # Core catalog: non-provider executable tools + standalone md skills
+            # for admin. Markdown-backed executable tools are represented by
+            # their markdown skill entry.
             full_catalog: list[dict] = []
             full_seen: set[str] = set()
+            core_tool_count = 0
+            core_md_count = 0
             for tool in tools_snap:
+                if not skill_permission_service.is_core_catalog_tool_snapshot(tool):
+                    continue
                 tool_name = str(tool.get("name", "") or "").strip()
                 if not tool_name or tool_name in full_seen:
                     continue
                 full_seen.add(tool_name)
+                core_tool_count += 1
                 full_catalog.append(_make_entry(tool_name, tool_name, tool.get("description", "")))
             for md in md_skills:
+                if skill_permission_service.is_provider_bound_md_skill_snapshot(md):
+                    continue
                 md_name = str(md.get("name", "") or "").strip()
                 md_qname = str(md.get("qualified_name", "") or "").strip()
                 skill_id = md_qname or md_name
                 if not skill_id or skill_id in full_seen:
                     continue
                 full_seen.add(skill_id)
+                core_md_count += 1
                 full_catalog.append(_make_entry(skill_id, md_name, md.get("description", "")))
-
-            # Provider-only catalog: provider executable tools + provider md
-            # skills (for non-admin system-managed roles like user).
-            provider_catalog: list[dict] = []
-            provider_seen: set[str] = set()
-            for tool in tools_snap:
-                if str(tool.get("source", "")).strip().lower() != "provider":
-                    continue
-                tool_name = str(tool.get("name", "") or "").strip()
-                if not tool_name or tool_name in provider_seen:
-                    continue
-                provider_seen.add(tool_name)
-                provider_catalog.append(_make_entry(tool_name, tool_name, tool.get("description", "")))
-            for md in md_skills:
-                if not str(md.get("provider", "")).strip():
-                    continue
-                md_name = str(md.get("name", "") or "").strip()
-                md_qname = str(md.get("qualified_name", "") or "").strip()
-                skill_id = md_qname or md_name
-                if not skill_id or skill_id in provider_seen:
-                    continue
-                provider_seen.add(skill_id)
-                provider_catalog.append(_make_entry(skill_id, md_name, md.get("description", "")))
 
             if not full_catalog:
                 return
@@ -300,12 +288,12 @@ async def _ensure_builtin_role_skill_permissions(skill_registry) -> None:
             # ---- Per-role incremental merge ----
             changed = False
             for role in managed_roles:
-                # Admin gets the full catalog; other system-managed roles
-                # (e.g. user) only receive provider-originated skills.
+                # Admin gets the core catalog; other system-managed roles keep
+                # their skill_permissions untouched unless explicitly updated.
                 catalog_entries = (
                     full_catalog
                     if role.identifier in _FULL_CATALOG_ROLE_IDENTIFIERS
-                    else provider_catalog
+                    else []
                 )
                 if not catalog_entries:
                     continue
@@ -349,7 +337,7 @@ async def _ensure_builtin_role_skill_permissions(skill_registry) -> None:
                     print(
                         f"[AtlasClaw] Bootstrapped {role.identifier} default skill permissions "
                         f"({len(merged)} entries: "
-                        f"{len(tools_snap)} executable + {len(md_skills)} markdown)"
+                        f"{core_tool_count} executable + {core_md_count} markdown)"
                     )
                 else:
                     print(

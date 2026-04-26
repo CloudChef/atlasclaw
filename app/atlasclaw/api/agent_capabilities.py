@@ -13,14 +13,12 @@ from app.atlasclaw.auth.guards import (
     filter_provider_instances_for_authz,
     has_permission,
 )
+from app.atlasclaw.skills.permission_service import skill_permission_service
 
 from .deps_context import (
     APIContext,
     _build_md_tool_skill_refs,
-    _filter_provider_bound_snapshots,
     _filter_snapshot_by_permissions,
-    _provider_type_from_md_skill_snapshot,
-    _provider_type_from_tool_snapshot,
 )
 
 
@@ -173,7 +171,7 @@ def _get_visible_skill_snapshots(
                 tools_snapshot = []
                 md_skills_snapshot = []
 
-    tools_snapshot, md_skills_snapshot = _filter_provider_bound_snapshots(
+    tools_snapshot, md_skills_snapshot = skill_permission_service.filter_provider_bound_snapshots(
         tools_snapshot,
         md_skills_snapshot,
         provider_instances,
@@ -321,7 +319,7 @@ def build_agent_capabilities(
 
     for md_skill in md_skills_snapshot:
         metadata = md_skill.get("metadata") if isinstance(md_skill.get("metadata"), dict) else {}
-        provider_type = _provider_type_from_md_skill_snapshot(md_skill)
+        provider_type = skill_permission_service.provider_type_from_md_skill_snapshot(md_skill)
         skill_name = _normalize_text(md_skill.get("name"))
         qualified_skill_name = _normalize_text(md_skill.get("qualified_name")) or skill_name
         description = _normalize_text(md_skill.get("description"))
@@ -365,7 +363,7 @@ def build_agent_capabilities(
         if bool(tool.get("coordination_only")):
             continue
 
-        provider_type = _provider_type_from_tool_snapshot(tool)
+        provider_type = skill_permission_service.provider_type_from_tool_snapshot(tool)
         skill_name = _normalize_text(tool.get("skill_name")) or tool_name
         qualified_skill_name = _normalize_text(tool.get("qualified_skill_name")) or skill_name
         description = _normalize_text(tool.get("description"))

@@ -274,10 +274,10 @@ class TestMainStartup:
 
     @pytest.mark.asyncio
     async def test_builtin_role_skill_permission_bootstrap_seeds_admin_and_user(self, tmp_path):
-        """Startup bootstrap should seed system-managed admin and user role skills.
+        """Startup bootstrap should seed only core system-managed role skills.
 
-        Admin receives the full catalog (built-in + provider).
-        User receives only provider-originated skills.
+        Admin receives the core catalog (built-in + standalone).
+        User does not receive provider-originated skills here.
         Viewer remains untouched (empty skill_permissions).
         """
         import importlib
@@ -295,6 +295,7 @@ class TestMainStartup:
         await manager.create_tables()
 
         BUILTIN_TOOL_NAME = "exec"
+        STANDALONE_SKILL_ID = "release-helper"
 
         class _FakeRegistry:
             def tools_snapshot(self):
@@ -327,6 +328,13 @@ class TestMainStartup:
                         "provider": "smartcmp",
                         "location": "provider",
                     },
+                    {
+                        "name": STANDALONE_SKILL_ID,
+                        "qualified_name": STANDALONE_SKILL_ID,
+                        "description": "Release helper",
+                        "provider": "",
+                        "location": "workspace",
+                    },
                 ]
 
         try:
@@ -339,21 +347,23 @@ class TestMainStartup:
 
             provider_ids = {SMARTCMP_REQUEST_SKILL_ID, *SMARTCMP_REQUEST_TOOL_NAMES}
 
-            # Admin should have ALL skills (provider + built-in)
+            # Admin should have core skills only (built-in + standalone).
             admin_skill_ids = {
                 entry["skill_id"]
                 for entry in admin_role.permissions["skills"]["skill_permissions"]
             }
-            assert provider_ids.issubset(admin_skill_ids)
+            assert provider_ids.isdisjoint(admin_skill_ids)
             assert BUILTIN_TOOL_NAME in admin_skill_ids
+            assert STANDALONE_SKILL_ID in admin_skill_ids
 
-            # User should only have PROVIDER skills, not built-in
+            # User should not be bootstrapped with provider or built-in skills.
             user_skill_ids = {
                 entry["skill_id"]
                 for entry in user_role.permissions["skills"]["skill_permissions"]
             }
-            assert provider_ids.issubset(user_skill_ids)
+            assert provider_ids.isdisjoint(user_skill_ids)
             assert BUILTIN_TOOL_NAME not in user_skill_ids
+            assert STANDALONE_SKILL_ID not in user_skill_ids
 
             # Viewer remains untouched
             assert viewer_role.permissions["skills"]["skill_permissions"] == []

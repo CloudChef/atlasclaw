@@ -127,7 +127,25 @@ def test_agent_capabilities_hide_denied_provider_instance(tmp_path):
     assert "/no-provider-vm-request" in commands
 
 
-def test_resolve_selected_capability_rejects_disabled_skill(tmp_path):
+def test_resolve_selected_capability_rejects_disabled_standalone_skill(tmp_path):
+    ctx = _build_context(tmp_path)
+    selected = {
+        "kind": "skill",
+        "command": "/no-provider-vm-request",
+        "qualified_skill_name": "no-provider-vm-request",
+    }
+
+    resolved = resolve_selected_capability(
+        ctx=ctx,
+        selected=selected,
+        authz=_authz(standalone_skill_enabled=False),
+        provider_instances={"smartcmp": {"default": {"base_url": "https://example.test"}}},
+    )
+
+    assert resolved is None
+
+
+def test_resolve_selected_provider_capability_uses_provider_permission(tmp_path):
     ctx = _build_context(tmp_path)
     selected = {
         "kind": "provider_skill",
@@ -141,6 +159,16 @@ def test_resolve_selected_capability_rejects_disabled_skill(tmp_path):
         ctx=ctx,
         selected=selected,
         authz=_authz(provider_skill_enabled=False),
+        provider_instances={"smartcmp": {"default": {"base_url": "https://example.test"}}},
+    )
+
+    assert resolved is not None
+    assert resolved["provider_type"] == "smartcmp"
+
+    resolved = resolve_selected_capability(
+        ctx=ctx,
+        selected=selected,
+        authz=_authz(provider_allowed=False, provider_skill_enabled=False),
         provider_instances={"smartcmp": {"default": {"base_url": "https://example.test"}}},
     )
 

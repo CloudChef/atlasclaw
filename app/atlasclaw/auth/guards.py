@@ -23,6 +23,7 @@ from app.atlasclaw.db import get_db_manager, get_db_session_dependency as get_db
 from app.atlasclaw.db.models import UserModel
 from app.atlasclaw.db.orm.role import RoleService, build_default_permissions
 from app.atlasclaw.db.orm.user import UserService
+from app.atlasclaw.skills.permission_service import skill_permission_service
 
 
 SKILL_MODULE_PERMISSION_KEYS = {"view", "enable_disable", "manage_permissions"}
@@ -217,10 +218,6 @@ def _normalize_permission_path(permission_path: str) -> list[str]:
     return parts
 
 
-def _normalize_skill_identifier(skill_name: str) -> str:
-    return str(skill_name or "").strip()
-
-
 def _extract_external_subject(user: UserInfo) -> str:
     extra = user.extra if isinstance(user.extra, dict) else {}
     external_subject = str(extra.get("external_subject", "")).strip()
@@ -283,18 +280,6 @@ async def _lookup_workspace_user(session: AsyncSession, user: UserInfo) -> Optio
     return None
 
 
-def _skill_identifier_matches(candidate: Any, skill_name: str) -> bool:
-    normalized_skill_name = _normalize_skill_identifier(skill_name)
-    if not normalized_skill_name:
-        return False
-
-    normalized_candidate = _normalize_skill_identifier(str(candidate or ""))
-    if not normalized_candidate:
-        return False
-
-    return normalized_candidate == normalized_skill_name or normalized_candidate.split(":")[-1] == normalized_skill_name.split(":")[-1]
-
-
 def has_permission(authz: AuthorizationContext, permission_path: str) -> bool:
     """Check whether the current user has a specific effective permission."""
     value: Any = authz.permissions
@@ -317,19 +302,7 @@ def has_skill_access(authz: AuthorizationContext, skill_name: str) -> bool:
         # retains open access; all other roles are deny-all.
         return authz.is_admin
 
-    matching_entries = [
-        entry
-        for entry in skill_permissions
-        if isinstance(entry, dict)
-        and (
-            _skill_identifier_matches(entry.get("skill_id"), skill_name)
-            or _skill_identifier_matches(entry.get("skill_name"), skill_name)
-        )
-    ]
-    if not matching_entries:
-        return False
-
-    return any(bool(entry.get("authorized", False)) and bool(entry.get("enabled", False)) for entry in matching_entries)
+    return skill_permission_service.is_skill_enabled(skill_permissions, skill_name)
 
 
 def has_provider_instance_access(

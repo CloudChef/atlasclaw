@@ -347,6 +347,46 @@ def test_build_scoped_deps_keeps_provider_tools_when_instance_is_allowed(tmp_pat
     assert deps.extra["available_providers"] == {"smartcmp": ["default"]}
 
 
+def test_build_scoped_deps_keeps_provider_tools_when_visible_instance_lacks_user_auth(tmp_path) -> None:
+    _write_provider_skill(tmp_path)
+    registry = SkillRegistry()
+    registry.load_from_directory(str(tmp_path), location="external", provider="smartcmp")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    ctx = APIContext(
+        session_manager=SessionManager(str(workspace)),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+        provider_instances={
+            "smartcmp": {
+                "cmp": {
+                    "base_url": "https://cmp.example.com",
+                    "auth_type": ["cookie", "user_token"],
+                }
+            },
+        },
+    )
+    user = UserInfo(
+        user_id="u1",
+        display_name="User",
+        raw_token="token",
+        roles=["user"],
+    )
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        extra={"context": {"_provider_permissions": []}},
+    )
+
+    tool_names = {tool["name"] for tool in deps.extra["tools_snapshot"]}
+    assert {"cmp_list_pending", "cmp_get_ticket"}.issubset(tool_names)
+    assert "group:smartcmp" in deps.extra["tool_groups_snapshot"]
+    assert deps.extra["provider_instances"] == {}
+    assert deps.extra["available_providers"] == {}
+
+
 def test_build_scoped_deps_reload_markdown_skill_tools_after_skill_permission_toggle(tmp_path) -> None:
     _write_standalone_md_tool_skill(tmp_path)
     registry = SkillRegistry()

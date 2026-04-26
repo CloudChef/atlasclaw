@@ -90,11 +90,13 @@ def test_skills_api_does_not_show_excluded_builtin_tools(tmp_path: Path) -> None
 
     assert response.status_code == 200
     payload = response.json()
-    executable = {item["name"]: item for item in payload["skills"] if item["type"] == "executable"}
+    skills = {item["name"]: item for item in payload["skills"]}
 
     for tool_name in ("read", "write", "edit", "delete", "exec"):
-        assert tool_name not in executable
-    assert "process" in executable
+        assert tool_name not in skills
+    assert "group:fs" not in skills
+    assert skills["group:runtime"]["type"] == "tool_group"
+    assert skills["group:runtime"]["member_skill_ids"] == ["process"]
 
 
 def test_markdown_script_backed_tools_remain_enabled_when_builtin_script_execution_disabled(tmp_path: Path) -> None:

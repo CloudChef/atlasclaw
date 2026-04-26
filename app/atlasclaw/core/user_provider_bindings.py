@@ -148,6 +148,64 @@ def _get_provider_template_from_instances(
     return dict(template_config) if isinstance(template_config, dict) else None
 
 
+def _get_provider_template_bucket(
+    provider_type: str,
+    provider_instances: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
+) -> dict[str, dict[str, Any]]:
+    """Return provider template instances from explicit input or config."""
+    normalized_provider_type = str(provider_type or "").strip()
+    if not normalized_provider_type:
+        return {}
+
+    if isinstance(provider_instances, dict):
+        provider_bucket = provider_instances.get(normalized_provider_type)
+        if not isinstance(provider_bucket, dict):
+            provider_bucket = provider_instances.get(normalized_provider_type.lower())
+        if isinstance(provider_bucket, dict):
+            return {
+                str(instance_name): dict(instance_config)
+                for instance_name, instance_config in provider_bucket.items()
+                if str(instance_name or "").strip() and isinstance(instance_config, dict)
+            }
+
+    service_providers = get_config().service_providers or {}
+    config_provider_instances = service_providers.get(normalized_provider_type)
+    if not isinstance(config_provider_instances, dict):
+        config_provider_instances = service_providers.get(normalized_provider_type.lower())
+    if not isinstance(config_provider_instances, dict):
+        return {}
+    return {
+        str(instance_name): dict(instance_config)
+        for instance_name, instance_config in config_provider_instances.items()
+        if str(instance_name or "").strip() and isinstance(instance_config, dict)
+    }
+
+
+def _resolve_template_instance_name(
+    provider_type: str,
+    instance_name: str,
+    provider_instances: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
+) -> str:
+    """Resolve legacy user setting instance aliases to configured templates."""
+    normalized_instance_name = str(instance_name or "").strip()
+    if not normalized_instance_name:
+        return ""
+
+    templates = _get_provider_template_bucket(provider_type, provider_instances)
+    if normalized_instance_name in templates:
+        return normalized_instance_name
+
+    lowered = normalized_instance_name.lower()
+    for template_instance_name in templates.keys():
+        if template_instance_name.lower() == lowered:
+            return template_instance_name
+
+    if lowered == "default" and len(templates) == 1:
+        return next(iter(templates.keys()))
+
+    return normalized_instance_name
+
+
 def resolve_provider_instance_config(
     provider_type: str,
     instance_name: str,
@@ -304,20 +362,21 @@ def get_provider_template_config(
     provider_instances: Optional[dict[str, dict[str, dict[str, Any]]]] = None,
 ) -> Optional[dict[str, Any]]:
     """Return the configured system provider template for a binding."""
+    resolved_instance_name = _resolve_template_instance_name(
+        provider_type,
+        instance_name,
+        provider_instances,
+    )
     template_config = _get_provider_template_from_instances(
         provider_instances,
         provider_type,
-        instance_name,
+        resolved_instance_name,
     )
     if template_config is not None:
         return template_config
 
-    service_providers = get_config().service_providers or {}
-    config_provider_instances = service_providers.get(provider_type)
-    if not isinstance(config_provider_instances, dict):
-        return None
-
-    template_config = config_provider_instances.get(instance_name)
+    templates = _get_provider_template_bucket(provider_type)
+    template_config = templates.get(resolved_instance_name)
     return dict(template_config) if isinstance(template_config, dict) else None
 
 
@@ -350,15 +409,27 @@ def resolve_user_provider_instance(
 ) -> dict[str, Any]:
     """Resolve a user-configured provider instance to a runtime-ready config."""
     binding_value = f"{provider_type}/{instance_name}"
-    template_config = get_provider_template_config(
+    resolved_instance_name = _resolve_template_instance_name(
         provider_type,
         instance_name,
+        provider_templates,
+    )
+    template_config = get_provider_template_config(
+        provider_type,
+        resolved_instance_name,
         provider_instances=provider_templates,
     )
     if template_config is None:
         raise ValueError(f"Provider binding '{binding_value}' was not found")
 
     user_entry = _get_user_provider_entry(user_id, provider_type, instance_name, workspace_path)
+    if not isinstance(user_entry, dict) and resolved_instance_name != instance_name:
+        user_entry = _get_user_provider_entry(
+            user_id,
+            provider_type,
+            resolved_instance_name,
+            workspace_path,
+        )
     if not isinstance(user_entry, dict) or not bool(user_entry.get("configured")):
         raise ValueError(
             f"Provider binding '{binding_value}' is not configured for user '{user_id}'"
@@ -372,7 +443,7 @@ def resolve_user_provider_instance(
 
     return resolve_provider_instance_config(
         provider_type,
-        instance_name,
+        resolved_instance_name,
         template_config=template_config,
         user_config=user_config,
         runtime_context=runtime_context,
@@ -420,8 +491,13 @@ def build_user_provider_instances(
             except ValueError:
                 continue
 
+            resolved_instance_name = str(
+                resolved_entry.get("instance_name") or normalized_instance_name
+            ).strip()
+            if not resolved_instance_name:
+                continue
             resolved_instances.setdefault(normalized_provider_type, {})[
-                normalized_instance_name
+                resolved_instance_name
             ] = resolved_entry
 
     return {

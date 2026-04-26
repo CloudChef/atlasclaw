@@ -202,7 +202,7 @@ When implementing features, see `openspec/AGENTS.md` for spec-driven development
 - Use `openspec-cn` CLI for spec management
 - Follow three-phase workflow: Create → Implement → Archive
 
-## Commit Messages
+## Commit and PR Messages
 
 Use Conventional Commits: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`.
 
@@ -211,6 +211,9 @@ Format:
 
 Example:
 - `docs(config): align webhook env var examples`
+
+PR titles must use the same Conventional Commit type format. Do not include
+AI assistant or AI tool names in PR titles.
 
 ---
 

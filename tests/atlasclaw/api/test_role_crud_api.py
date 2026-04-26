@@ -31,6 +31,7 @@ from app.atlasclaw.db.schemas import RoleCreate, ServiceProviderConfigCreate, Us
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
+from app.atlasclaw.tools.registration import register_builtin_tools
 
 
 _test_db_manager: DatabaseManager = None
@@ -42,8 +43,15 @@ async def _test_get_db_session() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-def _build_client(tmp_path: Path, auth_config: AuthConfig) -> TestClient:
+def _build_client(
+    tmp_path: Path,
+    auth_config: AuthConfig,
+    *,
+    with_builtin_tools: bool = False,
+) -> TestClient:
     registry = SkillRegistry()
+    if with_builtin_tools:
+        register_builtin_tools(registry)
 
     async def echo_skill(message: str = "ok") -> dict[str, str]:
         return {"echo": message}
@@ -511,6 +519,75 @@ class TestRoleCRUDAPI:
         ]
 
         _cleanup_manager(manager)
+
+    def test_role_update_accepts_tool_group_and_stores_concrete_permissions(self, tmp_path):
+        manager = _init_database_sync(tmp_path)
+        try:
+            client = _build_client(tmp_path, _get_auth_config(), with_builtin_tools=True)
+            token = _login_as(client, 'admin', 'adminpass123')
+            headers = {'AtlasClaw-Authenticate': token}
+
+            roles_response = client.get('/api/roles', headers=headers)
+            assert roles_response.status_code == 200
+            user_role = next(role for role in roles_response.json()['roles'] if role['identifier'] == 'user')
+
+            update_response = client.put(
+                f"/api/roles/{user_role['id']}",
+                json={
+                    'permissions': {
+                        'skills': {
+                            'module_permissions': {
+                                'view': True,
+                            },
+                            'skill_permissions': [
+                                {
+                                    'skill_id': 'group:fs',
+                                    'skill_name': 'group:fs',
+                                    'description': 'Filesystem tools',
+                                    'authorized': True,
+                                    'enabled': True,
+                                },
+                            ],
+                        },
+                    },
+                },
+                headers=headers,
+            )
+
+            assert update_response.status_code == 200
+            response_entries = update_response.json()['permissions']['skills']['skill_permissions']
+            response_by_id = {entry['skill_id']: entry for entry in response_entries}
+            assert 'group:fs' in response_by_id
+            assert response_by_id['group:fs']['type'] == 'tool_group'
+            assert response_by_id['group:fs']['member_skill_ids'] == ['read', 'write', 'edit', 'delete']
+            for concrete_tool in ('read', 'write', 'edit', 'delete'):
+                assert concrete_tool not in response_by_id
+
+            async def _stored_skill_ids() -> set[str]:
+                async with _test_db_manager.get_session() as session:
+                    stored_user_role = await RoleService.get_by_identifier(session, 'user')
+                    return {
+                        entry['skill_id']
+                        for entry in stored_user_role.permissions['skills']['skill_permissions']
+                    }
+
+            stored_skill_ids = asyncio.run(_stored_skill_ids())
+            assert {'read', 'write', 'edit', 'delete'}.issubset(stored_skill_ids)
+            assert 'group:fs' not in stored_skill_ids
+
+            refreshed_roles_response = client.get('/api/roles', headers=headers)
+            assert refreshed_roles_response.status_code == 200
+            refreshed_user_role = next(
+                role for role in refreshed_roles_response.json()['roles'] if role['identifier'] == 'user'
+            )
+            refreshed_by_id = {
+                entry['skill_id']
+                for entry in refreshed_user_role['permissions']['skills']['skill_permissions']
+            }
+            assert 'group:fs' in refreshed_by_id
+            assert {'read', 'write', 'edit', 'delete'}.isdisjoint(refreshed_by_id)
+        finally:
+            _cleanup_manager(manager)
 
     def test_builtin_user_provider_permissions_can_be_modified_via_api(self, tmp_path):
         manager = _init_database_sync(tmp_path)

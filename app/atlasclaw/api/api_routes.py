@@ -80,6 +80,7 @@ from app.atlasclaw.api.service_provider_schemas import (
     serialize_provider_auth_type,
 )
 from .deps_context import get_api_context
+from app.atlasclaw.skills.permission_service import skill_permission_service
 from .services.auth_service import load_profile_snapshot
 from .model_config_routes import router as model_config_router
 from .provider_info_routes import router as provider_info_router
@@ -158,8 +159,16 @@ def _serialize_role_for_audit(role: object) -> dict[str, object]:
 def _role_to_response(role: object) -> RoleResponse:
     """Serialize roles with the canonical permission shape."""
     response = RoleResponse.model_validate(role)
+    try:
+        skill_registry = get_api_context().skill_registry
+    except Exception:
+        skill_registry = None
+    permissions = skill_permission_service.collapse_role_skill_permissions_for_response(
+        RoleService.normalize_permissions(response.permissions),
+        skill_registry=skill_registry,
+    )
     return response.model_copy(
-        update={"permissions": RoleService.normalize_permissions(response.permissions)}
+        update={"permissions": permissions}
     )
 
 
@@ -997,6 +1006,14 @@ async def create_role(
 ) -> RoleResponse:
     """Create a new Role."""
     ensure_permission(authz, "roles.create", detail="Missing permission: roles.create")
+    try:
+        skill_registry = get_api_context().skill_registry
+    except Exception:
+        skill_registry = None
+    role_data.permissions = skill_permission_service.expand_role_skill_permissions_for_storage(
+        role_data.permissions,
+        skill_registry=skill_registry,
+    )
     ensure_can_manage_permission_modules(
         authz,
         role_data.permissions,
@@ -1130,6 +1147,14 @@ async def update_role(
         ensure_permission(authz, "roles.edit", detail="Missing permission: roles.edit")
 
     if "permissions" in role_data.model_fields_set:
+        try:
+            skill_registry = get_api_context().skill_registry
+        except Exception:
+            skill_registry = None
+        role_data.permissions = skill_permission_service.expand_role_skill_permissions_for_storage(
+            role_data.permissions,
+            skill_registry=skill_registry,
+        )
         if old_role.is_builtin and is_system_managed_builtin_role(old_role.identifier):
             # System-managed built-in roles keep most modules locked, but
             # runtime access modules are editable. Partial API updates must

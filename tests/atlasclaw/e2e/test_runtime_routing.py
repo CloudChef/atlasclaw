@@ -194,6 +194,7 @@ def _build_e2e_config(tmp_path: Path, db_path: Path, cmp_base_url: str) -> dict[
             "smartcmp": {
                 "default": {
                     "base_url": cmp_base_url,
+                    "auth_type": "cookie",
                     "cookie": "AtlasClaw-Host-Authenticate=fake-host-token",
                 }
             }

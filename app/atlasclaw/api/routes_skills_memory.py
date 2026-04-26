@@ -20,6 +20,7 @@ from app.atlasclaw.auth.guards import (
 from app.atlasclaw.core.config import get_config, get_config_path
 from app.atlasclaw.skills.frontmatter import parse_frontmatter
 from app.atlasclaw.skills.registry import validate_skill_name
+from app.atlasclaw.skills.permission_service import skill_permission_service
 from .deps_context import APIContext, get_api_context
 from .schemas import (
     MemorySearchRequest,
@@ -170,72 +171,19 @@ def register_skills_memory_routes(router: APIRouter) -> None:
             detail="Missing permission: skills.view or skills.manage_permissions",
         )
 
+        tools_snapshot_builder = getattr(ctx.skill_registry, "tools_snapshot", None)
         executable_skills = (
             ctx.skill_registry.tools_snapshot()
-            if include_metadata
+            if callable(tools_snapshot_builder)
             else ctx.skill_registry.snapshot_builtins()
         )
         md_skills = _build_md_skill_catalog(ctx)
 
-        all_skills = []
-        for s in executable_skills:
-            all_skills.append(
-                {
-                    "name": s["name"],
-                    "description": s["description"],
-                    "category": s.get("category", "utility"),
-                    "type": "executable",
-                    "runtime_enabled": True,
-                    **(
-                        {
-                            "provider_type": s.get("provider_type", ""),
-                            "group_ids": list(s.get("group_ids", []) or []),
-                            "capability_class": s.get("capability_class", ""),
-                            "priority": int(s.get("priority", 100) or 100),
-                            "location": s.get("location", "built-in"),
-                            "source": s.get("source", "builtin"),
-                        }
-                        if include_metadata
-                        else {}
-                    ),
-                },
-            )
-        for s in md_skills:
-            metadata = s.get("metadata", {})
-            if not isinstance(metadata, dict):
-                metadata = {}
-            skill_provider_type = (
-                s.get("provider", "") or metadata.get("provider_type", "") or ""
-            ).strip()
-            all_skills.append(
-                {
-                    "name": s["name"],
-                    "description": s["description"],
-                    "category": metadata.get("category", "skill"),
-                    "type": "markdown",
-                    "runtime_enabled": s.get("runtime_enabled", True) is True,
-                    **({
-                        "provider_type": skill_provider_type,
-                    } if skill_provider_type else {}),
-                    **(
-                        {
-                            "qualified_name": s.get("qualified_name", s["name"]),
-                            "provider_type": (
-                                metadata.get("provider_type")
-                                or s.get("provider", "")
-                                or ""
-                            ),
-                            "group_ids": list(metadata.get("group_ids", []) or []),
-                            "capability_class": metadata.get("capability_class", ""),
-                            "priority": int(metadata.get("priority", 100) or 100),
-                            "location": s.get("location", "built-in"),
-                            "file_path": s.get("file_path", ""),
-                        }
-                        if include_metadata
-                        else {}
-                    ),
-                },
-            )
+        all_skills = skill_permission_service.build_role_skill_catalog(
+            tools_snapshot=executable_skills,
+            md_skills=md_skills,
+            include_metadata=include_metadata,
+        )
 
         return {"skills": all_skills}
 

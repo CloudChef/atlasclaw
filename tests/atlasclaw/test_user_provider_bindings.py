@@ -7,6 +7,7 @@ from __future__ import annotations
 import pytest
 
 from app.atlasclaw.core.user_provider_bindings import (
+    build_user_provider_instances,
     build_resolved_provider_instances,
     resolve_provider_instance_config,
 )
@@ -146,3 +147,83 @@ def test_build_resolved_provider_instances_resolves_global_instances_with_runtim
     assert resolved["smartcmp"]["default"]["auth_type"] == "user_token"
     assert resolved["smartcmp"]["default"]["user_token"] == "user-token-123"
     assert "cookie" not in resolved["smartcmp"]["default"]
+
+
+def test_build_user_provider_instances_maps_legacy_default_to_single_configured_instance(tmp_path) -> None:
+    user_dir = tmp_path / "users" / "admin"
+    user_dir.mkdir(parents=True)
+    (user_dir / "user_setting.json").write_text(
+        """
+{
+  "channels": {},
+  "providers": {
+    "smartcmp": {
+      "default": {
+        "configured": true,
+        "config": {
+          "auth_type": ["cookie", "user_token"],
+          "user_token": "legacy-user-token"
+        }
+      }
+    }
+  },
+  "preferences": {}
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    resolved = build_user_provider_instances(
+        "admin",
+        workspace_path=str(tmp_path),
+        provider_templates={
+            "smartcmp": {
+                "cmp": {
+                    "base_url": "https://cmp.example.com",
+                    "auth_type": ["cookie", "user_token"],
+                }
+            }
+        },
+    )
+
+    assert resolved["smartcmp"]["cmp"]["instance_name"] == "cmp"
+    assert resolved["smartcmp"]["cmp"]["auth_type"] == "user_token"
+    assert resolved["smartcmp"]["cmp"]["user_token"] == "legacy-user-token"
+
+
+def test_build_user_provider_instances_does_not_map_legacy_default_when_multiple_instances(tmp_path) -> None:
+    user_dir = tmp_path / "users" / "admin"
+    user_dir.mkdir(parents=True)
+    (user_dir / "user_setting.json").write_text(
+        """
+{
+  "channels": {},
+  "providers": {
+    "smartcmp": {
+      "default": {
+        "configured": true,
+        "config": {
+          "auth_type": ["user_token"],
+          "user_token": "legacy-user-token"
+        }
+      }
+    }
+  },
+  "preferences": {}
+}
+""".strip(),
+        encoding="utf-8",
+    )
+
+    resolved = build_user_provider_instances(
+        "admin",
+        workspace_path=str(tmp_path),
+        provider_templates={
+            "smartcmp": {
+                "cmp": {"base_url": "https://cmp.example.com", "auth_type": ["user_token"]},
+                "backup": {"base_url": "https://backup.example.com", "auth_type": ["user_token"]},
+            }
+        },
+    )
+
+    assert resolved == {}

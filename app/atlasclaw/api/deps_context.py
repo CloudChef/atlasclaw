@@ -32,6 +32,7 @@ from ..memory.manager import MemoryManager
 from ..session.manager import SessionManager
 from ..session.queue import SessionQueue
 from ..session.router import SessionManagerRouter
+from ..skills.permission_service import skill_permission_service
 from ..skills.registry import SkillRegistry
 from ..hooks.runtime import HookRuntime
 from ..hooks.runtime_sinks import ContextSink, MemorySink
@@ -162,82 +163,6 @@ def _filter_provider_instances_by_permissions(
     return filtered
 
 
-def _visible_provider_types(
-    provider_instances: dict[str, dict[str, dict[str, Any]]],
-) -> set[str]:
-    return {
-        str(provider_type or "").strip().lower()
-        for provider_type, instances in (provider_instances or {}).items()
-        if str(provider_type or "").strip() and isinstance(instances, dict) and instances
-    }
-
-
-def _provider_type_from_tool_snapshot(tool: dict[str, Any]) -> str:
-    provider_type = str(tool.get("provider_type", "") or "").strip().lower()
-    if provider_type:
-        return provider_type
-
-    capability_class = str(tool.get("capability_class", "") or "").strip().lower()
-    if capability_class.startswith("provider:"):
-        inferred_provider = capability_class.split(":", 1)[1].strip()
-        if inferred_provider and inferred_provider != "generic":
-            return inferred_provider
-    return ""
-
-
-def _provider_type_from_md_skill_snapshot(skill: dict[str, Any]) -> str:
-    metadata = skill.get("metadata")
-    if not isinstance(metadata, dict):
-        metadata = {}
-    return str(
-        metadata.get("provider_type", "")
-        or skill.get("provider_type", "")
-        or skill.get("provider", "")
-        or ""
-    ).strip().lower()
-
-
-def _filter_provider_bound_snapshots(
-    tools_snapshot: list[dict[str, Any]],
-    md_skills_snapshot: list[dict[str, Any]],
-    provider_instances: dict[str, dict[str, dict[str, Any]]],
-    *,
-    enforce: bool = False,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Hide provider-bound tools/skills when no visible instance remains.
-
-    Provider permissions are instance-scoped, but provider tools are routed at
-    provider type level. If every instance for a provider type is hidden, the
-    corresponding tools must leave the request toolset as well; otherwise
-    routing caches can keep treating a denied provider as available.
-    """
-    visible_providers = _visible_provider_types(provider_instances)
-    if not visible_providers and not enforce:
-        return tools_snapshot, md_skills_snapshot
-    if not tools_snapshot and not md_skills_snapshot:
-        return tools_snapshot, md_skills_snapshot
-
-    filtered_tools: list[dict[str, Any]] = []
-    for tool in tools_snapshot or []:
-        if not isinstance(tool, dict):
-            continue
-        provider_type = _provider_type_from_tool_snapshot(tool)
-        if provider_type and provider_type not in visible_providers:
-            continue
-        filtered_tools.append(tool)
-
-    filtered_md_skills: list[dict[str, Any]] = []
-    for skill in md_skills_snapshot or []:
-        if not isinstance(skill, dict):
-            continue
-        provider_type = _provider_type_from_md_skill_snapshot(skill)
-        if provider_type and provider_type not in visible_providers:
-            continue
-        filtered_md_skills.append(skill)
-
-    return filtered_tools, filtered_md_skills
-
-
 @dataclass
 class APIContext:
     session_manager: SessionManager
@@ -340,44 +265,12 @@ def resolve_workspace_path(request: Request, ctx: Optional[APIContext] = None) -
     return str(Path(".").resolve())
 
 
-def _normalize_skill_id(value: str) -> str:
-    return str(value or "").strip().lower()
-
-
-def _skill_id_matches(candidate: str, target: str) -> bool:
-    nc = _normalize_skill_id(candidate)
-    nt = _normalize_skill_id(target)
-    if not nc or not nt:
-        return False
-    return nc == nt or nc.split(":")[-1] == nt.split(":")[-1]
-
-
-def _is_skill_enabled(skill_permissions: list[dict], skill_name: str) -> bool:
-    """Check if a skill is enabled in the user's role permissions.
-
-    Returns True if:
-    - a matching entry has both authorized=True and enabled=True
-    Returns False if:
-    - skill_permissions is empty (no grants = deny all)
-    - a matching entry exists but is not authorized+enabled
-    - no matching entry found (skill not in permissions = not allowed)
-    """
-    for entry in skill_permissions:
-        if not isinstance(entry, dict):
-            continue
-        sid = entry.get("skill_id") or entry.get("skill_name") or ""
-        sname = entry.get("skill_name") or sid
-        if _skill_id_matches(sid, skill_name) or _skill_id_matches(sname, skill_name):
-            return bool(entry.get("authorized")) and bool(entry.get("enabled"))
-    return False
-
-
 def _skill_permission_matches_any(
     skill_permissions: list[dict],
     skill_names: list[str],
 ) -> bool:
     for skill_name in skill_names:
-        if _is_skill_enabled(skill_permissions, skill_name):
+        if skill_permission_service.is_skill_enabled(skill_permissions, skill_name):
             return True
     return False
 
@@ -388,8 +281,8 @@ def _build_md_skill_lookup(md_skills_snapshot: list[dict]) -> dict[str, dict[str
         if not isinstance(md, dict):
             continue
         identifiers = {
-            _normalize_skill_id(md.get("qualified_name") or ""),
-            _normalize_skill_id(md.get("name") or ""),
+            skill_permission_service.normalize_key(md.get("qualified_name") or ""),
+            skill_permission_service.normalize_key(md.get("name") or ""),
         }
         identifiers.discard("")
         for identifier in identifiers:
@@ -410,15 +303,15 @@ def _build_md_tool_skill_refs(
         return tool_refs
 
     for qualified_name, tool_names in md_skill_tools_map.items():
-        qualified_ref = _normalize_skill_id(qualified_name)
+        qualified_ref = skill_permission_service.normalize_key(qualified_name)
         if not qualified_ref:
             continue
         md_entry = md_lookup.get(qualified_ref, {})
         refs = [
             ref for ref in (
                 qualified_ref,
-                _normalize_skill_id(md_entry.get("qualified_name") if isinstance(md_entry, dict) else ""),
-                _normalize_skill_id(md_entry.get("name") if isinstance(md_entry, dict) else ""),
+                skill_permission_service.normalize_key(md_entry.get("qualified_name") if isinstance(md_entry, dict) else ""),
+                skill_permission_service.normalize_key(md_entry.get("name") if isinstance(md_entry, dict) else ""),
                 qualified_ref.split(":")[-1],
             )
             if ref
@@ -429,7 +322,7 @@ def _build_md_tool_skill_refs(
             if not (ref in seen_refs or seen_refs.add(ref))
         ]
         for tool_name in tool_names or set():
-            normalized_tool = _normalize_skill_id(tool_name)
+            normalized_tool = skill_permission_service.normalize_key(tool_name)
             if not normalized_tool:
                 continue
             bucket = tool_refs.setdefault(normalized_tool, [])
@@ -455,6 +348,9 @@ def _filter_snapshot_by_permissions(
 
     filtered_tools = []
     for tool in tools_snapshot:
+        if skill_permission_service.is_provider_bound_tool_snapshot(tool):
+            filtered_tools.append(tool)
+            continue
         # Check by qualified_skill_name, then skill_name, then tool name
         skill_ref = (
             tool.get("qualified_skill_name")
@@ -462,7 +358,7 @@ def _filter_snapshot_by_permissions(
             or tool.get("name", "")
         )
         candidate_refs = [skill_ref]
-        tool_name = _normalize_skill_id(tool.get("name", ""))
+        tool_name = skill_permission_service.normalize_key(tool.get("name", ""))
         if tool_name:
             candidate_refs.extend(parent_refs_by_tool.get(tool_name, []))
         if _skill_permission_matches_any(skill_permissions, candidate_refs):
@@ -470,8 +366,11 @@ def _filter_snapshot_by_permissions(
 
     filtered_md = []
     for md in md_skills_snapshot:
+        if skill_permission_service.is_provider_bound_md_skill_snapshot(md):
+            filtered_md.append(md)
+            continue
         skill_ref = md.get("qualified_name") or md.get("name", "")
-        if _is_skill_enabled(skill_permissions, skill_ref):
+        if skill_permission_service.is_skill_enabled(skill_permissions, skill_ref):
             filtered_md.append(md)
 
     return filtered_tools, filtered_md
@@ -534,22 +433,26 @@ def build_scoped_deps(
         if isinstance(provider_config, dict) and provider_config
         else (ctx.provider_instances or {})
     )
-    resolved_provider_instances = build_resolved_provider_instances(
+    provider_permissions = _get_provider_permissions_from_extra(_extra)
+    visible_provider_instances = _filter_provider_instances_by_permissions(
         base_provider_instances,
+        provider_permissions,
+    )
+    resolved_provider_instances = build_resolved_provider_instances(
+        visible_provider_instances,
         runtime_context=runtime_context,
     )
     user_provider_instances = build_user_provider_instances(
         user_info.user_id,
         workspace_path=str(scoped_session_mgr.workspace_path),
         runtime_context=runtime_context,
-        provider_templates=base_provider_instances,
+        provider_templates=visible_provider_instances,
     )
     for provider_type, instances in user_provider_instances.items():
         provider_bucket = resolved_provider_instances.setdefault(provider_type, {})
         for instance_name, instance_config in instances.items():
             provider_bucket[instance_name] = dict(instance_config)
 
-    provider_permissions = _get_provider_permissions_from_extra(_extra)
     resolved_provider_instances = _filter_provider_instances_by_permissions(
         resolved_provider_instances,
         provider_permissions,
@@ -583,13 +486,13 @@ def build_scoped_deps(
         _disabled_skill_ids: set[str] = set()
         for sp_entry in user_skill_permissions:
             if isinstance(sp_entry, dict) and not (sp_entry.get("enabled") and sp_entry.get("authorized")):
-                _sid = _normalize_skill_id(sp_entry.get("skill_id") or sp_entry.get("skill_name") or "")
+                _sid = skill_permission_service.normalize_key(sp_entry.get("skill_id") or sp_entry.get("skill_name") or "")
                 if _sid:
                     _disabled_skill_ids.add(_sid)
 
         # 1. Extract handler tool names from disabled md_skills metadata
         for md_entry in _all_md:
-            _qname = _normalize_skill_id(md_entry.get("qualified_name") or md_entry.get("name") or "")
+            _qname = skill_permission_service.normalize_key(md_entry.get("qualified_name") or md_entry.get("name") or "")
             _bare = _qname.split(":")[-1] if _qname else ""
             if _bare in _disabled_skill_ids or _qname in _disabled_skill_ids:
                 _md_meta = md_entry.get("metadata") or {}
@@ -605,7 +508,7 @@ def build_scoped_deps(
         _md_skill_tools_map = getattr(ctx.skill_registry, "_md_skill_tools", {})
         if isinstance(_md_skill_tools_map, dict):
             for qual_name, tool_names_set in _md_skill_tools_map.items():
-                _qnorm = _normalize_skill_id(qual_name)
+                _qnorm = skill_permission_service.normalize_key(qual_name)
                 _bare = _qnorm.split(":")[-1] if _qnorm else ""
                 if _bare in _disabled_skill_ids or _qnorm in _disabled_skill_ids:
                     for tn in (tool_names_set or set()):
@@ -620,13 +523,13 @@ def build_scoped_deps(
     else:
         md_skills_snapshot = ctx.skill_registry.md_snapshot()
 
-    provider_snapshot_filter_active = provider_permissions is not None or bool(base_provider_instances)
+    provider_snapshot_filter_active = provider_permissions is not None or bool(visible_provider_instances)
     tool_count_before_provider_filter = len(tools_snapshot or [])
     md_count_before_provider_filter = len(md_skills_snapshot or [])
-    tools_snapshot, md_skills_snapshot = _filter_provider_bound_snapshots(
+    tools_snapshot, md_skills_snapshot = skill_permission_service.filter_provider_bound_snapshots(
         tools_snapshot,
         md_skills_snapshot,
-        resolved_provider_instances,
+        visible_provider_instances,
         enforce=provider_snapshot_filter_active,
     )
     provider_snapshot_filtered = (
@@ -688,7 +591,7 @@ def build_scoped_deps(
         _d_ids = set()
         for sp_entry in user_skill_permissions:
             if isinstance(sp_entry, dict) and not (sp_entry.get("enabled") and sp_entry.get("authorized")):
-                _sid = _normalize_skill_id(sp_entry.get("skill_id") or sp_entry.get("skill_name") or "")
+                _sid = skill_permission_service.normalize_key(sp_entry.get("skill_id") or sp_entry.get("skill_name") or "")
                 if _sid:
                     _d_ids.add(_sid)
         if _d_ids:
