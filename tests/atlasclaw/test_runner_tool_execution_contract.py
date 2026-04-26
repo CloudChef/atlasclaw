@@ -20,6 +20,7 @@ from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     build_finalize_payload,
     build_lookup_dump_recovery_payload,
     build_tool_failure_fallback_payload,
+    select_provider_auth_diagnostic,
 )
 from app.atlasclaw.agent.runner_tool.runner_execution_retry import RunnerExecutionRetryMixin
 from app.atlasclaw.agent.runner_tool.runner_tool_messages import (
@@ -84,6 +85,156 @@ def test_build_tool_failure_fallback_payload_forbids_inferred_side_effect_claims
     assert "paste access credentials into chat" in payload["system_prompt"]
     assert "atlasclaw.json" not in payload["system_prompt"]
     assert "Authoritative workflow notes" not in payload["user_prompt"]
+
+
+def test_provider_auth_diagnostic_sanitizes_user_token_failure() -> None:
+    diagnostic = select_provider_auth_diagnostic(
+        extra={
+            "provider_auth_diagnostics": {
+                "providerx": {
+                    "default": {
+                        "provider_type": "providerx",
+                        "instance_name": "default",
+                        "missing_user_token": True,
+                        "contact_admin": False,
+                    }
+                }
+            },
+            "tools_snapshot": [
+                {"name": "providerx_list_services", "provider_type": "providerx"},
+            ],
+        },
+        attempted_tools=[{"name": "providerx_list_services"}],
+        failure_reasons=[
+            "providerx_list_services error: [ERROR] Provider configuration not available. "
+            "Configure one of the following in atlasclaw.json or pass a session token in the HTTP request."
+        ],
+        tool_results=[],
+    )
+
+    payload = build_tool_failure_fallback_payload(
+        user_message="申请服务",
+        tool_results=[
+            {
+                "tool_name": "providerx_list_services",
+                "content": (
+                    "[ERROR] Provider configuration not available.\n"
+                    "Configure one of the following in atlasclaw.json:\n"
+                    "base_url + cookie"
+                ),
+            }
+        ],
+        attempted_tools=[{"name": "providerx_list_services"}],
+        failure_reasons=[
+            "providerx_list_services error: [ERROR] Provider configuration not available. "
+            "Configure one of the following in atlasclaw.json or pass a session token in the HTTP request."
+        ],
+        provider_auth_diagnostic=diagnostic,
+    )
+
+    assert diagnostic and diagnostic["missing_user_token"] is True
+    assert "personal provider access credential (`user_token`) is not configured" in payload["user_prompt"]
+    assert "contact an administrator" not in payload["user_prompt"]
+    assert "atlasclaw.json" not in payload["user_prompt"]
+    assert "HTTP request" not in payload["user_prompt"]
+    assert "base_url" not in payload["user_prompt"]
+    assert "cookie" not in payload["user_prompt"].lower()
+
+
+def test_provider_auth_diagnostic_sanitizes_rejected_user_token_failure() -> None:
+    diagnostic = select_provider_auth_diagnostic(
+        extra={
+            "provider_auth_diagnostics": {
+                "providerx": {
+                    "default": {
+                        "provider_type": "providerx",
+                        "instance_name": "default",
+                        "missing_user_token": False,
+                        "user_token_configured": True,
+                        "contact_admin": False,
+                    }
+                }
+            },
+            "tools_snapshot": [
+                {"name": "providerx_list_services", "provider_type": "providerx"},
+            ],
+        },
+        attempted_tools=[{"name": "providerx_list_services"}],
+        failure_reasons=["providerx_list_services error: HTTP 401: {}"],
+        tool_results=[
+            {
+                "tool_name": "providerx_list_services",
+                "content": "HTTP 401: {}",
+            }
+        ],
+    )
+
+    payload = build_tool_failure_fallback_payload(
+        user_message="申请服务",
+        tool_results=[
+            {
+                "tool_name": "providerx_list_services",
+                "content": "HTTP 401: {}",
+            }
+        ],
+        attempted_tools=[{"name": "providerx_list_services"}],
+        failure_reasons=["providerx_list_services error: HTTP 401: {}"],
+        provider_auth_diagnostic=diagnostic,
+    )
+
+    assert diagnostic and diagnostic["user_token_configured"] is True
+    assert "personal provider access credential (`user_token`) was rejected" in payload["user_prompt"]
+    assert "personal account settings" in payload["user_prompt"]
+    assert "contact an administrator" not in payload["user_prompt"]
+    assert "HTTP 401" not in payload["user_prompt"]
+
+
+def test_provider_auth_diagnostic_does_not_fall_back_to_unmatched_provider() -> None:
+    diagnostic = select_provider_auth_diagnostic(
+        extra={
+            "provider_auth_diagnostics": {
+                "providerx": {
+                    "default": {
+                        "provider_type": "providerx",
+                        "instance_name": "default",
+                        "missing_user_token": True,
+                        "contact_admin": False,
+                    }
+                }
+            },
+            "tools_snapshot": [
+                {"name": "providerx_list_services", "provider_type": "stale-provider"},
+            ],
+        },
+        attempted_tools=[{"name": "providerx_list_services"}],
+        failure_reasons=["Provider authentication is missing."],
+        tool_results=[],
+    )
+
+    assert diagnostic is None
+
+
+def test_provider_auth_diagnostic_sanitizes_admin_required_failure() -> None:
+    diagnostic = {
+        "provider_type": "providerx",
+        "instance_name": "default",
+        "missing_user_token": False,
+        "contact_admin": True,
+    }
+
+    payload = build_tool_failure_fallback_payload(
+        user_message="申请服务",
+        tool_results=[],
+        attempted_tools=[{"name": "providerx_list_services"}],
+        failure_reasons=[
+            "providerx_list_services error: Provider binding 'providerx/default' has no usable auth mode"
+        ],
+        provider_auth_diagnostic=diagnostic,
+    )
+
+    assert "contact an administrator" in payload["user_prompt"]
+    assert "personal provider access credential" not in payload["user_prompt"]
+    assert "Provider binding" not in payload["user_prompt"]
 
 
 class _PostRunner(

@@ -163,6 +163,116 @@ def _filter_provider_instances_by_permissions(
     return filtered
 
 
+def _normalize_provider_auth_chain(value: Any) -> list[str]:
+    raw_values = value if isinstance(value, list) else [value]
+    chain: list[str] = []
+    for item in raw_values:
+        normalized = str(item or "").strip().lower()
+        if normalized and normalized not in chain:
+            chain.append(normalized)
+    return chain
+
+
+def _provider_value_present(value: Any) -> bool:
+    return bool(str(value or "").strip())
+
+
+def _provider_auth_mode_has_configured_value(instance_config: dict[str, Any], mode: str) -> bool:
+    normalized = str(mode or "").strip().lower()
+    if normalized == "provider_token":
+        return _provider_value_present(instance_config.get("provider_token"))
+    if normalized == "user_token":
+        return _provider_value_present(instance_config.get("user_token"))
+    if normalized == "cookie":
+        return _provider_value_present(instance_config.get("cookie"))
+    if normalized == "credential":
+        return _provider_value_present(instance_config.get("credential")) or (
+            _provider_value_present(instance_config.get("username"))
+            and _provider_value_present(instance_config.get("password"))
+        )
+    return False
+
+
+def _provider_instance_missing_user_token(instance_config: dict[str, Any]) -> bool:
+    auth_chain = _normalize_provider_auth_chain(instance_config.get("auth_type"))
+    if "user_token" not in auth_chain:
+        return False
+    if _provider_auth_mode_has_configured_value(instance_config, "user_token"):
+        return False
+    other_modes = [mode for mode in auth_chain if mode != "user_token"]
+    if not other_modes:
+        return True
+    return not any(
+        _provider_auth_mode_has_configured_value(instance_config, mode)
+        for mode in other_modes
+    )
+
+
+def _provider_instance_uses_configured_user_token(instance_config: dict[str, Any]) -> bool:
+    auth_chain = _normalize_provider_auth_chain(instance_config.get("auth_type"))
+    return "user_token" in auth_chain and _provider_auth_mode_has_configured_value(
+        instance_config,
+        "user_token",
+    )
+
+
+def _build_provider_auth_diagnostics(
+    visible_provider_instances: dict[str, dict[str, dict[str, Any]]],
+    resolved_provider_instances: dict[str, dict[str, dict[str, Any]]],
+    user_provider_instances: dict[str, dict[str, dict[str, Any]]] | None = None,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    diagnostics: dict[str, dict[str, dict[str, Any]]] = {}
+    for provider_type, instances in (visible_provider_instances or {}).items():
+        if not isinstance(instances, dict):
+            continue
+        normalized_provider_type = str(provider_type or "").strip().lower()
+        if not normalized_provider_type:
+            continue
+        resolved_bucket = resolved_provider_instances.get(normalized_provider_type, {})
+        if not isinstance(resolved_bucket, dict):
+            resolved_bucket = {}
+        user_bucket = (user_provider_instances or {}).get(normalized_provider_type, {})
+        if not isinstance(user_bucket, dict):
+            user_bucket = {}
+        for instance_name, instance_config in instances.items():
+            normalized_instance_name = str(instance_name or "").strip()
+            if not normalized_instance_name or not isinstance(instance_config, dict):
+                continue
+
+            resolved_config = resolved_bucket.get(normalized_instance_name)
+            user_config = user_bucket.get(normalized_instance_name)
+            if isinstance(resolved_config, dict):
+                # Resolved providers are usable; only user-owned credentials need
+                # account-setting guidance when a later tool call rejects them.
+                if isinstance(user_config, dict) and _provider_instance_uses_configured_user_token(
+                    user_config
+                ):
+                    auth_chain = _normalize_provider_auth_chain(user_config.get("auth_type"))
+                    diagnostics.setdefault(normalized_provider_type, {})[
+                        normalized_instance_name
+                    ] = {
+                        "provider_type": normalized_provider_type,
+                        "instance_name": normalized_instance_name,
+                        "auth_chain": auth_chain,
+                        "missing_user_token": False,
+                        "user_token_configured": True,
+                        "contact_admin": False,
+                    }
+                continue
+
+            auth_chain = _normalize_provider_auth_chain(instance_config.get("auth_type"))
+            missing_user_token = _provider_instance_missing_user_token(instance_config)
+            diagnostics.setdefault(normalized_provider_type, {})[normalized_instance_name] = {
+                "provider_type": normalized_provider_type,
+                "instance_name": normalized_instance_name,
+                "auth_chain": auth_chain,
+                "missing_user_token": missing_user_token,
+                "user_token_configured": False,
+                "contact_admin": not missing_user_token,
+            }
+    return diagnostics
+
+
 @dataclass
 class APIContext:
     session_manager: SessionManager
@@ -457,6 +567,11 @@ def build_scoped_deps(
         resolved_provider_instances,
         provider_permissions,
     )
+    provider_auth_diagnostics = _build_provider_auth_diagnostics(
+        visible_provider_instances,
+        resolved_provider_instances,
+        user_provider_instances,
+    )
     provider_registry = ResolvedProviderInstanceRegistry(resolved_provider_instances)
     available_providers = provider_registry.get_available_providers_summary()
     all_md_skills_snapshot = ctx.skill_registry.md_snapshot()
@@ -574,6 +689,7 @@ def build_scoped_deps(
         "available_providers": available_providers,
         "provider_instances": resolved_provider_instances,
         "provider_config": resolved_provider_instances,
+        "provider_auth_diagnostics": provider_auth_diagnostics,
         "tools_snapshot": tools_snapshot,
         # The request-scoped snapshot is authoritative for provider-bound
         # capability availability after role and provider filters run.

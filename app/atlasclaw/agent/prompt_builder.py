@@ -129,6 +129,7 @@ class PromptBuilder:
         tool_policy: Optional[dict] = None,
         user_info: Optional["UserInfo"] = None,
         provider_contexts: Optional[dict[str, dict]] = None,
+        provider_auth_diagnostics: Optional[dict[str, dict]] = None,
         context_window_tokens: Optional[int] = None,
         mode_override: Optional[PromptMode] = None,
         transcript_skill_hint: Optional[str] = None,
@@ -164,6 +165,9 @@ class PromptBuilder:
         tool_policy_section = self._build_tool_policy(tool_policy)
         if tool_policy_section:
             parts.append(tool_policy_section)
+        provider_auth_section = self._build_provider_auth_diagnostics(provider_auth_diagnostics)
+        if provider_auth_section:
+            parts.append(provider_auth_section)
         
         # 3. Safety section
         parts.append(self._build_safety())
@@ -258,6 +262,9 @@ class PromptBuilder:
 
     def _build_tool_policy(self, tool_policy: Optional[dict]) -> str:
         return prompt_sections.build_tool_policy(tool_policy)
+
+    def _build_provider_auth_diagnostics(self, diagnostics: Optional[dict[str, dict]]) -> str:
+        return prompt_sections.build_provider_auth_diagnostics(diagnostics)
     
     def _build_safety(self) -> str:
         return prompt_sections.build_safety()

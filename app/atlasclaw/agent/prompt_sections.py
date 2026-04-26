@@ -308,6 +308,18 @@ def build_tool_policy(tool_policy: Optional[dict]) -> str:
                 "because no provider, skill, or tool is available."
             )
             lines.append(
+                "Treat requests to create, submit, file, apply for, approve, reject, start, "
+                "stop, delete, update, query, verify, or track enterprise records or service "
+                "workflow items as runtime-capability requests when no matching capability is "
+                "visible. This includes provider-backed requests, service tickets, approvals, "
+                "resource changes, access changes, and private catalog workflows."
+            )
+            lines.append(
+                "For those runtime-capability requests, do not continue by gathering workflow "
+                "details, offering categories, or asking which external system to use. State "
+                "that no provider, skill, or tool is available to perform or verify the request."
+            )
+            lines.append(
                 "For that unavailable-capability answer, use the user's language and keep it "
                 "to one concise sentence. It must explicitly include the runtime words "
                 "`provider`, `skill`, and `tool`, and say AtlasClaw cannot perform or verify "
@@ -340,6 +352,70 @@ def build_tool_policy(tool_policy: Optional[dict]) -> str:
                 "Do not emit tool-call markup, XML tags, or pseudo tool invocations like "
                 "`<tool_call>` or `<web_search>`."
             )
+    return "\n".join(lines)
+
+
+def build_provider_auth_diagnostics(diagnostics: Optional[dict[str, dict]]) -> str:
+    """Build provider-auth guidance from request-scoped runtime diagnostics."""
+    if not isinstance(diagnostics, dict) or not diagnostics:
+        return ""
+
+    entries: list[str] = []
+    for provider_type, instances in diagnostics.items():
+        normalized_provider_type = str(provider_type or "").strip()
+        if not normalized_provider_type or not isinstance(instances, dict):
+            continue
+        for instance_name, diagnostic in instances.items():
+            if not isinstance(diagnostic, dict):
+                continue
+            normalized_instance_name = str(
+                diagnostic.get("instance_name") or instance_name or ""
+            ).strip()
+            label = f"provider:{normalized_provider_type}"
+            if normalized_instance_name:
+                label += f" instance:{normalized_instance_name}"
+            if bool(diagnostic.get("missing_user_token")):
+                entries.append(
+                    f"- {label}: the user's personal provider access credential (`user_token`) "
+                    "is not configured. If a tool result reports missing authentication for "
+                    "this provider, tell the user the requested service is currently "
+                    "unavailable and ask them to configure the provider access credential or "
+                    "token in personal account settings, then retry. Do not also tell them "
+                    "to contact an administrator for this case."
+                )
+            elif bool(diagnostic.get("user_token_configured")):
+                entries.append(
+                    f"- {label}: this run is using the user's personal provider access "
+                    "credential (`user_token`). If a tool result reports that authentication "
+                    "was rejected, invalid, expired, unauthorized, forbidden, or returned "
+                    "HTTP 401/403 for this provider, tell the user the requested service is "
+                    "currently unavailable and ask them to update the provider access "
+                    "credential or token in personal account settings, then retry. Do not "
+                    "also tell them to contact an administrator for this user-owned "
+                    "credential case."
+                )
+            elif bool(diagnostic.get("contact_admin")):
+                entries.append(
+                    f"- {label}: provider runtime access is not configured or authorized for "
+                    "this run. If a tool result reports missing authentication for this "
+                    "provider, tell the user the requested service is currently unavailable "
+                    "and ask them to contact an administrator."
+                )
+
+    if not entries:
+        return ""
+
+    lines = [
+        "## Provider Authentication Diagnostics",
+        "",
+        "These diagnostics describe runtime authentication handling for visible provider services.",
+        "Use them only when a visible provider or skill tool reports missing authentication "
+        "or an authentication or authorization rejection.",
+        *entries,
+        "Do not expose backend setup instructions, configuration file paths, internal "
+        "credential mechanics, or raw credentials. Do not ask the user to paste credentials "
+        "in chat.",
+    ]
     return "\n".join(lines)
 
 

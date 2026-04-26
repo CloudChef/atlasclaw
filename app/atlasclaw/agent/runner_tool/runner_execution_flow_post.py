@@ -14,6 +14,7 @@ from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     build_direct_answer_recovery_payload,
     build_lookup_dump_recovery_payload,
     build_tool_failure_fallback_payload,
+    select_provider_auth_diagnostic,
 )
 from app.atlasclaw.agent.runner_tool.runner_llm_routing import messages_satisfy_artifact_goal
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import has_hidden_lookup_result_content
@@ -237,6 +238,35 @@ class RunnerExecutionFlowPostMixin:
             for key in ("repeated_tool_failure", "repeated_tool_no_progress", "repeated_tool_loop")
         )
 
+    def _collect_recent_tool_result_records(
+        self,
+        *,
+        final_messages: list[dict[str, Any]],
+        start_index: int,
+        max_items: int = 3,
+    ) -> list[dict[str, Any]]:
+        tool_results: list[dict[str, Any]] = []
+        extract_records = getattr(self, "_extract_tool_result_records_from_messages", None)
+        if not callable(extract_records):
+            return tool_results
+        for record in extract_records(
+            messages=final_messages,
+            start_index=start_index,
+            max_items=max_items,
+        ) or []:
+            if not isinstance(record, dict):
+                continue
+            content = str(record.get("text", "") or "").strip()
+            if not content:
+                continue
+            tool_results.append(
+                {
+                    "tool_name": str(record.get("tool_name", "") or "tool").strip() or "tool",
+                    "content": content,
+                }
+            )
+        return tool_results
+
     async def _generate_missing_tool_evidence_fallback_answer(
         self,
         *,
@@ -248,30 +278,22 @@ class RunnerExecutionFlowPostMixin:
         failure_reasons: list[str],
         agent: Any,
     ) -> str:
-        tool_results: list[dict[str, Any]] = []
-        extract_records = getattr(self, "_extract_tool_result_records_from_messages", None)
-        if callable(extract_records):
-            for record in extract_records(
-                messages=final_messages,
-                start_index=start_index,
-                max_items=3,
-            ) or []:
-                if not isinstance(record, dict):
-                    continue
-                content = str(record.get("text", "") or "").strip()
-                if not content:
-                    continue
-                tool_results.append(
-                    {
-                        "tool_name": str(record.get("tool_name", "") or "tool").strip() or "tool",
-                        "content": content,
-                    }
-                )
+        tool_results = self._collect_recent_tool_result_records(
+            final_messages=final_messages,
+            start_index=start_index,
+            max_items=3,
+        )
         payload = build_tool_failure_fallback_payload(
             user_message=user_message,
             tool_results=tool_results,
             attempted_tools=tool_call_summaries,
             failure_reasons=failure_reasons,
+            provider_auth_diagnostic=select_provider_auth_diagnostic(
+                extra=getattr(deps, "extra", {}),
+                attempted_tools=tool_call_summaries,
+                failure_reasons=failure_reasons,
+                tool_results=tool_results,
+            ),
         )
         run_single = getattr(self, "run_single", None)
         if not callable(run_single):
@@ -637,6 +659,33 @@ class RunnerExecutionFlowPostMixin:
             final_messages=final_messages,
             run_output_start_index=persist_run_output_start_index,
         )
+        planned_tool_names = [
+            str(item.get("name", "") or "").strip()
+            for item in tool_call_summaries
+            if isinstance(item, dict) and str(item.get("name", "") or "").strip()
+        ]
+        provider_auth_failure_needs_fallback = False
+        if any(
+            isinstance(state.get(key), dict)
+            for key in ("repeated_tool_failure", "repeated_tool_no_progress", "repeated_tool_loop")
+        ):
+            fallback_reasons_for_auth = self._build_missing_tool_evidence_fallback_reasons(
+                state=state,
+                missing_required_tools=missing_required_tools,
+                final_messages=final_messages,
+                start_index=persist_run_output_start_index,
+                planned_tool_names=planned_tool_names,
+            )
+            provider_auth_failure_needs_fallback = select_provider_auth_diagnostic(
+                extra=getattr(deps, "extra", {}),
+                attempted_tools=tool_call_summaries,
+                failure_reasons=fallback_reasons_for_auth,
+                tool_results=self._collect_recent_tool_result_records(
+                    final_messages=final_messages,
+                    start_index=persist_run_output_start_index,
+                    max_items=3,
+                ),
+            ) is not None
 
         should_fail_for_missing_evidence = artifact_completion_missing or (
             tool_execution_required
@@ -647,7 +696,7 @@ class RunnerExecutionFlowPostMixin:
                 or isinstance(state.get("repeated_tool_no_progress"), dict)
                 or isinstance(state.get("repeated_tool_loop"), dict)
             )
-        )
+        ) or provider_auth_failure_needs_fallback
         should_block_assistant_emit = should_fail_for_missing_evidence
 
         if model_stream_timed_out and not final_assistant.strip():
@@ -935,11 +984,6 @@ class RunnerExecutionFlowPostMixin:
                 failure_message = (
                     f"The runtime gathered intermediate data, but it did not actually produce the requested {artifact_label}."
                 )
-            planned_tool_names = [
-                str(item.get("name", "") or "").strip()
-                for item in tool_call_summaries
-                if isinstance(item, dict) and str(item.get("name", "") or "").strip()
-            ]
             fallback_reasons = self._build_missing_tool_evidence_fallback_reasons(
                 state=state,
                 missing_required_tools=missing_required_tools,
