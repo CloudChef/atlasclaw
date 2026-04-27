@@ -14,6 +14,30 @@ from pathlib import Path
 from app.atlasclaw.core.workspace import WorkspaceInitializer, UserWorkspaceInitializer
 
 
+class TemplateWorkspaceInitializer(WorkspaceInitializer):
+    """Workspace initializer with a test-controlled template directory."""
+
+    def __init__(self, workspace_path: str, template_dir: Path):
+        super().__init__(workspace_path)
+        self.template_dir = template_dir
+
+    def _get_default_main_agent_template_dir(self) -> Path:
+        return self.template_dir
+
+
+def write_main_agent_templates(template_dir: Path, *, soul: str = "template soul") -> None:
+    """Write a complete main-agent template set for workspace sync tests."""
+    template_dir.mkdir(parents=True, exist_ok=True)
+    templates = {
+        "SOUL.md": soul,
+        "IDENTITY.md": "template identity",
+        "USER.md": "template user",
+        "MEMORY.md": "template memory",
+    }
+    for filename, content in templates.items():
+        (template_dir / filename).write_text(content, encoding="utf-8")
+
+
 class TestWorkspaceInitializer:
     """Test WorkspaceInitializer functionality."""
 
@@ -112,6 +136,129 @@ class TestWorkspaceInitializer:
             assert (main_agent_dir / filename).read_text(encoding="utf-8") == (
                 template_dir / filename
             ).read_text(encoding="utf-8")
+
+    def test_initialize_writes_template_sync_state(self, tmp_path):
+        """Test: Initializing default main agent records template sync hashes."""
+        workspace = tmp_path / ".atlasclaw"
+        initializer = WorkspaceInitializer(str(workspace))
+
+        initializer.initialize()
+
+        state = json.loads((workspace / "runtime_state.json").read_text(encoding="utf-8"))
+        assert state["version"] == 1
+        for filename in ("SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md"):
+            record = state["template_sync"][f"agents/main/{filename}"]
+            assert record["template_hash"].startswith("sha256:")
+            assert record["target_hash"].startswith("sha256:")
+
+    def test_initialize_overwrites_existing_different_file_without_hash_state(self, tmp_path):
+        """Test: Existing installs without hash state are overwritten when content differs."""
+        workspace = tmp_path / ".atlasclaw"
+        template_dir = tmp_path / "templates" / "agents" / "main"
+        write_main_agent_templates(template_dir, soul="template soul v1")
+
+        main_agent_dir = workspace / "agents" / "main"
+        main_agent_dir.mkdir(parents=True)
+        (main_agent_dir / "SOUL.md").write_text("old local soul", encoding="utf-8")
+
+        initializer = TemplateWorkspaceInitializer(str(workspace), template_dir)
+        initializer.initialize()
+
+        assert (main_agent_dir / "SOUL.md").read_text(encoding="utf-8") == "template soul v1"
+        state = json.loads((workspace / "runtime_state.json").read_text(encoding="utf-8"))
+        assert "agents/main/SOUL.md" in state["template_sync"]
+
+    def test_initialize_overwrites_existing_different_file_with_invalid_hash_state(self, tmp_path):
+        """Test: Malformed sync records are treated as missing hash baselines."""
+        workspace = tmp_path / ".atlasclaw"
+        template_dir = tmp_path / "templates" / "agents" / "main"
+        write_main_agent_templates(template_dir, soul="template soul v1")
+
+        main_agent_dir = workspace / "agents" / "main"
+        main_agent_dir.mkdir(parents=True)
+        (main_agent_dir / "SOUL.md").write_text("old local soul", encoding="utf-8")
+        (workspace / "runtime_state.json").write_text(
+            json.dumps({
+                "version": 1,
+                "template_sync": {
+                    "agents/main/SOUL.md": {"template_hash": "sha256:old"},
+                },
+            }),
+            encoding="utf-8",
+        )
+
+        initializer = TemplateWorkspaceInitializer(str(workspace), template_dir)
+        initializer.initialize()
+
+        assert (main_agent_dir / "SOUL.md").read_text(encoding="utf-8") == "template soul v1"
+
+    def test_initialize_records_hash_without_copy_when_target_matches_template(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Test: Matching existing files only update state and do not copy templates."""
+        workspace = tmp_path / ".atlasclaw"
+        template_dir = tmp_path / "templates" / "agents" / "main"
+        write_main_agent_templates(template_dir, soul="same soul")
+
+        main_agent_dir = workspace / "agents" / "main"
+        main_agent_dir.mkdir(parents=True)
+        for filename in ("SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md"):
+            (main_agent_dir / filename).write_text(
+                (template_dir / filename).read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+
+        def fail_on_copy(*args, **kwargs):
+            raise AssertionError("copy2 should not be called for matching templates")
+
+        monkeypatch.setattr("app.atlasclaw.core.workspace.shutil.copy2", fail_on_copy)
+
+        initializer = TemplateWorkspaceInitializer(str(workspace), template_dir)
+        initializer.initialize()
+
+        state = json.loads((workspace / "runtime_state.json").read_text(encoding="utf-8"))
+        assert set(state["template_sync"]) == {
+            "agents/main/SOUL.md",
+            "agents/main/IDENTITY.md",
+            "agents/main/USER.md",
+            "agents/main/MEMORY.md",
+        }
+
+    def test_initialize_updates_unmodified_target_when_template_changes(self, tmp_path):
+        """Test: A target unchanged since last sync follows template updates."""
+        workspace = tmp_path / ".atlasclaw"
+        template_dir = tmp_path / "templates" / "agents" / "main"
+        write_main_agent_templates(template_dir, soul="template soul v1")
+
+        initializer = TemplateWorkspaceInitializer(str(workspace), template_dir)
+        initializer.initialize()
+
+        write_main_agent_templates(template_dir, soul="template soul v2")
+        initializer.initialize()
+
+        soul_md = workspace / "agents" / "main" / "SOUL.md"
+        assert soul_md.read_text(encoding="utf-8") == "template soul v2"
+
+    def test_initialize_preserves_user_modified_target_across_repeated_restarts(self, tmp_path):
+        """Test: User-modified files are not re-baselined after a skipped sync."""
+        workspace = tmp_path / ".atlasclaw"
+        template_dir = tmp_path / "templates" / "agents" / "main"
+        write_main_agent_templates(template_dir, soul="template soul v1")
+
+        initializer = TemplateWorkspaceInitializer(str(workspace), template_dir)
+        initializer.initialize()
+
+        soul_md = workspace / "agents" / "main" / "SOUL.md"
+        soul_md.write_text("custom user soul", encoding="utf-8")
+        write_main_agent_templates(template_dir, soul="template soul v2")
+
+        initializer.initialize()
+        assert soul_md.read_text(encoding="utf-8") == "custom user soul"
+
+        initializer.initialize()
+        assert soul_md.read_text(encoding="utf-8") == "custom user soul"
 
     def test_initialize_restores_only_missing_main_agent_files(self, tmp_path):
         """Test: Existing main agent files are preserved and missing files are restored."""

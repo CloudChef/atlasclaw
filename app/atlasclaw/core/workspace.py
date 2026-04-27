@@ -9,9 +9,11 @@ and management for AtlasClaw.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
+from typing import Any
 
 
 class WorkspaceInitializer:
@@ -38,6 +40,7 @@ class WorkspaceInitializer:
         self.workspace_path = Path(workspace_path).resolve()
         self.users_dir = self.workspace_path / "users"
         self._main_agent_filenames = ("SOUL.md", "IDENTITY.md", "USER.md", "MEMORY.md")
+        self._runtime_state_filename = "runtime_state.json"
     
     def initialize(self) -> bool:
         """Initialize workspace directory structure.
@@ -62,25 +65,110 @@ class WorkspaceInitializer:
             # Create users directory inside workspace
             self.users_dir.mkdir(exist_ok=True)
             
-            # Create default main agent if not exists
-            self._create_default_main_agent()
+            # Create or update the default main agent from templates.
+            self._sync_default_main_agent()
             
             return True
         except Exception as e:
             print(f"[WorkspaceInitializer] Failed to initialize workspace: {e}")
             return False
     
-    def _create_default_main_agent(self) -> None:
-        """Ensure the default main agent exists from repo templates."""
+    def _sync_default_main_agent(self) -> None:
+        """Synchronize default main agent files from repo templates.
+
+        Synchronization state is stored in `<workspace>/runtime_state.json`
+        under `template_sync`. Files that already match the template only update
+        the hash baseline. Existing installations without a hash baseline are
+        overwritten once when their content differs from the template. After a
+        baseline exists, files changed by users are left untouched.
+        """
         main_agent_dir = self.workspace_path / "agents" / "main"
         main_agent_dir.mkdir(parents=True, exist_ok=True)
 
+        state = self._load_runtime_state()
+        template_sync = state.setdefault("template_sync", {})
         template_dir = self._get_default_main_agent_template_dir()
         for filename in self._main_agent_filenames:
+            relative_path = f"agents/main/{filename}"
+            template_path = template_dir / filename
             target_path = main_agent_dir / filename
-            if target_path.exists():
-                continue
-            shutil.copy2(template_dir / filename, target_path)
+            record = template_sync.get(relative_path)
+
+            should_overwrite = self._should_overwrite_template_target(
+                template_path=template_path,
+                target_path=target_path,
+                record=record,
+            )
+            if should_overwrite:
+                shutil.copy2(template_path, target_path)
+
+            if target_path.exists() and (
+                should_overwrite or self._hash_file(target_path) == self._hash_file(template_path)
+            ):
+                template_sync[relative_path] = {
+                    "template_hash": self._hash_file(template_path),
+                    "target_hash": self._hash_file(target_path),
+                }
+
+        self._save_runtime_state(state)
+
+    def _load_runtime_state(self) -> dict[str, Any]:
+        """Load workspace runtime state."""
+        state_path = self.workspace_path / self._runtime_state_filename
+        if not state_path.exists():
+            return {"version": 1, "template_sync": {}}
+        try:
+            raw = json.loads(state_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {"version": 1, "template_sync": {}}
+        if not isinstance(raw, dict):
+            return {"version": 1, "template_sync": {}}
+        raw.setdefault("version", 1)
+        template_sync = raw.get("template_sync")
+        if not isinstance(template_sync, dict):
+            raw["template_sync"] = {}
+        return raw
+
+    def _save_runtime_state(self, state: dict[str, Any]) -> None:
+        """Save workspace runtime state."""
+        state_path = self.workspace_path / self._runtime_state_filename
+        state_path.write_text(
+            json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    def _should_overwrite_template_target(
+        self,
+        *,
+        template_path: Path,
+        target_path: Path,
+        record: object,
+    ) -> bool:
+        """Return whether a workspace template target should be overwritten."""
+        if not target_path.exists():
+            return True
+
+        template_hash = self._hash_file(template_path)
+        target_hash = self._hash_file(target_path)
+        if target_hash == template_hash:
+            return False
+
+        if not isinstance(record, dict):
+            return True
+
+        previous_target_hash = record.get("target_hash")
+        if not isinstance(previous_target_hash, str):
+            return True
+        return target_hash == previous_target_hash
+
+    @staticmethod
+    def _hash_file(path: Path) -> str:
+        """Return a stable SHA-256 hash for a file."""
+        return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
+
+    def _create_default_main_agent(self) -> None:
+        """Compatibility wrapper for older callers."""
+        self._sync_default_main_agent()
 
     def _get_default_main_agent_template_dir(self) -> Path:
         """Return the repo template directory for the default main agent."""
