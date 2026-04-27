@@ -36,6 +36,7 @@ def build_system_prompt(
         "tool_policy": collect_tool_policy(deps),
         "user_info": deps.user_info,
         "provider_contexts": collect_provider_contexts(deps),
+        "provider_auth_diagnostics": collect_provider_auth_diagnostics(deps),
         "context_window_tokens": context_window_tokens,
         "mode_override": prompt_mode,
         "transcript_skill_hint": collect_transcript_skill_hint(deps),
@@ -311,6 +312,13 @@ def collect_tool_policy(deps) -> Optional[dict]:
     extra = deps.extra if isinstance(deps.extra, dict) else {}
     value = extra.get("tool_policy")
     return value if isinstance(value, dict) else None
+
+
+def collect_provider_auth_diagnostics(deps) -> dict[str, dict]:
+    """Read request-scoped provider authentication diagnostics from `deps.extra`."""
+    extra = deps.extra if isinstance(deps.extra, dict) else {}
+    value = extra.get("provider_auth_diagnostics")
+    return value if isinstance(value, dict) else {}
 
 
 def collect_tool_groups_snapshot(deps) -> dict[str, list[str]]:

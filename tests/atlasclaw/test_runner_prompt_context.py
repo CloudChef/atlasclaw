@@ -622,6 +622,45 @@ def test_build_system_prompt_uses_unified_capability_index_surface(tmp_path) -> 
     assert "FULL BODY SHOULD NOT APPEAR" not in prompt
 
 
+def test_build_system_prompt_includes_provider_auth_diagnostics(tmp_path) -> None:
+    deps = SimpleNamespace(
+        user_info=SimpleNamespace(
+            user_id="user-1",
+            display_name="User One",
+            tenant_id="default",
+            roles=["user"],
+        ),
+        extra={
+            "provider_auth_diagnostics": {
+                "example-provider": {
+                    "default": {
+                        "provider_type": "example-provider",
+                        "instance_name": "default",
+                        "auth_chain": ["user_token"],
+                        "missing_user_token": True,
+                        "contact_admin": False,
+                    }
+                }
+            },
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [],
+            "md_skills_snapshot": [],
+            "skills_snapshot": [],
+        },
+    )
+    builder = PromptBuilder(PromptBuilderConfig(workspace_path=str(tmp_path)))
+
+    prompt = build_system_prompt(builder, session=None, deps=deps, agent=SimpleNamespace(tools=[]))
+
+    assert "## Provider Authentication Diagnostics" in prompt
+    assert "provider:example-provider instance:default" in prompt
+    assert "personal provider access credential (`user_token`) is not configured" in prompt
+    assert "personal account settings" in prompt
+    assert "Do not also tell them to contact an administrator for this case." in prompt
+    assert "atlasclaw.json" not in prompt
+    assert "paste credentials" in prompt
+
+
 def test_build_capability_index_truncates_stably_with_budget() -> None:
     config = PromptBuilderConfig(
         workspace_path="",
@@ -1084,6 +1123,8 @@ def test_no_tools_prompt_policy_forbids_external_system_success_claims() -> None
     assert "no provider, skill, or tool is available" in prompt
     assert "Never present unavailable external-system state" in prompt
     assert "Do not turn missing capability into an external-system fact" in prompt
+    assert "Treat requests to create, submit, file, apply for" in prompt
+    assert "do not continue by gathering workflow details" in prompt
     assert "records are absent" in prompt
     assert "results are empty" in prompt
     assert "logs, timestamps, statuses" in prompt

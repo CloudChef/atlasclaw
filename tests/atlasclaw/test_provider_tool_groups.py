@@ -358,6 +358,60 @@ def test_build_scoped_deps_keeps_provider_tools_with_provider_instance_when_rbac
         "cmp_get_ticket",
         "cmp_list_pending",
     }
+    assert deps.extra["provider_auth_diagnostics"] == {}
+
+
+def test_build_scoped_deps_records_user_token_auth_context_from_account_settings(tmp_path) -> None:
+    _write_provider_skill(tmp_path)
+    registry = SkillRegistry()
+    registry.load_from_directory(str(tmp_path), location="external", provider="smartcmp")
+
+    workspace = tmp_path / "workspace"
+    user_settings_dir = workspace / "users" / "u1"
+    user_settings_dir.mkdir(parents=True, exist_ok=True)
+    (user_settings_dir / "user_setting.json").write_text(
+        """
+{
+  "providers": {
+    "smartcmp": {
+      "cmp": {
+        "configured": true,
+        "config": {
+          "user_token": "saved-user-token"
+        }
+      }
+    }
+  }
+}
+""",
+        encoding="utf-8",
+    )
+    ctx = APIContext(
+        session_manager=SessionManager(str(workspace)),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+        provider_instances={
+            "smartcmp": {
+                "cmp": {
+                    "base_url": "https://cmp.example.test",
+                    "auth_type": ["cookie", "user_token"],
+                }
+            }
+        },
+    )
+    user = UserInfo(user_id="u1", display_name="User", raw_token="token", roles=["custom"])
+
+    deps = build_scoped_deps(
+        ctx,
+        user,
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+    )
+
+    diagnostic = deps.extra["provider_auth_diagnostics"]["smartcmp"]["cmp"]
+    assert diagnostic["missing_user_token"] is False
+    assert diagnostic["user_token_configured"] is True
+    assert diagnostic["contact_admin"] is False
+    assert "saved-user-token" not in str(diagnostic)
 
 
 def test_build_scoped_deps_keeps_non_provider_skill_without_provider_instance_when_rbac_active(tmp_path) -> None:
@@ -611,6 +665,8 @@ def test_build_scoped_deps_keeps_provider_tools_when_visible_instance_lacks_user
     assert "group:smartcmp" in deps.extra["tool_groups_snapshot"]
     assert deps.extra["provider_instances"] == {}
     assert deps.extra["available_providers"] == {}
+    assert deps.extra["provider_auth_diagnostics"]["smartcmp"]["cmp"]["missing_user_token"] is True
+    assert deps.extra["provider_auth_diagnostics"]["smartcmp"]["cmp"]["contact_admin"] is False
 
 
 def test_build_scoped_deps_reload_markdown_skill_tools_after_skill_permission_toggle(tmp_path) -> None:

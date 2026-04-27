@@ -12,10 +12,170 @@ from app.atlasclaw.agent.runner_tool.runner_agent_override import resolve_overri
 from app.atlasclaw.core.deps import SkillDeps
 
 
+def _provider_auth_diagnostic_message(diagnostic: dict[str, Any] | None) -> str:
+    if not isinstance(diagnostic, dict):
+        return ""
+    if bool(diagnostic.get("missing_user_token")):
+        return (
+            "Provider authentication diagnostic: the requested provider service is currently "
+            "unavailable because the user's personal provider access credential (`user_token`) "
+            "is not configured. Tell the user to configure it in personal account settings, "
+            "then retry."
+        )
+    if bool(diagnostic.get("user_token_configured")):
+        return (
+            "Provider authentication diagnostic: the requested provider service is currently "
+            "unavailable because the user's personal provider access credential (`user_token`) "
+            "was rejected or may be invalid or expired. Tell the user to update it in personal "
+            "account settings, then retry."
+        )
+    if bool(diagnostic.get("contact_admin")):
+        return (
+            "Provider authentication diagnostic: the requested provider service is currently "
+            "unavailable because the provider instance is not configured or authorized for "
+            "runtime access. Tell the user to contact an administrator, then retry."
+        )
+    return ""
+
+
+def _looks_like_provider_auth_failure(value: Any) -> bool:
+    text = str(value or "").strip().lower()
+    if not text:
+        return False
+    has_provider_auth_context = any(
+        marker in text
+        for marker in (
+            "auth",
+            "credential",
+            "token",
+            "configuration",
+            "config",
+            "unauthorized",
+            "forbidden",
+            "permission",
+            "access denied",
+        )
+    )
+    has_failure_context = any(
+        marker in text
+        for marker in (
+            "not configured",
+            "not available",
+            "missing",
+            "required",
+            "no usable",
+            "unavailable",
+            "rejected",
+            "invalid",
+            "expired",
+            "denied",
+            "failed",
+        )
+    )
+    has_http_auth_status = any(
+        marker in text
+        for marker in (
+            "http 401",
+            "http 403",
+            "status 401",
+            "status 403",
+            "401 unauthorized",
+            "403 forbidden",
+        )
+    )
+    has_backend_detail = any(
+        marker in text
+        for marker in (
+            "atlasclaw.json",
+            "service_providers",
+            "provider_config",
+            "environment variable",
+            "http request",
+        )
+    )
+    return has_http_auth_status or (has_provider_auth_context and has_failure_context) or has_backend_detail
+
+
+def _sanitize_provider_auth_text(value: Any, diagnostic: dict[str, Any] | None) -> str:
+    text = str(value or "").strip()
+    diagnostic_message = _provider_auth_diagnostic_message(diagnostic)
+    if diagnostic_message and _looks_like_provider_auth_failure(text):
+        return diagnostic_message
+    return text
+
+
+def select_provider_auth_diagnostic(
+    *,
+    extra: Any,
+    attempted_tools: list[dict[str, Any]] | list[str] | None = None,
+    failure_reasons: list[str] | None = None,
+    tool_results: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Pick a request-scoped provider-auth diagnostic for failed tool output."""
+    if not isinstance(extra, dict):
+        return None
+    diagnostics = extra.get("provider_auth_diagnostics")
+    if not isinstance(diagnostics, dict) or not diagnostics:
+        return None
+
+    evidence_texts = [str(reason or "") for reason in (failure_reasons or [])]
+    for result in tool_results or []:
+        if isinstance(result, dict):
+            evidence_texts.append(str(result.get("content", "") or ""))
+    if evidence_texts and not any(_looks_like_provider_auth_failure(text) for text in evidence_texts):
+        return None
+
+    attempted_tool_names: set[str] = set()
+    for item in attempted_tools or []:
+        if isinstance(item, dict):
+            tool_name = str(item.get("name", "") or item.get("tool_name", "")).strip()
+        else:
+            tool_name = str(item or "").strip()
+        if tool_name:
+            attempted_tool_names.add(tool_name)
+
+    provider_types: set[str] = set()
+    tools_snapshot = extra.get("tools_snapshot")
+    if isinstance(tools_snapshot, list) and attempted_tool_names:
+        for tool in tools_snapshot:
+            if not isinstance(tool, dict):
+                continue
+            tool_name = str(tool.get("name", "") or "").strip()
+            if tool_name not in attempted_tool_names:
+                continue
+            provider_type = str(tool.get("provider_type", "") or "").strip().lower()
+            if provider_type:
+                provider_types.add(provider_type)
+
+    candidates: list[dict[str, Any]] = []
+    for provider_type, instances in diagnostics.items():
+        normalized_provider_type = str(provider_type or "").strip().lower()
+        if provider_types and normalized_provider_type not in provider_types:
+            continue
+        if not isinstance(instances, dict):
+            continue
+        for diagnostic in instances.values():
+            if isinstance(diagnostic, dict):
+                candidates.append(diagnostic)
+
+    if not candidates:
+        # Do not borrow diagnostics from unrelated providers; generic failure text
+        # is safer than telling the user to fix the wrong credential.
+        return None
+    for diagnostic in candidates:
+        if bool(diagnostic.get("missing_user_token")):
+            return diagnostic
+    for diagnostic in candidates:
+        if bool(diagnostic.get("user_token_configured")):
+            return diagnostic
+    return candidates[0]
+
+
 def build_finalize_payload(
     *,
     user_message: str,
     tool_results: list[dict[str, Any]],
+    provider_auth_diagnostic: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Build a minimal final-answer payload for a tool-backed turn."""
     evidence_lines: list[str] = []
@@ -23,7 +183,7 @@ def build_finalize_payload(
         if not isinstance(item, dict):
             continue
         tool_name = str(item.get("tool_name", "") or "").strip() or "tool"
-        content = str(item.get("content", "") or "").strip()
+        content = _sanitize_provider_auth_text(item.get("content", ""), provider_auth_diagnostic)
         if not content:
             continue
         evidence_lines.append(f"- {tool_name}: {content}")
@@ -35,12 +195,15 @@ def build_finalize_payload(
         "system_prompt": (
             "You are AtlasClaw. Produce a concise markdown answer using only the supplied tool evidence. "
             "Do not fabricate facts or mention hidden reasoning. "
-            "If tool evidence shows missing provider authentication or access credentials, first say the "
+            "If a Provider authentication diagnostic appears in the supplied evidence, follow that diagnostic exactly: "
+            "when it says `user_token` is not configured, rejected, invalid, or expired, do not also tell the user to contact an administrator; "
+            "when it says to contact an administrator, do not also mention `user_token`. "
+            "If tool evidence shows missing, rejected, invalid, or expired provider authentication or access credentials, first say the "
             "service the user is trying to use is currently unavailable. Do not expose backend setup details, "
             "internal field names, low-level credential mechanics, or configuration file paths. If the "
-            "missing credential is, or appears to be, a user-owned `user_token`, explicitly say their "
-            "personal provider access credential (`user_token`) is not configured and they should configure "
-            "it in personal account settings. For provider instance or server-side configuration problems, "
+            "credential is, or appears to be, a user-owned `user_token`, explicitly say their "
+            "personal provider access credential (`user_token`) is not configured or may be invalid/expired "
+            "and they should configure or update it in personal account settings. For provider instance or server-side configuration problems, "
             "or when the credential owner is unclear, tell the user to contact an administrator. Do not ask "
             "diagnostic questions about backend setup, and do not ask the user to paste access credentials into chat. "
             "Do not add wrapper headings like 'Answer' or 'Result' unless the user explicitly asked for them."
@@ -60,6 +223,7 @@ def build_tool_failure_fallback_payload(
     tool_results: list[dict[str, Any]],
     attempted_tools: list[dict[str, Any]] | list[str] | None = None,
     failure_reasons: list[str] | None = None,
+    provider_auth_diagnostic: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Build a minimal payload for same-turn fallback after tool execution failed."""
     evidence_lines: list[str] = []
@@ -67,7 +231,7 @@ def build_tool_failure_fallback_payload(
         if not isinstance(item, dict):
             continue
         tool_name = str(item.get("tool_name", "") or "").strip() or "tool"
-        content = str(item.get("content", "") or "").strip()
+        content = _sanitize_provider_auth_text(item.get("content", ""), provider_auth_diagnostic)
         if not content:
             continue
         evidence_lines.append(f"- {tool_name}: {content}")
@@ -94,11 +258,15 @@ def build_tool_failure_fallback_payload(
     if not attempted_lines:
         attempted_lines.append("- none recorded")
 
-    failure_lines = [
-        f"- {str(reason).strip()}"
-        for reason in (failure_reasons or [])
-        if str(reason).strip()
-    ]
+    diagnostic_message = _provider_auth_diagnostic_message(provider_auth_diagnostic)
+    failure_lines = []
+    if diagnostic_message:
+        failure_lines.append(f"- {diagnostic_message}")
+    for reason in failure_reasons or []:
+        sanitized_reason = _sanitize_provider_auth_text(reason, provider_auth_diagnostic)
+        if not sanitized_reason or sanitized_reason == diagnostic_message:
+            continue
+        failure_lines.append(f"- {sanitized_reason}")
     if not failure_lines:
         failure_lines.append("- Tool execution did not yield usable evidence.")
 
@@ -106,14 +274,17 @@ def build_tool_failure_fallback_payload(
         "system_prompt": (
             "You are AtlasClaw. The runtime attempted tools first, but they did not produce a usable final answer. "
             "Produce a concise markdown answer.\n"
+            "If a Provider authentication diagnostic appears below, follow that diagnostic exactly: "
+            "when it says `user_token` is not configured, rejected, invalid, or expired, do not also tell the user to contact an administrator; "
+            "when it says to contact an administrator, do not also mention `user_token`.\n"
             "If the request depends on private, enterprise, provider-backed, or otherwise unavailable data that the tools "
             "did not return, do not invent it. Explain the limitation, missing parameter, or retry path instead.\n"
-            "If the tool failure indicates missing provider authentication or access credentials, first say the "
+            "If the tool failure indicates missing, rejected, invalid, or expired provider authentication or access credentials, first say the "
             "service the user is trying to use is currently unavailable. Do not expose backend setup details, "
             "internal field names, low-level credential mechanics, or configuration file paths. If the "
-            "missing credential is, or appears to be, a user-owned `user_token`, explicitly say their "
-            "personal provider access credential (`user_token`) is not configured and they should configure "
-            "it in personal account settings. For provider instance or server-side configuration problems, "
+            "credential is, or appears to be, a user-owned `user_token`, explicitly say their "
+            "personal provider access credential (`user_token`) is not configured or may be invalid/expired "
+            "and they should configure or update it in personal account settings. For provider instance or server-side configuration problems, "
             "or when the credential owner is unclear, tell the user to contact an administrator. Do not ask "
             "diagnostic questions about backend setup, and do not ask the user to paste access credentials into chat.\n"
             "If the request is a public recommendation or general knowledge question, you may provide a best-effort answer "
