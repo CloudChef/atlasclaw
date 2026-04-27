@@ -29,7 +29,7 @@ from app.atlasclaw.tools.registration import register_builtin_tools
 
 
 # ======================================================================
-# 7.1 TestFrontmatterParser (8 cases)
+# 7.1 TestFrontmatterParser
 # ======================================================================
 
 class TestFrontmatterParser:
@@ -164,7 +164,6 @@ Body content
             "payload_file": "--file",
         }
         assert "json_body" not in result.metadata
-
 
 # ======================================================================
 # 7.2 TestMdSkillEntry (3 cases)
@@ -421,6 +420,54 @@ class TestSkillRegistryMdLoading:
         assert result["success"] is True
         payload = json.loads(result["output"].strip())
         assert payload["argv"][0] == "--json"
+
+    def test_cli_positional_flow_into_registered_script_tool(self, tmp_path):
+        """Positional frontmatter mappings should affect registered script argv."""
+        skill_dir = tmp_path / "positional-demo"
+        _write_skill_md(
+            skill_dir / "SKILL.md",
+            [
+                "name: positional-demo",
+                "description: Demo positional skill",
+                "tool_detail_name: demo_detail_item",
+                "tool_detail_description: Inspect one item",
+                "tool_detail_entrypoint: scripts/detail.py",
+                "tool_detail_cli_positional:",
+                "  - item_id",
+                "tool_detail_parameters: |",
+                "  {",
+                '    "type": "object",',
+                '    "properties": {',
+                '      "item_id": {"type": "string"},',
+                '      "days": {"type": "integer", "default": 7}',
+                "    },",
+                '    "required": ["item_id"]',
+                "  }",
+            ],
+        )
+        script_path = skill_dir / "scripts" / "detail.py"
+        script_path.parent.mkdir(parents=True, exist_ok=True)
+        script_path.write_text(
+            "\n".join(
+                [
+                    "import json, sys",
+                    "print(json.dumps({'argv': sys.argv[1:]}))",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        reg = SkillRegistry()
+        reg.load_from_directory(str(tmp_path))
+
+        entry = reg.get("demo_detail_item")
+        assert entry is not None
+        _, handler = entry
+        result = asyncio.run(handler(item_id="item-1", days=3))
+
+        assert result["success"] is True
+        payload = json.loads(result["output"].strip())
+        assert payload["argv"] == ["item-1", "--days", "3"]
 
     def test_qualified_name_uses_explicit_provider(self, tmp_path):
         """显式 provider_type 生成 provider:skill 标识"""
