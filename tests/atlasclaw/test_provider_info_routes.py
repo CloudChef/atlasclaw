@@ -12,19 +12,26 @@ from fastapi.testclient import TestClient
 
 import app.atlasclaw.core.config as config_module
 from app.atlasclaw.api.provider_info_routes import router as provider_info_router
+from app.atlasclaw.api.service_provider_schemas import (
+    clear_provider_schema_definitions,
+)
 from app.atlasclaw.db.database import DatabaseConfig, init_database
 from app.atlasclaw.db.orm.service_provider_config import ServiceProviderConfigService
 from app.atlasclaw.db.schemas import ServiceProviderConfigCreate
+from tests.atlasclaw.provider_schema_fixtures import register_default_provider_schemas
 
 
 @pytest.fixture(autouse=True)
 def reset_config_manager():
     config_module._config_manager = None
+    clear_provider_schema_definitions()
+    register_default_provider_schemas()
     yield
     config_module._config_manager = None
+    clear_provider_schema_definitions()
 
 
-def test_available_instances_exposes_auth_type_and_safe_config_keys(tmp_path, monkeypatch):
+def test_available_instances_exposes_manifest_providers_and_skips_core_channels(tmp_path, monkeypatch):
     config_path = tmp_path / "atlasclaw.json"
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ATLASCLAW_CONFIG", str(config_path))
@@ -33,11 +40,11 @@ def test_available_instances_exposes_auth_type_and_safe_config_keys(tmp_path, mo
 {
   "workspace": { "path": ".atlasclaw" },
   "service_providers": {
-    "smartcmp": {
+    "managed": {
       "default": {
-        "base_url": "https://console.smartcmp.cloud",
+        "base_url": "https://managed.example.com",
         "auth_type": "credential",
-        "username": "cmp-robot",
+        "username": "service-account",
         "password": "secret-pass",
         "ACCESS_TOKEN": "access-token",
         "refreshToken": "refresh-token",
@@ -71,28 +78,21 @@ def test_available_instances_exposes_auth_type_and_safe_config_keys(tmp_path, mo
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["count"] == 2
+    assert payload["count"] == 1
 
     providers = {
         (item["provider_type"], item["instance_name"]): item
         for item in payload["providers"]
     }
+    assert ("dingtalk", "default") not in providers
 
-    assert providers[("smartcmp", "default")] == {
-        "provider_type": "smartcmp",
-        "display_name": "SmartCMP",
+    assert providers[("managed", "default")] == {
+        "provider_type": "managed",
+        "display_name": "Managed Provider",
         "instance_name": "default",
-        "base_url": "https://console.smartcmp.cloud",
+        "base_url": "https://managed.example.com",
         "auth_type": "credential",
         "config_keys": ["region", "username"],
-    }
-    assert providers[("dingtalk", "default")] == {
-        "provider_type": "dingtalk",
-        "display_name": "DingTalk",
-        "instance_name": "default",
-        "base_url": "https://oapi.dingtalk.com",
-        "auth_type": "app_credentials",
-        "config_keys": ["agent_id", "app_key"],
     }
 
 
@@ -105,9 +105,9 @@ def test_available_instances_fall_back_to_schema_defaults_when_base_url_missing(
 {
   "workspace": { "path": ".atlasclaw" },
   "service_providers": {
-    "smartcmp": {
+    "managed": {
       "default": {
-        "username": "cmp-robot"
+        "username": "service-account"
       }
     }
   }
@@ -126,10 +126,10 @@ def test_available_instances_fall_back_to_schema_defaults_when_base_url_missing(
     payload = response.json()
     assert payload["count"] == 1
     assert payload["providers"][0] == {
-        "provider_type": "smartcmp",
-        "display_name": "SmartCMP",
+        "provider_type": "managed",
+        "display_name": "Managed Provider",
         "instance_name": "default",
-        "base_url": "https://console.smartcmp.cloud",
+        "base_url": "https://managed.example.com",
         "auth_type": "user_token",
         "config_keys": ["username"],
     }
@@ -150,14 +150,16 @@ def test_provider_definitions_expose_backend_managed_form_schema():
         for item in payload["providers"]
     }
 
-    smartcmp = providers["smartcmp"]
+    assert set(providers.keys()) == {"managed", "tracker"}
+    assert "dingtalk" not in providers
+    managed = providers["managed"]
     fields = {
         field["name"]: field
-        for field in smartcmp["schema"]["fields"]
+        for field in managed["schema"]["fields"]
     }
 
-    assert smartcmp["name_i18n_key"] == "provider.catalog.smartcmp.name"
-    assert fields["base_url"]["default"] == "https://console.smartcmp.cloud"
+    assert managed["name_i18n_key"] == "provider.catalog.managed.name"
+    assert fields["base_url"]["default"] == "https://managed.example.com"
     assert fields["auth_type"]["type"] == "hidden"
     assert fields["auth_type"]["default"] == "user_token"
     assert fields["user_token"]["type"] == "password"
@@ -175,9 +177,9 @@ def test_provider_definitions_fill_base_url_default_from_config(tmp_path, monkey
 {
   "workspace": { "path": ".atlasclaw" },
   "service_providers": {
-    "smartcmp": {
+    "managed": {
       "default": {
-        "base_url": "https://console.smartcmp.cloud",
+        "base_url": "https://managed.example.com",
         "auth_type": "user_token"
       }
     }
@@ -199,12 +201,12 @@ def test_provider_definitions_fill_base_url_default_from_config(tmp_path, monkey
         item["provider_type"]: item
         for item in payload["providers"]
     }
-    smartcmp_fields = {
+    managed_fields = {
         field["name"]: field
-        for field in providers["smartcmp"]["schema"]["fields"]
+        for field in providers["managed"]["schema"]["fields"]
     }
 
-    assert smartcmp_fields["base_url"]["default"] == "https://console.smartcmp.cloud"
+    assert managed_fields["base_url"]["default"] == "https://managed.example.com"
 
 
 def test_available_instances_expose_ordered_auth_chain_when_template_uses_multi_auth(
@@ -219,11 +221,11 @@ def test_available_instances_expose_ordered_auth_chain_when_template_uses_multi_
 {
   "workspace": { "path": ".atlasclaw" },
   "service_providers": {
-    "smartcmp": {
+    "managed": {
       "default": {
-        "base_url": "https://console.smartcmp.cloud",
+        "base_url": "https://managed.example.com",
         "auth_type": ["cookie", "user_token"],
-        "username": "cmp-robot"
+        "username": "service-account"
       }
     }
   }
@@ -266,10 +268,10 @@ def test_available_instances_include_db_managed_provider_configs(tmp_path, monke
             await ServiceProviderConfigService.create(
                 session,
                 ServiceProviderConfigCreate(
-                    provider_type="smartcmp",
+                    provider_type="managed",
                     instance_name="db-managed",
                     config={
-                        "base_url": "https://db.smartcmp.cloud",
+                        "base_url": "https://db.managed.example.com",
                         "auth_type": ["provider_token", "user_token"],
                         "provider_token": "shared-provider-token",
                     },
@@ -292,24 +294,24 @@ def test_available_instances_include_db_managed_provider_configs(tmp_path, monke
         instances_payload = instances_response.json()
         assert instances_payload["providers"] == [
             {
-                "provider_type": "smartcmp",
-                "display_name": "SmartCMP",
+                "provider_type": "managed",
+                "display_name": "Managed Provider",
                 "instance_name": "db-managed",
-                "base_url": "https://db.smartcmp.cloud",
+                "base_url": "https://db.managed.example.com",
                 "auth_type": ["provider_token", "user_token"],
                 "config_keys": [],
             }
         ]
 
         assert definitions_response.status_code == 200
-        smartcmp_fields = {
+        managed_fields = {
             field["name"]: field
             for provider in definitions_response.json()["providers"]
-            if provider["provider_type"] == "smartcmp"
+            if provider["provider_type"] == "managed"
             for field in provider["schema"]["fields"]
         }
-        assert smartcmp_fields["base_url"]["default"] == "https://db.smartcmp.cloud"
-        assert smartcmp_fields["auth_type"]["default"] == ["provider_token", "user_token"]
+        assert managed_fields["base_url"]["default"] == "https://db.managed.example.com"
+        assert managed_fields["auth_type"]["default"] == ["provider_token", "user_token"]
     finally:
         asyncio.run(manager.close())
 
@@ -327,13 +329,13 @@ def test_available_instances_skips_unknown_auth_type_and_logs_error(
 {
   "workspace": { "path": ".atlasclaw" },
   "service_providers": {
-    "smartcmp": {
+    "managed": {
       "legacy": {
-        "base_url": "https://legacy.smartcmp.cloud",
+        "base_url": "https://legacy.managed.example.com",
         "auth_type": "cmp"
       },
       "default": {
-        "base_url": "https://console.smartcmp.cloud",
+        "base_url": "https://managed.example.com",
         "auth_type": "user_token"
       }
     }
@@ -355,4 +357,4 @@ def test_available_instances_skips_unknown_auth_type_and_logs_error(
     assert payload["count"] == 1
     assert payload["providers"][0]["instance_name"] == "default"
     assert "Unsupported auth_type: cmp" in caplog.text
-    assert "Skipping provider instance smartcmp.legacy" in caplog.text
+    assert "Skipping provider instance managed.legacy" in caplog.text

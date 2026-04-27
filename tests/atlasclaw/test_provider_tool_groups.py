@@ -8,13 +8,61 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.atlasclaw.api.deps_context import APIContext, build_scoped_deps
+from app.atlasclaw.api.service_provider_schemas import (
+    ProviderAuthModeDefinition,
+    ProviderSchemaDefinition,
+    ProviderSchemaField,
+    clear_provider_schema_definitions,
+    register_provider_schema_definition,
+)
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
 from app.atlasclaw.tools.catalog import GROUP_ATLASCLAW, GROUP_CATALOG, GROUP_WEB
 from app.atlasclaw.tools.registration import register_builtin_tools
+from tests.atlasclaw.provider_schema_fixtures import managed_provider_definition
+
+
+@pytest.fixture(autouse=True)
+def provider_manifests() -> None:
+    clear_provider_schema_definitions()
+    register_provider_schema_definition(
+        managed_provider_definition(
+            provider_type="smartcmp",
+            display_name="SmartCMP",
+            default_base_url="https://cmp.example.com",
+        )
+    )
+    yield
+    clear_provider_schema_definitions()
+
+
+def _register_generic_provider_schema() -> None:
+    register_provider_schema_definition(
+        ProviderSchemaDefinition(
+            provider_type="generic",
+            display_name="Generic",
+            default_auth_type=("sso", "user_token"),
+            auth_modes={
+                "sso": ProviderAuthModeDefinition(required_fields=()),
+                "user_token": ProviderAuthModeDefinition(required_fields=("user_token",)),
+            },
+            fields=(
+                ProviderSchemaField(name="base_url", required=True),
+                ProviderSchemaField(name="auth_type", type="hidden", default=("sso", "user_token")),
+                ProviderSchemaField(
+                    name="user_token",
+                    type="password",
+                    sensitive=True,
+                    auth_types=("user_token",),
+                ),
+            ),
+        )
+    )
 
 
 def _write_provider_skill(base: Path) -> None:
@@ -744,6 +792,7 @@ def test_build_scoped_deps_reload_markdown_skill_tools_after_skill_permission_to
 
 
 def test_build_scoped_deps_exposes_provider_sso_context_and_resolves_template_instances(tmp_path) -> None:
+    _register_generic_provider_schema()
     registry = SkillRegistry()
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True, exist_ok=True)

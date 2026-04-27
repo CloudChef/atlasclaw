@@ -78,8 +78,10 @@ Response
 
 ```
 providers/<provider-name>/
-├── PROVIDER.md              # Provider documentation (required)
-├── README.md                # Human-readable description
+├── PROVIDER.md              # LLM-facing provider contract (required)
+├── provider.schema.json     # Runtime/API/UI manifest
+├── README.md                # Human-readable package documentation
+├── assets/                  # Optional icons/images referenced by the manifest
 ├── skills/                  # Provider Skills
 │   └── <skill-name>/
 │       ├── SKILL.md         # Skill metadata and documentation
@@ -95,11 +97,24 @@ providers/<provider-name>/
 
 | File | Purpose | Required |
 |------|---------|----------|
-| `PROVIDER.md` | Provider metadata and capabilities | Yes |
+| `PROVIDER.md` | LLM-facing provider contract and routing context | Yes |
+| `provider.schema.json` | Machine-readable provider manifest for runtime/API/UI and code-analysis agents | Required for provider definitions/config UI/schema validation |
 | `README.md` | Human-readable overview | Recommended |
 | `SKILL.md` | Skill definition and usage | Yes |
 | `handler.py` | Skill implementation | Yes |
 | `references/` | Additional documentation | Optional |
+
+`provider.schema.json`, `PROVIDER.md`, and `README.md` intentionally serve
+different readers:
+
+- `provider.schema.json`: exact structured metadata for AtlasClaw runtime/API/UI
+  and code-analysis agents. It owns catalog display metadata, config fields,
+  auth modes, aliases, defaults, sensitive flags, and optional extra redaction
+  hints.
+- `PROVIDER.md`: natural-language contract for LLM context and provider usage
+  rules. It can explain why and when to use a provider, but runtime must never
+  parse config schema from body tables.
+- `README.md`: human-facing package docs for developers and operators.
 
 ---
 
@@ -107,7 +122,9 @@ providers/<provider-name>/
 
 ### Configuration Schema
 
-Providers are configured in `atlasclaw.json` under `service_providers`:
+Provider instances are configured in `atlasclaw.json` under
+`service_providers`. The allowed fields and defaults for provider management UI
+come from the provider's `provider.schema.json` manifest:
 
 ```json
 {
@@ -135,28 +152,85 @@ Providers are configured in `atlasclaw.json` under `service_providers`:
 | `api_version` | API version to use | Optional |
 | `default_project` | Default project/key | Optional |
 
+Core owns the standard auth mode names, such as `provider_token`, `user_token`,
+`cookie`, and `credential`. Each provider manifest declares which config fields
+are required for each mode. Username/password-style auth uses canonical
+`username` + `password`; API tokens for username/password-style systems should
+be stored in `password` with provider-specific label text.
+
+### provider.schema.json Manifest
+
+AtlasClaw looks for the fixed filename `provider.schema.json` next to
+`PROVIDER.md`. If the manifest is missing, provider skills still load, but the
+provider is absent from `/api/service-providers/definitions` and config UI,
+defaults, schema validation, aliases, sensitive flags, and optional
+provider-specific redaction hints are not available for that provider.
+
+Minimal shape:
+
+```json
+{
+  "schema_version": 1,
+  "provider_type": "ticketing",
+  "catalog": {
+    "display_name": "Ticketing",
+    "badge": "ISSUE",
+    "icon": "TK",
+    "icon_path": "assets/icon.svg",
+    "accent": "#0052cc",
+    "description": "Ticketing workflow provider."
+  },
+  "config_schema": {
+    "default_auth_type": "credential",
+    "auth_modes": {
+      "credential": {
+        "required_fields": ["username", "password"]
+      }
+    },
+    "fields": [
+      {
+        "name": "base_url",
+        "type": "url",
+        "required": true,
+        "scope": "instance",
+        "label": "Base URL"
+      },
+      {
+        "name": "password",
+        "type": "password",
+        "required": true,
+        "sensitive": true,
+        "scope": "instance",
+        "auth_types": ["credential"],
+        "label": "Password / API Token"
+      }
+    ]
+  }
+}
+```
+
 ### Environment Variables
 
 Sensitive configuration should use environment variables:
 
 ```json
 {
-  "password": "${JIRA_PASSWORD}"
+  "password": "${TICKETING_PASSWORD}"
 }
 ```
 
 Set in environment:
 ```bash
-export JIRA_PASSWORD="your-secure-password"
+export TICKETING_PASSWORD="your-secure-password"
 ```
 
 ---
 
 ## PROVIDER.md Structure
 
-Each provider requires a `PROVIDER.md` file that serves two purposes:
-1. **Human documentation** - Connection parameters, configuration examples
-2. **LLM context** - Semantic information for skill discovery
+Each provider requires a `PROVIDER.md` file for LLM context and provider usage
+rules. Human package documentation belongs in `README.md`; machine-readable
+config schema belongs in `provider.schema.json`.
 
 ### Frontmatter Schema
 
@@ -165,7 +239,7 @@ The PROVIDER.md file uses YAML frontmatter to define LLM context fields:
 ```yaml
 ---
 # === Required Fields ===
-provider_type: jira              # Unique identifier (must match directory name)
+provider_type: jira              # Stable runtime identifier
 display_name: Jira               # Human-readable name
 version: "1.0.0"                 # Provider version
 
@@ -645,12 +719,11 @@ Providers can be deployed to multiple locations:
 **Location**: `app/atlasclaw/providers/<provider-name>/`
 
 **Characteristics**:
-- Shipped with AtlasClaw Core
-- Core integrations (Jira, etc.)
-- Updated with Core releases
-- Always available
+- Reserved for core-owned internal integrations only
+- Concrete enterprise service providers should live under `providers_root`
+- Core channels, such as DingTalk channel support, are not service providers
 
-**Use Case**: Essential system integrations maintained by the Core team.
+**Use Case**: Rare core-owned integration points that are not external provider packages.
 
 #### 2. External Providers (Recommended)
 
@@ -693,14 +766,14 @@ Providers can be deployed to multiple locations:
 AtlasClaw discovers Providers through this process:
 
 1. **Search Path Resolution**
-   - Scan built-in Providers directory
-   - Scan workspace Providers directory
-   - Scan user Providers directory
+   - Resolve `providers_root` from `atlasclaw.json`
+   - Scan direct child directories under `providers_root`
 
 2. **Provider Detection**
    - Look for `PROVIDER.md` in each subdirectory
-   - Parse Provider metadata
-   - Validate required fields
+   - Parse LLM-facing Provider metadata from frontmatter
+   - Look for fixed sibling file `provider.schema.json`
+   - Load provider definitions/config UI metadata only from `provider.schema.json`
 
 3. **Skill Discovery**
    - Scan `skills/` subdirectory
@@ -713,9 +786,10 @@ AtlasClaw discovers Providers through this process:
 1. Clear Provider registry
 2. Scan all Provider locations
 3. Load Provider metadata
-4. Discover and load Skills
-5. Register Skills to Agent
-6. Log loaded Providers and Skills
+4. Load `provider.schema.json` when present
+5. Discover and load Skills
+6. Register Skills to Agent
+7. Log loaded Providers and Skills
 
 **Dynamic Loading**:
 - File system watchers detect changes
@@ -758,7 +832,9 @@ Create the Provider structure:
 ```
 providers/my-provider/
 ├── PROVIDER.md
+├── provider.schema.json
 ├── README.md
+├── assets/
 └── skills/
     └── my-skill/
         ├── SKILL.md
@@ -769,10 +845,16 @@ providers/my-provider/
 #### Step 2: Write Documentation
 
 Create `PROVIDER.md` with:
-- Provider metadata
-- Supported versions
-- Authentication methods
-- Available Skills
+- LLM-facing provider metadata
+- supported versions
+- when to use or avoid this provider
+- available Skills
+
+Create `provider.schema.json` with:
+- catalog display metadata and optional icon path
+- config fields, defaults, labels, placeholders, scopes, sensitive flags, and aliases
+- auth modes mapped to required fields
+- optional provider-specific redaction hints
 
 #### Step 3: Implement Skills
 

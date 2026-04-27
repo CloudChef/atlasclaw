@@ -81,19 +81,9 @@ def _validate_instance_auth_type(
     config: dict[str, Any],
 ) -> None:
     """Validate configured provider auth_type against the core auth type registry."""
-    from app.atlasclaw.api.service_provider_schemas import (
-        get_provider_schema_definition,
-        normalize_provider_auth_type_chain,
-    )
+    from app.atlasclaw.api.service_provider_schemas import validate_provider_instance_auth_type
 
-    definition = get_provider_schema_definition(provider_type)
-    fallback = definition.default_auth_type if definition is not None else None
-    try:
-        normalize_provider_auth_type_chain(config.get("auth_type"), fallback=fallback)
-    except ValueError as exc:
-        raise ValueError(
-            f"Skipping provider instance {provider_type}.{instance_name}: {exc}"
-        ) from exc
+    validate_provider_instance_auth_type(provider_type, instance_name, config)
 
 
 @dataclass
@@ -128,6 +118,7 @@ class ServiceProviderRegistry:
         self._templates: dict[str, ProviderTemplate] = {}
         self._instances: dict[str, dict[str, dict[str, Any]]] = {}
         self._contexts: dict[str, ProviderContext] = {}  # LLM context for each provider
+        self._schema_definitions: dict[str, Any] = {}
 
     def load_from_directory(self, providers_dir: Path) -> int:
         """Load provider templates from a providers directory."""
@@ -135,6 +126,8 @@ class ServiceProviderRegistry:
         if not providers_dir.is_dir():
             logger.debug("providers directory does not exist: %s", providers_dir)
             return 0
+
+        from app.atlasclaw.api.service_provider_schemas import load_provider_directory_schema
 
         count = 0
         for sub in sorted(providers_dir.iterdir()):
@@ -168,6 +161,18 @@ class ServiceProviderRegistry:
                     len(context.keywords),
                     len(context.capabilities),
                 )
+
+            try:
+                schema_definition = load_provider_directory_schema(sub, context=context)
+            except Exception as exc:
+                logger.warning("Skipping provider schema %s: %s", sub, exc)
+            else:
+                if schema_definition is not None:
+                    self._schema_definitions[schema_definition.provider_type] = schema_definition
+                    logger.debug(
+                        "Loaded provider schema: %s",
+                        schema_definition.provider_type,
+                    )
             
             count += 1
             logger.info("Discovered provider: %s (%s)", sub.name, md_path.name)
@@ -258,6 +263,17 @@ class ServiceProviderRegistry:
             Dictionary mapping provider_type to ProviderContext
         """
         return dict(self._contexts)
+
+    def get_provider_schema_definition(self, provider_type: str) -> Any:
+        """Get machine-readable provider manifest schema for a provider."""
+        normalized = str(provider_type or "").strip().lower()
+        if not normalized:
+            return None
+        return self._schema_definitions.get(normalized)
+
+    def get_all_provider_schema_definitions(self) -> dict[str, Any]:
+        """Get all loaded machine-readable provider manifest schemas."""
+        return dict(self._schema_definitions)
 
     def load_instances_from_config(self, config: dict[str, dict[str, Any]]) -> None:
         """Load provider instance configuration from atlasclaw config."""

@@ -189,18 +189,18 @@ Configure enterprise system instances the Agent can integrate with:
 ```json
 {
   "service_providers": {
-    "jira": {
+    "ticketing": {
       "prod": {
-        "base_url": "https://jira.corp.com",
-        "username": "${JIRA_USERNAME}",
-        "token": "${JIRA_PROD_TOKEN}",
+        "base_url": "https://ticketing.corp.com",
+        "username": "${TICKETING_USERNAME}",
+        "password": "${TICKETING_PROD_TOKEN}",
         "api_version": "2",
         "default_project": "PROJ"
       },
       "dev": {
-        "base_url": "https://jira-dev.corp.com",
-        "username": "${JIRA_USERNAME}",
-        "token": "${JIRA_DEV_TOKEN}",
+        "base_url": "https://ticketing-dev.corp.com",
+        "username": "${TICKETING_USERNAME}",
+        "password": "${TICKETING_DEV_TOKEN}",
         "api_version": "2",
         "default_project": "DEV"
       }
@@ -399,7 +399,7 @@ Content-Type: application/json
 
 {
   "session_key": "main:api:dm:default",
-  "message": "List all open Jira issues assigned to me",
+  "message": "List all open work items assigned to me",
   "timeout_seconds": 600
 }
 ```
@@ -565,7 +565,9 @@ provider repository owns concrete provider behavior and examples.
 ```
 <providers_root>/<provider-name>/
 ├── PROVIDER.md
+├── provider.schema.json
 ├── README.md
+├── assets/
 └── skills/
     └── <skill-name>/
         ├── SKILL.md
@@ -578,7 +580,7 @@ Core documentation covers:
 
 - loading providers from `providers_root`
 - system-level skills and channels owned by core
-- provider metadata and configuration contracts
+- provider metadata, manifest, and configuration contracts
 - runtime behavior such as instance selection and permission propagation
 
 Provider repositories cover:
@@ -587,10 +589,16 @@ Provider repositories cover:
 - provider-specific fields and workflow semantics
 - provider-specific UI copy, webhook examples, and operator guidance
 
+`provider.schema.json` is the machine-readable provider manifest consumed by
+runtime/API/UI code and code-analysis agents. `PROVIDER.md` is the natural
+language provider contract included in LLM context. `README.md` is package
+documentation for humans. Runtime must never parse UI/config schema from
+`PROVIDER.md` body tables.
+
 ### 8.3 Adding A Custom Provider
 
 1. Create the package under `providers_root`
-2. Add `PROVIDER.md` and provider-owned skills
+2. Add `PROVIDER.md`, `provider.schema.json`, and provider-owned skills
 3. Register instances under `service_providers`
 4. Restart or reload AtlasClaw so the package is discovered
 

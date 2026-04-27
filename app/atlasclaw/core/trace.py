@@ -337,30 +337,15 @@ def _is_sensitive_log_key(
     if _is_sensitive_key(normalized) or _is_sensitive_provider_config_key(normalized):
         return True
 
-    definition = _get_provider_schema_definition(provider_type)
-    if definition is None:
-        return False
-
-    defaults = dict(field_defaults) if isinstance(field_defaults, Mapping) else None
-    for field in definition.resolve_fields(
-        field_defaults=defaults,
-        filter_by_auth_type=False,
-    ):
-        if str(field.name or "").strip().lower() != normalized:
-            continue
-        return bool(field.sensitive or field.type == "password")
-    return False
-
-
-def _get_provider_schema_definition(provider_type: str):
-    normalized = str(provider_type or "").strip().lower()
-    if not normalized:
-        return None
     try:
-        from app.atlasclaw.api.service_provider_schemas import get_provider_schema_definition
+        from app.atlasclaw.api.service_provider_schemas import is_provider_config_field_sensitive
     except Exception:
-        return None
-    return get_provider_schema_definition(normalized)
+        return False
+    return is_provider_config_field_sensitive(
+        provider_type,
+        normalized,
+        field_defaults=field_defaults,
+    )
 
 
 def _truncate_text(value: str, *, max_string_chars: int) -> str:

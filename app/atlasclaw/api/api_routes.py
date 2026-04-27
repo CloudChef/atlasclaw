@@ -75,6 +75,7 @@ from app.atlasclaw.auth.guards import (
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.api.service_provider_schemas import (
     get_provider_schema_definition,
+    is_provider_config_field_sensitive,
     normalize_provider_config,
     normalize_provider_auth_type_chain,
     serialize_provider_auth_type,
@@ -568,26 +569,11 @@ def _normalize_user_provider_config(
 
 def _is_sensitive_provider_config_field(provider_type: str, field_name: str) -> bool:
     """Return True when a provider config field should never be echoed back to the UI."""
-    normalized_field_name = str(field_name or "").strip().lower()
-    if not normalized_field_name:
-        return False
-    compact_field_name = "".join(
-        char for char in normalized_field_name if char.isalnum()
+    return is_provider_config_field_sensitive(
+        provider_type,
+        field_name,
+        key_fragments=SENSITIVE_PROVIDER_CONFIG_KEY_FRAGMENTS,
     )
-    if any(
-        fragment in normalized_field_name or fragment in compact_field_name
-        for fragment in SENSITIVE_PROVIDER_CONFIG_KEY_FRAGMENTS
-    ):
-        return True
-
-    definition = get_provider_schema_definition(provider_type)
-    if definition is None:
-        return False
-
-    for field in definition.resolve_fields(filter_by_auth_type=False):
-        if field.name == normalized_field_name:
-            return bool(field.sensitive or field.type == "password")
-    return False
 
 
 def _redact_user_provider_config(

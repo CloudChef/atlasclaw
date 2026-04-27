@@ -52,9 +52,12 @@ Every callable tool must be normalized to:
 | `category` | string | no | informational |
 | `location` | string | no | `built-in`, `provider`, `workspace`, `user`, etc. |
 
-## 3. Provider Metadata Contract (PROVIDER.md)
+## 3. Provider Metadata Contract (PROVIDER.md and provider.schema.json)
 
-Provider identity and discovery metadata live in `PROVIDER.md` frontmatter.
+Provider LLM routing metadata lives in `PROVIDER.md` frontmatter. Runtime/API/UI
+configuration metadata lives in the fixed sibling file `provider.schema.json`.
+Runtime must not parse config schema, auth fields, labels, placeholders, icons,
+or redaction rules from `PROVIDER.md` body tables.
 
 ### 3.1 Required provider keys
 
@@ -93,6 +96,35 @@ use_when:
 avoid_when:
   - user asks generic internet questions
 ---
+```
+
+### 3.4 Provider manifest example
+
+```json
+{
+  "schema_version": 1,
+  "provider_type": "smartcmp",
+  "catalog": {
+    "display_name": "SmartCMP",
+    "badge": "CMP",
+    "icon": "SC",
+    "icon_path": "assets/icon.svg",
+    "accent": "#0f766e",
+    "description": "Enterprise CMP workflow provider."
+  },
+  "config_schema": {
+    "default_auth_type": "user_token",
+    "auth_modes": {
+      "user_token": { "required_fields": ["user_token"] },
+      "credential": { "required_fields": ["username", "password"] }
+    },
+    "fields": [
+      { "name": "base_url", "type": "url", "required": true, "scope": "instance" },
+      { "name": "auth_type", "type": "hidden", "default": "user_token", "scope": "instance" },
+      { "name": "user_token", "type": "password", "required": true, "sensitive": true, "scope": "user", "auth_types": ["user_token"] }
+    ]
+  }
+}
 ```
 
 ## 4. Skill Metadata Contract (SKILL.md)
@@ -240,6 +272,8 @@ All tool types (builtin/provider/skills) appear in one list and one loop.
 1. edit `providers/<provider>/PROVIDER.md` frontmatter
 2. set `provider_type`, `display_name`, `version`
 3. add `keywords/capabilities/use_when/avoid_when`
+4. edit `providers/<provider>/provider.schema.json`
+5. set catalog metadata, config fields, auth modes, aliases, defaults, sensitive flags, and optional redaction hints
 
 ### 7.2 Add skill metadata
 
@@ -285,7 +319,7 @@ To avoid breaking existing skill packages:
 
 All tools must follow the same contract and same loop semantics.
 
-## 11. Complete Provider Metadata Schema (PROVIDER.md)
+## 11. Complete Provider Metadata Schema
 
 This section is normative for provider frontmatter keys.
 

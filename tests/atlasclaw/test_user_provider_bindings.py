@@ -5,11 +5,65 @@ from __future__ import annotations
 
 import pytest
 
+from app.atlasclaw.api.service_provider_schemas import (
+    ProviderAuthModeDefinition,
+    ProviderSchemaDefinition,
+    ProviderSchemaField,
+    clear_provider_schema_definitions,
+    register_provider_schema_definition,
+)
 from app.atlasclaw.core.user_provider_bindings import (
     build_user_provider_instances,
     build_resolved_provider_instances,
     resolve_provider_instance_config,
 )
+from tests.atlasclaw.provider_schema_fixtures import managed_provider_definition
+
+
+@pytest.fixture(autouse=True)
+def provider_manifests() -> None:
+    clear_provider_schema_definitions()
+    register_provider_schema_definition(
+        managed_provider_definition(
+            provider_type="smartcmp",
+            display_name="SmartCMP",
+            default_base_url="https://cmp.example.com",
+        )
+    )
+    yield
+    clear_provider_schema_definitions()
+
+
+@pytest.fixture
+def generic_provider_schema() -> None:
+    register_provider_schema_definition(
+        ProviderSchemaDefinition(
+            provider_type="generic",
+            display_name="Generic",
+            default_auth_type=("sso", "user_token"),
+            auth_modes={
+                "sso": ProviderAuthModeDefinition(required_fields=()),
+                "cookie": ProviderAuthModeDefinition(required_fields=("cookie",)),
+                "user_token": ProviderAuthModeDefinition(required_fields=("user_token",)),
+            },
+            fields=(
+                ProviderSchemaField(name="base_url", required=True),
+                ProviderSchemaField(name="auth_type", type="hidden", default=("sso", "user_token")),
+                ProviderSchemaField(
+                    name="cookie",
+                    type="password",
+                    sensitive=True,
+                    auth_types=("cookie",),
+                ),
+                ProviderSchemaField(
+                    name="user_token",
+                    type="password",
+                    sensitive=True,
+                    auth_types=("user_token",),
+                ),
+            ),
+        )
+    )
 
 
 def test_resolve_provider_instance_config_prefers_first_usable_auth_mode() -> None:
@@ -29,7 +83,9 @@ def test_resolve_provider_instance_config_prefers_first_usable_auth_mode() -> No
     assert "user_token" not in resolved
 
 
-def test_resolve_provider_instance_config_falls_back_to_user_token_when_sso_missing() -> None:
+def test_resolve_provider_instance_config_falls_back_to_user_token_when_sso_missing(
+    generic_provider_schema,
+) -> None:
     resolved = resolve_provider_instance_config(
         "generic",
         "default",
@@ -92,7 +148,9 @@ def test_resolve_provider_instance_config_uses_request_scoped_cookie() -> None:
     assert "provider_token" not in resolved
 
 
-def test_resolve_provider_instance_config_uses_sso_and_strips_persisted_auth_fields() -> None:
+def test_resolve_provider_instance_config_uses_sso_and_strips_persisted_auth_fields(
+    generic_provider_schema,
+) -> None:
     resolved = resolve_provider_instance_config(
         "generic",
         "default",
@@ -114,7 +172,9 @@ def test_resolve_provider_instance_config_uses_sso_and_strips_persisted_auth_fie
     assert "user_token" not in resolved
 
 
-def test_resolve_provider_instance_config_raises_when_chain_has_no_usable_auth() -> None:
+def test_resolve_provider_instance_config_raises_when_chain_has_no_usable_auth(
+    generic_provider_schema,
+) -> None:
     with pytest.raises(ValueError, match="no usable auth mode"):
         resolve_provider_instance_config(
             "generic",

@@ -10,8 +10,6 @@ from pathlib import Path
 from typing import Any, Optional
 
 from app.atlasclaw.api.service_provider_schemas import (
-    PROVIDER_AUTH_FIELD_NAMES,
-    PROVIDER_AUTH_REQUIRED_FIELDS,
     get_provider_schema_definition,
     normalize_provider_config,
     normalize_provider_auth_type_chain,
@@ -98,37 +96,37 @@ def _filter_user_config(user_config: Optional[dict[str, Any]]) -> dict[str, Any]
 
 
 def _is_auth_mode_usable(
+    provider_type: str,
     auth_type: str,
     config: dict[str, Any],
     runtime_context: dict[str, Any],
 ) -> bool:
+    definition = get_provider_schema_definition(provider_type)
+    if definition is not None:
+        return definition.is_auth_mode_usable(auth_type, config, runtime_context)
+
     if auth_type == "sso":
         return bool(runtime_context.get("provider_sso_available")) and not _is_blank(
             runtime_context.get("provider_sso_token")
         )
     if auth_type == "cookie" and bool(runtime_context.get("provider_cookie_available")):
         return not _is_blank(runtime_context.get("provider_cookie_token"))
-
-    required_fields = PROVIDER_AUTH_REQUIRED_FIELDS.get(auth_type, ())
-    return all(not _is_blank(config.get(field_name)) for field_name in required_fields)
+    return True
 
 
 def _strip_non_selected_auth_fields(
+    provider_type: str,
     config: dict[str, Any],
     selected_auth_type: str,
 ) -> dict[str, Any]:
-    """Remove credentials for inactive auth modes before passing config to tools."""
-    selected_fields = set(PROVIDER_AUTH_REQUIRED_FIELDS.get(selected_auth_type, ()))
+    definition = get_provider_schema_definition(provider_type)
+    if definition is not None:
+        return definition.strip_auth_fields_for_runtime(config, selected_auth_type)
+
     runtime_config: dict[str, Any] = {"auth_type": selected_auth_type}
-
     for key, value in config.items():
-        normalized_key = str(key or "").strip().lower()
-        if normalized_key == "auth_type":
-            continue
-        if normalized_key in PROVIDER_AUTH_FIELD_NAMES and normalized_key not in selected_fields:
-            continue
-        runtime_config[key] = value
-
+        if str(key or "").strip().lower() != "auth_type":
+            runtime_config[key] = value
     return runtime_config
 
 
@@ -243,7 +241,12 @@ def resolve_provider_instance_config(
         (
             auth_type
             for auth_type in auth_chain
-            if _is_auth_mode_usable(auth_type, normalized_config, normalized_runtime_context)
+            if _is_auth_mode_usable(
+                provider_type,
+                auth_type,
+                normalized_config,
+                normalized_runtime_context,
+            )
         ),
         "",
     )
@@ -253,7 +256,11 @@ def resolve_provider_instance_config(
             f"Provider binding '{binding_value}' has no usable auth mode in chain [{attempted_auth_chain}]"
         )
 
-    runtime_config = _strip_non_selected_auth_fields(normalized_config, selected_auth_type)
+    runtime_config = _strip_non_selected_auth_fields(
+        provider_type,
+        normalized_config,
+        selected_auth_type,
+    )
     if selected_auth_type == "cookie":
         runtime_cookie_token = normalized_runtime_context.get("provider_cookie_token")
         if not _is_blank(runtime_cookie_token):
