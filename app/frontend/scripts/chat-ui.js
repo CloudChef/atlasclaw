@@ -32,6 +32,19 @@ const IME_ENTER_GUARD_MS = 150
 const SCROLL_THRESHOLD = 50
 const CHAT_INPUT_FOCUS_RETRY_ATTEMPTS = 100
 const CHAT_INPUT_FOCUS_RETRY_DELAY_MS = 100
+const USER_MESSAGE_COPY_RETRY_DELAY_MS = 250
+const USER_MESSAGE_COPY_RESET_MS = 1200
+
+const COPY_MESSAGE_ICON = `
+<svg class="atlas-user-message-copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+  <rect x="8" y="8" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
+  <path d="M5 15V7a2 2 0 0 1 2-2h8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"></path>
+</svg>`
+
+const COPIED_MESSAGE_ICON = `
+<svg class="atlas-user-message-copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+  <path d="M20 6 9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>`
 
 function clearImeEnterGuard() {
   blockNextEnterAfterComposition = false
@@ -128,10 +141,14 @@ function attachImeGuardListeners(target) {
 
 function getMessageContainer() {
   const dc = document.querySelector('deep-chat')
-  if (!dc?.shadowRoot) return null
-  return dc.shadowRoot.querySelector('.messages-container') ||
-    dc.shadowRoot.querySelector('#messages') ||
-    dc.shadowRoot.querySelector('[class*="message-container"]')
+  return getMessageContainerForElement(dc)
+}
+
+function getMessageContainerForElement(element) {
+  if (!element?.shadowRoot) return null
+  return element.shadowRoot.querySelector('.messages-container') ||
+    element.shadowRoot.querySelector('#messages') ||
+    element.shadowRoot.querySelector('[class*="message-container"]')
 }
 
 function getChatInputElement(element = chatElement) {
@@ -241,6 +258,151 @@ function setupCompositionListeners() {
   }
 }
 
+function getTranslatedChatLabel(key, fallback) {
+  return translateIfExists(key) || fallback
+}
+
+function scheduleUserMessageCopySetup(element) {
+  if (!element || element.nodeType !== 1 || element._userMessageCopySetupTimer) return
+  element._userMessageCopySetupTimer = setTimeout(() => {
+    element._userMessageCopySetupTimer = null
+    setupUserMessageCopyActions(element)
+  }, USER_MESSAGE_COPY_RETRY_DELAY_MS)
+}
+
+function setupUserMessageCopyActions(element = chatElement) {
+  if (!element?.shadowRoot) {
+    scheduleUserMessageCopySetup(element)
+    return false
+  }
+
+  const container = getMessageContainerForElement(element)
+  if (!container) {
+    scheduleUserMessageCopySetup(element)
+    return false
+  }
+
+  decorateUserMessagesWithCopy(container)
+  if (typeof MutationObserver === 'undefined') return true
+  if (container._userMessageCopyObserver) return true
+
+  const observer = new MutationObserver(() => {
+    decorateUserMessagesWithCopy(container)
+  })
+  observer.observe(container, { childList: true, subtree: true })
+  container._userMessageCopyObserver = observer
+  return true
+}
+
+function decorateUserMessagesWithCopy(container) {
+  if (!container) return
+  const userBubbles = container.querySelectorAll('.message-bubble.user-message-text, .user-message-text')
+  userBubbles.forEach((bubble) => {
+    if (!bubble || bubble.dataset?.copyEnhanced === 'true') {
+      refreshUserMessageCopyButtonLabels(bubble?.nextElementSibling)
+      return
+    }
+
+    const button = createUserMessageCopyButton(bubble)
+    bubble.insertAdjacentElement('afterend', button)
+    bubble.dataset.copyEnhanced = 'true'
+  })
+}
+
+function createUserMessageCopyButton(messageBubble) {
+  const button = document.createElement('button')
+  button.type = 'button'
+  button.className = 'atlas-user-message-copy-btn'
+  button.innerHTML = COPY_MESSAGE_ICON
+  applyUserMessageCopyButtonLabels(button)
+
+  button.addEventListener('click', async (event) => {
+    event.preventDefault()
+    event.stopPropagation()
+
+    const text = readUserMessageText(messageBubble)
+    if (!text) return
+
+    const copied = await copyTextToClipboard(text)
+    if (copied) {
+      showUserMessageCopySuccess(button)
+    }
+  })
+
+  return button
+}
+
+function refreshUserMessageCopyButtonLabels(button) {
+  if (!button?.classList?.contains('atlas-user-message-copy-btn')) return
+  applyUserMessageCopyButtonLabels(button)
+}
+
+function applyUserMessageCopyButtonLabels(button) {
+  const label = getTranslatedChatLabel('chat.copyMessage', 'Copy message')
+  button.title = label
+  button.setAttribute('aria-label', label)
+}
+
+function readUserMessageText(messageBubble) {
+  const renderedText = typeof messageBubble?.innerText === 'string'
+    ? messageBubble.innerText
+    : messageBubble?.textContent || ''
+  return String(renderedText).replace(/\r?\n$/, '')
+}
+
+async function copyTextToClipboard(text) {
+  const clipboard = typeof navigator !== 'undefined' ? navigator.clipboard : null
+  if (clipboard?.writeText) {
+    try {
+      await clipboard.writeText(text)
+      return true
+    } catch (error) {
+      console.warn('[ChatUI] Clipboard API copy failed, falling back:', error)
+    }
+  }
+
+  return fallbackCopyText(text)
+}
+
+function fallbackCopyText(text) {
+  if (!document?.body || typeof document.execCommand !== 'function') {
+    return false
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', '')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  textarea.style.top = '0'
+  document.body.appendChild(textarea)
+  textarea.focus()
+  textarea.select()
+
+  try {
+    return document.execCommand('copy')
+  } catch (error) {
+    console.warn('[ChatUI] Fallback copy failed:', error)
+    return false
+  } finally {
+    textarea.remove()
+  }
+}
+
+function showUserMessageCopySuccess(button) {
+  button.classList.add('copied')
+  button.innerHTML = COPIED_MESSAGE_ICON
+  applyUserMessageCopyButtonLabels(button)
+
+  clearTimeout(button._copyResetTimer)
+  button._copyResetTimer = setTimeout(() => {
+    button.classList.remove('copied')
+    button.innerHTML = COPY_MESSAGE_ICON
+    applyUserMessageCopyButtonLabels(button)
+    button._copyResetTimer = null
+  }, USER_MESSAGE_COPY_RESET_MS)
+}
+
 function getLatestRuntimePanel(container) {
   if (!container) return null
   const panels = container.querySelectorAll('details.runtime-panel')
@@ -336,12 +498,30 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-content ul,.response-content ol{margin:0 0 12px 20px;padding:0}
 .response-content li{margin:4px 0;line-height:1.7}
 .response-content h1,.response-content h2,.response-content h3{margin:0 0 10px 0;line-height:1.4}
+.outer-message-container:has(.response-table-wrap){padding-left:8%!important;padding-right:8%!important}
+.outer-message-container:has(.response-table-wrap) .inner-message-container{width:100%!important;max-width:100%!important}
+.message-bubble.ai-message:has(.response-table-wrap){width:100%!important;max-width:100%!important}
+.response-table-wrap{width:100%;overflow-x:auto;margin:4px 0 14px 0;border:1px solid #e2e8f0;border-radius:10px;background:#fff}
+.response-table{width:100%;min-width:860px;border-collapse:separate;border-spacing:0;font-size:13px;line-height:1.45;color:#1f2937}
+.response-table th,.response-table td{padding:9px 10px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top;white-space:nowrap}
+.response-table th{position:sticky;top:0;background:#f8fafc;color:#475569;font-size:12px;font-weight:700}
+.response-table td{font-variant-numeric:tabular-nums}
+.response-table td.response-table-number{text-align:right}
+.response-table tr:last-child td{border-bottom:0}
+.response-table tbody tr:nth-child(even) td{background:#fbfdff}
 .response-content pre{margin:0 0 12px 0;padding:18px 20px;overflow-x:auto;border-radius:16px;background:#1e293b;color:#e2e8f0}
 .response-content code{padding:2px 6px;border-radius:6px;background:#eef2f7;font-size:.95em}
 .response-content pre code{display:block;padding:0;border-radius:0;background:transparent;color:inherit;font-size:13px;line-height:1.7;white-space:pre;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace}
 .response-content a{color:#2563eb;text-decoration:none}
 .response-content a:hover{text-decoration:underline}
 .message-wrapper{display:flex;flex-direction:column;gap:12px}
+.atlas-user-message-copy-btn{width:30px;height:30px;margin-top:12px;margin-left:8px;border:1px solid rgba(148,163,184,.34);border-radius:999px;background:rgba(255,255,255,.92);color:#64748b;box-shadow:0 10px 24px rgba(15,23,42,.10);display:inline-flex;align-items:center;justify-content:center;flex:0 0 30px;cursor:pointer;opacity:0;pointer-events:none;transform:translateY(2px) scale(.96);transition:opacity .16s ease,transform .16s ease,color .16s ease,border-color .16s ease,background .16s ease}
+.atlas-user-message-copy-btn:hover{color:#1f2937;border-color:rgba(124,131,253,.46);background:#ffffff}
+.atlas-user-message-copy-btn:focus-visible{outline:2px solid rgba(124,131,253,.52);outline-offset:2px}
+.atlas-user-message-copy-btn.copied{color:#16a34a;border-color:rgba(22,163,74,.30);background:#ecfdf5}
+.atlas-user-message-copy-icon{width:15px;height:15px;display:block}
+.inner-message-container:hover>.atlas-user-message-copy-btn,.atlas-user-message-copy-btn:focus-visible,.atlas-user-message-copy-btn.copied{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}
+@media (hover:none){.atlas-user-message-copy-btn{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}}
 `
 
 export async function initChat(element, callbacks = {}) {
@@ -361,8 +541,10 @@ export async function initChat(element, callbacks = {}) {
   // Set up IME composition handling for macOS/Asian input
   setupCompositionListeners()
   setupSlashCapabilityPicker(element)
+  setupUserMessageCopyActions(element)
   
   await activateSession(getSessionKey())
+  setupUserMessageCopyActions(element)
   focusChatInput()
 
   console.log('[ChatUI] Initialized')
@@ -823,6 +1005,71 @@ function renderInlineMarkdown(line) {
   return html
 }
 
+function splitMarkdownTableRow(line) {
+  const raw = normalizeMarkdownTableLine(line)
+  if (!raw.includes('|')) return null
+
+  let row = raw
+  if (row.startsWith('|')) row = row.slice(1)
+  if (row.endsWith('|')) row = row.slice(0, -1)
+
+  const cells = []
+  let current = ''
+  let escaped = false
+  for (const char of row) {
+    if (escaped) {
+      current += char
+      escaped = false
+      continue
+    }
+    if (char === '\\') {
+      escaped = true
+      continue
+    }
+    if (char === '|') {
+      cells.push(current.trim())
+      current = ''
+      continue
+    }
+    current += char
+  }
+  cells.push(current.trim())
+
+  return cells.length >= 2 ? cells : null
+}
+
+function normalizeMarkdownTableLine(line) {
+  const raw = String(line || '').trim()
+  if (!raw.includes('|')) return raw
+
+  const listRowMatch = /^[-*]\s+(.+\|.*)$/.exec(raw)
+  if (listRowMatch) return listRowMatch[1].trim()
+
+  return raw
+}
+
+function isMarkdownTableSeparator(cells) {
+  return Array.isArray(cells) &&
+    cells.length >= 2 &&
+    cells.every((cell) => /^:?-{3,}:?$/.test(String(cell || '').trim()))
+}
+
+function renderMarkdownTable(headerCells, bodyRows) {
+  const headerHtml = headerCells
+    .map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`)
+    .join('')
+  const rowsHtml = bodyRows.map((row) => {
+    const cells = headerCells.map((_header, index) => {
+      const cell = row[index] || ''
+      const numberClass = /^-?\d+(?:\.\d+)?$/.test(cell) ? ' class="response-table-number"' : ''
+      return `<td${numberClass}>${renderInlineMarkdown(cell)}</td>`
+    }).join('')
+    return `<tr>${cells}</tr>`
+  }).join('')
+
+  return `<div class="response-table-wrap"><table class="response-table"><thead><tr>${headerHtml}</tr></thead><tbody>${rowsHtml}</tbody></table></div>`
+}
+
 function renderAssistantMarkdown(text) {
   const cleaned = stripWrapperHeading(text || '')
   const escaped = escapeHtml(cleaned).replace(/\r\n/g, '\n')
@@ -889,6 +1136,28 @@ function renderAssistantMarkdown(text) {
     }
 
     const nextLine = (lines[index + 1] || '').trim()
+    const headerCells = splitMarkdownTableRow(line)
+    const separatorCells = splitMarkdownTableRow(nextLine)
+    if (headerCells && isMarkdownTableSeparator(separatorCells)) {
+      flushParagraph()
+      flushList()
+      const bodyRows = []
+      let rowIndex = index + 2
+      while (rowIndex < lines.length) {
+        const candidateLine = (lines[rowIndex] || '').trim()
+        if (!candidateLine) break
+        const rowCells = splitMarkdownTableRow(candidateLine)
+        if (!rowCells || isMarkdownTableSeparator(rowCells) || rowCells.length < headerCells.length) break
+        bodyRows.push(rowCells)
+        rowIndex += 1
+      }
+      if (bodyRows.length) {
+        htmlParts.push(renderMarkdownTable(headerCells, bodyRows))
+        index = rowIndex - 1
+        continue
+      }
+    }
+
     if (
       line &&
       !/^(#{1,3})\s+/.test(line) &&

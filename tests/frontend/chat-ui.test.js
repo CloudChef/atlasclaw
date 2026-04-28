@@ -13,6 +13,11 @@ jest.mock('../../app/frontend/scripts/config.js', () => ({
 
 jest.mock('../../app/frontend/scripts/i18n.js', () => ({
     t: jest.fn((key) => key),
+    translateIfExists: jest.fn((key) => ({
+        'chat.placeholder': 'Enter your question...',
+        'chat.copyMessage': 'Copy message'
+    })[key] || null),
+    getCurrentLocale: jest.fn(() => 'en-US'),
     isLocaleLoaded: jest.fn(() => false)
 }));
 
@@ -140,6 +145,23 @@ function setEditableText(input, text) {
     selection.removeAllRanges();
     selection.addRange(range);
     input.dispatchEvent(new Event('input', { bubbles: true }));
+}
+
+function appendRenderedMessage(messages, role, text) {
+    const outer = document.createElement('div');
+    outer.className = 'outer-message-container';
+    const bubbleClass = role === 'user' ? 'user-message-text' : 'ai-message-text';
+    outer.innerHTML = `
+        <div class="inner-message-container">
+            <div class="message-bubble ${bubbleClass}">${text}</div>
+        </div>
+    `;
+    messages.appendChild(outer);
+    return outer.querySelector('.message-bubble');
+}
+
+function waitForMutationObserver() {
+    return new Promise(resolve => setTimeout(resolve, 0));
 }
 
 describe('chat-ui.js handler mode', () => {
@@ -278,6 +300,128 @@ describe('chat-ui.js handler mode', () => {
         expect(typeof element.handler).toBe('function');
         expect(element.auxiliaryStyle).not.toContain('#text-input-container { border: none !important; background: transparent !important; box-shadow: none !important; }');
         expect(element.auxiliaryStyle).not.toContain('#input { background: transparent !important; }');
+    });
+
+    test('decorates only user messages with a localized copy action', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const { initChat, cancelChatInputFocusRetry } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ messages: [] })
+            });
+
+        try {
+            await initChat(element);
+            appendRenderedMessage(messages, 'user', 'copy this user message');
+            appendRenderedMessage(messages, 'ai', 'assistant messages stay untouched');
+            await waitForMutationObserver();
+
+            const buttons = messages.querySelectorAll('.atlas-user-message-copy-btn');
+            expect(buttons).toHaveLength(1);
+            expect(buttons[0].title).toBe('Copy message');
+            expect(buttons[0].getAttribute('aria-label')).toBe('Copy message');
+            expect(messages.querySelector('.ai-message-text + .atlas-user-message-copy-btn')).toBeNull();
+        } finally {
+            cancelChatInputFocusRetry();
+        }
+    });
+
+    test('decorates restored history user messages with copy actions', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const { initChat, cancelChatInputFocusRetry } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        element.loadHistory = jest.fn((history) => {
+            messages.innerHTML = '';
+            history.forEach((message) => {
+                appendRenderedMessage(messages, message.role === 'user' ? 'user' : 'ai', message.text);
+            });
+        });
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({
+                    messages: [
+                        { role: 'user', content: 'historical user prompt' },
+                        { role: 'assistant', content: 'historical answer' }
+                    ]
+                })
+            });
+
+        try {
+            await initChat(element);
+            await waitForMutationObserver();
+
+            const buttons = messages.querySelectorAll('.atlas-user-message-copy-btn');
+            expect(buttons).toHaveLength(1);
+            expect(messages.querySelector('.user-message-text')?.textContent).toBe('historical user prompt');
+            expect(messages.querySelector('.ai-message-text + .atlas-user-message-copy-btn')).toBeNull();
+        } finally {
+            cancelChatInputFocusRetry();
+        }
+    });
+
+    test('copy action writes user message text and briefly shows success state', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const writeText = jest.fn(() => Promise.resolve());
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText }
+        });
+
+        const { initChat, cancelChatInputFocusRetry } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ messages: [] })
+            });
+
+        try {
+            await initChat(element);
+            appendRenderedMessage(messages, 'user', 'copy probe message');
+            await waitForMutationObserver();
+
+            const button = messages.querySelector('.atlas-user-message-copy-btn');
+            expect(button).not.toBeNull();
+
+            jest.useFakeTimers();
+            button.click();
+            await Promise.resolve();
+            await Promise.resolve();
+
+            expect(writeText).toHaveBeenCalledWith('copy probe message');
+            expect(button.classList.contains('copied')).toBe(true);
+            expect(button.title).toBe('Copy message');
+            expect(button.getAttribute('aria-label')).toBe('Copy message');
+
+            await jest.advanceTimersByTimeAsync(1200);
+
+            expect(button.classList.contains('copied')).toBe(false);
+            expect(button.title).toBe('Copy message');
+        } finally {
+            jest.useRealTimers();
+            cancelChatInputFocusRetry();
+        }
     });
 
     test('initChat focuses the chat input when it is ready', async () => {
@@ -534,16 +678,16 @@ describe('chat-ui.js handler mode', () => {
                     {
                         id: 'provider-skill',
                         kind: 'provider_skill',
-                        command: '/default.linux-vm-request',
-                        label: 'default.linux-vm-request',
-                        provider_type: 'smartcmp',
-                        provider_display_name: 'SmartCMP',
+                        command: '/default.resource-request',
+                        label: 'default.resource-request',
+                        provider_type: 'demo-provider',
+                        provider_display_name: 'Demo Provider',
                         instance_name: 'default',
-                        skill_name: 'linux-vm-request',
-                        qualified_skill_name: 'smartcmp:linux-vm-request',
-                        target_provider_types: ['smartcmp'],
-                        target_skill_names: ['smartcmp:linux-vm-request', 'linux-vm-request'],
-                        target_tool_names: ['smartcmp_linux_vm_request']
+                        skill_name: 'resource-request',
+                        qualified_skill_name: 'demo-provider:resource-request',
+                        target_provider_types: ['demo-provider'],
+                        target_skill_names: ['demo-provider:resource-request', 'resource-request'],
+                        target_tool_names: ['demo_provider_resource_request']
                     }
                 ]
             })
@@ -560,20 +704,20 @@ describe('chat-ui.js handler mode', () => {
         });
 
         const handlerPromise = element.handler(
-            { messages: [{ text: `${input.textContent}申请 1C2G Linux`, role: 'user' }] },
+            { messages: [{ text: `${input.textContent}create resource`, role: 'user' }] },
             signals
         );
         await new Promise(r => setTimeout(r, 80));
 
         const [, requestOptions] = global.fetch.mock.calls[0];
         const parsedBody = JSON.parse(requestOptions.body);
-        expect(parsedBody.message).toBe('申请 1C2G Linux');
+        expect(parsedBody.message).toBe('create resource');
         expect(parsedBody.context.selected_capability).toMatchObject({
             kind: 'provider_skill',
-            provider_type: 'smartcmp',
+            provider_type: 'demo-provider',
             instance_name: 'default',
-            qualified_skill_name: 'smartcmp:linux-vm-request',
-            target_tool_names: ['smartcmp_linux_vm_request']
+            qualified_skill_name: 'demo-provider:resource-request',
+            target_tool_names: ['demo_provider_resource_request']
         });
 
         MockEventSource.instances[0].simulateEvent('lifecycle', { phase: 'end' });
@@ -666,12 +810,12 @@ describe('chat-ui.js handler mode', () => {
                     {
                         id: 'standalone-skill',
                         kind: 'skill',
-                        command: '/no-provider-vm-request',
-                        label: 'no-provider-vm-request',
-                        skill_name: 'no-provider-vm-request',
-                        qualified_skill_name: 'no-provider-vm-request',
-                        target_skill_names: ['no-provider-vm-request'],
-                        target_tool_names: ['no_provider_vm_request']
+                        command: '/no-provider-resource-request',
+                        label: 'no-provider-resource-request',
+                        skill_name: 'no-provider-resource-request',
+                        qualified_skill_name: 'no-provider-resource-request',
+                        target_skill_names: ['no-provider-resource-request'],
+                        target_tool_names: ['no_provider_resource_request']
                     }
                 ]
             })
@@ -688,18 +832,18 @@ describe('chat-ui.js handler mode', () => {
         });
 
         const handlerPromise = element.handler(
-            { messages: [{ text: `${input.textContent}申请 Linux VM`, role: 'user' }] },
+            { messages: [{ text: `${input.textContent}create resource`, role: 'user' }] },
             signals
         );
         await new Promise(r => setTimeout(r, 80));
 
         const [, requestOptions] = global.fetch.mock.calls[0];
         const parsedBody = JSON.parse(requestOptions.body);
-        expect(parsedBody.message).toBe('申请 Linux VM');
+        expect(parsedBody.message).toBe('create resource');
         expect(parsedBody.context.selected_capability).toMatchObject({
             kind: 'skill',
-            qualified_skill_name: 'no-provider-vm-request',
-            target_tool_names: ['no_provider_vm_request']
+            qualified_skill_name: 'no-provider-resource-request',
+            target_tool_names: ['no_provider_resource_request']
         });
 
         MockEventSource.instances[0].simulateEvent('lifecycle', { phase: 'end' });
@@ -1095,6 +1239,61 @@ describe('chat-ui.js handler mode', () => {
         expect(htmlPayload).toContain('<strong>加粗项</strong>');
         expect(htmlPayload).toContain('<a href="https://example.com"');
         expect(htmlPayload).not.toContain('**加粗项**');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler renders assistant pipe tables as aligned tables', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-markdown-table' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'render inventory table', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances[0];
+        stream.simulateEvent('assistant', {
+            text: [
+                'Inventory snapshot - 2 items',
+                '',
+                '| # | Item ID | Name | Updated At | Status |',
+                '- --- | --- | --- | --- | --- |',
+                '- 1 | ITEM-001 | Database cluster | 2026-04-27 22:58 | Active |',
+                '- 2 | ITEM-002 | Web frontend | 2026-04-26 22:39 | Pending |',
+                'Status summary: Active 1 | Pending 1'
+            ].join('\n'),
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
+        expect(htmlPayload).toContain('<table class="response-table">');
+        expect(htmlPayload).toContain('<th>Item ID</th>');
+        expect(htmlPayload).toContain('<td>ITEM-001</td>');
+        expect(htmlPayload).toContain('<td>Database cluster</td>');
+        expect(htmlPayload).toContain('<p>Status summary: Active 1 | Pending 1</p>');
+        expect(htmlPayload).not.toContain('<li>1 | ITEM-001');
+        expect(htmlPayload).not.toContain('<td>Status summary');
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;
@@ -1727,7 +1926,7 @@ describe('chat-ui.js handler mode', () => {
         });
 
         const handlerPromise = element.handler(
-            { messages: [{ text: 'check pending approvals', role: 'user' }] },
+            { messages: [{ text: 'check external status', role: 'user' }] },
             signals
         );
 
@@ -1779,7 +1978,7 @@ describe('chat-ui.js handler mode', () => {
         });
 
         const handlerPromise = element.handler(
-            { messages: [{ text: 'cmp pending', role: 'user' }] },
+            { messages: [{ text: 'external status', role: 'user' }] },
             signals
         );
 
@@ -1823,7 +2022,7 @@ describe('chat-ui.js handler mode', () => {
         });
 
         const handlerPromise = element.handler(
-            { messages: [{ text: 'cmp pending', role: 'user' }] },
+            { messages: [{ text: 'external status', role: 'user' }] },
             signals
         );
 
@@ -2002,7 +2201,7 @@ describe('chat-ui.js handler mode', () => {
         });
 
         const handlerPromise = element.handler(
-            { messages: [{ text: 'cmp pending', role: 'user' }] },
+            { messages: [{ text: 'external status', role: 'user' }] },
             signals
         );
 
@@ -2051,7 +2250,7 @@ describe('chat-ui.js handler mode', () => {
         });
 
         const handlerPromise = element.handler(
-            { messages: [{ text: 'cmp pending', role: 'user' }] },
+            { messages: [{ text: 'external status', role: 'user' }] },
             signals
         );
 
@@ -2101,18 +2300,18 @@ describe('chat-ui.js handler mode', () => {
 
         global.fetch.mockResolvedValueOnce({
             ok: true,
-            json: () => Promise.resolve({ run_id: 'run-ascii-pending-output' })
+            json: () => Promise.resolve({ run_id: 'run-ascii-tool-output' })
         });
 
         const handlerPromise = element.handler(
-            { messages: [{ text: 'cmp pending', role: 'user' }] },
+            { messages: [{ text: 'tool status list', role: 'user' }] },
             signals
         );
 
         await new Promise(r => setTimeout(r, 100));
         const stream = MockEventSource.instances[0];
         stream.simulateEvent('assistant', {
-            text: '\uFEFFAnswer\n=====\n待审批列表 - 共 2 项（按优先级排序）\n==================\n+- [1] 高 --------\n| 名称：Test ticket for build verification\n| 工单号: TIC20260316000001\n|\n+- [2] 高 --------\n| 名称: 加急加急\n| 工单号：TIC20260313000006',
+            text: '\uFEFFAnswer\n=====\nInventory report - 2 items (by status)\n==================\n+- [1] Active --------\n| Name: Build verification item\n| Ticket: ITEM-20260316000001\n|\n+- [2] Pending --------\n| Name: Expedited item\n| Ticket: ITEM-20260313000006',
             is_delta: true
         });
         await new Promise(r => setTimeout(r, 160));
@@ -2120,11 +2319,11 @@ describe('chat-ui.js handler mode', () => {
         const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
         expect(htmlPayload).not.toContain('>Answer<');
         expect(htmlPayload).not.toContain('=====');
-        expect(htmlPayload).toContain('<h1>待审批列表 - 共 2 项（按优先级排序）</h1>');
-        expect(htmlPayload).toContain('<li>名称: Test ticket for build verification</li>');
-        expect(htmlPayload).toContain('<li>工单号: TIC20260316000001</li>');
-        expect(htmlPayload).toContain('<li>名称: 加急加急</li>');
-        expect(htmlPayload).toContain('<li>工单号: TIC20260313000006</li>');
+        expect(htmlPayload).toContain('<h1>Inventory report - 2 items (by status)</h1>');
+        expect(htmlPayload).toContain('<li>Name: Build verification item</li>');
+        expect(htmlPayload).toContain('<li>Ticket: ITEM-20260316000001</li>');
+        expect(htmlPayload).toContain('<li>Name: Expedited item</li>');
+        expect(htmlPayload).toContain('<li>Ticket: ITEM-20260313000006</li>');
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;
@@ -2154,7 +2353,7 @@ describe('chat-ui.js handler mode', () => {
             });
 
             const handlerPromise = element.handler(
-                { messages: [{ text: 'cmp pending', role: 'user' }] },
+                { messages: [{ text: 'external status', role: 'user' }] },
                 signals
             );
 
@@ -2205,7 +2404,7 @@ describe('chat-ui.js handler mode', () => {
             });
 
             const handlerPromise = element.handler(
-                { messages: [{ text: 'cmp pending', role: 'user' }] },
+                { messages: [{ text: 'external status', role: 'user' }] },
                 signals
             );
 
