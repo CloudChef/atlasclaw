@@ -8,7 +8,7 @@
  */
 
 import { getSessionKey, initSession, setSessionKey, setSessionHasMessages } from './session-manager.js?v=19'
-import { getAgentInfo, getSessionHistory } from './api-client.js?v=19'
+import { buildWorkspaceFileDownloadUrl, getAgentInfo, getSessionHistory } from './api-client.js?v=19'
 import { createStreamHandler } from './stream-handler.js?v=19'
 import { buildApiUrl } from './config.js?v=19'
 import { translateIfExists, getCurrentLocale } from './i18n.js'
@@ -44,6 +44,13 @@ const COPY_MESSAGE_ICON = `
 const COPIED_MESSAGE_ICON = `
 <svg class="atlas-user-message-copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
   <path d="M20 6 9 17l-5-5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>`
+
+const WORKSPACE_DOWNLOAD_ICON = `
+<svg class="workspace-download-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+  <path d="M12 3v11" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+  <path d="m7 10 5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+  <path d="M5 20h14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
 </svg>`
 
 function clearImeEnterGuard() {
@@ -528,6 +535,10 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-content pre code{display:block;padding:0;border-radius:0;background:transparent;color:inherit;font-size:13px;line-height:1.7;white-space:pre;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace}
 .response-content a{color:#2563eb;text-decoration:none}
 .response-content a:hover{text-decoration:underline}
+.response-content a.workspace-download-link{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:3px 8px;border:1px solid rgba(37,99,235,.20);border-radius:8px;background:#eff6ff;color:#1d4ed8;font-weight:600;line-height:1.45;vertical-align:baseline}
+.response-content a.workspace-download-link:hover{border-color:rgba(37,99,235,.36);background:#dbeafe;text-decoration:none}
+.response-content .workspace-generated-downloads{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
+.workspace-download-icon{width:14px;height:14px;flex:0 0 14px}
 .message-wrapper{display:flex;flex-direction:column;gap:12px}
 .atlas-user-message-copy-btn{width:30px;height:30px;margin-top:12px;margin-left:8px;border:1px solid rgba(148,163,184,.34);border-radius:999px;background:rgba(255,255,255,.92);color:#64748b;box-shadow:0 10px 24px rgba(15,23,42,.10);display:inline-flex;align-items:center;justify-content:center;flex:0 0 30px;cursor:pointer;opacity:0;pointer-events:none;transform:translateY(2px) scale(.96);transition:opacity .16s ease,transform .16s ease,color .16s ease,border-color .16s ease,background .16s ease}
 .atlas-user-message-copy-btn:hover{color:#1f2937;border-color:rgba(124,131,253,.46);background:#ffffff}
@@ -941,10 +952,22 @@ function formatElapsed(elapsedMs) {
   return `${(elapsedMs / 1000).toFixed(1)}s`
 }
 
-function buildMessageContent(runtimeEntries, thinkingContent, responseContent, elapsedMs = null, isThinking = false, panelOpen = null, isComplete = false, renderRevision = 0) {
+function buildMessageContent(
+  runtimeEntries,
+  thinkingContent,
+  responseContent,
+  elapsedMs = null,
+  isThinking = false,
+  panelOpen = null,
+  isComplete = false,
+  renderRevision = 0,
+  workspaceDownloadReferences = []
+) {
   const runtimeHtml = buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs, isThinking, panelOpen, isComplete)
-  const responseHtml = responseContent
-    ? `<div class="response-content">${renderAssistantMarkdown(responseContent)}</div>`
+  const downloadHtml = buildGeneratedWorkspaceDownloadsHtml(workspaceDownloadReferences, responseContent)
+  const responseBodyHtml = `${responseContent ? renderAssistantMarkdown(responseContent) : ''}${downloadHtml}`
+  const responseHtml = responseBodyHtml
+    ? `<div class="response-content">${responseBodyHtml}</div>`
     : ''
   if (!runtimeHtml && !responseHtml) {
     return { html: '' }
@@ -973,6 +996,204 @@ function sanitizeLinkUrl(url) {
   if (!normalized) return '#'
   if (/^https?:\/\//i.test(normalized)) return normalized
   return '#'
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#039;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+}
+
+function decodeWorkspacePath(value) {
+  try {
+    return decodeURIComponent(value)
+  } catch (_error) {
+    return value
+  }
+}
+
+function isSafeWorkspaceRelativePath(path) {
+  const normalized = String(path || '').trim().replace(/\\/g, '/')
+  if (!normalized || normalized.startsWith('/') || normalized.startsWith('~')) return false
+  if (/^[a-z][a-z0-9+.-]*:/i.test(normalized)) return false
+  if (/^[a-z]:\//i.test(normalized)) return false
+  return normalized.split('/').every((part) => part && part !== '.' && part !== '..')
+}
+
+function normalizeWorkspaceDownloadReference(rawValue, { allowRelativeWorkDir = false } = {}) {
+  const decoded = decodeHtmlEntities(rawValue).trim().replace(/\\/g, '/')
+  if (!decoded) return null
+
+  if (/^workspace:\/\//i.test(decoded)) {
+    let path = decodeWorkspacePath(decoded.replace(/^workspace:\/\//i, ''))
+    if (isSafeWorkspaceRelativePath(path)) {
+      return { path: path.replace(/\\/g, '/') }
+    }
+    return null
+  }
+
+  if (/^[a-z][a-z0-9+.-]*:/i.test(decoded)) return null
+
+  if (allowRelativeWorkDir && isSafeWorkspaceRelativePath(decoded)) {
+    return { path: decoded }
+  }
+  return null
+}
+
+function getWorkspaceDownloadDisplayName(path) {
+  return path.split('/').filter(Boolean).pop() || 'download'
+}
+
+function buildWorkspaceDownloadAnchor(labelHtml, path) {
+  const href = escapeHtml(buildWorkspaceFileDownloadUrl(path))
+  const name = getWorkspaceDownloadDisplayName(path)
+  const ariaLabel = escapeHtml(`Download ${name}`)
+  return `<a href="${href}" class="workspace-download-link" download aria-label="${ariaLabel}">${WORKSPACE_DOWNLOAD_ICON}<span class="workspace-download-text">${labelHtml}</span></a>`
+}
+
+function renderWorkspaceDownloadLink(labelHtml, rawReference, options = {}) {
+  const reference = normalizeWorkspaceDownloadReference(rawReference, options)
+  if (!reference) return null
+  const effectiveLabel = options.labelFromPath
+    ? escapeHtml(getWorkspaceDownloadDisplayName(reference.path))
+    : labelHtml
+  return buildWorkspaceDownloadAnchor(effectiveLabel, reference.path)
+}
+
+function workspaceDownloadReferenceKey(reference) {
+  if (!reference) return ''
+  return reference.path
+}
+
+function parseWorkspaceDownloadPayload(rawPayload) {
+  if (!rawPayload) return null
+  if (typeof rawPayload === 'string') {
+    const trimmed = rawPayload.trim()
+    if (!trimmed || !/^[{[]/.test(trimmed)) return null
+    try {
+      return JSON.parse(trimmed)
+    } catch (_error) {
+      return null
+    }
+  }
+  if (typeof rawPayload === 'object') return rawPayload
+  return null
+}
+
+function normalizeWorkspaceDownloadArtifact(item) {
+  if (!item) return null
+  if (typeof item === 'string') {
+    const reference = normalizeWorkspaceDownloadReference(item)
+    return reference ? { ...reference, label: getWorkspaceDownloadDisplayName(reference.path) } : null
+  }
+  if (typeof item !== 'object') return null
+
+  const rawReference = item.href || item.url || item.reference
+  if (rawReference) {
+    const reference = normalizeWorkspaceDownloadReference(String(rawReference))
+    return reference ? {
+      ...reference,
+      label: String(item.label || item.name || getWorkspaceDownloadDisplayName(reference.path)).trim()
+    } : null
+  }
+
+  const path = String(item.path || item.relative_path || '').trim()
+  if (!isSafeWorkspaceRelativePath(path)) return null
+  return {
+    path: path.replace(/\\/g, '/'),
+    label: String(item.label || item.name || getWorkspaceDownloadDisplayName(path)).trim()
+  }
+}
+
+function extractWorkspaceDownloadArtifacts(rawPayload) {
+  const payload = parseWorkspaceDownloadPayload(rawPayload)
+  if (!payload || typeof payload !== 'object') return []
+  const downloads = payload.workspace_downloads || payload.workspaceDownloads
+  if (!Array.isArray(downloads)) return []
+  const references = []
+  const seen = new Set()
+  for (const item of downloads) {
+    const reference = normalizeWorkspaceDownloadArtifact(item)
+    if (!reference) continue
+    const key = workspaceDownloadReferenceKey(reference)
+    if (seen.has(key)) continue
+    seen.add(key)
+    references.push(reference)
+  }
+  return references
+}
+
+function responseContentHasWorkspaceDownloadReference(responseContent, reference) {
+  if (!reference) return false
+  const targetKey = workspaceDownloadReferenceKey(reference)
+  const content = String(responseContent || '')
+  const normalizedContent = content.replace(/\\/g, '/')
+  if (normalizedContent.includes(`workspace://${reference.path}`)) {
+    return true
+  }
+
+  const markdownLinkPattern = /\[([^\]]+)\]\(([^)]+)\)/g
+  let linkMatch = null
+  while ((linkMatch = markdownLinkPattern.exec(content)) !== null) {
+    const linkedReference = normalizeWorkspaceDownloadReference(linkMatch[2])
+    if (linkedReference && workspaceDownloadReferenceKey(linkedReference) === targetKey) {
+      return true
+    }
+  }
+
+  const fileWrittenPattern = /\bFile written:\s*(?:`([^`]+)`|([^<\s]+))/gi
+  let fileMatch = null
+  while ((fileMatch = fileWrittenPattern.exec(content)) !== null) {
+    const rawPath = fileMatch[1] || fileMatch[2] || ''
+    const fileReference = normalizeWorkspaceDownloadReference(rawPath, { allowRelativeWorkDir: true })
+    if (fileReference && workspaceDownloadReferenceKey(fileReference) === targetKey) {
+      return true
+    }
+  }
+  return false
+}
+
+function buildGeneratedWorkspaceDownloadsHtml(references, responseContent) {
+  if (!Array.isArray(references) || !references.length) return ''
+  const anchors = references
+    .filter((reference) => !responseContentHasWorkspaceDownloadReference(responseContent, reference))
+    .map((reference) => {
+      const label = escapeHtml(reference.label || getWorkspaceDownloadDisplayName(reference.path))
+      return buildWorkspaceDownloadAnchor(label, reference.path)
+    })
+    .join('')
+  return anchors ? `<div class="workspace-generated-downloads">${anchors}</div>` : ''
+}
+
+function linkifyFileWrittenReferences(html) {
+  return html.replace(/\b(File written:\s*)(?:`([^`]+)`|([^<\s]+))/gi, (match, prefix, quotedPath, barePath, offset) => {
+    if (offset > 0 && html[offset - 1] === '[') return match
+    const rawPath = quotedPath || barePath || ''
+    const link = renderWorkspaceDownloadLink(
+      escapeHtml(decodeHtmlEntities(rawPath)),
+      rawPath,
+      { allowRelativeWorkDir: true, labelFromPath: true },
+    )
+    return link || match
+  })
+}
+
+function linkifyBareWorkspaceReferences(html) {
+  return html.replace(/(^|[\s(])workspace:\/\/[^\s<>)`]+/gi, (match, prefix, offset) => {
+    if (prefix === '(' && offset > 0 && html[offset - 1] === ']') {
+      return match
+    }
+    const rawReference = match.slice(prefix.length)
+    const link = renderWorkspaceDownloadLink(
+      escapeHtml(rawReference),
+      rawReference,
+      { labelFromPath: true },
+    )
+    return link ? `${prefix}${link}` : match
+  })
 }
 
 function stripWrapperHeading(text) {
@@ -1009,11 +1230,15 @@ function stripWrapperHeading(text) {
 
 function renderInlineMarkdown(line) {
   let html = line || ''
-  html = html.replace(/`([^`]+)`/g, '<code>$1</code>')
-  html = html.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_match, label, url) => {
+  html = linkifyFileWrittenReferences(html)
+  html = linkifyBareWorkspaceReferences(html)
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, url) => {
+    const workspaceLink = renderWorkspaceDownloadLink(label, url)
+    if (workspaceLink) return workspaceLink
     const safeUrl = sanitizeLinkUrl(url)
     return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${label}</a>`
   })
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>')
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>')
   return html
@@ -1282,6 +1507,8 @@ async function handleStreamWithSignals(runId, signals, context) {
   let serverRuntimeSeen = false
   let localRuntimeSeedTimers = []
   let renderRevision = 0
+  let workspaceDownloadReferences = []
+  let workspaceDownloadReferenceKeys = new Set()
 
   function currentElapsedMs() {
     if (runStartTime) {
@@ -1345,6 +1572,20 @@ async function handleStreamWithSignals(runId, signals, context) {
       )
       updateUI()
     }, phase.delayMs))
+  }
+
+  function recordWorkspaceDownloadArtifacts(rawPayload) {
+    const references = extractWorkspaceDownloadArtifacts(rawPayload)
+    if (!references.length) return false
+    let changed = false
+    for (const reference of references) {
+      const key = workspaceDownloadReferenceKey(reference)
+      if (!key || workspaceDownloadReferenceKeys.has(key)) continue
+      workspaceDownloadReferenceKeys.add(key)
+      workspaceDownloadReferences = [...workspaceDownloadReferences, reference]
+      changed = true
+    }
+    return changed
   }
 
   function refreshActiveRuntimeEntry() {
@@ -1478,7 +1719,8 @@ async function handleStreamWithSignals(runId, signals, context) {
         !thinkingFinalized,
         panelShouldOpen,
         finalAnswerReady,
-        renderRevision
+        renderRevision,
+        workspaceDownloadReferences
       )
       if (content.html) {
         signals.onResponse({ html: content.html, overwrite: true })
@@ -1566,6 +1808,7 @@ async function handleStreamWithSignals(runId, signals, context) {
         updateUI()
       },
       onToolEnd: (data) => {
+        recordWorkspaceDownloadArtifacts(data?.result)
         pushRuntimeEntry('waiting_for_tool', `Tool completed: ${data?.tool_name || 'tool'}`, { phase: 'tool_completed' })
         updateUI()
       },
@@ -1606,7 +1849,16 @@ async function handleStreamWithSignals(runId, signals, context) {
       onRuntime: (data) => {
         serverRuntimeSeen = true
         clearLocalRuntimeSeedTimers()
+        const hasWorkspaceDownloads = recordWorkspaceDownloadArtifacts(data?.metadata || data)
+        if (data?.metadata?.phase === 'workspace_downloads') {
+          updateUI()
+          return
+        }
         pushRuntimeEntry(data.state, data.message, data.metadata || {})
+        if (hasWorkspaceDownloads) {
+          updateUI()
+          return
+        }
         updateUI()
       },
       onHeartbeat: () => {
@@ -1621,7 +1873,7 @@ async function handleStreamWithSignals(runId, signals, context) {
           thinkingFinalized = true
           stopThinkingTimer()
           if (!runtimeEntries.some((entry) => entry.state === 'failed')) {
-            if (aiMessageContent.trim()) {
+            if (aiMessageContent.trim() || workspaceDownloadReferences.length) {
               finalAnswerReady = true
             } else {
               pushRuntimeEntry('failed', 'Run ended without a usable answer.', { phase: 'completed' })

@@ -415,11 +415,17 @@ class RunnerToolGateModelMixin:
     def _build_metadata_fallback_tool_intent_plan(
         self,
         *,
+        user_message: str = "",
         metadata_candidates: Optional[dict[str, Any]],
         available_tools: list[dict[str, Any]],
     ) -> Optional[ToolIntentPlan]:
+        workspace_write_plan = self._build_workspace_file_write_intent_plan(
+            user_message=user_message,
+            available_tools=available_tools,
+        )
+
         if not isinstance(metadata_candidates, dict):
-            return None
+            return workspace_write_plan
 
         try:
             confidence = float(metadata_candidates.get("confidence", 0.0) or 0.0)
@@ -437,6 +443,34 @@ class RunnerToolGateModelMixin:
             metadata_candidates=metadata_candidates,
             available_tools=available_tools,
         )
+
+        if (
+            confidence >= min_confidence
+            or has_provider_tool_consensus
+            or has_single_tool_consensus
+        ):
+            artifact_tools = self._select_explicit_artifact_metadata_tools(
+                metadata_candidates=metadata_candidates,
+                available_tools=available_tools,
+            )
+            if artifact_tools:
+                reason = str(metadata_candidates.get("reason", "") or "").strip()
+                if reason:
+                    reason = (
+                        f"Metadata fallback planner selected explicit artifact capability hints ({reason})."
+                    )
+                else:
+                    reason = "Metadata fallback planner selected explicit artifact capability hints."
+                plan = self._build_selected_tool_intent_plan(
+                    tools=artifact_tools,
+                    reason=reason,
+                )
+                if plan is not None:
+                    return plan
+
+        if workspace_write_plan is not None:
+            return workspace_write_plan
+
         if (
             confidence < min_confidence
             and not has_provider_tool_consensus
@@ -449,24 +483,6 @@ class RunnerToolGateModelMixin:
             for tool in available_tools
             if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
         }
-        artifact_tools = self._select_explicit_artifact_metadata_tools(
-            metadata_candidates=metadata_candidates,
-            available_tools=available_tools,
-        )
-        if artifact_tools:
-            reason = str(metadata_candidates.get("reason", "") or "").strip()
-            if reason:
-                reason = (
-                    f"Metadata fallback planner selected explicit artifact capability hints ({reason})."
-                )
-            else:
-                reason = "Metadata fallback planner selected explicit artifact capability hints."
-            plan = self._build_selected_tool_intent_plan(
-                tools=artifact_tools,
-                reason=reason,
-            )
-            if plan is not None:
-                return plan
 
         dominant_tool_name = self._select_dominant_metadata_tool_name(
             metadata_candidates=metadata_candidates,
@@ -604,6 +620,64 @@ class RunnerToolGateModelMixin:
             target_capability_classes=target_capability_classes,
             target_tool_names=target_tool_names,
             reason=reason,
+        )
+
+    def _build_workspace_file_write_intent_plan(
+        self,
+        *,
+        user_message: str,
+        available_tools: list[dict[str, Any]],
+    ) -> Optional[ToolIntentPlan]:
+        message = str(user_message or "").strip()
+        if not message:
+            return None
+
+        lowered = message.lower()
+        has_write_intent = any(
+            token in lowered
+            for token in (
+                "write",
+                "create",
+                "save",
+                "generate",
+                "写入",
+                "创建",
+                "生成",
+                "保存",
+            )
+        )
+        has_workspace_reference = "workspace://" in lowered
+        has_file_word = "file" in lowered or "文件" in lowered
+        has_path_like_target = re.search(r"(?<!\S)[^\s`'\"<>]+\.[A-Za-z0-9]{1,12}(?!\S)", message) is not None
+        has_file_target = has_workspace_reference or has_file_word or has_path_like_target
+        if not (has_write_intent and has_file_target):
+            return None
+
+        write_tool = next(
+            (
+                tool
+                for tool in available_tools
+                if isinstance(tool, dict)
+                and str(tool.get("capability_class", "") or "").strip().lower() == "fs_write"
+            ),
+            None,
+        )
+        if write_tool is None:
+            write_tool = next(
+                (
+                    tool
+                    for tool in available_tools
+                    if isinstance(tool, dict)
+                    and str(tool.get("name", "") or "").strip() == "write"
+                ),
+                None,
+            )
+            if write_tool is None:
+                return None
+
+        return self._build_selected_tool_intent_plan(
+            tools=[write_tool],
+            reason="Workspace file creation request matched filesystem write capability.",
         )
 
     @staticmethod

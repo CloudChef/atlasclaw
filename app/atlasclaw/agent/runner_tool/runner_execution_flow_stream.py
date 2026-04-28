@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator
 
 from app.atlasclaw.agent.context_pruning import prune_context_messages, should_apply_context_pruning
@@ -21,6 +22,155 @@ from app.atlasclaw.agent.runner_tool.runner_tool_messages import (
 )
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import turn_action_requires_tool_execution
 from app.atlasclaw.agent.stream import StreamEvent
+from app.atlasclaw.core.workspace_downloads import workspace_download_reference_for_path
+
+
+WORKSPACE_ARTIFACT_EXPLICIT_PATH_KEYS = {
+    "artifact_path",
+    "download_path",
+    "output_file",
+    "output_path",
+}
+
+WORKSPACE_ARTIFACT_CONDITIONAL_PATH_KEYS = {"file_path"}
+
+WORKSPACE_DOWNLOAD_TOOL_NAME_TOKENS = {
+    "artifact",
+    "create",
+    "docx",
+    "export",
+    "generate",
+    "pdf",
+    "pptx",
+    "write",
+    "xlsx",
+}
+
+
+def _coerce_tool_result_payload(payload: Any) -> Any:
+    if isinstance(payload, str):
+        normalized = payload.strip()
+        if not normalized:
+            return ""
+        if normalized.startswith("{") or normalized.startswith("["):
+            try:
+                return json.loads(normalized)
+            except Exception:
+                return normalized
+        return normalized
+    return payload
+
+
+def _tool_name_can_emit_workspace_download(tool_name: str) -> bool:
+    normalized = str(tool_name or "").strip().lower()
+    return any(token in normalized for token in WORKSPACE_DOWNLOAD_TOOL_NAME_TOKENS)
+
+
+def _tool_result_payload_is_error(payload: dict[str, Any]) -> bool:
+    if payload.get("is_error") is True:
+        return True
+    details = payload.get("details")
+    return isinstance(details, dict) and details.get("is_error") is True
+
+
+def _iter_workspace_file_path_candidates(payload: Any, *, tool_name: str) -> list[Any]:
+    normalized = _coerce_tool_result_payload(payload)
+    if isinstance(normalized, dict):
+        if _tool_result_payload_is_error(normalized):
+            return []
+        candidates: list[Any] = []
+        for key, value in normalized.items():
+            normalized_key = str(key or "").strip()
+            if (
+                normalized_key in WORKSPACE_ARTIFACT_EXPLICIT_PATH_KEYS
+                or (
+                    normalized_key in WORKSPACE_ARTIFACT_CONDITIONAL_PATH_KEYS
+                    and _tool_name_can_emit_workspace_download(tool_name)
+                )
+            ):
+                if isinstance(value, list):
+                    candidates.extend(value)
+                else:
+                    candidates.append(value)
+                continue
+            if isinstance(value, (dict, list)):
+                candidates.extend(_iter_workspace_file_path_candidates(value, tool_name=tool_name))
+        return candidates
+    if isinstance(normalized, list):
+        candidates: list[Any] = []
+        for item in normalized:
+            candidates.extend(_iter_workspace_file_path_candidates(item, tool_name=tool_name))
+        return candidates
+    if isinstance(normalized, str):
+        stripped = normalized.strip()
+        lowered = stripped.lower()
+        if _tool_name_can_emit_workspace_download(tool_name) and lowered.startswith("file written:"):
+            return [stripped.split(":", 1)[1].strip().strip("`")]
+    return []
+
+
+def _iter_tool_result_payloads(
+    *,
+    messages: list[dict[str, Any]],
+    start_index: int,
+    target_tool_names: list[str],
+) -> list[tuple[str, Any]]:
+    target_names = {str(name).strip() for name in target_tool_names if str(name).strip()}
+    if not target_names:
+        return []
+    payloads: list[tuple[str, Any]] = []
+    safe_start = max(0, min(int(start_index), len(messages)))
+    for message in messages[safe_start:]:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", "") or "").strip().lower()
+        if role in {"tool", "toolresult", "tool_result"}:
+            tool_name = str(message.get("tool_name", "") or message.get("name", "")).strip()
+            if tool_name in target_names:
+                payload = message if message.get("is_error") is True else message.get("content", message)
+                payloads.append((tool_name, payload))
+        tool_results = message.get("tool_results")
+        if not isinstance(tool_results, list):
+            continue
+        for result in tool_results:
+            if not isinstance(result, dict):
+                continue
+            tool_name = str(result.get("tool_name", "") or result.get("name", "")).strip()
+            if tool_name in target_names:
+                payload = result if result.get("is_error") is True else result.get("content", result)
+                payloads.append((tool_name, payload))
+    return payloads
+
+
+def collect_workspace_download_references_from_tool_results(
+    *,
+    messages: list[dict[str, Any]],
+    start_index: int,
+    target_tool_names: list[str],
+    workspace_path: str | Path,
+    user_id: str,
+) -> list[dict[str, str]]:
+    references: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for tool_name, payload in _iter_tool_result_payloads(
+        messages=messages,
+        start_index=start_index,
+        target_tool_names=target_tool_names,
+    ):
+        for candidate in _iter_workspace_file_path_candidates(payload, tool_name=tool_name):
+            reference = workspace_download_reference_for_path(
+                candidate,
+                workspace_path=workspace_path,
+                user_id=user_id,
+            )
+            if not reference:
+                continue
+            key = reference["path"]
+            if key in seen:
+                continue
+            seen.add(key)
+            references.append(reference)
+    return references
 
 
 class RunnerExecutionFlowStreamMixin:
@@ -477,6 +627,36 @@ class RunnerExecutionFlowStreamMixin:
                 state["latest_runtime_messages"] = list(latest_runtime_messages)
                 state["latest_agent_messages"] = list(latest_messages)
                 state["message_history"] = list(latest_messages)
+                workspace_path = str(getattr(session_manager, "workspace_path", "") or "").strip()
+                user_id = str(getattr(getattr(deps, "user_info", None), "user_id", "") or "").strip()
+                if workspace_path and user_id and user_id != "anonymous":
+                    download_references = collect_workspace_download_references_from_tool_results(
+                        messages=latest_messages,
+                        start_index=persist_run_output_start_index,
+                        target_tool_names=current_node_tool_names,
+                        workspace_path=workspace_path,
+                        user_id=user_id,
+                    )
+                    existing_download_keys = set(state.get("workspace_download_reference_keys") or [])
+                    new_download_references = []
+                    for reference in download_references:
+                        key = reference["path"]
+                        if key in existing_download_keys:
+                            continue
+                        existing_download_keys.add(key)
+                        new_download_references.append(reference)
+                    if new_download_references:
+                        state["workspace_download_reference_keys"] = existing_download_keys
+                        yield StreamEvent.runtime_update(
+                            "artifact",
+                            "Generated file ready for download.",
+                            metadata={
+                                "phase": "workspace_downloads",
+                                "attempt": state.get("current_model_attempt"),
+                                "elapsed": round(time.monotonic() - start_time, 1),
+                                "workspace_downloads": new_download_references,
+                            },
+                        )
                 repeated_failure = self._detect_repeated_tool_failure(
                     messages=latest_messages,
                     start_index=persist_run_output_start_index,

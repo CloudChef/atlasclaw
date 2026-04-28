@@ -110,6 +110,42 @@ function createChatElement() {
     };
 }
 
+async function renderAssistantHtml(text, runId = 'run-render-assistant-html') {
+    const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+    const element = createChatElement();
+    const signals = createMockSignals();
+
+    global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ session_key: 'session-123' })
+    }).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({})
+    });
+
+    await initChat(element);
+    global.fetch.mockClear();
+    global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ run_id: runId })
+    });
+
+    const handlerPromise = element.handler(
+        { messages: [{ text: 'render please', role: 'user' }] },
+        signals
+    );
+
+    await new Promise(r => setTimeout(r, 100));
+    const stream = MockEventSource.instances.at(-1);
+    stream.simulateEvent('assistant', { text, is_delta: true });
+    await new Promise(r => setTimeout(r, 160));
+
+    const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
+    stream.simulateEvent('lifecycle', { phase: 'end' });
+    await handlerPromise;
+    return htmlPayload;
+}
+
 function createDomChatElement() {
     const element = document.createElement('deep-chat');
     element.handler = null;
@@ -1275,6 +1311,247 @@ describe('chat-ui.js handler mode', () => {
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;
+    });
+
+    test('handler renders workspace markdown links as download controls', async () => {
+        const htmlPayload = await renderAssistantHtml(
+            'Download [conversation record](workspace://conversation_2026-04-28.txt)',
+            'run-workspace-markdown-link'
+        );
+
+        expect(htmlPayload).toContain('class="workspace-download-link"');
+        expect(htmlPayload).toContain('download');
+        expect(htmlPayload).toContain('/api/workspace/files/download?path=conversation_2026-04-28.txt');
+        expect(htmlPayload).toContain('conversation record');
+        expect(htmlPayload).not.toContain('target="_blank"');
+    });
+
+    test('handler renders bare workspace references as download controls', async () => {
+        const htmlPayload = await renderAssistantHtml(
+            'Download workspace://conversation_2026-04-28.txt',
+            'run-bare-workspace-link'
+        );
+
+        expect(htmlPayload).toContain('class="workspace-download-link"');
+        expect(htmlPayload).toContain('/api/workspace/files/download?path=conversation_2026-04-28.txt');
+        expect(htmlPayload).toContain('<span class="workspace-download-text">conversation_2026-04-28.txt</span>');
+        expect(htmlPayload).not.toContain('target="_blank"');
+    });
+
+    test('handler renders file written output as a workspace download control', async () => {
+        const htmlPayload = await renderAssistantHtml(
+            'File written: .atlasclaw/history.txt',
+            'run-file-written-link'
+        );
+
+        expect(htmlPayload).not.toContain('File written:');
+        expect(htmlPayload).toContain('class="workspace-download-link"');
+        expect(htmlPayload).toContain('/api/workspace/files/download?path=.atlasclaw%2Fhistory.txt');
+        expect(htmlPayload).toContain('<span class="workspace-download-text">history.txt</span>');
+        expect(htmlPayload).not.toContain('workspace-download-text">.atlasclaw');
+    });
+
+    test('handler renders runtime workspace artifacts as download controls', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-runtime-artifact-link' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'make pptx', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances.at(-1);
+        stream.simulateEvent('assistant', {
+            text: 'Done! I created empty.pptx.',
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Generated file ready for download.',
+            phase: 'workspace_downloads',
+            workspace_downloads: [
+                { path: 'empty.pptx' }
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
+        expect(htmlPayload).toContain('class="workspace-download-link"');
+        expect(htmlPayload).toContain('/api/workspace/files/download?path=empty.pptx');
+        expect(htmlPayload).toContain('<span class="workspace-download-text">empty.pptx</span>');
+        expect(htmlPayload).not.toContain('workspace-download-text">.atlasclaw');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler does not duplicate generated artifact controls already shown in final text', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-runtime-artifact-dedupe' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'write file', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances.at(-1);
+        stream.simulateEvent('assistant', {
+            text: 'File written: conversation.txt',
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Generated file ready for download.',
+            phase: 'workspace_downloads',
+            workspace_downloads: [
+                { path: 'conversation.txt' }
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
+        const downloadLinkCount = (htmlPayload.match(/workspace-download-link/g) || []).length;
+        expect(downloadLinkCount).toBe(1);
+        expect(htmlPayload).toContain('/api/workspace/files/download?path=conversation.txt');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler renders tool-end workspace artifact content as download controls', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-tool-artifact-link' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'make pptx', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances.at(-1);
+        stream.simulateEvent('tool', {
+            tool: 'pptx_create_deck',
+            phase: 'end',
+            content: JSON.stringify({
+                workspace_downloads: [
+                    { path: 'tool-result.pptx' }
+                ]
+            })
+        });
+        await new Promise(r => setTimeout(r, 80));
+
+        const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
+        expect(htmlPayload).toContain('class="workspace-download-link"');
+        expect(htmlPayload).toContain('/api/workspace/files/download?path=tool-result.pptx');
+        expect(htmlPayload).toContain('<span class="workspace-download-text">tool-result.pptx</span>');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler treats nested file-written paths as work-dir relative paths', async () => {
+        const htmlPayload = await renderAssistantHtml(
+            'File written: downloads/report.txt',
+            'run-file-written-nested-path'
+        );
+
+        expect(htmlPayload).not.toContain('File written:');
+        expect(htmlPayload).toContain('/api/workspace/files/download?path=downloads%2Freport.txt');
+        expect(htmlPayload).toContain('<span class="workspace-download-text">report.txt</span>');
+    });
+
+    test('handler does not linkify unsafe local file paths', async () => {
+        const htmlPayload = await renderAssistantHtml(
+            'File written: /etc/passwd\n[local](/etc/passwd)',
+            'run-unsafe-local-link'
+        );
+
+        expect(htmlPayload).not.toContain('workspace-download-link');
+        expect(htmlPayload).not.toContain('/api/workspace/files/download');
+        expect(htmlPayload).toContain('<a href="#"');
+    });
+
+    test('handler does not linkify external file-written URLs as workspace downloads', async () => {
+        const htmlPayload = await renderAssistantHtml(
+            'File written: https://example.com/users/bob/work_dir/report.txt',
+            'run-external-file-written-url'
+        );
+
+        expect(htmlPayload).not.toContain('workspace-download-link');
+        expect(htmlPayload).not.toContain('/api/workspace/files/download');
+        expect(htmlPayload).toContain('https://example.com/users/bob/work_dir/report.txt');
+    });
+
+    test('handler does not linkify absolute user workspace-looking paths', async () => {
+        const htmlPayload = await renderAssistantHtml(
+            'File written: /tmp/workspace/users/bob/work_dir/report.txt',
+            'run-absolute-user-path'
+        );
+
+        expect(htmlPayload).not.toContain('workspace-download-link');
+        expect(htmlPayload).not.toContain('/api/workspace/files/download');
+        expect(htmlPayload).toContain('File written: /tmp/workspace/users/bob/work_dir/report.txt');
+    });
+
+    test('handler preserves external links as normal links', async () => {
+        const htmlPayload = await renderAssistantHtml(
+            '[docs](https://example.com/path?q=1)',
+            'run-external-link'
+        );
+
+        expect(htmlPayload).toContain('<a href="https://example.com/path?q=1"');
+        expect(htmlPayload).toContain('target="_blank"');
+        expect(htmlPayload).not.toContain('workspace-download-link');
     });
 
     test('handler renders assistant pipe tables as aligned tables', async () => {

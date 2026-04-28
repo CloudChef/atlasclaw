@@ -58,6 +58,102 @@ class _ClassifierAgent:
         )
 
 
+def test_metadata_fallback_routes_workspace_file_creation_to_write_tool() -> None:
+    runner = _GateRunner()
+
+    plan = runner._build_metadata_fallback_tool_intent_plan(
+        user_message="请创建一个对话记录 TXT 文件，路径为 `conversation_2026-04-28.txt`。",
+        metadata_candidates={
+            "confidence": 0.0,
+            "preferred_tool_names": [],
+        },
+        available_tools=[
+            {
+                "name": "write",
+                "description": "Write file content",
+                "qualified_skill_name": "write",
+                "skill_name": "write",
+                "group_ids": ["group:fs", "group:atlasclaw"],
+                "capability_class": "fs_write",
+            }
+        ],
+    )
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.USE_TOOLS
+    assert plan.target_tool_names == ["write"]
+    assert plan.target_skill_names == ["write"]
+
+
+def test_metadata_fallback_does_not_force_write_for_export_only_request() -> None:
+    runner = _GateRunner()
+
+    plan = runner._build_metadata_fallback_tool_intent_plan(
+        user_message="请导出审批请求报告。",
+        metadata_candidates={
+            "confidence": 0.0,
+            "preferred_tool_names": [],
+        },
+        available_tools=[
+            {
+                "name": "write",
+                "description": "Write file content",
+                "qualified_skill_name": "write",
+                "skill_name": "write",
+                "group_ids": ["group:fs", "group:atlasclaw"],
+                "capability_class": "fs_write",
+            }
+        ],
+    )
+
+    assert plan is None
+
+
+def test_metadata_fallback_keeps_explicit_artifact_over_workspace_write_fallback() -> None:
+    runner = _GateRunner()
+
+    plan = runner._build_metadata_fallback_tool_intent_plan(
+        user_message="create an empty deck file named deck.bundle",
+        metadata_candidates={
+            "confidence": 0.9,
+            "reason": "artifact metadata matched",
+            "tool_candidates": [
+                {
+                    "tool_name": "deck_artifact_create",
+                    "score": 100,
+                    "has_strong_anchor": True,
+                    "tool_names": ["deck_artifact_create"],
+                    "capability_classes": ["artifact:presentation"],
+                }
+            ],
+        },
+        available_tools=[
+            {
+                "name": "write",
+                "description": "Write file content",
+                "qualified_skill_name": "write",
+                "skill_name": "write",
+                "group_ids": ["group:fs", "group:atlasclaw"],
+                "capability_class": "fs_write",
+            },
+            {
+                "name": "deck_artifact_create",
+                "description": "Create a presentation artifact file",
+                "qualified_skill_name": "deck",
+                "skill_name": "deck",
+                "group_ids": ["group:artifact"],
+                "capability_class": "artifact:presentation",
+                "priority": 120,
+            },
+        ],
+    )
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.USE_TOOLS
+    assert plan.target_tool_names == ["deck_artifact_create"]
+    assert plan.target_capability_classes == ["artifact:presentation"]
+
+
 def test_tool_gate_classifier_resolves_async_agent_factory() -> None:
     runner = _GateRunner()
     classifier = _ClassifierAgent()

@@ -101,7 +101,7 @@ export function createStreamHandler(runId, callbacks = {}) {
             if (data.phase === 'start') {
                 onToolStart({ tool_name: data.tool });
             } else if (data.phase === 'end') {
-                onToolEnd({ tool_name: data.tool, result: data.result });
+                onToolEnd({ tool_name: data.tool, result: data.result ?? data.content });
             }
         });
 

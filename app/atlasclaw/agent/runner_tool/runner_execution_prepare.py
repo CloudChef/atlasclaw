@@ -54,6 +54,22 @@ from app.atlasclaw.core.deps import SkillDeps
 logger = logging.getLogger(__name__)
 
 
+def _plan_is_workspace_file_write(plan: Optional[ToolIntentPlan]) -> bool:
+    if plan is None or plan.action is not ToolIntentAction.USE_TOOLS:
+        return False
+    target_tool_names = {
+        str(name or "").strip()
+        for name in list(plan.target_tool_names or [])
+        if str(name or "").strip()
+    }
+    target_capability_classes = {
+        str(name or "").strip().lower()
+        for name in list(plan.target_capability_classes or [])
+        if str(name or "").strip()
+    }
+    return target_tool_names == {"write"} or target_capability_classes == {"fs_write"}
+
+
 def select_execution_prompt_mode(
     *,
     intent_action: str,
@@ -1427,6 +1443,7 @@ class RunnerExecutionPreparePhaseMixin:
                 metadata_tool_intent_plan = selected_tool_intent_plan
             else:
                 metadata_tool_intent_plan = self._build_metadata_fallback_tool_intent_plan(
+                    user_message=tool_request_message,
                     metadata_candidates=metadata_candidates,
                     available_tools=available_tools,
                 )
@@ -1509,6 +1526,9 @@ class RunnerExecutionPreparePhaseMixin:
             if selected_tool_intent_plan is not None:
                 explicit_capability_match = True
                 tool_intent_plan = selected_tool_intent_plan
+            elif _plan_is_workspace_file_write(metadata_tool_intent_plan):
+                explicit_capability_match = True
+                tool_intent_plan = metadata_tool_intent_plan
             else:
                 explicit_capability_match = self._metadata_plan_represents_explicit_capability_match(
                     metadata_candidates=metadata_candidates,

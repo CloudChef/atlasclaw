@@ -23,6 +23,7 @@ from .routes_hooks import register_hook_routes
 from .routes_session import register_session_routes
 from .routes_skills_memory import register_skills_memory_routes
 from .routes_webhook import register_webhook_routes
+from .routes_workspace_files import register_workspace_file_routes
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,7 @@ def create_router() -> APIRouter:
     register_skills_memory_routes(router)
     register_webhook_routes(router)
     register_auth_routes(router)
+    register_workspace_file_routes(router)
 
     @router.get("/health")
     async def health_check() -> dict[str, Any]:

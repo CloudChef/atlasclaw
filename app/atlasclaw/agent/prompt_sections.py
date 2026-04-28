@@ -674,7 +674,13 @@ def build_workspace_info(config) -> str:
 
 Working directory: `{workspace}`
 
-You can read and write files in this directory."""
+You can read and write files in this directory.
+
+When you create or export a user-facing file, include a final-answer markdown download link
+using `workspace://<relative-path>`. Use paths relative to the current user's work
+directory only, not absolute filesystem paths. Do not place user-facing generated files
+under hidden internal directories such as `.atlasclaw`; prefer a readable top-level file
+name or a purpose-specific subdirectory."""
 
 
 def build_documentation() -> str:

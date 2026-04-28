@@ -10,6 +10,12 @@
 import { buildApiUrl } from './config.js';
 import { getCurrentLocale } from './i18n.js';
 
+export function buildWorkspaceFileDownloadUrl(path) {
+    const params = new URLSearchParams();
+    params.set('path', path);
+    return buildApiUrl(`/api/workspace/files/download?${params.toString()}`);
+}
+
 /**
  * List all sessions for the current user
  * @returns {Promise<Array>} List of sessions
