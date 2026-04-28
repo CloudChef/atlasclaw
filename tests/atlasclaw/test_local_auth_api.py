@@ -177,6 +177,111 @@ def test_auth_me_includes_avatar_from_profile(tmp_path):
     manager_cleanup(manager)
 
 
+def test_password_enabled_external_user_local_login_uses_db_user_id(tmp_path):
+    import asyncio
+
+    manager = init_database_sync(tmp_path)
+    client = _build_client(tmp_path)
+
+    async def _create_password_enabled_external_user() -> str:
+        async with manager.get_session() as session:
+            user = await UserService.create(
+                session,
+                UserCreate(
+                    username="cmp_user",
+                    password="password",
+                    display_name="CMP User",
+                    roles={"user": True},
+                    auth_type="cookie",
+                    is_active=True,
+                ),
+            )
+            return user.id
+
+    db_user_id = asyncio.run(_create_password_enabled_external_user())
+
+    login_resp = client.post(
+        "/api/auth/local/login",
+        json={"username": "cmp_user", "password": "password"},
+    )
+    assert login_resp.status_code == 200
+    login_body = login_resp.json()
+    assert login_body["user"]["id"] == db_user_id
+    assert login_body["user"]["username"] == "cmp_user"
+    assert login_body["user"]["auth_type"] == "cookie"
+
+    token = login_body["token"]
+    me_resp = client.get(
+        "/api/auth/me",
+        headers={"AtlasClaw-Authenticate": token},
+    )
+    assert me_resp.status_code == 200
+    body = me_resp.json()
+    assert body["user_id"] == db_user_id
+    assert body["username"] == "cmp_user"
+    assert body["auth_type"] == "cookie"
+    assert body["role_identifiers"] == ["user"]
+
+    manager_cleanup(manager)
+
+
+def test_auth_me_rejects_inactive_db_user_token(tmp_path):
+    import asyncio
+
+    manager = init_database_sync(tmp_path)
+    client = _build_client(tmp_path)
+
+    async def _prepare_inactive_federated_session() -> tuple[str, str]:
+        async with manager.get_session() as session:
+            user = await UserService.create(
+                session,
+                UserCreate(
+                    username="disabled-sso@example.com",
+                    password=None,
+                    display_name="Disabled SSO User",
+                    roles={"user": True},
+                    auth_type="oidc:test",
+                    is_active=False,
+                ),
+            )
+
+        ctx = get_api_context()
+        key = SessionKey(
+            agent_id="main",
+            channel="web",
+            chat_type=SessionChatType.DM,
+            user_id=user.id,
+        )
+        session_key = key.to_string(scope=SessionScope.MAIN)
+        session = await ctx.session_manager.get_or_create(session_key)
+        session.display_name = "Disabled SSO User"
+        return user.id, session_key
+
+    user_id, session_key = asyncio.run(_prepare_inactive_federated_session())
+
+    token = issue_atlas_token(
+        subject=user_id,
+        is_admin=False,
+        roles=["user"],
+        auth_type="oidc:test",
+        secret_key="test-secret",
+        expires_minutes=60,
+        issuer="atlasclaw-test",
+        additional_claims={"external_subject": "disabled-sso@example.com"},
+    )
+    client.cookies.set("atlasclaw_session", session_key)
+
+    me_resp = client.get(
+        "/api/auth/me",
+        headers={"AtlasClaw-Authenticate": token},
+    )
+
+    assert me_resp.status_code == 403
+    assert "inactive" in me_resp.json()["detail"]
+
+    manager_cleanup(manager)
+
+
 def test_auth_me_uses_external_subject_for_federated_rbac(tmp_path):
     import asyncio
 

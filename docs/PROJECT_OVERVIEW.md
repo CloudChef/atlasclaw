@@ -466,7 +466,7 @@ pytest --cov=app.atlasclaw --cov-report=term-missing
 | **Agent Framework** | PydanticAI | Type-safe, structured output, tool calling |
 | **Web Framework** | FastAPI | Async-native, auto API docs, type hints |
 | **Configuration** | Pydantic + layered loading | Type-safe, flexible overrides |
-| **Authentication** | Strategy pattern + shadow users | Multiple auth sources, unified user model |
+| **Authentication** | Strategy pattern + DB users | Multiple auth sources, unified user model |
 | **Storage** | File system (JSON/JSONL/Markdown) | Simple, version-controllable, debuggable |
 | **Multi-tenancy** | Path isolation | Simple, effective, easy backup/migration |
 | **Streaming** | SSE | Simpler than WebSocket, supports auto-reconnect |

@@ -53,11 +53,12 @@ AtlasClaw uses a hybrid storage approach combining file-system and relational da
 - **Sessions**: JSONL (one JSON object per line, append-only)
 - **Memory**: Markdown files (daily date-scoped + long-term)
 - **Configuration**: JSON/YAML files with environment variable interpolation
-- **Users**: JSON (shadow user store)
+- **Runtime directories**: per-user session and memory files under the workspace
 
 **Relational Database** (enterprise mode):
 - **SQLite** (default): Zero-config, file-based, auto-creates schema via ORM on startup
 - **MySQL** (enterprise): Requires Alembic migrations for DDL/DML management
+- **Users**: DB-backed `users` table for local and external identities
 
 **Database Configuration** (`atlasclaw.json`):
 ```json
@@ -100,7 +101,7 @@ routes.py | gateway.py | sse.py | webhook_dispatch.py
     |
     v
 [Auth Middleware]
-credential extraction -> provider.authenticate() -> shadow_store.get_or_create() -> UserInfo
+credential extraction -> provider.authenticate() -> DB user resolution -> UserInfo
     |
     v
 [Agent Engine]
@@ -117,7 +118,7 @@ ConfigManager | SkillDeps | WorkspaceInitializer | TenantManager | ServiceProvid
     |
     v
 [Data & State Management]
-SessionManager (JSONL) | MemoryManager (Markdown) | ShadowUserStore (JSON) | ChannelStore (JSON)
+SessionManager (JSONL) | MemoryManager (Markdown) | UserService (DB) | ChannelStore (JSON)
     |
     v
 [External LLM Providers]
@@ -129,12 +130,12 @@ DeepSeek | OpenAI | Doubao | Kimi | Anthropic
 |---|---|---|
 | **Access Channels** | Protocol adaptation, message normalization | `channels/handlers/*` |
 | **API Layer** | HTTP routing, SSE streaming, WebSocket frames, webhook dispatch | `api/routes.py`, `api/sse.py`, `api/gateway.py` |
-| **Auth Middleware** | Credential extraction, provider authentication, shadow user resolution | `auth/middleware.py`, `auth/strategy.py` |
+| **Auth Middleware** | Credential extraction, provider authentication, DB user resolution | `auth/middleware.py`, `auth/strategy.py` |
 | **Agent Engine** | LLM orchestration, prompt construction, streaming, context compaction, token management, agent instance pooling | `agent/runner.py`, `agent/prompt_builder.py`, `agent/token_policy.py`, `agent/agent_pool.py`, `core/token_pool.py`, `core/token_health_store.py`, `core/token_interceptor.py` |
 | **Tools & Skills** | Executable capabilities exposed to the LLM | `tools/`, `skills/` |
 | **Hooks** | Lifecycle interception plus generic runtime event dispatch, per-user hook state, and memory/context sinks | `hooks/system.py`, `hooks/runtime.py` |
 | **Core Infrastructure** | Configuration, dependency injection, workspace, tenancy | `core/` |
-| **Data & State** | Persistence for sessions, memory, users, channels, token health | `session/`, `memory/`, `auth/shadow_store.py` |
+| **Data & State** | Persistence for sessions, memory, users, channels, token health | `session/`, `memory/`, `db/orm/user.py`, `auth/user_store.py` |
 
 ### Session Scope Model
 
@@ -170,11 +171,11 @@ app/atlasclaw/
 |  |- token_pool.py              # TokenPool, TokenEntry, TokenHealth
 |  \- token_interceptor.py      # TokenHealthInterceptor
 |- auth/
-|  |- models.py                  # UserInfo, AuthResult, ShadowUser
+|  |- models.py                  # UserInfo, AuthResult
 |  |- middleware.py              # AuthMiddleware
 |  |- strategy.py                # AuthStrategy
 |  |- registry.py                # AuthRegistry
-|  |- shadow_store.py            # ShadowUserStore
+|  |- user_store.py              # External auth to DB user helpers
 |  |- config.py                  # AuthConfig, OIDCConfig
 |  \- providers/
 |     |- base.py
@@ -367,7 +368,7 @@ HTTP Request (POST /api/agent/run)
    - AuthStrategy.resolve_user(credential)
    - Check TTL cache (300s default)
    - AuthProvider.authenticate(credential) -> AuthResult
-   - ShadowUserStore.get_or_create() -> ShadowUser -> UserInfo
+   - ensure_db_user_for_auth_result() -> DB User -> UserInfo
    - Attach UserInfo to request.state.user
 2. Route handler (api/routes.py)
    - Parse AgentRunRequest (session_key, message, model, timeout)
@@ -445,7 +446,7 @@ main (orchestrator)
 |  |- middleware
 |  |- strategy
 |  |- providers
-|  \- shadow_store
+|  \- user_store
 |- channels
 |  |- manager
 |  |- registry
@@ -558,10 +559,10 @@ Each user can have overrides at `<workspace>/users/<user_id>/atlasclaw.json`. Lo
 Credential -> AuthProvider.authenticate() -> AuthResult
                                       |
                                       v
-                       ShadowUserStore.get_or_create()
+                       ensure_db_user_for_auth_result()
                                       |
                                       v
-                             ShadowUser -> UserInfo
+                               DB User -> UserInfo
 ```
 
 **Credential Sources** (checked in order):
@@ -889,9 +890,9 @@ Heartbeat state is intentionally separate from Hook Runtime state:
 
 ### 11.4 Users
 
-**Format**: JSON
-**Location**: `~/.atlasclaw/users.json`
-**Content**: Shadow user mappings (`provider:subject` ->`user_id` ->`ShadowUser`)
+**Format**: Relational database row
+**Location**: `users` table
+**Content**: Local and external user identities, role assignments, active state, and profile fields
 
 ### 11.5 Configuration
 

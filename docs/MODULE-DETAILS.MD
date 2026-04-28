@@ -433,7 +433,7 @@ Instance wrapper logic: when a skill is invoked, if the provider has a single in
 
 **Path**: `app/atlasclaw/auth/`
 
-Implements the authentication pipeline: credential extraction ->provider authentication ->shadow user resolution ->UserInfo injection.
+Implements the authentication pipeline: credential extraction ->provider authentication ->DB user resolution ->UserInfo injection.
 
 ### 2.1 Data Models (`auth/models.py`)
 
@@ -443,7 +443,7 @@ Implements the authentication pipeline: credential extraction ->provider authent
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `user_id` | `str` | -| Internal shadow user UUID or `"anonymous"` / `"default"` |
+| `user_id` | `str` | -| Internal DB user UUID or `"anonymous"` / `"default"` |
 | `display_name` | `str` | `""` | Human-readable name |
 | `tenant_id` | `str` | `"default"` | Tenant/org identifier |
 | `roles` | `list[str]` | `[]` | Role strings |
@@ -469,22 +469,7 @@ Properties: `is_anonymous: bool`, `is_default: bool`
 | `raw_token` | `str` | `""` |
 | `extra` | `dict[str, Any]` | `{}` |
 
-**Dataclass: `ShadowUser`** -Internal user record persisted in `~/.atlasclaw/users.json`.
-
-| Field | Type | Description |
-|---|---|---|
-| `user_id` | `str` | Internal UUID |
-| `provider` | `str` | e.g. `"local"`, `"oidc_jwt"`, `"oidc_login"`, `"none"` |
-| `subject` | `str` | External subject ID |
-| `auth_type` | `str` | Auth source type, e.g. `"local"`, `"oidc:keycloak"` |
-
-| `display_name` | `str` | Human-readable name |
-| `tenant_id` | `str` | Tenant identifier |
-| `roles` | `list[str]` | Assigned roles |
-| `created_at` | `datetime` | Creation timestamp (UTC) |
-| `last_seen_at` | `datetime` | Last activity (UTC) |
-
-Methods: `create(provider, subject, result) -> ShadowUser`, `to_user_info(raw_token, extra) -> UserInfo`, `to_dict() -> dict`, `from_dict(d) -> ShadowUser`
+External auth users are persisted in the DB `users` table. The helper module `auth/user_store.py` resolves an `AuthResult` into a DB user and then builds the request `UserInfo`.
 
 ### 2.2 Auth Middleware (`auth/middleware.py`)
 
@@ -506,19 +491,19 @@ Constructor: `strategy: AuthStrategy`, `anonymous_fallback: bool = False`, `oidc
 - Embedded host cookie mode is configured under `auth.host_cookie`, including the token header/cookie name and the host identity cookie names used for subject, display name, user ID, and tenant ID.
 
 
-**Function**: `setup_auth_middleware(app, auth_config, shadow_store) -> None`
+**Function**: `setup_auth_middleware(app, auth_config, workspace_path=".") -> None`
 
 ### 2.3 Auth Strategy (`auth/strategy.py`)
 
 **Class: `AuthStrategy`**
 
-Constructor: `provider: AuthProvider`, `shadow_store: ShadowUserStore`, `cache_ttl_seconds: int = 300`
+Constructor: `providers: list[AuthProvider]`, `workspace_path: str = "."`, `cache_ttl_seconds: int = 300`
 
 | Method | Signature | Description |
 |---|---|---|
-| `resolve_user` | `(credential: str) -> UserInfo` | Full auth pipeline: check TTL cache ->`provider.authenticate()` ->`shadow_store.get_or_create()` ->convert to `UserInfo` and cache |
+| `resolve_user` | `(credential: str) -> UserInfo` | Full auth pipeline: check TTL cache ->`provider.authenticate()` ->resolve/create DB user ->convert to `UserInfo` and cache |
 
-**Function**: `create_auth_strategy(config, shadow_store) -> Optional[AuthStrategy]`
+**Function**: `create_auth_strategy(config, workspace_path=".") -> Optional[AuthStrategy]`
 
 ### 2.4 Auth Providers (`auth/providers/`)
 
@@ -552,20 +537,17 @@ Constructor: `provider: AuthProvider`, `shadow_store: ShadowUserStore`, `cache_t
 *Chained Authentication*: The `AuthStrategy` supports trying multiple providers in sequence (e.g., local auth first, then OIDC JWT).
 
 
-### 2.5 Shadow User Store (`auth/shadow_store.py`)
+### 2.5 User Store Helpers (`auth/user_store.py`)
 
-**Class: `ShadowUserStore`**
+External auth providers resolve into DB-backed `UserModel` records instead of a JSON mapping file.
 
-Constructor: `store_path: str = "~/.atlasclaw/users.json"`, `workspace_path: str = "."`
-
-| Method | Signature | Description |
+| Function | Signature | Description |
 |---|---|---|
-| `get_or_create` | `(provider: str, result: AuthResult) -> ShadowUser` | Idempotent lookup/create by `"provider:subject"` index |
-| `get_by_subject` | `(provider: str, subject: str) -> Optional[ShadowUser]` | Lookup by external identity |
-| `list_users` | `() -> list[ShadowUser]` | List all shadow users |
-| `delete` | `(user_id: str) -> bool` | Remove a shadow user |
+| `ensure_db_user_for_auth_result` | `(session, provider, result, default_roles=None) -> UserModel` | Idempotently resolve/create a DB user by authenticated subject |
+| `build_user_info_from_db_user` | `(user, provider, result, raw_token="", extra=None, auth_type="") -> UserInfo` | Convert a DB user and auth result into request identity |
+| `extract_role_identifiers` | `(raw_roles) -> list[str]` | Normalize DB role storage into enabled role identifiers |
 
-Thread-safe and idempotent under concurrent access.
+New external users receive the standard user role by default. Existing DB users keep their assigned roles and active state.
 
 ### 2.6 Auth Registry (`auth/registry.py`)
 

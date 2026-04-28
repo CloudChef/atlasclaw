@@ -1035,7 +1035,7 @@ Response Stream (SSE)
 | Agent Framework | PydanticAI | Type-safe, structured output, native tool calling |
 | Web Framework | FastAPI | Async-native, auto API docs, type hints |
 | Configuration | Pydantic + layered loading | Type-safe, flexible overrides |
-| Authentication | Strategy pattern + shadow users | Multiple auth sources, unified user model |
+| Authentication | Strategy pattern + DB users | Multiple auth sources, unified user model |
 | Storage | File system (JSON / JSONL / Markdown) | Simple, version-controllable, debuggable |
 | Streaming | SSE | Simpler than WebSocket, supports auto-reconnect |
 | Skills System | Markdown + Python hybrid | Flexible: docs-only or executable |

@@ -143,17 +143,16 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 return JSONResponse(status_code=500, content={"detail": "Host cookie provider misconfigured"})
             try:
                 auth_result = await host_provider.authenticate_from_cookies(cookies)
-                shadow = await self._strategy._shadow_store.get_or_create(
-                    provider=provider_name, result=auth_result,
-                )
-                self._strategy.ensure_user_workspace(shadow.user_id)
                 provider_cookie_context = {
                     "provider_cookie_available": True,
                     "provider_cookie_token": auth_result.raw_token,
                 }
-                request.state.user_info = shadow.to_user_info(
+                request.state.user_info = await self._strategy.resolve_user_from_auth_result(
+                    provider=provider_name,
+                    result=auth_result,
                     raw_token=auth_result.raw_token,
                     extra={**auth_result.extra, **provider_cookie_context},
+                    auth_type="cookie",
                 )
                 return await call_next(request)
             except AuthenticationError as exc:
@@ -358,18 +357,20 @@ class AuthMiddleware(BaseHTTPMiddleware):
 def setup_auth_middleware(
     app,
     auth_config: Optional[object],
-    shadow_store: Optional[object] = None,
+    workspace_path: str = ".",
 ) -> None:
     from app.atlasclaw.auth.config import AuthConfig
     from app.atlasclaw.auth.strategy import create_auth_strategy
 
     if auth_config is None:
         from app.atlasclaw.auth.providers.none import NoneProvider
-        from app.atlasclaw.auth.shadow_store import ShadowUserStore
 
-        _store = shadow_store or ShadowUserStore()
         _provider = NoneProvider(default_user_id="anonymous")
-        strategy = AuthStrategy(providers=[_provider], shadow_store=_store, cache_ttl_seconds=0)
+        strategy = AuthStrategy(
+            providers=[_provider],
+            workspace_path=workspace_path,
+            cache_ttl_seconds=0,
+        )
 
         app.add_middleware(AuthMiddleware, strategy=strategy, auth_config=None, anonymous_fallback=True)
         logger.info("AuthMiddleware: anonymous fallback mode (no auth config)")
@@ -378,7 +379,7 @@ def setup_auth_middleware(
     if isinstance(auth_config, dict):
         auth_config = AuthConfig(**auth_config)
 
-    strategy = create_auth_strategy(auth_config, shadow_store)
+    strategy = create_auth_strategy(auth_config, workspace_path=workspace_path)
     if strategy is None:
         logger.warning("AuthMiddleware: create_auth_strategy returned None, using anonymous")
         app.add_middleware(
@@ -389,9 +390,7 @@ def setup_auth_middleware(
                         "app.atlasclaw.auth.providers.none", fromlist=["NoneProvider"]
                     ).NoneProvider()
                 ],
-                shadow_store=__import__(
-                    "app.atlasclaw.auth.shadow_store", fromlist=["ShadowUserStore"]
-                ).ShadowUserStore(),
+                workspace_path=workspace_path,
             ),
 
             auth_config=None,

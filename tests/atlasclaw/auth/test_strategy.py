@@ -10,14 +10,13 @@ AuthStrategy 单元测试
 from __future__ import annotations
 
 import json
-import time
 import pytest
-from unittest.mock import AsyncMock, MagicMock
 
-from app.atlasclaw.auth.models import AuthResult, UserInfo, ANONYMOUS_USER
+from app.atlasclaw.auth.models import AuthResult
 from app.atlasclaw.auth.strategy import AuthStrategy
 from app.atlasclaw.auth.providers.base import AuthProvider
-from app.atlasclaw.auth.shadow_store import ShadowUserStore
+from app.atlasclaw.db.database import DatabaseConfig, init_database
+from app.atlasclaw.db.orm.user import UserService
 
 
 class _MockProvider(AuthProvider):
@@ -26,7 +25,7 @@ class _MockProvider(AuthProvider):
         self.call_count = call_count if call_count is not None else []
 
     def provider_name(self) -> str:
-        return "mock"
+        return "local"
 
     async def authenticate(self, credential: str) -> AuthResult:
         self.call_count.append(credential)
@@ -37,22 +36,28 @@ class TestAuthStrategy:
 
     @pytest.mark.asyncio
     async def test_full_auth_flow_creates_user_info(self, tmp_path):
-        store = ShadowUserStore(store_path=str(tmp_path / "users.json"))
         provider = _MockProvider(subject="alice")
-        strategy = AuthStrategy(providers=[provider], shadow_store=store, cache_ttl_seconds=60)
+        strategy = AuthStrategy(
+            providers=[provider],
+            workspace_path=str(tmp_path),
+            cache_ttl_seconds=60,
+        )
 
         user_info = await strategy.resolve_user("token-alice")
 
-        assert user_info.user_id  # non-empty UUID
+        assert user_info.user_id == "alice"
         assert user_info.display_name == "Mock"
         assert user_info.raw_token == "token-alice"
 
     @pytest.mark.asyncio
     async def test_cache_hit_skips_provider(self, tmp_path):
         calls: list[str] = []
-        store = ShadowUserStore(store_path=str(tmp_path / "users.json"))
         provider = _MockProvider(subject="bob", call_count=calls)
-        strategy = AuthStrategy(providers=[provider], shadow_store=store, cache_ttl_seconds=60)
+        strategy = AuthStrategy(
+            providers=[provider],
+            workspace_path=str(tmp_path),
+            cache_ttl_seconds=60,
+        )
 
 
         await strategy.resolve_user("token-bob")
@@ -64,10 +69,13 @@ class TestAuthStrategy:
     @pytest.mark.asyncio
     async def test_cache_miss_after_ttl_expiry(self, tmp_path):
         calls: list[str] = []
-        store = ShadowUserStore(store_path=str(tmp_path / "users.json"))
         provider = _MockProvider(subject="carol", call_count=calls)
         # TTL = 0 → every call is a cache miss
-        strategy = AuthStrategy(providers=[provider], shadow_store=store, cache_ttl_seconds=0)
+        strategy = AuthStrategy(
+            providers=[provider],
+            workspace_path=str(tmp_path),
+            cache_ttl_seconds=0,
+        )
 
         await strategy.resolve_user("token-carol")
         await strategy.resolve_user("token-carol")
@@ -77,9 +85,12 @@ class TestAuthStrategy:
     @pytest.mark.asyncio
     async def test_different_tokens_are_cached_independently(self, tmp_path):
         calls: list[str] = []
-        store = ShadowUserStore(store_path=str(tmp_path / "users.json"))
         provider = _MockProvider(subject="dave", call_count=calls)
-        strategy = AuthStrategy(providers=[provider], shadow_store=store, cache_ttl_seconds=60)
+        strategy = AuthStrategy(
+            providers=[provider],
+            workspace_path=str(tmp_path),
+            cache_ttl_seconds=60,
+        )
 
 
         await strategy.resolve_user("token-A")
@@ -91,12 +102,12 @@ class TestAuthStrategy:
     @pytest.mark.asyncio
     async def test_login_creates_user_workspace(self, tmp_path):
         workspace = tmp_path / "workspace"
-        store = ShadowUserStore(
-            store_path=str(tmp_path / "users.json"),
-            workspace_path=str(workspace),
-        )
         provider = _MockProvider(subject="eve")
-        strategy = AuthStrategy(providers=[provider], shadow_store=store, cache_ttl_seconds=60)
+        strategy = AuthStrategy(
+            providers=[provider],
+            workspace_path=str(workspace),
+            cache_ttl_seconds=60,
+        )
 
         user_info = await strategy.resolve_user("token-eve")
         user_dir = workspace / "users" / user_info.user_id
@@ -107,4 +118,46 @@ class TestAuthStrategy:
         assert user_config.exists()
         with open(user_config, "r", encoding="utf-8") as f:
             config = json.load(f)
-        assert config == {"channels": {}, "preferences": {}}
+        assert config["channels"] == {}
+        assert config["preferences"] == {}
+        assert config["providers"] == {}
+
+    @pytest.mark.asyncio
+    async def test_resolve_user_from_auth_result_creates_db_backed_user(self, tmp_path):
+        manager = await init_database(
+            DatabaseConfig(db_type="sqlite", sqlite_path=str(tmp_path / "users.db"))
+        )
+        await manager.create_tables()
+
+        workspace = tmp_path / "workspace"
+        strategy = AuthStrategy(
+            providers=[],
+            workspace_path=str(workspace),
+            cache_ttl_seconds=60,
+        )
+
+        user_info = await strategy.resolve_user_from_auth_result(
+            provider="host_cookie",
+            result=AuthResult(
+                subject="cmp_user",
+                display_name="CMP User",
+                raw_token="cookie-token",
+                extra={"auth_type": "cookie"},
+            ),
+            raw_token="cookie-token",
+            auth_type="cookie",
+        )
+
+        assert user_info.user_id
+        assert user_info.user_id != "cmp_user"
+        assert user_info.display_name == "CMP User"
+        assert user_info.roles == ["user"]
+        assert (workspace / "users" / user_info.user_id / "user_setting.json").exists()
+
+        async with manager.get_session() as session:
+            user = await UserService.get_by_username(session, "cmp_user")
+            assert user is not None
+            assert user.id == user_info.user_id
+            assert user.password is None
+
+        await manager.close()

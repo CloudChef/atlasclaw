@@ -43,14 +43,14 @@ This document describes the relationship between Users, Workspaces, Agents, Prov
 A **User** represents an authenticated entity in the AtlasClaw system.
 
 **Key Characteristics:**
-- Identified by a unique `user_id` (UUID)
+- Identified by a unique DB user ID (UUID)
 - Linked to external identity providers (OAuth, OIDC, SAML)
 - Has isolated storage and session data
-- Inherits permissions from external identity providers
+- Uses DB-backed roles and permissions
 
 **User Lifecycle:**
 1. User authenticates via external provider (OAuth/OIDC/SAML)
-2. `ShadowUserStore` creates or retrieves the user mapping
+2. Auth helpers create or retrieve the matching DB `users` row
 3. `UserWorkspaceInitializer` creates user directory structure
 4. User sessions and memory are isolated by `user_id`
 
@@ -99,12 +99,6 @@ A **Workspace** is the root organizational unit containing all AtlasClaw resourc
 │           └── memory/                  # Long-term memory storage
 ├── atlasclaw.json                       # Project configuration (symlink or copy)
 └── .gitignore                           # Git ignore rules
-```
-
-**Global User Storage:**
-```
-~/.atlasclaw/
-└── users.json                           # User authentication mapping
 ```
 
 **Initialization:**
@@ -257,11 +251,11 @@ User ──▶ Channel Adapter ──▶ Session Manager ──▶ Agent Runner 
 ```
 1. User authenticates via OAuth/OIDC/SAML
 2. Auth provider returns AuthResult (subject, email, name)
-3. ShadowUserStore.get_or_create():
-   - Check if user exists (provider:subject mapping)
-   - If not, create new ShadowUser with UUID
+3. DB user helper resolves the authenticated subject:
+   - Check if a matching `users.username` exists
+   - If not, create a DB user with the default standard role
    - Initialize user workspace directory
-4. Return ShadowUser with user_id
+4. Return UserInfo with the DB user ID
 ```
 
 ### 2. Session Creation Flow
@@ -309,7 +303,6 @@ Configuration is loaded in the following priority order (highest to lowest):
    - Long-term memory
 
 3. Global-level (~/.atlasclaw/)
-   - User authentication mapping (users.json)
    - Global skills
 
 4. Default built-in
@@ -325,13 +318,13 @@ Configuration is loaded in the following priority order (highest to lowest):
 External Identity Provider
     │
     ▼
-ShadowUser (user_id)
+DB User (user_id)
     │
     ├──▶ Session (isolated per user)
     │
     ├──▶ Memory (isolated per user)
     │
-    └──▶ Provider Access (inherited permissions)
+    └──▶ Role-based access
 ```
 
 ### Key Security Principles
@@ -374,7 +367,7 @@ ShadowUser (user_id)
 | `AgentConfig` | `agent.agent_definition` | Agent configuration dataclass |
 | `SkillRegistry` | `skills.registry` | Register and execute skills |
 | `SessionManager` | `session.manager` | Manage session lifecycle |
-| `ShadowUserStore` | `auth.shadow_store` | User authentication mapping |
+| `UserService` | `db.orm.user` | Manage DB-backed users |
 | `WorkspaceInitializer` | `core.workspace` | Initialize workspace structure |
 | `ChannelAdapterRegistry` | `channels.registry` | Manage channel adapters |
 
@@ -382,7 +375,7 @@ ShadowUser (user_id)
 
 | Function | Module | Purpose |
 |----------|--------|---------|
-| `get_or_create_user()` | `auth.shadow_store` | Authenticate and create users |
+| `ensure_db_user_for_auth_result()` | `auth.user_store` | Resolve external auth results to DB users |
 | `load_agent()` | `agent.agent_definition` | Load agent configuration |
 | `execute()` | `skills.registry` | Execute a skill |
 | `get_or_create_session()` | `session.manager` | Manage sessions |

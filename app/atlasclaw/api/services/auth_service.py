@@ -145,20 +145,27 @@ async def perform_local_login(request: Request, body: LocalLoginRequest) -> Resp
             detail=f"Local authentication failed: {exc}",
         )
 
+    auth_type = auth_result.extra.get("auth_type", "local")
+    db_user_id = str(auth_result.extra.get("db_user_id", "") or "").strip()
+    runtime_user_id = (
+        db_user_id
+        if auth_type != "local" and db_user_id
+        else auth_result.subject
+    )
+
     ctx = get_api_context()
     key = SessionKey(
         agent_id="main",
         channel="web",
         chat_type=SessionChatType.DM,
-        user_id=auth_result.subject,
+        user_id=runtime_user_id,
     )
     session_key_str = key.to_string(scope=SessionScope.MAIN)
     session = await ctx.session_manager.get_or_create(session_key_str)
     workspace_path = resolve_workspace_path(request, ctx=ctx)
-    UserWorkspaceInitializer(workspace_path, auth_result.subject).initialize()
+    UserWorkspaceInitializer(workspace_path, runtime_user_id).initialize()
 
     roles = auth_result.roles if isinstance(auth_result.roles, list) else []
-    auth_type = auth_result.extra.get("auth_type", "local")
     is_admin = is_admin_from_roles(roles)
 
     session.display_name = auth_result.display_name or body.username
@@ -169,13 +176,17 @@ async def perform_local_login(request: Request, body: LocalLoginRequest) -> Resp
     session.extra["is_admin"] = is_admin
 
     atlas_token = issue_atlas_token(
-        subject=auth_result.subject,
+        subject=runtime_user_id,
         is_admin=is_admin,
         roles=roles,
         auth_type=auth_type,
         secret_key=jwt_cfg.secret_key,
         expires_minutes=jwt_cfg.expires_minutes,
         issuer=jwt_cfg.issuer,
+        additional_claims={
+            "external_subject": auth_result.subject,
+            "provider_subject": f"{auth_type}:{auth_result.subject}",
+        } if runtime_user_id != auth_result.subject else None,
     )
 
     secure_cookie = request.url.scheme == "https"
@@ -183,7 +194,7 @@ async def perform_local_login(request: Request, body: LocalLoginRequest) -> Resp
         content={
             "success": True,
             "user": {
-                "id": auth_result.subject,
+                "id": runtime_user_id,
                 "username": body.username,
                 "display_name": auth_result.display_name or body.username,
                 "auth_type": auth_type,
@@ -256,7 +267,7 @@ async def complete_sso_login(
     error: str,
     error_description: str,
 ) -> Response:
-    from ...auth.shadow_store import ShadowUserStore
+    from ...auth.user_store import resolve_user_info_for_auth_result
     from ...core.workspace import UserWorkspaceInitializer
 
     if error:
@@ -291,12 +302,19 @@ async def complete_sso_login(
         )
 
     workspace_path = resolve_workspace_path(request)
-    shadow_store = ShadowUserStore(workspace_path=workspace_path)
-    shadow_user = await shadow_store.get_or_create(
-        provider=auth_config.provider.lower(),
-        result=auth_result,
-    )
-    user_id = shadow_user.user_id
+    provider_name = auth_config.provider.lower()
+    try:
+        user_info = await resolve_user_info_for_auth_result(
+            provider=provider_name,
+            result=auth_result,
+            raw_token=auth_result.raw_token,
+        )
+    except AuthenticationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"SSO authentication failed: {exc}",
+        ) from exc
+    user_id = user_info.user_id
     UserWorkspaceInitializer(workspace_path, user_id).initialize()
 
     ctx = get_api_context()
@@ -308,10 +326,10 @@ async def complete_sso_login(
     )
     session_key_str = key.to_string(scope=SessionScope.MAIN)
     session = await ctx.session_manager.get_or_create(session_key_str)
-    session.display_name = auth_result.display_name or shadow_user.display_name or user_id
+    session.display_name = user_info.display_name or auth_result.display_name or user_id
 
-    roles = auth_result.roles if isinstance(auth_result.roles, list) else []
-    auth_type = auth_result.extra.get("auth_type", "oidc")
+    roles = list(user_info.roles)
+    auth_type = user_info.auth_type or auth_result.extra.get("auth_type", "oidc")
     is_admin = is_admin_from_roles(roles)
     if not isinstance(session.extra, dict):
         session.extra = {}
@@ -330,7 +348,7 @@ async def complete_sso_login(
         additional_claims={
             "display_name": session.display_name,
             "external_subject": auth_result.subject,
-            "provider_subject": f"{auth_config.provider.lower()}:{auth_result.subject}",
+            "provider_subject": user_info.provider_subject,
         },
     )
 
@@ -382,7 +400,6 @@ async def load_profile_snapshot(
     workspace_path: str = "",
     external_subject: str = "",
 ) -> dict[str, Any]:
-    from ...auth.shadow_store import ShadowUserStore
     from ...db.database import get_db_manager
     from ...db.orm.user import UserService
 
@@ -395,89 +412,67 @@ async def load_profile_snapshot(
         if normalized_external_subject:
             return normalized_external_subject
 
-        if not workspace_path:
-            return ""
+        return ""
 
-        try:
-            shadow_store = ShadowUserStore(workspace_path=workspace_path)
-            shadow_user = await shadow_store.get_by_id(user_id)
-        except Exception:
-            return ""
+    def _serialize_user(user) -> dict[str, Any]:
+        return {
+            "id": user.id,
+            "username": user.username,
+            "email": user.email,
+            "display_name": user.display_name or user.username,
+            "avatar_url": user.avatar_url,
+            "roles": user.roles or {},
+            "auth_type": user.auth_type,
+            "is_active": user.is_active,
+            "is_admin": user.is_admin,
+            "created_at": user.created_at,
+            "last_login_at": user.last_login_at,
+            "updated_at": user.updated_at,
+        }
 
-        if not shadow_user:
-            return ""
-
-        return str(shadow_user.subject or "").strip()
-
-    async def _load_db_profile(username: str) -> dict[str, Any]:
-        normalized_username = str(username or "").strip()
-        if not normalized_username:
+    async def _load_db_profile_by_id(candidate_user_id: str) -> dict[str, Any]:
+        if not candidate_user_id:
             return {}
 
         try:
             db_manager = get_db_manager()
             async with db_manager.get_session() as db_session:
-                user = await UserService.get_by_username(db_session, normalized_username)
+                user = await UserService.get_by_id(db_session, candidate_user_id)
                 if not user:
                     return {}
-                return {
-                    "id": user.id,
-                    "username": user.username,
-                    "email": user.email,
-                    "display_name": user.display_name or user.username,
-                    "avatar_url": user.avatar_url,
-                    "roles": user.roles or {},
-                    "auth_type": user.auth_type,
-                    "is_active": user.is_active,
-                    "is_admin": user.is_admin,
-                    "created_at": user.created_at,
-                    "last_login_at": user.last_login_at,
-                    "updated_at": user.updated_at,
-                }
+                return _serialize_user(user)
         except Exception:
             return {}
 
-    db_profile = await _load_db_profile(user_id)
+    async def _load_db_profile_by_username(username: str) -> dict[str, Any]:
+        if not username:
+            return {}
+
+        try:
+            db_manager = get_db_manager()
+            async with db_manager.get_session() as db_session:
+                user = await UserService.get_by_username(db_session, username)
+                if not user:
+                    return {}
+                return _serialize_user(user)
+        except Exception:
+            return {}
+
+    db_profile = await _load_db_profile_by_id(user_id)
+    if db_profile:
+        return db_profile
+
+    db_profile = await _load_db_profile_by_username(user_id)
     if db_profile:
         return db_profile
 
     federated_subject = await _resolve_federated_subject()
     if federated_subject and federated_subject != str(user_id or "").strip():
-        db_profile = await _load_db_profile(federated_subject)
+        db_profile = await _load_db_profile_by_username(federated_subject)
         if db_profile:
             return db_profile
 
-    normalized_auth_type = str(auth_type or "").strip().lower()
-    if not workspace_path or normalized_auth_type == "local":
-        return {}
-
-    try:
-        shadow_store = ShadowUserStore(workspace_path=workspace_path)
-        shadow_user = await shadow_store.get_by_id(user_id)
-        if not shadow_user:
-            return {}
-
-        roles = {str(role): True for role in shadow_user.roles}
-        is_admin = any(str(role).lower() == "admin" for role in shadow_user.roles)
-        display_name = shadow_user.display_name or shadow_user.subject or shadow_user.user_id
-        username = shadow_user.subject or shadow_user.user_id
-
-        return {
-            "id": shadow_user.user_id,
-            "username": username,
-            "email": None,
-            "display_name": display_name,
-            "avatar_url": None,
-            "roles": roles,
-            "auth_type": shadow_user.auth_type or auth_type,
-            "is_active": True,
-            "is_admin": is_admin,
-            "created_at": shadow_user.created_at,
-            "last_login_at": shadow_user.last_seen_at,
-            "updated_at": shadow_user.last_seen_at,
-        }
-    except Exception:
-        return {}
+    return {}
 
 
 async def get_current_user_payload(request: Request) -> dict[str, Any]:
@@ -512,12 +507,29 @@ async def get_current_user_payload(request: Request) -> dict[str, Any]:
     if auth_config.provider == "host_cookie" and not token:
         user_info = getattr(request.state, "user_info", None)
         if user_info and user_info.user_id != "anonymous":
+            profile_overrides = await load_profile_snapshot(
+                user_id=user_info.user_id,
+                auth_type=user_info.auth_type or "cookie",
+                workspace_path=resolve_workspace_path(request),
+                external_subject=str((user_info.extra or {}).get("external_subject", "")),
+            )
+            db_manager = get_db_manager()
+            async with db_manager.get_session() as db_session:
+                authz = await resolve_authorization_context(db_session, user_info)
             return {
                 "user_id": user_info.user_id,
-                "display_name": user_info.display_name,
+                "username": profile_overrides.get("username", user_info.user_id),
+                "display_name": profile_overrides.get("display_name", user_info.display_name),
+                "email": profile_overrides.get("email"),
+                "avatar_url": profile_overrides.get("avatar_url"),
                 "provider": "host_cookie",
                 "auth_type": user_info.auth_type or "cookie",
                 "tenant_id": user_info.tenant_id,
+                "roles": authz.role_identifiers,
+                "role_identifiers": authz.role_identifiers,
+                "is_active": profile_overrides.get("is_active", True),
+                "is_admin": authz.is_admin,
+                "permissions": authz.permissions,
             }
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -600,6 +612,8 @@ async def get_current_user_payload(request: Request) -> dict[str, Any]:
         effective_permissions = authz.permissions
         effective_role_identifiers = authz.role_identifiers
         effective_is_admin = authz.is_admin
+    except HTTPException:
+        raise
     except Exception:
         # Fall back to the token payload if the DB-backed RBAC snapshot cannot be resolved.
         effective_permissions = {}

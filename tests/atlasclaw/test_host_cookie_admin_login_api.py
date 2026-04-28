@@ -157,6 +157,24 @@ def test_host_cookie_mode_auth_me_accepts_configured_host_cookies(tmp_path: Path
             assert body["provider"] == "host_cookie"
             assert body["auth_type"] == "cookie"
             assert body["tenant_id"] == "tenant-a"
+            assert body["roles"] == ["user"]
+            assert body["permissions"]["channels"]["view"] is True
+            assert body["permissions"]["channels"]["create"] is True
+
+            login_response = client.post(
+                "/api/auth/local/login",
+                json={"username": "admin", "password": "Admin@123"},
+            )
+            assert login_response.status_code == 200
+            users_response = client.get(
+                "/api/users",
+                headers={"AtlasClaw-Authenticate": login_response.json()["token"]},
+            )
+            assert users_response.status_code == 200
+            assert any(
+                user["username"] == "host-admin" and user["roles"] == {"user": True}
+                for user in users_response.json()["users"]
+            )
     finally:
         config_module._config_manager = old_manager
 
@@ -180,6 +198,61 @@ def test_host_cookie_mode_admin_api_accepts_local_admin_jwt(tmp_path: Path, monk
             body = users_response.json()
             assert body["total"] >= 1
             assert any(user["username"] == "admin" for user in body["users"])
+    finally:
+        config_module._config_manager = old_manager
+
+
+def test_host_cookie_mode_rejects_inactive_cookie_user(tmp_path: Path, monkeypatch) -> None:
+    app, config_module, old_manager = _create_host_cookie_app(tmp_path, monkeypatch)
+    try:
+        with TestClient(app) as client:
+            first_me_response = client.get(
+                "/api/auth/me",
+                cookies={
+                    "Host-Authenticate": "host-token",
+                    "hostUser": "host-disabled",
+                    "hostDisplayName": "Host%20Disabled",
+                    "hostTenantId": "tenant-a",
+                },
+            )
+            assert first_me_response.status_code == 200
+
+            login_response = client.post(
+                "/api/auth/local/login",
+                json={"username": "admin", "password": "Admin@123"},
+            )
+            assert login_response.status_code == 200
+            token = login_response.json()["token"]
+
+            users_response = client.get(
+                "/api/users",
+                headers={"AtlasClaw-Authenticate": token},
+            )
+            assert users_response.status_code == 200
+            host_user = next(
+                user
+                for user in users_response.json()["users"]
+                if user["username"] == "host-disabled"
+            )
+
+            update_response = client.put(
+                f"/api/users/{host_user['id']}",
+                json={"is_active": False},
+                headers={"AtlasClaw-Authenticate": token},
+            )
+            assert update_response.status_code == 200
+
+            client.cookies.clear()
+            inactive_me_response = client.get(
+                "/api/auth/me",
+                cookies={
+                    "Host-Authenticate": "host-token",
+                    "hostUser": "host-disabled",
+                    "hostDisplayName": "Host%20Disabled",
+                    "hostTenantId": "tenant-a",
+                },
+            )
+            assert inactive_me_response.status_code == 401
     finally:
         config_module._config_manager = old_manager
 

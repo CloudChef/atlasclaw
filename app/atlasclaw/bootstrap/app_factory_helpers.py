@@ -195,7 +195,6 @@ def setup_auth_middleware_from_config(app: FastAPI) -> None:
     try:
         from app.atlasclaw.auth.config import AuthConfig
         from app.atlasclaw.auth.middleware import setup_auth_middleware
-        from app.atlasclaw.auth.shadow_store import ShadowUserStore
         from app.atlasclaw.core.config import get_config
 
         config = get_config()
@@ -206,8 +205,7 @@ def setup_auth_middleware_from_config(app: FastAPI) -> None:
             auth = None
 
         auth_workspace_path = str(Path(config.workspace.path).resolve())
-        shadow_store = ShadowUserStore(workspace_path=auth_workspace_path)
-        setup_auth_middleware(app, auth, shadow_store=shadow_store)
+        setup_auth_middleware(app, auth, workspace_path=auth_workspace_path)
 
         app.state.config = config
         if auth is not None and isinstance(auth, AuthConfig):

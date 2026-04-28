@@ -2,7 +2,7 @@
 # Copyright 2026  Qianyun, Inc., www.cloudchef.io, All rights reserved.
 
 """
-AuthStrategy — orchestrates Provider → ShadowUserStore → UserInfo.
+AuthStrategy — orchestrates Provider → DB-backed user resolution → UserInfo.
 Includes a simple in-memory TTL cache keyed by credential.
 
 Supports chained authentication: tries multiple providers in sequence,
@@ -16,14 +16,9 @@ import time
 from typing import Optional
 
 from app.atlasclaw.auth.config import AuthConfig
-from app.atlasclaw.auth.models import (
-    UserInfo, 
-    ANONYMOUS_USER, 
-    AuthenticationError,
-    AuthResult,
-)
+from app.atlasclaw.auth.user_store import resolve_user_info_for_auth_result
+from app.atlasclaw.auth.models import AuthResult, AuthenticationError, UserInfo
 from app.atlasclaw.auth.providers.base import AuthProvider
-from app.atlasclaw.auth.shadow_store import ShadowUserStore
 from app.atlasclaw.core.workspace import UserWorkspaceInitializer
 
 logger = logging.getLogger(__name__)
@@ -36,7 +31,7 @@ class AuthStrategy:
     Authentication flow:
       1. Try primary provider (local/none)
       2. If primary fails, try secondary providers (oidc_jwt, etc.)
-      3. First successful AuthResult → ShadowUserStore → UserInfo
+      3. First successful AuthResult → DB user/UserInfo
       
     Results are cached in memory for ``cache_ttl_seconds`` to avoid repeated
     remote calls for the same token.
@@ -45,17 +40,17 @@ class AuthStrategy:
     def __init__(
         self,
         providers: list[AuthProvider],
-        shadow_store: ShadowUserStore,
+        workspace_path: str = ".",
         cache_ttl_seconds: int = 300,
     ) -> None:
         """
         Args:
             providers: List of providers to try in order
-            shadow_store: Shadow user store for mapping auth results
+            workspace_path: Workspace root for per-user runtime directories
             cache_ttl_seconds: Cache TTL in seconds
         """
         self._providers = providers
-        self._shadow_store = shadow_store
+        self._workspace_path = workspace_path
         self._cache_ttl = cache_ttl_seconds
         # token -> (UserInfo, expiry_monotonic_ts)
         self._cache: dict[str, tuple[UserInfo, float]] = {}
@@ -72,13 +67,33 @@ class AuthStrategy:
 
     def _ensure_user_workspace(self, user_id: str) -> None:
         user_initializer = UserWorkspaceInitializer(
-            str(self._shadow_store.workspace_path),
+            str(self._workspace_path),
             user_id,
         )
         user_initializer.initialize()
 
     def ensure_user_workspace(self, user_id: str) -> None:
         self._ensure_user_workspace(user_id)
+
+    async def resolve_user_from_auth_result(
+        self,
+        *,
+        provider: str,
+        result: AuthResult,
+        raw_token: str = "",
+        extra: Optional[dict] = None,
+        auth_type: str = "",
+    ) -> UserInfo:
+        """Resolve an AuthResult to UserInfo and initialize runtime workspace."""
+        user_info = await resolve_user_info_for_auth_result(
+            provider=provider,
+            result=result,
+            raw_token=raw_token or result.raw_token,
+            extra=extra,
+            auth_type=auth_type,
+        )
+        self._ensure_user_workspace(user_info.user_id)
+        return user_info
 
     async def resolve_user(self, credential: str) -> UserInfo:
         """
@@ -95,9 +110,6 @@ class AuthStrategy:
         Raises:
             AuthenticationError: If all providers fail
         """
-        if not credential:
-            raise AuthenticationError("Credential is empty")
-        
         # --- TTL cache hit -------------------------------------------
         if credential in self._cache:
             user_info, expiry = self._cache[credential]
@@ -114,25 +126,44 @@ class AuthStrategy:
             try:
                 logger.debug(f"Trying provider: {provider.provider_name()}")
                 result = await provider.authenticate(credential)
-                
-                # Success! Map to shadow user
-                shadow = await self._shadow_store.get_or_create(
-                    provider=provider.provider_name(),
-                    result=result,
-                )
-                self._ensure_user_workspace(shadow.user_id)
-                
-                user_info = shadow.to_user_info(raw_token=result.raw_token)
-                
-                # Populate cache
+
+                provider_name = provider.provider_name()
+                if provider_name in {"none", "local"}:
+                    result_extra = dict(result.extra or {})
+                    auth_type = result_extra.get("auth_type", provider_name)
+                    db_user_id = str(result_extra.get("db_user_id", "") or "").strip()
+                    runtime_user_id = (
+                        db_user_id
+                        if provider_name == "local" and auth_type != "local" and db_user_id
+                        else result.subject
+                    )
+                    user_info = UserInfo(
+                        user_id=runtime_user_id,
+                        display_name=result.display_name or result.subject,
+                        tenant_id=result.tenant_id,
+                        roles=list(result.roles),
+                        raw_token=result.raw_token,
+                        provider_subject=f"{provider_name}:{result.subject}",
+                        extra=result_extra,
+                        auth_type=auth_type,
+                    )
+                    self._ensure_user_workspace(user_info.user_id)
+                else:
+                    user_info = await self.resolve_user_from_auth_result(
+                        provider=provider_name,
+                        result=result,
+                        raw_token=result.raw_token,
+                        extra=dict(result.extra or {}),
+                    )
+
                 if self._cache_ttl > 0:
                     self._cache[credential] = (
                         user_info,
                         time.monotonic() + self._cache_ttl,
                     )
-                
+
                 logger.info(
-                    f"Authentication succeeded: provider={provider.provider_name()}, "
+                    f"Authentication succeeded: provider={provider_name}, "
                     f"user={user_info.user_id}"
                 )
                 return user_info
@@ -150,7 +181,7 @@ class AuthStrategy:
 
 def create_auth_strategy(
     config: Optional[AuthConfig],
-    shadow_store: Optional[ShadowUserStore] = None,
+    workspace_path: str = ".",
 ) -> Optional[AuthStrategy]:
     """
     Factory that builds an AuthStrategy with multi-provider support.
@@ -165,7 +196,7 @@ def create_auth_strategy(
     
     Args:
         config: Auth configuration from atlasclaw.json
-        shadow_store: Optional shadow user store
+        workspace_path: Workspace root for per-user runtime directories
         
     Returns:
         AuthStrategy instance, or None if config is None (anonymous mode)
@@ -185,7 +216,6 @@ def create_auth_strategy(
         logger.error("Auth config validation failed: %s", exc)
         raise
 
-    store = shadow_store or ShadowUserStore()
     providers: list[AuthProvider] = []
     
     # 1. Primary provider (local/none)
@@ -213,6 +243,6 @@ def create_auth_strategy(
 
     return AuthStrategy(
         providers=providers,
-        shadow_store=store,
+        workspace_path=workspace_path,
         cache_ttl_seconds=config.cache_ttl_seconds,
     )

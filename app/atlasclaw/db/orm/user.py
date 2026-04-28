@@ -21,6 +21,18 @@ logger = logging.getLogger(__name__)
 _LEGACY_SQLITE_USERS_IS_ADMIN_COLUMN_CACHE: Dict[str, bool] = {}
 
 
+def _normalize_required_text(value: Any, field_name: str) -> str:
+    normalized = str(value or "").strip()
+    if not normalized:
+        raise ValueError(f"{field_name} cannot be empty")
+    return normalized
+
+
+def _normalize_optional_text(value: Any) -> Optional[str]:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
 def hash_password(password: str) -> str:
     """Hash a password using bcrypt.
 
@@ -177,28 +189,41 @@ class UserService:
         Returns:
             Created User model
         """
+        normalized_user_data = UserCreate(
+            username=_normalize_required_text(user_data.username, "username"),
+            email=_normalize_optional_text(user_data.email),
+            password=user_data.password,
+            display_name=_normalize_optional_text(user_data.display_name),
+            roles=user_data.roles,
+            auth_type=(
+                _normalize_optional_text(getattr(user_data, "auth_type", "local"))
+                or "local"
+            ),
+            is_active=user_data.is_active,
+        )
+
         # Hash password if provided
         password = None
-        if user_data.password:
-            password = hash_password(user_data.password)
+        if normalized_user_data.password:
+            password = hash_password(normalized_user_data.password)
 
         if await _has_legacy_sqlite_users_is_admin_column(session):
             user = await _create_user_for_legacy_sqlite_schema(
                 session,
-                user_data,
+                normalized_user_data,
                 password_digest=password,
             )
             logger.info(f"Created user: {user.username} (id={user.id})")
             return user
 
         user = UserModel(
-            username=user_data.username,
-            email=user_data.email,
+            username=normalized_user_data.username,
+            email=normalized_user_data.email,
             password=password,
-            auth_type=getattr(user_data, "auth_type", "local") or "local",
-            display_name=user_data.display_name,
-            roles=user_data.roles,
-            is_active=user_data.is_active,
+            auth_type=normalized_user_data.auth_type,
+            display_name=normalized_user_data.display_name,
+            roles=normalized_user_data.roles,
+            is_active=normalized_user_data.is_active,
         )
 
         session.add(user)
@@ -218,6 +243,10 @@ class UserService:
         Returns:
             User model or None
         """
+        user_id = _normalize_optional_text(user_id)
+        if not user_id:
+            return None
+
         result = await session.execute(
             select(UserModel).where(UserModel.id == user_id)
         )
@@ -234,6 +263,10 @@ class UserService:
         Returns:
             User model or None
         """
+        username = _normalize_optional_text(username)
+        if not username:
+            return None
+
         result = await session.execute(
             select(UserModel).where(UserModel.username == username)
         )
@@ -250,6 +283,10 @@ class UserService:
         Returns:
             User model or None
         """
+        email = _normalize_optional_text(email)
+        if not email:
+            return None
+
         result = await session.execute(
             select(UserModel).where(UserModel.email == email)
         )
@@ -269,6 +306,10 @@ class UserService:
         Returns:
             User model if authenticated, None otherwise
         """
+        username = _normalize_optional_text(username)
+        if not username:
+            return None
+
         user = await UserService.get_by_username(session, username)
         if user is None:
             return None

@@ -60,5 +60,6 @@ class LocalAuthProvider(AuthProvider):
             raw_token=credential,
             extra={
                 "auth_type": auth_type,
+                "db_user_id": user.id,
             },
         )

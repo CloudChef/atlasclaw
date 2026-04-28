@@ -343,7 +343,7 @@ def get_first(items: list[T]) -> T | None:
 | Classes, exceptions | `PascalCase` | `AgentRunner`, `AuthenticationError` |
 | Constants | `SCREAMING_SNAKE_CASE` | `ANONYMOUS_USER`, `GROUP_FS` |
 | Private members | `_` prefix | `_hooks`, `_build_prompt` |
-| Modules | `snake_case` | `shadow_store.py`, `config_schema.py` |
+| Modules | `snake_case` | `user_store.py`, `config_schema.py` |
 
 Use verb-noun format for functions:
 
@@ -378,18 +378,19 @@ Key components:
 ```
 
 ```python
-def get_or_create(self, provider: str, result: AuthResult) -> ShadowUser:
-    """Look up or create a shadow user for the given external identity.
+async def ensure_db_user_for_auth_result(session: AsyncSession, provider: str, result: AuthResult) -> UserModel:
+    """Look up or create a DB user for the given external identity.
 
     Args:
+        session: Active database session.
         provider: Auth provider name (e.g., "local", "oidc_jwt", "oidc_login").
         result: Authentication result from the provider.
 
     Returns:
-        The existing or newly created shadow user.
+        The existing or newly created DB user.
 
     Raises:
-        IOError: If the user store file cannot be written.
+        ValueError: If the authenticated subject is empty.
     """
 ```
 
@@ -475,7 +476,7 @@ Registries are class-level (not instance-level) and populated at startup.
 
 ### 4.4 Strategy Pattern
 
-`AuthStrategy` is the canonical example: it delegates to a pluggable `AuthProvider` while managing caching and shadow user resolution.
+`AuthStrategy` is the canonical example: it delegates to pluggable `AuthProvider` instances while managing caching and DB user resolution.
 
 Use when: An operation needs multiple interchangeable implementations selected at configuration time.
 
@@ -770,7 +771,7 @@ Always use `@pytest.mark.asyncio` for async tests:
 ```python
 @pytest.mark.asyncio
 async def test_resolve_user():
-    strategy = AuthStrategy(provider=mock_provider, shadow_store=store)
+    strategy = AuthStrategy(providers=[mock_provider], workspace_path=str(tmp_path))
     user = await strategy.resolve_user("token-abc")
     assert user.user_id != "anonymous"
 ```

@@ -390,35 +390,32 @@ class TestUserProfileAPI:
 
         _cleanup_manager(manager)
 
-    def test_get_shadow_user_profile(self, tmp_path):
-        """Shadow users can load a synthetic read-only profile."""
+    def test_get_db_external_user_profile_by_id(self, tmp_path):
+        """External users load their profile from the DB user table."""
+        manager = _init_database_sync(tmp_path)
         workspace_path = tmp_path / "workspace"
         workspace_path.mkdir(parents=True, exist_ok=True)
-        (workspace_path / "users.json").write_text(
-            json.dumps(
-                {
-                    "users": [
-                        {
-                            "user_id": "shadow-user-1",
-                            "provider": "oidc",
-                            "subject": "sso-user@example.com",
-                            "display_name": "SSO User",
-                            "tenant_id": "default",
-                            "roles": ["user"],
-                            "auth_type": "oidc:test",
-                            "created_at": "2026-01-01T09:00:00+00:00",
-                            "last_seen_at": "2026-03-30T15:30:00+00:00",
-                        }
-                    ]
-                }
-            ),
-            encoding="utf-8",
-        )
+
+        async def _create_external_user():
+            async with _test_db_manager.get_session() as session:
+                return await UserService.create(
+                    session,
+                    UserCreate(
+                        username="sso-user@example.com",
+                        password=None,
+                        display_name="SSO User",
+                        roles={"user": True},
+                        auth_type="oidc:test",
+                        is_active=True,
+                    ),
+                )
+
+        db_user = asyncio.run(_create_external_user())
 
         app = FastAPI()
         app.include_router(api_router)
         app.dependency_overrides[get_current_user] = lambda: UserInfo(
-            user_id="shadow-user-1",
+            user_id=db_user.id,
             display_name="SSO User",
             auth_type="oidc:test",
             roles=["user"],
@@ -434,10 +431,12 @@ class TestUserProfileAPI:
 
         assert resp.status_code == 200
         data = resp.json()
-        assert data["id"] == "shadow-user-1"
+        assert data["id"] == db_user.id
         assert data["username"] == "sso-user@example.com"
         assert data["display_name"] == "SSO User"
         assert data["auth_type"] == "oidc:test"
+
+        _cleanup_manager(manager)
 
     def test_get_federated_profile_prefers_db_user_by_external_subject(self, tmp_path):
         """Federated accounts should resolve DB-managed profiles via the external subject."""

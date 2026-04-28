@@ -227,26 +227,6 @@ class TestMainStartup:
         workspace_path = tmp_path / ".atlasclaw-test"
         users_dir = workspace_path / "users"
         (users_dir / "workspace-user").mkdir(parents=True, exist_ok=True)
-        (workspace_path / "users.json").write_text(
-            json.dumps(
-                {
-                    "users": [
-                        {
-                            "user_id": "shadow-user",
-                            "provider": "oidc",
-                            "subject": "subject-1",
-                            "display_name": "Shadow User",
-                            "tenant_id": "default",
-                            "roles": [],
-                            "auth_type": "oidc:keycloak",
-                        }
-                    ]
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
 
         import app.atlasclaw.main as main_module
         importlib.reload(main_module)
@@ -270,7 +250,7 @@ class TestMainStartup:
             channel_manager=_FakeChannelManager(),
         )
 
-        assert user_ids == ["admin", "channel-user", "shadow-user", "workspace-user"]
+        assert user_ids == ["admin", "channel-user", "workspace-user"]
 
     @pytest.mark.asyncio
     async def test_builtin_role_skill_permission_bootstrap_seeds_admin_and_user(self, tmp_path):

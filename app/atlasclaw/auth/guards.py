@@ -231,34 +231,13 @@ def _extract_external_subject(user: UserInfo) -> str:
     return provider_subject.split(":", 1)[1].strip()
 
 
-async def _resolve_shadow_subject(user: UserInfo) -> str:
-    normalized_auth_type = str(user.auth_type or "").strip().lower()
-    if normalized_auth_type == "local":
-        return ""
-
-    normalized_user_id = str(user.user_id or "").strip()
-    if not normalized_user_id:
-        return ""
-
-    try:
-        from pathlib import Path
-
-        from app.atlasclaw.auth.shadow_store import ShadowUserStore
-        from app.atlasclaw.core.config import get_config
-
-        workspace_path = Path(get_config().workspace.path).resolve()
-        shadow_store = ShadowUserStore(workspace_path=str(workspace_path))
-        shadow_user = await shadow_store.get_by_id(normalized_user_id)
-    except Exception:
-        return ""
-
-    if not shadow_user:
-        return ""
-
-    return str(shadow_user.subject or "").strip()
-
-
 async def _lookup_workspace_user(session: AsyncSession, user: UserInfo) -> Optional[UserModel]:
+    runtime_user_id = user.user_id or ""
+    if runtime_user_id:
+        db_user = await UserService.get_by_id(session, runtime_user_id)
+        if db_user is not None:
+            return db_user
+
     candidates: list[str] = []
 
     def _append_candidate(value: str) -> None:
@@ -266,11 +245,8 @@ async def _lookup_workspace_user(session: AsyncSession, user: UserInfo) -> Optio
         if normalized_value and normalized_value not in candidates:
             candidates.append(normalized_value)
 
-    _append_candidate(user.user_id)
+    _append_candidate(runtime_user_id)
     _append_candidate(_extract_external_subject(user))
-
-    if str(user.auth_type or "").strip().lower() != "local" and len(candidates) <= 1:
-        _append_candidate(await _resolve_shadow_subject(user))
 
     for candidate in candidates:
         db_user = await UserService.get_by_username(session, candidate)

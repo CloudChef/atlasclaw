@@ -62,7 +62,6 @@ from app.atlasclaw.channels.handlers.dingtalk import DingTalkHandler
 from app.atlasclaw.channels.handlers.wecom import WeComHandler
 from app.atlasclaw.auth import AuthRegistry
 from app.atlasclaw.auth.models import UserInfo
-from app.atlasclaw.auth.shadow_store import ShadowUserStore
 from app.atlasclaw.agent.agent_pool import AgentInstancePool
 from app.atlasclaw.agent.token_policy import DynamicTokenPolicy
 from app.atlasclaw.hooks.runtime import HookRuntime, HookRuntimeContext
@@ -145,16 +144,6 @@ def _list_workspace_runtime_user_ids(workspace_path: str | Path) -> set[str]:
     }
 
 
-async def _list_shadow_runtime_user_ids(workspace_path: str | Path) -> set[str]:
-    store = ShadowUserStore(workspace_path=str(Path(workspace_path).resolve()))
-    users = await store.list_all()
-    return {
-        user.user_id
-        for user in users
-        if user.user_id and user.user_id not in {"default", "anonymous"}
-    }
-
-
 async def _list_db_runtime_user_ids(db_initialized: bool) -> set[str]:
     if not db_initialized:
         return set()
@@ -164,11 +153,13 @@ async def _list_db_runtime_user_ids(db_initialized: bool) -> set[str]:
     except Exception as exc:
         print(f"[AtlasClaw] Warning: Failed to load runtime users from database: {exc}")
         return set()
-    return {
-        user.username
-        for user in users
-        if getattr(user, "username", "") and user.username not in {"default", "anonymous"}
-    }
+    user_ids: set[str] = set()
+    for user in users:
+        auth_type = str(getattr(user, "auth_type", "") or "").strip().lower()
+        runtime_user_id = user.username if auth_type == "local" else user.id
+        if runtime_user_id and runtime_user_id not in {"default", "anonymous"}:
+            user_ids.add(runtime_user_id)
+    return user_ids
 
 
 def _list_active_channel_runtime_user_ids(channel_manager: Optional[ChannelManager]) -> set[str]:
@@ -189,7 +180,6 @@ async def _collect_runtime_user_ids(
 ) -> list[str]:
     user_ids: set[str] = set()
     user_ids.update(_list_workspace_runtime_user_ids(workspace_path))
-    user_ids.update(await _list_shadow_runtime_user_ids(workspace_path))
     user_ids.update(await _list_db_runtime_user_ids(db_initialized))
     user_ids.update(_list_active_channel_runtime_user_ids(channel_manager))
     return sorted(
