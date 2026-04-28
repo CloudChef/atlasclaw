@@ -374,6 +374,39 @@ describe('chat-ui.js handler mode', () => {
         }
     });
 
+    test('decorates user messages after DeepChat replaces the message container', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const { initChat, cancelChatInputFocusRetry } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ messages: [] })
+            });
+
+        try {
+            await initChat(element);
+            const replacement = document.createElement('div');
+            replacement.className = 'messages-container';
+            messages.replaceWith(replacement);
+            appendRenderedMessage(replacement, 'user', 'late restored user message');
+            await waitForMutationObserver();
+            await waitForMutationObserver();
+
+            const buttons = replacement.querySelectorAll('.atlas-user-message-copy-btn');
+            expect(buttons).toHaveLength(1);
+            expect(buttons[0].title).toBe('Copy message');
+        } finally {
+            cancelChatInputFocusRetry();
+        }
+    });
+
     test('copy action writes user message text and briefly shows success state', async () => {
         sessionStorage.setItem('atlasclaw_session_key', 'session-123');
 

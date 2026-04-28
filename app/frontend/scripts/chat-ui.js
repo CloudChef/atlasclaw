@@ -276,6 +276,7 @@ function setupUserMessageCopyActions(element = chatElement) {
     return false
   }
 
+  setupUserMessageCopyRootObserver(element)
   const container = getMessageContainerForElement(element)
   if (!container) {
     scheduleUserMessageCopySetup(element)
@@ -284,14 +285,27 @@ function setupUserMessageCopyActions(element = chatElement) {
 
   decorateUserMessagesWithCopy(container)
   if (typeof MutationObserver === 'undefined') return true
-  if (container._userMessageCopyObserver) return true
+  if (element._userMessageCopyContainer === container && element._userMessageCopyObserver) return true
+  if (element._userMessageCopyObserver) {
+    element._userMessageCopyObserver.disconnect()
+  }
 
   const observer = new MutationObserver(() => {
     decorateUserMessagesWithCopy(container)
   })
   observer.observe(container, { childList: true, subtree: true })
-  container._userMessageCopyObserver = observer
+  element._userMessageCopyContainer = container
+  element._userMessageCopyObserver = observer
   return true
+}
+
+function setupUserMessageCopyRootObserver(element) {
+  if (typeof MutationObserver === 'undefined' || element._userMessageCopyRootObserver) return
+  const observer = new MutationObserver(() => {
+    setupUserMessageCopyActions(element)
+  })
+  observer.observe(element.shadowRoot, { childList: true, subtree: true })
+  element._userMessageCopyRootObserver = observer
 }
 
 function decorateUserMessagesWithCopy(container) {
