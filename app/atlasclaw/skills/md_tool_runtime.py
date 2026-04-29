@@ -277,6 +277,20 @@ def create_script_wrapper(
             )
             print(f"[DEBUG] ctx.deps.extra keys: {list(extra.keys())}")
 
+            # Provider scripts consume these canonical selectors to fail closed
+            # on the exact instance/profile chosen for this run.
+            provider_type_meta = str(extra.get("provider_type", "") or "").strip()
+            provider_instance_meta = str(
+                extra.get("provider_instance_name", "") or ""
+            ).strip()
+            robot_profile_meta = str(extra.get("robot_profile", "") or "").strip()
+            if provider_type_meta:
+                env["ATLASCLAW_PROVIDER_TYPE"] = provider_type_meta
+            if provider_instance_meta:
+                env["ATLASCLAW_PROVIDER_INSTANCE"] = provider_instance_meta
+            if robot_profile_meta:
+                env["ATLASCLAW_ROBOT_PROFILE"] = robot_profile_meta
+
             provider_sso_token = str(extra.get("provider_sso_token", "") or "").strip()
             provider_sso_available = bool(extra.get("provider_sso_available")) and bool(
                 provider_sso_token

@@ -180,6 +180,7 @@ def test_sanitize_log_value_redacts_provider_schema_sensitive_fields() -> None:
         provider_config,
         provider_type="smartcmp",
         field_defaults=provider_config,
+        max_depth=8,
     )
 
     assert payload["provider_type"] == "smartcmp"
@@ -187,6 +188,38 @@ def test_sanitize_log_value_redacts_provider_schema_sensitive_fields() -> None:
     assert payload["cookie"] == "[REDACTED]"
     assert payload["password"] == "[REDACTED]"
     assert payload["user_token"] == "[REDACTED]"
+
+
+def test_sanitize_log_value_redacts_nested_robot_auth_secrets() -> None:
+    provider_config = {
+        "smartcmp": {
+            "cmp": {
+                "base_url": "https://cmp.example.com/platform-api",
+                "robot_auth": {
+                    "preapproval_bot": {
+                        "auth_type": "provider_token",
+                        "provider_token": "cmp_tk_robot_secret",
+                        "password": "robot-password",
+                        "auth": {"cookie": "robot-cookie"},
+                        "allowed_skills": ["smartcmp:preapproval-agent"],
+                    }
+                },
+            }
+        }
+    }
+
+    payload = sanitize_log_value(
+        provider_config,
+        provider_type="smartcmp",
+        field_defaults=provider_config,
+        max_depth=8,
+    )
+
+    profile = payload["smartcmp"]["cmp"]["robot_auth"]["preapproval_bot"]
+    assert profile["provider_token"] == "[REDACTED]"
+    assert profile["password"] == "[REDACTED]"
+    assert profile["auth"]["cookie"] == "[REDACTED]"
+    assert profile["allowed_skills"] == ["smartcmp:preapproval-agent"]
 
 
 def test_http_response_log_payload_marks_streaming_without_consuming_body() -> None:

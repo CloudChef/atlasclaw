@@ -387,6 +387,66 @@ def test_script_wrapper_exposes_provider_cookie_runtime_context_to_script_enviro
     }
 
 
+def test_script_wrapper_exposes_robot_provider_metadata_to_script_environment(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "echo_robot.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "print(json.dumps({",
+                "  'provider_type': os.environ.get('ATLASCLAW_PROVIDER_TYPE', ''),",
+                "  'provider_instance': os.environ.get('ATLASCLAW_PROVIDER_INSTANCE', ''),",
+                "  'robot_profile': os.environ.get('ATLASCLAW_ROBOT_PROFILE', ''),",
+                "  'provider_config': json.loads(os.environ.get('ATLASCLAW_PROVIDER_CONFIG', '{}')),",
+                "}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    runtime_provider_config = {
+        "smartcmp": {
+            "cmp": {
+                "provider_type": "smartcmp",
+                "instance_name": "cmp",
+                "base_url": "https://cmp.example.com/platform-api",
+                "auth_type": "provider_token",
+                "provider_token": "cmp_tk_robot_secret",
+            }
+        }
+    }
+
+    class _Deps:
+        cookies = {}
+        extra = {
+            "provider_config": runtime_provider_config,
+            "provider_type": "smartcmp",
+            "provider_instance_name": "cmp",
+            "robot_profile": "preapproval_bot",
+            "provider_instance": runtime_provider_config["smartcmp"]["cmp"],
+        }
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(
+        script,
+        provider_type="smartcmp",
+        tool_name="smartcmp_list_pending",
+    )
+
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is True
+    payload = json.loads(result["output"].strip())
+    assert payload["provider_type"] == "smartcmp"
+    assert payload["provider_instance"] == "cmp"
+    assert payload["robot_profile"] == "preapproval_bot"
+    assert payload["provider_config"] == runtime_provider_config
+
+
 def test_script_wrapper_blocks_submit_request_without_explicit_confirmation(
     tmp_path: Path,
 ) -> None:

@@ -88,7 +88,17 @@
         "base_url": "${CMP_URL}",
         "auth_type": ["cookie", "user_token"],
         "username": "${CMP_USERNAME}",
-        "password": "${CMP_PASSWORD}"
+        "password": "${CMP_PASSWORD}",
+        "robot_auth": {
+          "preapproval_bot": {
+            "auth_type": "provider_token",
+            "provider_token": "${CMP_ROBOT_APPROVER_TOKEN}",
+            "allowed_skills": [
+              "smartcmp:preapproval-agent",
+              "smartcmp:request-decomposition-agent"
+            ]
+          }
+        }
       }
     },
     "github": {
@@ -168,7 +178,8 @@
         "sk_env": "ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL",
         "default_agent_id": "main",
         "allowed_skills": [
-          "smartcmp:preapproval-agent"
+          "smartcmp:preapproval-agent",
+          "smartcmp:request-decomposition-agent"
         ]
       }
     ]

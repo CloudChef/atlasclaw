@@ -132,6 +132,32 @@ def build_user_selected_tool_intent_plan(deps: SkillDeps) -> ToolIntentPlan | No
     )
 
 
+def build_preselected_md_skill_intent_plan(deps: SkillDeps) -> ToolIntentPlan | None:
+    """Translate a request-scoped target markdown skill into a hard skill plan."""
+    extra = getattr(deps, "extra", None)
+    if not isinstance(extra, dict):
+        return None
+
+    target_md_skill = extra.get("target_md_skill")
+    if not isinstance(target_md_skill, dict):
+        return None
+
+    # Webhook dispatch stores a validated provider-qualified skill here. Require
+    # the canonical name so this hard plan has no legacy or display-name fallback.
+    qualified_name = _normalize_text(target_md_skill.get("qualified_name"))
+    if not qualified_name:
+        return None
+
+    provider_type = _normalize_text(target_md_skill.get("provider"))
+    return ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_provider_types=[provider_type] if provider_type else [],
+        target_skill_names=[qualified_name],
+        target_group_ids=[f"group:{provider_type}"] if provider_type else [],
+        reason="preselected_target_md_skill",
+    )
+
+
 def select_explicit_tool_execution_target(
     *,
     intent_plan: ToolIntentPlan | None,
@@ -1729,7 +1755,16 @@ class RunnerExecutionPreparePhaseMixin:
             #
             # When routing plan is absent (short follow-up input), we fall
             # back to the metadata hint for SKILL.md loading only.
-            skill_resolution_plan = tool_intent_plan
+            # Webhook-selected skills are an authenticated routing decision, so
+            # they take precedence over classifier/transcript skill hints.
+            preselected_md_skill_plan = build_preselected_md_skill_intent_plan(deps)
+            skill_resolution_plan = preselected_md_skill_plan or tool_intent_plan
+            if preselected_md_skill_plan is not None:
+                _log_step(
+                    "target_md_skill_preselected",
+                    reason=preselected_md_skill_plan.reason,
+                    target_skill_names=list(preselected_md_skill_plan.target_skill_names),
+                )
             if used_follow_up_context:
                 workflow_active_skill = _infer_active_skill_from_workflow_context(
                     workflow_context=target_md_skill_workflow_context,

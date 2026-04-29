@@ -104,6 +104,22 @@
         "_comment": "auth_type=user_token — Each user configures their own API token via the AtlasClaw UI. Only base_url is needed here.",
         "base_url": "${CMP_URL}",
         "auth_type": "user_token"
+      },
+
+      "_example_robot_execution": {
+        "_comment": "Robot execution profile for webhook-driven backend skills. The provider instance keeps normal user/cookie auth above; robot_auth is selected only when webhook args.robot_profile is set.",
+        "base_url": "${CMP_URL}",
+        "auth_type": "user_token",
+        "robot_auth": {
+          "preapproval_bot": {
+            "auth_type": "provider_token",
+            "provider_token": "${CMP_ROBOT_APPROVER_TOKEN}",
+            "allowed_skills": [
+              "smartcmp:preapproval-agent",
+              "smartcmp:request-decomposition-agent"
+            ]
+          }
+        }
       }
     },
 
@@ -131,7 +147,8 @@
         "sk_env": "ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL",
         "default_agent_id": "main",
         "allowed_skills": [
-          "smartcmp:preapproval-agent"
+          "smartcmp:preapproval-agent",
+          "smartcmp:request-decomposition-agent"
         ]
       }
     ]
