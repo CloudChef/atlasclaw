@@ -24,18 +24,33 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
+from app.atlasclaw.api.service_provider_schemas import (
+    clear_provider_schema_definitions,
+    register_provider_schema_definition,
+)
 from app.atlasclaw.api.webhook_dispatch import WebhookDispatchManager
 from app.atlasclaw.core.config_schema import (
     WebhookConfig,
     WebhookSystemConfig,
 )
+from app.atlasclaw.core.provider_registry import ServiceProviderRegistry
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
+from tests.atlasclaw.provider_schema_fixtures import managed_provider_definition
+
+
+@pytest.fixture(autouse=True)
+def _provider_schema_registry():
+    clear_provider_schema_definitions()
+    register_provider_schema_definition(managed_provider_definition(provider_type="smartcmp"))
+    yield
+    clear_provider_schema_definitions()
 
 
 class _RecordingAgentRunner:
@@ -55,7 +70,13 @@ class _RecordingAgentRunner:
             yield None
 
 
-def _write_skill_md(path: Path, *, name: str, description: str, extra: list[str] | None = None) -> None:
+def _write_skill_md(
+    path: Path,
+    *,
+    name: str,
+    description: str,
+    extra: list[str] | None = None,
+) -> None:
     lines = ["---", f"name: {name}", f"description: {description}"]
     if extra:
         lines.extend(extra)
@@ -64,7 +85,13 @@ def _write_skill_md(path: Path, *, name: str, description: str, extra: list[str]
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _build_client(tmp_path: Path, monkeypatch, *, allowed_skills: list[str]) -> tuple[TestClient, _RecordingAgentRunner]:
+def _build_client(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    allowed_skills: list[str],
+    provider_instances: dict | None = None,
+) -> tuple[TestClient, _RecordingAgentRunner]:
     monkeypatch.setenv("ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL", "secret-1")
     registry = SkillRegistry()
     _write_skill_md(
@@ -96,12 +123,21 @@ def _build_client(tmp_path: Path, monkeypatch, *, allowed_skills: list[str]) -> 
     webhook_manager.validate_startup()
 
     runner = _RecordingAgentRunner()
+    service_provider_registry = None
+    if provider_instances is not None:
+        service_provider_registry = ServiceProviderRegistry()
+        service_provider_registry._schema_definitions["smartcmp"] = (  # noqa: SLF001
+            managed_provider_definition(provider_type="smartcmp")
+        )
+        service_provider_registry.load_instances_from_config(provider_instances)
+
     ctx = APIContext(
         session_manager=SessionManager(agents_dir=str(tmp_path / "agents")),
         session_queue=SessionQueue(),
         skill_registry=registry,
         agent_runner=runner,
         webhook_manager=webhook_manager,
+        service_provider_registry=service_provider_registry,
     )
     set_api_context(ctx)
 
@@ -148,6 +184,35 @@ class TestWebhookDispatchManager:
 
 
 class TestWebhookDispatchAPI:
+    def _smartcmp_robot_provider_instances(self) -> dict:
+        return {
+            "smartcmp": {
+                "cmp": {
+                    "base_url": "https://cmp.example.com",
+                    "auth_url": "https://login.example.com/platform-api/login",
+                    "auth_type": "user_token",
+                    "user_token": "base-user-token",
+                    "cookie": "base-cookie-token",
+                    "robot_auth": {
+                        "preapproval_bot": {
+                            "auth_type": "provider_token",
+                            "provider_token": "cmp_tk_robot_secret",
+                            "allowed_skills": ["smartcmp:preapproval-agent"],
+                        },
+                        "decomposition_bot": {
+                            "auth_type": "provider_token",
+                            "provider_token": "cmp_tk_decompose_secret",
+                            "allowed_skills": ["smartcmp:request-decomposition-agent"],
+                        },
+                        "broken_bot": {
+                            "auth_type": "provider_token",
+                            "allowed_skills": ["smartcmp:preapproval-agent"],
+                        },
+                    },
+                }
+            }
+        }
+
     def test_dispatch_accepts_allowed_skill(self, tmp_path, monkeypatch):
         client, runner = _build_client(
             tmp_path,
@@ -170,6 +235,270 @@ class TestWebhookDispatchAPI:
         assert "smartcmp:preapproval-agent" in runner.calls[0]["user_message"]
         assert "approval_id" in runner.calls[0]["user_message"]
         assert runner.calls[0]["deps"].extra["webhook_skill"] == "smartcmp:preapproval-agent"
+
+    def test_dispatch_robot_profile_uses_runtime_only_provider_config(self, tmp_path, monkeypatch):
+        client, runner = _build_client(
+            tmp_path,
+            monkeypatch,
+            allowed_skills=["smartcmp:preapproval-agent"],
+            provider_instances=self._smartcmp_robot_provider_instances(),
+        )
+
+        resp = client.post(
+            "/api/webhook/dispatch",
+            headers={"X-AtlasClaw-SK": "secret-1"},
+            json={
+                "skill": "smartcmp:preapproval-agent",
+                "args": {
+                    "request_id": "RES20260427000004",
+                    "provider_instance": "cmp",
+                    "robot_profile": "preapproval_bot",
+                    "provider_token": "arg-token-should-not-enter-prompt",
+                },
+            },
+        )
+
+        assert resp.status_code == 202
+        assert len(runner.calls) == 1
+        call = runner.calls[0]
+        assert "arg-token-should-not-enter-prompt" not in call["user_message"]
+        assert "cmp_tk_robot_secret" not in call["user_message"]
+        assert '"provider_token": "[REDACTED]"' in call["user_message"]
+        assert '"provider_instance": "cmp"' in call["user_message"]
+
+        deps_extra = call["deps"].extra
+        assert deps_extra["provider_type"] == "smartcmp"
+        assert deps_extra["provider_instance_name"] == "cmp"
+        assert deps_extra["robot_profile"] == "preapproval_bot"
+        assert deps_extra["webhook_args"]["provider_instance"] == "cmp"
+        assert deps_extra["webhook_args"]["provider_token"] == "[REDACTED]"
+
+        runtime_config = deps_extra["provider_config"]["smartcmp"]["cmp"]
+        assert runtime_config["base_url"] == "https://cmp.example.com"
+        assert runtime_config["auth_url"] == "https://login.example.com/platform-api/login"
+        assert runtime_config["auth_type"] == "provider_token"
+        assert runtime_config["provider_token"] == "cmp_tk_robot_secret"
+        assert runtime_config["provider_type"] == "smartcmp"
+        assert runtime_config["instance_name"] == "cmp"
+        assert "robot_auth" not in runtime_config
+        assert "user_token" not in runtime_config
+        assert "cookie" not in runtime_config
+
+    def test_dispatch_robot_profile_missing_returns_400_before_runner(self, tmp_path, monkeypatch):
+        client, runner = _build_client(
+            tmp_path,
+            monkeypatch,
+            allowed_skills=["smartcmp:preapproval-agent"],
+            provider_instances=self._smartcmp_robot_provider_instances(),
+        )
+
+        resp = client.post(
+            "/api/webhook/dispatch",
+            headers={"X-AtlasClaw-SK": "secret-1"},
+            json={
+                "skill": "smartcmp:preapproval-agent",
+                "args": {
+                    "provider_instance": "cmp",
+                    "robot_profile": "missing_bot",
+                },
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "Robot profile not found" in resp.json()["detail"]
+        assert runner.calls == []
+
+    def test_dispatch_robot_profile_ignores_legacy_instance_field(self, tmp_path, monkeypatch):
+        client, runner = _build_client(
+            tmp_path,
+            monkeypatch,
+            allowed_skills=["smartcmp:preapproval-agent"],
+            provider_instances=self._smartcmp_robot_provider_instances(),
+        )
+
+        resp = client.post(
+            "/api/webhook/dispatch",
+            headers={"X-AtlasClaw-SK": "secret-1"},
+            json={
+                "skill": "smartcmp:preapproval-agent",
+                "args": {
+                    "instance": "cmp",
+                    "robot_profile": "preapproval_bot",
+                },
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "webhook args.provider_instance is required" in resp.json()["detail"]
+        assert runner.calls == []
+
+    def test_dispatch_robot_profile_profiles_bucket_shape_is_not_accepted(self, tmp_path, monkeypatch):
+        provider_instances = self._smartcmp_robot_provider_instances()
+        robot_auth = provider_instances["smartcmp"]["cmp"]["robot_auth"]
+        preapproval_profile = robot_auth.pop("preapproval_bot")
+        robot_auth["profiles"] = {"preapproval_bot": preapproval_profile}
+        client, runner = _build_client(
+            tmp_path,
+            monkeypatch,
+            allowed_skills=["smartcmp:preapproval-agent"],
+            provider_instances=provider_instances,
+        )
+
+        resp = client.post(
+            "/api/webhook/dispatch",
+            headers={"X-AtlasClaw-SK": "secret-1"},
+            json={
+                "skill": "smartcmp:preapproval-agent",
+                "args": {
+                    "provider_instance": "cmp",
+                    "robot_profile": "preapproval_bot",
+                },
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "Robot profile not found" in resp.json()["detail"]
+        assert runner.calls == []
+
+    def test_dispatch_robot_profile_nested_auth_container_is_not_accepted(self, tmp_path, monkeypatch):
+        provider_instances = self._smartcmp_robot_provider_instances()
+        provider_instances["smartcmp"]["cmp"]["robot_auth"]["preapproval_bot"] = {
+            "auth": {
+                "auth_type": "provider_token",
+                "provider_token": "cmp_tk_robot_secret",
+            },
+            "allowed_skills": ["smartcmp:preapproval-agent"],
+        }
+        client, runner = _build_client(
+            tmp_path,
+            monkeypatch,
+            allowed_skills=["smartcmp:preapproval-agent"],
+            provider_instances=provider_instances,
+        )
+
+        resp = client.post(
+            "/api/webhook/dispatch",
+            headers={"X-AtlasClaw-SK": "secret-1"},
+            json={
+                "skill": "smartcmp:preapproval-agent",
+                "args": {
+                    "provider_instance": "cmp",
+                    "robot_profile": "preapproval_bot",
+                },
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "must define a single auth_type string" in resp.json()["detail"]
+        assert runner.calls == []
+
+    def test_dispatch_robot_profile_allowed_skills_string_is_not_accepted(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        provider_instances = self._smartcmp_robot_provider_instances()
+        provider_instances["smartcmp"]["cmp"]["robot_auth"]["preapproval_bot"][
+            "allowed_skills"
+        ] = "smartcmp:preapproval-agent"
+        client, runner = _build_client(
+            tmp_path,
+            monkeypatch,
+            allowed_skills=["smartcmp:preapproval-agent"],
+            provider_instances=provider_instances,
+        )
+
+        resp = client.post(
+            "/api/webhook/dispatch",
+            headers={"X-AtlasClaw-SK": "secret-1"},
+            json={
+                "skill": "smartcmp:preapproval-agent",
+                "args": {
+                    "provider_instance": "cmp",
+                    "robot_profile": "preapproval_bot",
+                },
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "allowed_skills as a non-empty list" in resp.json()["detail"]
+        assert runner.calls == []
+
+    def test_dispatch_robot_profile_auth_type_list_is_not_accepted(self, tmp_path, monkeypatch):
+        provider_instances = self._smartcmp_robot_provider_instances()
+        provider_instances["smartcmp"]["cmp"]["robot_auth"]["preapproval_bot"]["auth_type"] = [
+            "provider_token"
+        ]
+        client, runner = _build_client(
+            tmp_path,
+            monkeypatch,
+            allowed_skills=["smartcmp:preapproval-agent"],
+            provider_instances=provider_instances,
+        )
+
+        resp = client.post(
+            "/api/webhook/dispatch",
+            headers={"X-AtlasClaw-SK": "secret-1"},
+            json={
+                "skill": "smartcmp:preapproval-agent",
+                "args": {
+                    "provider_instance": "cmp",
+                    "robot_profile": "preapproval_bot",
+                },
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "must define a single auth_type string" in resp.json()["detail"]
+        assert runner.calls == []
+
+    def test_dispatch_robot_profile_disallowed_skill_returns_403(self, tmp_path, monkeypatch):
+        client, runner = _build_client(
+            tmp_path,
+            monkeypatch,
+            allowed_skills=["smartcmp:preapproval-agent"],
+            provider_instances=self._smartcmp_robot_provider_instances(),
+        )
+
+        resp = client.post(
+            "/api/webhook/dispatch",
+            headers={"X-AtlasClaw-SK": "secret-1"},
+            json={
+                "skill": "smartcmp:preapproval-agent",
+                "args": {
+                    "provider_instance": "cmp",
+                    "robot_profile": "decomposition_bot",
+                },
+            },
+        )
+
+        assert resp.status_code == 403
+        assert "is not allowed to invoke" in resp.json()["detail"]
+        assert runner.calls == []
+
+    def test_dispatch_robot_profile_missing_credential_returns_400(self, tmp_path, monkeypatch):
+        client, runner = _build_client(
+            tmp_path,
+            monkeypatch,
+            allowed_skills=["smartcmp:preapproval-agent"],
+            provider_instances=self._smartcmp_robot_provider_instances(),
+        )
+
+        resp = client.post(
+            "/api/webhook/dispatch",
+            headers={"X-AtlasClaw-SK": "secret-1"},
+            json={
+                "skill": "smartcmp:preapproval-agent",
+                "args": {
+                    "provider_instance": "cmp",
+                    "robot_profile": "broken_bot",
+                },
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "missing required auth fields" in resp.json()["detail"]
+        assert runner.calls == []
 
     def test_dispatch_rejects_invalid_secret(self, tmp_path, monkeypatch):
         client, _runner = _build_client(

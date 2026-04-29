@@ -14,7 +14,14 @@ from ..session.context import ChatType as SessionChatType
 from ..session.context import SessionKey, SessionScope
 from .deps_context import APIContext, build_scoped_deps, get_api_context
 from .schemas import WebhookDispatchRequest, WebhookDispatchResponse
-from .webhook_dispatch import WebhookSystemIdentity, build_webhook_user_message
+from .webhook_dispatch import (
+    WebhookRobotProfileError,
+    WebhookRobotProfileSelection,
+    WebhookSystemIdentity,
+    build_webhook_user_message,
+    redact_webhook_payload,
+    resolve_webhook_robot_profile_selection,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +35,7 @@ async def execute_webhook_dispatch(
     agent_id: str,
     args: dict[str, Any],
     timeout_seconds: int,
+    robot_profile_selection: WebhookRobotProfileSelection | None = None,
 ) -> None:
     if not ctx.agent_runner:
         logger.error("Webhook dispatch %s failed: AgentRunner not configured", dispatch_id)
@@ -42,8 +50,35 @@ async def execute_webhook_dispatch(
     user_message = build_webhook_user_message(skill_entry, args, system.system_id)
 
     provider_config: dict[str, Any] = {}
-    if ctx.service_provider_registry:
+    if robot_profile_selection is not None:
+        # Robot dispatch gets a narrowed, runtime-only provider config. It
+        # must not expose unrelated provider instances or normal user creds.
+        provider_config = robot_profile_selection.provider_config
+    elif ctx.service_provider_registry:
         provider_config = ctx.service_provider_registry.get_all_instance_configs()
+
+    extra: dict[str, Any] = {
+        "webhook_system_id": system.system_id,
+        "webhook_skill": skill_entry.qualified_name,
+        "webhook_args": redact_webhook_payload(args, provider_type=skill_entry.provider),
+        # Pin the markdown skill selected by the authenticated webhook so the
+        # runner does not re-infer a different skill from the payload text.
+        "target_md_skill": {
+            "name": skill_entry.name,
+            "provider": skill_entry.provider,
+            "qualified_name": skill_entry.qualified_name,
+            "file_path": skill_entry.file_path,
+        },
+    }
+    if robot_profile_selection is not None:
+        extra.update(
+            {
+                "provider_type": robot_profile_selection.provider_type,
+                "provider_instance_name": robot_profile_selection.provider_instance,
+                "provider_instance": dict(robot_profile_selection.provider_instance_config),
+                "robot_profile": robot_profile_selection.robot_profile,
+            }
+        )
 
     deps = build_scoped_deps(
         ctx,
@@ -51,16 +86,7 @@ async def execute_webhook_dispatch(
         session_key,
         request_cookies={},
         provider_config=provider_config,
-        extra={
-            "webhook_skill": skill_entry.qualified_name,
-            "webhook_args": dict(args),
-            "target_md_skill": {
-                "name": skill_entry.name,
-                "provider": skill_entry.provider,
-                "qualified_name": skill_entry.qualified_name,
-                "file_path": skill_entry.file_path,
-            },
-        },
+        extra=extra,
     )
 
     logger.info(
@@ -144,6 +170,19 @@ def register_webhook_routes(router: APIRouter) -> None:
                 detail=f"Webhook markdown skill not found: {request.skill}",
             )
 
+        args = dict(request.args or {})
+        try:
+            robot_profile_selection = resolve_webhook_robot_profile_selection(
+                skill_entry=skill_entry,
+                args=args,
+                service_provider_registry=ctx.service_provider_registry,
+            )
+        except WebhookRobotProfileError as exc:
+            raise HTTPException(
+                status_code=exc.status_code,
+                detail=str(exc),
+            ) from exc
+
         agent_id = request.agent_id or system.default_agent_id
         session_key = SessionKey(
             agent_id=agent_id,
@@ -161,7 +200,8 @@ def register_webhook_routes(router: APIRouter) -> None:
             skill_entry,
             session_key,
             agent_id,
-            request.args,
+            robot_profile_selection.args if robot_profile_selection is not None else args,
             request.timeout_seconds,
+            robot_profile_selection,
         )
         return WebhookDispatchResponse(status="accepted")

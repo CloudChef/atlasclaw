@@ -17,6 +17,7 @@ from app.atlasclaw.agent.runner_prompt_context import (
     collect_tools_snapshot,
 )
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
+    build_preselected_md_skill_intent_plan,
     build_target_md_skill_workflow_context,
     build_explicit_tool_execution_prompt,
     enrich_target_md_skill_with_workflow_context,
@@ -839,6 +840,28 @@ def test_resolve_selected_md_skill_target_loads_only_matching_skill_body(tmp_pat
     assert target["qualified_name"] == "pptx"
     assert target["file_path"] == str(skill_path)
     assert "# PPTX Skill" in target["content"]
+
+
+def test_preselected_md_skill_plan_overrides_routing_skill_for_webhook() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "webhook_skill": "smartcmp:preapproval-agent",
+            "target_md_skill": {
+                "provider": "smartcmp",
+                "qualified_name": "smartcmp:preapproval-agent",
+                "file_path": "/tmp/preapproval-agent/SKILL.md",
+            },
+        }
+    )
+
+    plan = build_preselected_md_skill_intent_plan(deps)
+
+    assert plan is not None
+    assert plan.action == ToolIntentAction.USE_TOOLS
+    assert plan.target_provider_types == ["smartcmp"]
+    assert plan.target_skill_names == ["smartcmp:preapproval-agent"]
+    assert plan.target_group_ids == ["group:smartcmp"]
+    assert plan.reason == "preselected_target_md_skill"
 
 
 def test_enrich_target_md_skill_with_workflow_context_attaches_structured_context() -> None:

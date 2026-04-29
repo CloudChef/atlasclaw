@@ -19,6 +19,13 @@ def _smartcmp_instance_config() -> dict[str, str]:
         "cookie": "AtlasClaw-Host-Authenticate=session-cookie",
         "password": "super-secret-password",
         "user_token": "fake-smartcmp-user-token",
+        "robot_auth": {
+            "preapproval_bot": {
+                "auth_type": "provider_token",
+                "provider_token": "cmp_tk_robot_secret",
+                "allowed_skills": ["smartcmp:preapproval-agent"],
+            }
+        },
     }
 
 
@@ -33,6 +40,10 @@ def test_service_provider_registry_redacts_schema_sensitive_fields() -> None:
     assert redacted["cookie"] == "***"
     assert redacted["password"] == "***"
     assert redacted["user_token"] == "***"
+    assert redacted["robot_auth"]["preapproval_bot"]["provider_token"] == "***"
+    assert redacted["robot_auth"]["preapproval_bot"]["allowed_skills"] == [
+        "smartcmp:preapproval-agent"
+    ]
 
 
 def test_service_provider_registry_skips_unknown_auth_type_and_logs_error(caplog) -> None:
