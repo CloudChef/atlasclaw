@@ -39,8 +39,8 @@ def extract_role_identifiers(raw_roles: Any) -> list[str]:
 def _auth_type_for_result(provider: str, result: AuthResult) -> str:
     auth_type = str((result.extra or {}).get("auth_type", "") or "").strip()
     if auth_type:
-        return auth_type
-    return str(provider or "external").strip() or "external"
+        return auth_type.lower()
+    return (str(provider or "external").strip() or "external").lower()
 
 
 def _normalize_subject(result: AuthResult) -> str:
@@ -64,14 +64,15 @@ async def ensure_db_user_for_auth_result(
     keep their assigned roles; inactive users are rejected without login updates.
     """
     subject = _normalize_subject(result)
-    user = await UserService.get_by_username(session, subject)
+    auth_type = _auth_type_for_result(provider, result)
+    user = await UserService.get_by_username(session, subject, auth_type=auth_type)
     if user is not None:
         if not user.is_active:
             raise AuthenticationError("User account is inactive")
 
         changed = False
         display_name = str(result.display_name or "").strip()
-        if display_name and not user.display_name:
+        if display_name and user.auth_type != "local" and user.display_name != display_name:
             user.display_name = display_name
             changed = True
 
@@ -103,7 +104,7 @@ async def ensure_db_user_for_auth_result(
                 password=None,
                 display_name=str(result.display_name or "").strip() or subject,
                 roles=roles,
-                auth_type=_auth_type_for_result(provider, result),
+                auth_type=auth_type,
                 is_active=True,
             ),
         )
@@ -119,7 +120,7 @@ async def ensure_db_user_for_auth_result(
         return user
     except IntegrityError:
         await session.rollback()
-        user = await UserService.get_by_username(session, subject)
+        user = await UserService.get_by_username(session, subject, auth_type=auth_type)
         if user is None:
             raise
         if not user.is_active:
@@ -148,7 +149,7 @@ def build_user_info_from_db_user(
         str(auth_type or "").strip()
         or _auth_type_for_result(provider, result)
         or str(user.auth_type or "").strip()
-    )
+    ).lower()
 
     return UserInfo(
         user_id=str(user.id or "").strip() or str(user.username or "").strip(),

@@ -322,7 +322,11 @@ async def ensure_default_local_admin(config) -> None:
     password = auth_cfg.local.default_admin_password or "admin"
 
     async with get_db_manager().get_session() as session:
-        existing = await UserService.get_by_username(session, username)
+        existing = await UserService.get_by_username(
+            session,
+            username,
+            auth_type="local",
+        )
         if existing:
             return
 

@@ -971,6 +971,66 @@ class TestUserCRUDAPI:
 
         _cleanup_manager(manager)
 
+    def test_create_same_username_different_auth_type_succeeds(self, tmp_path):
+        """Creating same username under a different auth type is allowed."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "admin", "adminpass123")
+
+        resp = client.post(
+            "/api/users",
+            json={
+                "username": "admin",
+                "password": "cookiepass123",
+                "display_name": "Cookie Admin",
+                "auth_type": "cookie",
+                "roles": {"user": True},
+            },
+            headers={"AtlasClaw-Authenticate": token},
+        )
+
+        assert resp.status_code == 201
+        assert resp.json()["username"] == "admin"
+        assert resp.json()["auth_type"] == "cookie"
+
+        users_resp = client.get(
+            "/api/users?search=admin",
+            headers={"AtlasClaw-Authenticate": token},
+        )
+        assert users_resp.status_code == 200
+        admin_users = [
+            user
+            for user in users_resp.json()["users"]
+            if user["username"] == "admin"
+        ]
+        assert {user["auth_type"] for user in admin_users} == {"local", "cookie"}
+
+        _cleanup_manager(manager)
+
+    def test_update_user_auth_type_returns_400(self, tmp_path):
+        """Existing users cannot be moved between auth types."""
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        token = _login_as(client, "admin", "adminpass123")
+
+        users_resp = client.get(
+            "/api/users?search=regularuser",
+            headers={"AtlasClaw-Authenticate": token},
+        )
+        assert users_resp.status_code == 200
+        regular_user_id = users_resp.json()["users"][0]["id"]
+
+        resp = client.put(
+            f"/api/users/{regular_user_id}",
+            json={"auth_type": "cookie"},
+            headers={"AtlasClaw-Authenticate": token},
+        )
+
+        assert resp.status_code == 400
+        assert "auth type cannot be changed" in resp.json()["detail"].lower()
+
+        _cleanup_manager(manager)
+
     def test_create_duplicate_email_returns_409(self, tmp_path):
         """Creating user with existing email returns 409."""
         manager = _init_database_sync(tmp_path)

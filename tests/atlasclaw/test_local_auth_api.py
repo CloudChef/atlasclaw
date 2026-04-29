@@ -177,15 +177,15 @@ def test_auth_me_includes_avatar_from_profile(tmp_path):
     manager_cleanup(manager)
 
 
-def test_password_enabled_external_user_local_login_uses_db_user_id(tmp_path):
+def test_password_enabled_external_user_cannot_use_local_login(tmp_path):
     import asyncio
 
     manager = init_database_sync(tmp_path)
     client = _build_client(tmp_path)
 
-    async def _create_password_enabled_external_user() -> str:
+    async def _create_password_enabled_external_user() -> None:
         async with manager.get_session() as session:
-            user = await UserService.create(
+            await UserService.create(
                 session,
                 UserCreate(
                     username="cmp_user",
@@ -196,31 +196,14 @@ def test_password_enabled_external_user_local_login_uses_db_user_id(tmp_path):
                     is_active=True,
                 ),
             )
-            return user.id
 
-    db_user_id = asyncio.run(_create_password_enabled_external_user())
+    asyncio.run(_create_password_enabled_external_user())
 
     login_resp = client.post(
         "/api/auth/local/login",
         json={"username": "cmp_user", "password": "password"},
     )
-    assert login_resp.status_code == 200
-    login_body = login_resp.json()
-    assert login_body["user"]["id"] == db_user_id
-    assert login_body["user"]["username"] == "cmp_user"
-    assert login_body["user"]["auth_type"] == "cookie"
-
-    token = login_body["token"]
-    me_resp = client.get(
-        "/api/auth/me",
-        headers={"AtlasClaw-Authenticate": token},
-    )
-    assert me_resp.status_code == 200
-    body = me_resp.json()
-    assert body["user_id"] == db_user_id
-    assert body["username"] == "cmp_user"
-    assert body["auth_type"] == "cookie"
-    assert body["role_identifiers"] == ["user"]
+    assert login_resp.status_code == 401
 
     manager_cleanup(manager)
 

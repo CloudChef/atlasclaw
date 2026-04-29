@@ -385,13 +385,48 @@ async function loadAvailableRoles() {
 
 function escapeHtml(str) {
   if (!str) return ''
-  const div = document.createElement('div')
-  div.textContent = str
-  return div.innerHTML
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;')
 }
 
 function isLocalAuth(authType) {
   return String(authType || '').toLowerCase() === 'local'
+}
+
+export function formatUserAuthType(authType) {
+  return String(authType || 'local').trim() || 'local'
+}
+
+function ensureAuthTypeOption(authType) {
+  const normalized = formatUserAuthType(authType)
+  const select = container?.querySelector('#formAuthType')
+  const existing = select
+    ? Array.from(select.options || []).some(option => option.value === normalized)
+    : false
+  if (!select || existing) {
+    return normalized
+  }
+
+  const option = document.createElement('option')
+  option.value = normalized
+  option.textContent = normalized
+  select.appendChild(option)
+  return normalized
+}
+
+export function renderUserNameWithAuthType(user = {}) {
+  const displayName = user.display_name || user.username || 'User'
+  const authType = formatUserAuthType(user.auth_type)
+  return `
+    <div class="user-row-name-line">
+      <strong>${escapeHtml(displayName)}</strong>
+      <span class="user-auth-type-badge">${escapeHtml(authType)}</span>
+    </div>
+  `
 }
 
 function formatStatusText(isActive) {
@@ -742,7 +777,6 @@ export function buildUserPayloadForSubmission({
   if (!isEdit || canEditProfileFields) {
     formData.email = values.email ?? null
     formData.display_name = values.display_name ?? null
-    formData.auth_type = values.auth_type || 'local'
     formData.is_active = values.is_active === true
   }
 
@@ -757,6 +791,7 @@ export function buildUserPayloadForSubmission({
 
   if (!isEdit) {
     formData.username = values.username || ''
+    formData.auth_type = formatUserAuthType(values.auth_type)
   }
 
   if (values.password && (!isEdit || canEditProfileFields)) {
@@ -809,7 +844,7 @@ function applyEditModalPermissions(isEdit) {
 
   if (displayNameInput) displayNameInput.disabled = isEdit && !canEditUserProfileFields()
   if (emailInput) emailInput.disabled = isEdit && !canEditUserProfileFields()
-  if (authTypeSelect) authTypeSelect.disabled = isEdit && !canEditUserProfileFields()
+  if (authTypeSelect) authTypeSelect.disabled = isEdit || !canEditUserProfileFields()
   if (activeToggle) activeToggle.disabled = isEdit && !canEditUserProfileFields()
   if (passwordInput) passwordInput.disabled = isEdit && !canResetUserPasswords()
   if (togglePasswordBtn) togglePasswordBtn.disabled = isEdit && !canResetUserPasswords()
@@ -867,8 +902,8 @@ function renderUserList(users) {
           <strong>${escapeHtml(getUserCardId(user))}</strong>
         </div>
         <div class="user-row-name-block">
-          <strong>${escapeHtml(user.display_name || user.username)}</strong>
-          <span>${escapeHtml(user.email || 'No email')}</span>
+          ${renderUserNameWithAuthType(user)}
+          <span class="user-row-email">${escapeHtml(user.email || 'No email')}</span>
         </div>
       </div>
 
@@ -987,7 +1022,7 @@ function showEditModal(user) {
   container.querySelector('#formDisplayName').value = user.display_name || ''
   container.querySelector('#formEmail').value = user.email || ''
   container.querySelector('#formPassword').value = ''
-  container.querySelector('#formAuthType').value = user.auth_type || 'local'
+  container.querySelector('#formAuthType').value = ensureAuthTypeOption(user.auth_type)
   container.querySelector('#formIsActive').checked = user.is_active !== false
   container.querySelector('#formUsername').disabled = true
   container.querySelector('#passwordRequired').style.display = 'none'

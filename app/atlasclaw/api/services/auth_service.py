@@ -444,14 +444,22 @@ async def load_profile_snapshot(
         except Exception:
             return {}
 
-    async def _load_db_profile_by_username(username: str) -> dict[str, Any]:
+    async def _load_db_profile_by_username(
+        username: str,
+        *,
+        lookup_auth_type: str = "",
+    ) -> dict[str, Any]:
         if not username:
             return {}
 
         try:
             db_manager = get_db_manager()
             async with db_manager.get_session() as db_session:
-                user = await UserService.get_by_username(db_session, username)
+                user = await UserService.get_by_username(
+                    db_session,
+                    username,
+                    auth_type=lookup_auth_type or None,
+                )
                 if not user:
                     return {}
                 return _serialize_user(user)
@@ -462,13 +470,19 @@ async def load_profile_snapshot(
     if db_profile:
         return db_profile
 
-    db_profile = await _load_db_profile_by_username(user_id)
+    db_profile = await _load_db_profile_by_username(
+        user_id,
+        lookup_auth_type=auth_type,
+    )
     if db_profile:
         return db_profile
 
     federated_subject = await _resolve_federated_subject()
     if federated_subject and federated_subject != str(user_id or "").strip():
-        db_profile = await _load_db_profile_by_username(federated_subject)
+        db_profile = await _load_db_profile_by_username(
+            federated_subject,
+            lookup_auth_type=auth_type,
+        )
         if db_profile:
             return db_profile
 

@@ -420,6 +420,32 @@ describe('Permission-aware create flow', () => {
     expect(payload.roles).toEqual({ viewer: true, catalog_manager: true })
   })
 
+  test('edit payload does not submit auth type changes', async () => {
+    const { buildUserPayloadForSubmission } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    const payload = buildUserPayloadForSubmission({
+      isEdit: true,
+      authInfo: {
+        is_admin: true,
+        permissions: {
+          users: {
+            edit: true,
+            assign_roles: true
+          }
+        }
+      },
+      values: {
+        display_name: 'Platform Administrator',
+        email: null,
+        auth_type: 'cookie',
+        roles: { user: true },
+        is_active: true
+      }
+    })
+
+    expect(payload.auth_type).toBeUndefined()
+  })
+
   test('edit payload only includes password when viewer can edit users', async () => {
     const { buildUserPayloadForSubmission } = await import('../../app/frontend/scripts/pages/admin-users.js')
 
@@ -597,6 +623,33 @@ describe('Search Debounce Behavior', () => {
     // After 250ms
     jest.advanceTimersByTime(1)
     expect(callback).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('User list rendering', () => {
+  test('renders auth type after display name', async () => {
+    const { renderUserNameWithAuthType } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    const html = renderUserNameWithAuthType({
+      username: 'admin',
+      display_name: 'Platform Administrator',
+      auth_type: 'cookie'
+    })
+
+    expect(html).toContain('Platform Administrator')
+    expect(html).toContain('user-auth-type-badge')
+    expect(html).toContain('cookie')
+  })
+
+  test('defaults auth type badge to local', async () => {
+    const { renderUserNameWithAuthType } = await import('../../app/frontend/scripts/pages/admin-users.js')
+
+    const html = renderUserNameWithAuthType({
+      username: 'admin'
+    })
+
+    expect(html).toContain('admin')
+    expect(html).toContain('local')
   })
 })
 
