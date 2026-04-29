@@ -216,7 +216,8 @@ Multiple instances per provider type are supported. Instance names (`prod`, `dev
 ### 3.3 Webhook Configuration
 
 Configure inbound webhooks for provider-qualified skills already loaded from
-`providers_root`:
+`providers_root`. The webhook route authenticates the caller with a configured
+secret, then dispatches only skills listed in that system's `allowed_skills`:
 
 ```json
 {
@@ -236,6 +237,18 @@ Configure inbound webhooks for provider-qualified skills already loaded from
   }
 }
 ```
+
+Webhook payloads can select a provider instance with `args.provider_instance`.
+When a backend skill must run with an administrator-owned robot credential,
+include `args.robot_profile`. AtlasClaw resolves that profile from the selected
+provider instance, checks the profile's own `allowed_skills`, and passes a
+runtime-only provider config to the skill process.
+
+Robot credentials are not added to the agent prompt. Executable provider
+scripts receive the scoped config through `ATLASCLAW_PROVIDER_CONFIG` and the
+canonical selectors `ATLASCLAW_PROVIDER_TYPE`, `ATLASCLAW_PROVIDER_INSTANCE`,
+and `ATLASCLAW_ROBOT_PROFILE`. See
+[`docs/automation/webhook.md`](automation/webhook.md) for the full contract.
 
 ### 3.4 Authentication Configuration
 
