@@ -138,9 +138,12 @@ class UserModel(Base):
 
 
     __tablename__ = "users"
+    __table_args__ = (
+        UniqueConstraint("auth_type", "username", name="uq_users_auth_type_username"),
+    )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
-    username: Mapped[str] = mapped_column(String(100), unique=True, nullable=False, index=True)
+    username: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
     email: Mapped[Optional[str]] = mapped_column(String(255), unique=True, nullable=True, index=True)
     password: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     auth_type: Mapped[str] = mapped_column(String(100), nullable=False, default="local", index=True)

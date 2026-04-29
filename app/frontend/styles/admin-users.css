@@ -218,15 +218,40 @@
   min-width: 0;
 }
 
-.user-row-name-block strong {
-  display: block;
+.user-row-name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
   margin-bottom: 4px;
+}
+
+.user-row-name-line strong {
+  min-width: 0;
   font-size: 15px;
   color: #0f172a;
   line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.user-row-name-block span {
+.user-auth-type-badge {
+  flex: 0 0 auto;
+  max-width: 120px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #f1f5f9;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.user-row-name-block .user-row-email {
   display: block;
   color: #64748b;
   font-size: 13px;

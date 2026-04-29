@@ -33,6 +33,10 @@ def _normalize_optional_text(value: Any) -> Optional[str]:
     return normalized or None
 
 
+def _normalize_auth_type(value: Any) -> str:
+    return (_normalize_optional_text(value) or "local").lower()
+
+
 def hash_password(password: str) -> str:
     """Hash a password using bcrypt.
 
@@ -195,10 +199,7 @@ class UserService:
             password=user_data.password,
             display_name=_normalize_optional_text(user_data.display_name),
             roles=user_data.roles,
-            auth_type=(
-                _normalize_optional_text(getattr(user_data, "auth_type", "local"))
-                or "local"
-            ),
+            auth_type=_normalize_auth_type(getattr(user_data, "auth_type", "local")),
             is_active=user_data.is_active,
         )
 
@@ -253,12 +254,18 @@ class UserService:
         return result.scalar_one_or_none()
 
     @staticmethod
-    async def get_by_username(session: AsyncSession, username: str) -> Optional[UserModel]:
-        """Get User by username.
+    async def get_by_username(
+        session: AsyncSession,
+        username: str,
+        *,
+        auth_type: Optional[str] = None,
+    ) -> Optional[UserModel]:
+        """Get User by username, optionally scoped by auth type.
 
         Args:
             session: Database session
             username: Username
+            auth_type: Optional auth type scope
 
         Returns:
             User model or None
@@ -267,10 +274,12 @@ class UserService:
         if not username:
             return None
 
-        result = await session.execute(
-            select(UserModel).where(UserModel.username == username)
-        )
-        return result.scalar_one_or_none()
+        query = select(UserModel).where(UserModel.username == username)
+        if auth_type is not None:
+            query = query.where(UserModel.auth_type == _normalize_auth_type(auth_type))
+
+        result = await session.execute(query)
+        return result.scalars().first()
 
     @staticmethod
     async def get_by_email(session: AsyncSession, email: str) -> Optional[UserModel]:
@@ -310,7 +319,7 @@ class UserService:
         if not username:
             return None
 
-        user = await UserService.get_by_username(session, username)
+        user = await UserService.get_by_username(session, username, auth_type="local")
         if user is None:
             return None
 
@@ -405,6 +414,12 @@ class UserService:
         elif "password" in update_data:
             del update_data["password"]
 
+        if "email" in update_data:
+            update_data["email"] = _normalize_optional_text(update_data["email"])
+        if "display_name" in update_data:
+            update_data["display_name"] = _normalize_optional_text(update_data["display_name"])
+        if "auth_type" in update_data:
+            update_data["auth_type"] = _normalize_auth_type(update_data["auth_type"])
 
         for key, value in update_data.items():
             setattr(user, key, value)

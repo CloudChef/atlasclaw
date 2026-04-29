@@ -172,9 +172,55 @@ def test_host_cookie_mode_auth_me_accepts_configured_host_cookies(tmp_path: Path
             )
             assert users_response.status_code == 200
             assert any(
-                user["username"] == "host-admin" and user["roles"] == {"user": True}
+                user["username"] == "host-admin"
+                and user["auth_type"] == "cookie"
+                and user["roles"] == {"user": True}
                 for user in users_response.json()["users"]
             )
+    finally:
+        config_module._config_manager = old_manager
+
+
+def test_host_cookie_subject_can_match_local_username_without_admin_collision(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    app, config_module, old_manager = _create_host_cookie_app(tmp_path, monkeypatch)
+    try:
+        with TestClient(app) as client:
+            me_response = client.get(
+                "/api/auth/me",
+                cookies={
+                    "Host-Authenticate": "host-token",
+                    "hostUser": "admin",
+                    "hostDisplayName": "Platform%20Administrator",
+                    "hostTenantId": "tenant-a",
+                },
+            )
+            assert me_response.status_code == 200
+            body = me_response.json()
+            assert body["username"] == "admin"
+            assert body["display_name"] == "Platform Administrator"
+            assert body["auth_type"] == "cookie"
+            assert body["roles"] == ["user"]
+            assert body["is_admin"] is False
+
+            login_response = client.post(
+                "/api/auth/local/login",
+                json={"username": "admin", "password": "Admin@123"},
+            )
+            assert login_response.status_code == 200
+            users_response = client.get(
+                "/api/users",
+                headers={"AtlasClaw-Authenticate": login_response.json()["token"]},
+            )
+            assert users_response.status_code == 200
+            matching_users = [
+                user
+                for user in users_response.json()["users"]
+                if user["username"] == "admin"
+            ]
+            assert {user["auth_type"] for user in matching_users} == {"local", "cookie"}
     finally:
         config_module._config_manager = old_manager
 

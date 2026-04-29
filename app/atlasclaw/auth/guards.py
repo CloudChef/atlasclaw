@@ -248,8 +248,13 @@ async def _lookup_workspace_user(session: AsyncSession, user: UserInfo) -> Optio
     _append_candidate(runtime_user_id)
     _append_candidate(_extract_external_subject(user))
 
+    auth_type = str(user.auth_type or "").strip() or None
     for candidate in candidates:
-        db_user = await UserService.get_by_username(session, candidate)
+        db_user = await UserService.get_by_username(
+            session,
+            candidate,
+            auth_type=auth_type,
+        )
         if db_user is not None:
             return db_user
 

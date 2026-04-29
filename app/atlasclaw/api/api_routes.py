@@ -1246,9 +1246,17 @@ async def create_user(
     ensure_permission(authz, "users.create", detail="Missing permission: users.create")
     await _ensure_can_assign_roles(session, authz, user_data.roles)
 
-    existing = await UserService.get_by_username(session, user_data.username)
+    user_auth_type = str(user_data.auth_type or "local").strip() or "local"
+    existing = await UserService.get_by_username(
+        session,
+        user_data.username,
+        auth_type=user_auth_type,
+    )
     if existing:
-        raise HTTPException(status_code=409, detail=f"User '{user_data.username}' already exists")
+        raise HTTPException(
+            status_code=409,
+            detail=f"User '{user_data.username}' already exists for auth type '{user_auth_type}'",
+        )
 
     if user_data.email:
         existing_email = await UserService.get_by_email(session, user_data.email)
@@ -1341,7 +1349,11 @@ async def update_my_profile(
         raise HTTPException(status_code=400, detail="No fields to update")
 
     # Get user by username first to get the database ID
-    user = await UserService.get_by_username(session, current_user.user_id)
+    user = await UserService.get_by_username(
+        session,
+        current_user.user_id,
+        auth_type="local",
+    )
     if not user:
         if not _is_local_auth_type(current_user.auth_type):
             raise HTTPException(
@@ -1439,7 +1451,11 @@ async def upload_my_avatar(
     session: AsyncSession = Depends(get_db_session),
 ) -> UserResponse:
     """Upload avatar image for the authenticated user."""
-    user = await UserService.get_by_username(session, current_user.user_id)
+    user = await UserService.get_by_username(
+        session,
+        current_user.user_id,
+        auth_type="local",
+    )
     if not user:
         if not _is_local_auth_type(current_user.auth_type):
             raise HTTPException(
@@ -1489,7 +1505,11 @@ async def change_my_password(
 ):
     """Change the authenticated user's own password."""
     # Get user record first by username
-    user = await UserService.get_by_username(session, current_user.user_id)
+    user = await UserService.get_by_username(
+        session,
+        current_user.user_id,
+        auth_type="local",
+    )
     if not user:
         if not _is_local_auth_type(current_user.auth_type):
             raise HTTPException(
@@ -1559,6 +1579,14 @@ async def update_user(
         existing_user = await UserService.get_by_email(session, user_data.email)
         if existing_user and existing_user.id != old_user.id:
             raise HTTPException(status_code=409, detail="Email already in use")
+
+    if "auth_type" in user_data.model_fields_set:
+        requested_auth_type = str(user_data.auth_type or "").strip().lower() or "local"
+        if requested_auth_type != old_user.auth_type:
+            raise HTTPException(
+                status_code=400,
+                detail="User auth type cannot be changed",
+            )
 
     old_value = AuditService.sanitize_user_data({
         "id": old_user.id,
