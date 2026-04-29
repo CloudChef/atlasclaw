@@ -80,6 +80,29 @@ Configure the robot profile under the provider instance:
 }
 ```
 
+The `auth_type` inside `robot_auth.<profile>` is the provider authentication
+mode selected for that robot profile. It must be a single auth mode supported
+by the provider schema, and the profile must include the fields required by
+that mode. `provider_token` is the recommended shape for administrator-managed
+robot tokens, but a provider may also support other robot credential modes such
+as username/password credentials:
+
+```json
+{
+  "robot_auth": {
+    "backend_bot": {
+      "auth_type": "credential",
+      "username": "${PROVIDER_ROBOT_USERNAME}",
+      "password": "${PROVIDER_ROBOT_PASSWORD}",
+      "allowed_skills": ["example_provider:backend-agent"]
+    }
+  }
+}
+```
+
+Do not configure `robot_auth.<profile>.auth_type` as an ordered fallback chain.
+Robot execution uses exactly one deterministic credential profile.
+
 Then select it in the webhook payload:
 
 ```json
