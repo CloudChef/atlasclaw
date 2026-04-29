@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 # Import models to ensure they are registered with Base.metadata
 from app.atlasclaw.db.models import Base
 from app.atlasclaw.core.config import get_config
+from app.atlasclaw.db.database import build_mysql_connect_args, _resolve_mysql_tls
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -36,6 +37,9 @@ def get_url() -> str:
         atlasclaw_config = get_config()
         db_config = atlasclaw_config.database
 
+        if db_config is None:
+            raise ValueError("database config is not set in atlasclaw.json")
+
         if hasattr(db_config, "get"):
             # Dict format
             db_type = db_config.get("type", "sqlite")
@@ -50,16 +54,21 @@ def get_url() -> str:
                     f"?charset={mysql.get('charset', 'utf8mb4')}"
                 )
         else:
-            # Pydantic model format
+            # Pydantic model format (config_schema.DatabaseConfig)
+            # mysql/sqlite are nested sub-models, NOT flat attributes like mysql_user/mysql_host
             db_type = getattr(db_config, "type", "sqlite")
             if db_type == "sqlite":
-                path = getattr(db_config, "sqlite_path", "./data/atlasclaw.db")
+                sqlite_cfg = getattr(db_config, "sqlite", None)
+                path = getattr(sqlite_cfg, "path", "./data/atlasclaw.db") if sqlite_cfg else "./data/atlasclaw.db"
                 return f"sqlite+aiosqlite:///{path}"
             elif db_type == "mysql":
+                mysql_cfg = getattr(db_config, "mysql", None)
+                if mysql_cfg is None:
+                    raise ValueError("MySQL config section is missing in atlasclaw.json")
                 return (
-                    f"mysql+aiomysql://{db_config.mysql_user}:{db_config.mysql_password}"
-                    f"@{db_config.mysql_host}:{db_config.mysql_port}/{db_config.mysql_database}"
-                    f"?charset={db_config.mysql_charset}"
+                    f"mysql+aiomysql://{mysql_cfg.user}:{mysql_cfg.password}"
+                    f"@{mysql_cfg.host}:{mysql_cfg.port}/{mysql_cfg.database}"
+                    f"?charset={mysql_cfg.charset}"
                 )
     except Exception:
         pass
@@ -103,13 +112,20 @@ async def run_async_migrations() -> None:
     """In this scenario we need to create an Engine
     and associate a connection with the context.
     """
+    url = get_url()
     configuration = config.get_section(config.config_ini_section, {})
-    configuration["sqlalchemy.url"] = get_url()
+    configuration["sqlalchemy.url"] = url
+
+    # Apply TLS connect_args for MySQL connections
+    connect_args: dict = {}
+    if url.startswith("mysql"):
+        connect_args = build_mysql_connect_args(_resolve_mysql_tls())
 
     connectable = async_engine_from_config(
         configuration,
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args,
     )
 
     async with connectable.connect() as connection:

@@ -9,6 +9,8 @@ Supports SQLite (open source) and MySQL (enterprise) backends.
 from __future__ import annotations
 
 import logging
+import os
+import ssl
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator, Optional
@@ -23,6 +25,37 @@ from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.pool import NullPool, QueuePool
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_mysql_tls(config_value: Any = True) -> bool:
+    """Resolve MySQL TLS flag: MYSQL_TLS env var takes priority over config file.
+
+    Accepts 'true'/'false'/'1'/'0'/'yes'/'no' (case-insensitive).
+    Defaults to True when the env var is absent.
+    """
+    env_val = os.environ.get("MYSQL_TLS")
+    if env_val is not None:
+        return env_val.strip().lower() not in ("false", "0", "no")
+    if isinstance(config_value, bool):
+        return config_value
+    if isinstance(config_value, str):
+        return config_value.strip().lower() not in ("false", "0", "no")
+    return bool(config_value)
+
+
+def build_mysql_connect_args(tls: bool) -> dict[str, Any]:
+    """Build aiomysql connect_args for the given TLS setting.
+
+    When *tls* is True an SSL context that skips certificate verification is
+    created so the driver negotiates TLS without requiring a trusted CA chain.
+    When *tls* is False an empty dict is returned (plain-text connection).
+    """
+    if not tls:
+        return {}
+    ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+    return {"ssl": ssl_ctx}
 
 
 class Base(DeclarativeBase):
@@ -44,6 +77,7 @@ class DatabaseConfig:
         mysql_user: Optional[str] = None,
         mysql_password: Optional[str] = None,
         mysql_charset: str = "utf8mb4",
+        mysql_tls: bool = True,
         pool_size: int = 5,
         max_overflow: int = 10,
         echo: bool = False,
@@ -56,6 +90,7 @@ class DatabaseConfig:
         self.mysql_user = mysql_user
         self.mysql_password = mysql_password
         self.mysql_charset = mysql_charset
+        self.mysql_tls = mysql_tls
         self.pool_size = pool_size
         self.max_overflow = max_overflow
         self.echo = echo
@@ -75,6 +110,7 @@ class DatabaseConfig:
             mysql_user=db_config.get("mysql", {}).get("user"),
             mysql_password=db_config.get("mysql", {}).get("password"),
             mysql_charset=db_config.get("mysql", {}).get("charset", "utf8mb4"),
+            mysql_tls=_resolve_mysql_tls(db_config.get("mysql", {}).get("tls", True)),
             pool_size=db_config.get("pool_size", 5),
             max_overflow=db_config.get("max_overflow", 10),
             echo=db_config.get("echo", False),
@@ -147,7 +183,9 @@ class DatabaseManager:
                 pool_size=config.pool_size,
                 max_overflow=config.max_overflow,
                 pool_pre_ping=True,
+                connect_args=build_mysql_connect_args(config.mysql_tls),
             )
+            logger.info(f"MySQL TLS enabled: {config.mysql_tls}")
 
         # Create session factory
         self._session_factory = async_sessionmaker(
