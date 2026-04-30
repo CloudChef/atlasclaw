@@ -430,6 +430,17 @@ Please follow these safety guidelines:
 - Respect user data privacy"""
 
 
+def build_response_language() -> str:
+    """Build the always-on response language section."""
+    return """## Response Language
+
+Use the language explicitly requested by the user. If no response language is requested, use the dominant language of the current user message.
+
+Apply this to direct replies, tool-backed workflows, markdown-skill workflows, previews, confirmations, and follow-up questions.
+
+Do not translate code, JSON keys, API field names, provider names, skill names, tool names, catalog names, or quoted labels unless the user asks."""
+
+
 def build_skills_listing(skills: list[dict]) -> str:
     """Build available built-in executable skill listing."""
     if not skills:

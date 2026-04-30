@@ -171,6 +171,7 @@ class PromptBuilder:
         
         # 3. Safety section
         parts.append(self._build_safety())
+        parts.append(self._build_response_language())
         
         # 3b. User context (when authenticated)
         if user_info and user_info.user_id not in ("anonymous", ""):
@@ -268,6 +269,9 @@ class PromptBuilder:
     
     def _build_safety(self) -> str:
         return prompt_sections.build_safety()
+
+    def _build_response_language(self) -> str:
+        return prompt_sections.build_response_language()
     
     def _build_skills_listing(self, skills: list[dict]) -> str:
         return prompt_sections.build_skills_listing(skills)

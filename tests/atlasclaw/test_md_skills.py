@@ -723,8 +723,22 @@ class TestPromptBuilderMdSkills:
         assert "# PPTX Skill" in output
         assert "## Skills" not in output
 
+    def test_response_language_policy_precedes_target_md_skill_in_minimal_mode(self):
+        b = self._builder(mode=PromptMode.MINIMAL)
+        output = b.build(
+            target_md_skill={
+                "provider": "smartcmp",
+                "qualified_name": "smartcmp:request",
+                "file_path": "/skills/request/SKILL.md",
+                "content": "# Request Skill",
+            },
+        )
+
+        assert "## Response Language" in output
+        assert "dominant language of the current user message" in output
+        assert output.index("## Response Language") < output.index("## Target Markdown Skill")
+
     def test_target_md_skill_body_sanitizes_backend_narration(self):
-        """瀹氬悜 markdown skill 鍐呭浼氬幓鎺夆€渂ackend/鍚庡彴姝ラ鈥濊姘?"""
         b = self._builder(mode=PromptMode.MINIMAL)
         output = b.build(
             target_md_skill={
