@@ -87,8 +87,8 @@ def expand_env_value(value: str) -> str:
     return value
 
 
-async def run_mysql_alembic_upgrade(db_config: DatabaseConfig) -> None:
-    """Run Alembic migrations to head for MySQL deployments."""
+async def run_alembic_upgrade(db_config: DatabaseConfig) -> None:
+    """Run Alembic migrations to head for configured database deployments."""
     from alembic import command
     from alembic.config import Config as AlembicConfig
 
@@ -102,6 +102,11 @@ async def run_mysql_alembic_upgrade(db_config: DatabaseConfig) -> None:
         command.upgrade(alembic_cfg, "head")
 
     await asyncio.to_thread(_upgrade)
+
+
+async def run_mysql_alembic_upgrade(db_config: DatabaseConfig) -> None:
+    """Run Alembic migrations to head for MySQL deployments."""
+    await run_alembic_upgrade(db_config)
 
 
 def create_pydantic_model(token: TokenEntry):
