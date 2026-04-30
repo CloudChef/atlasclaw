@@ -23,7 +23,7 @@ from app.atlasclaw.core.base_path import build_base_path_url, normalize_base_pat
 
 logger = logging.getLogger(__name__)
 
-_SKIP_PATHS = frozenset({"/api/health", "/ping", "/favicon.ico", "/docs", "/openapi.json"})
+_SKIP_PATHS = frozenset({"/api/health", "/ping", "/favicon.ico", "/docs", "/openapi.json", "/api/webhook/dispatch"})
 
 _SSO_PATHS = frozenset({
     "/api/auth/login",
