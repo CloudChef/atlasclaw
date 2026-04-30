@@ -108,7 +108,7 @@ from app.atlasclaw.bootstrap.startup_helpers import (
     merge_provider_instances,
     merge_token_entries,
     print_root_plugins,
-    run_mysql_alembic_upgrade,
+    run_alembic_upgrade,
     scan_plugin_names,
 )
 
@@ -395,16 +395,11 @@ async def lifespan(app: FastAPI):
             })
             await init_database(db_config)
 
-            if db_config.db_type == "sqlite":
-                # SQLite: rely on ORM models to auto-create schema
-                await get_db_manager().create_tables()
-                print("[AtlasClaw] SQLite initialized via ORM models")
-            elif db_config.db_type == "mysql":
-                # MySQL: enterprise mode, schema/data changes managed by Alembic
-                await run_mysql_alembic_upgrade(db_config)
-                print("[AtlasClaw] MySQL initialized via Alembic migrations")
-            else:
+            if db_config.db_type not in {"sqlite", "mysql"}:
                 raise RuntimeError(f"Unsupported database type: {db_config.db_type}")
+
+            await run_alembic_upgrade(db_config)
+            print(f"[AtlasClaw] {db_config.db_type.upper()} initialized via Alembic migrations")
 
             db_initialized = True
         except Exception as e:
