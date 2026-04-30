@@ -1260,6 +1260,9 @@ def test_metadata_recall_follow_up_ignores_assistant_artifact_noise_for_request_
         "smartcmp_list_services",
         "smartcmp_submit_request",
     ]
+    assert "artifact:pptx" not in recalled["preferred_capability_classes"]
+    assert "group:pptx" not in recalled["preferred_group_ids"]
+    assert "pptx" not in recalled["preferred_skill_names"]
     assert "pptx_create_deck" not in recalled["preferred_tool_names"]
 
 
@@ -1554,6 +1557,7 @@ def test_metadata_recall_keeps_explicit_artifact_tool_in_top_candidates_for_engl
     )
 
     assert "pptx_create_deck" in metadata["preferred_tool_names"]
+    assert "artifact:pptx" in metadata["preferred_capability_classes"]
     artifact_tool_candidates = [
         item for item in metadata["tool_candidates"] if item.get("tool_name") == "pptx_create_deck"
     ]

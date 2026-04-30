@@ -569,19 +569,28 @@ class RunnerToolGateModelMixin:
             ]
         )
 
-        target_skill_names: list[str] = []
-        for item in (metadata_candidates.get("skill_candidates", []) or []):
-            if not isinstance(item, dict):
-                continue
-            qualified_skill_name = str(item.get("qualified_skill_name", "") or "").strip()
-            skill_name = str(item.get("skill_name", "") or "").strip()
-            hint_id = str(item.get("hint_id", "") or "").strip()
-            selected_name = qualified_skill_name or skill_name
-            if not selected_name and hint_id.startswith("skill:"):
-                selected_name = hint_id.split(":", 1)[1].strip()
-            if selected_name:
-                target_skill_names.append(selected_name)
-        target_skill_names = self._dedupe_preserve_order(target_skill_names)
+        if "preferred_skill_names" in metadata_candidates:
+            target_skill_names = self._dedupe_preserve_order(
+                [
+                    str(item).strip()
+                    for item in (metadata_candidates.get("preferred_skill_names", []) or [])
+                    if str(item).strip()
+                ]
+            )
+        else:
+            target_skill_names = []
+            for item in (metadata_candidates.get("skill_candidates", []) or []):
+                if not isinstance(item, dict):
+                    continue
+                qualified_skill_name = str(item.get("qualified_skill_name", "") or "").strip()
+                skill_name = str(item.get("skill_name", "") or "").strip()
+                hint_id = str(item.get("hint_id", "") or "").strip()
+                selected_name = qualified_skill_name or skill_name
+                if not selected_name and hint_id.startswith("skill:"):
+                    selected_name = hint_id.split(":", 1)[1].strip()
+                if selected_name:
+                    target_skill_names.append(selected_name)
+            target_skill_names = self._dedupe_preserve_order(target_skill_names)
 
         if not any(
             [

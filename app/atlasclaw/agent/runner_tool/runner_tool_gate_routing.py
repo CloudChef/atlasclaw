@@ -11,6 +11,7 @@ from app.atlasclaw.agent.tool_gate import CapabilityMatcher
 from app.atlasclaw.agent.tool_gate_models import CapabilityMatchResult, ToolGateDecision, ToolPolicyMode
 from app.atlasclaw.core.deps import SkillDeps
 
+
 class RunnerToolGateRoutingMixin:
     @staticmethod
     def _tool_rank_entry_declares_artifact(entry: dict[str, Any]) -> bool:
@@ -19,6 +20,12 @@ class RunnerToolGateRoutingMixin:
             if normalized.startswith("artifact:"):
                 return True
         return False
+
+    @classmethod
+    def _metadata_candidate_is_active_guidance(cls, entry: dict[str, Any]) -> bool:
+        if not cls._tool_rank_entry_declares_artifact(entry):
+            return True
+        return bool(entry.get("has_strong_anchor"))
 
     @classmethod
     def _select_tool_ranked_top_entries(
@@ -1501,18 +1508,23 @@ class RunnerToolGateRoutingMixin:
             tool_ranked=tool_ranked,
             limit=max(1, min(4, top_k_skill)),
         )
+        active_guidance = [
+            item
+            for item in provider_top + skill_top + tool_top
+            if self._metadata_candidate_is_active_guidance(item)
+        ]
 
         preferred_provider_types = self._dedupe_preserve_order(
             [
                 str(item.get("provider_type", "") or "").strip().lower()
-                for item in provider_top + skill_top + tool_top
+                for item in active_guidance
                 if str(item.get("provider_type", "") or "").strip()
             ]
         )
         preferred_group_ids = self._dedupe_preserve_order(
             [
                 str(group_id).strip()
-                for item in provider_top + skill_top + tool_top
+                for item in active_guidance
                 for group_id in (item.get("group_ids", []) or [])
                 if str(group_id).strip()
             ]
@@ -1520,13 +1532,20 @@ class RunnerToolGateRoutingMixin:
         preferred_capability_classes = self._dedupe_preserve_order(
             [
                 str(capability).strip().lower()
-                for item in provider_top + skill_top + tool_top
+                for item in active_guidance
                 for capability in (item.get("capability_classes", []) or [])
                 if str(capability).strip()
             ]
         )
+        preferred_skill_names = self._dedupe_preserve_order(
+            [
+                str(item.get("qualified_skill_name", "") or item.get("skill_name", "") or "").strip()
+                for item in active_guidance
+                if str(item.get("qualified_skill_name", "") or item.get("skill_name", "") or "").strip()
+            ]
+        )
         tool_name_scores: dict[str, tuple[int, int, str]] = {}
-        for item in provider_top + skill_top + tool_top:
+        for item in active_guidance:
             score = int(item.get("score", 0) or 0)
             hint_type = "tool"
             hint_id = str(item.get("hint_id", "") or "").strip()
@@ -1567,6 +1586,7 @@ class RunnerToolGateRoutingMixin:
             "preferred_provider_types": preferred_provider_types,
             "preferred_group_ids": preferred_group_ids,
             "preferred_capability_classes": preferred_capability_classes,
+            "preferred_skill_names": preferred_skill_names,
             "preferred_tool_names": preferred_tool_names,
             "confidence": confidence,
             "reason": reason,
