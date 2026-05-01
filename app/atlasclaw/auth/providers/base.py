@@ -33,5 +33,5 @@ class AuthProvider(ABC):
 
     @abstractmethod
     def provider_name(self) -> str:
-        """Return a short stable identifier, e.g. 'smartcmp', 'oidc', 'none'."""
+        """Return a short stable identifier, e.g. 'custom', 'oidc', 'none'."""
         ...

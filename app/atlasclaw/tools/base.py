@@ -82,7 +82,8 @@ class ToolMetadata:
         description: Human-readable tool description.
         group: Tool group, such as `fs`, `runtime`, or `web`.
         capability_class: Stable routing capability class declared by the tool
-            itself, for example `fs_write`, `provider:smartcmp`, or `artifact:pptx`.
+            itself, for example `provider:<provider_type>`, `artifact:<format>`,
+            or `web_search`.
         live_data: Whether the tool depends on live external/public data.
         browser_interaction: Whether the tool performs interactive browser actions.
         public_web: Whether the tool is a generic public-web lookup/fetch/browse

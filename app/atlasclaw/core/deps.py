@@ -30,7 +30,7 @@ class SkillDeps:
     Attributes:
         user_info: Authenticated user identity (always present; defaults to
             anonymous when no auth is configured).
-        smartcmp_client: Optional SmartCMP HTTP client.
+        provider_client: Optional provider HTTP client.
         peer_id: Peer identifier, such as a user or group ID.
         session_key: Stable session key for the current conversation.
         channel: Source channel name for the current request.
@@ -72,7 +72,7 @@ class SkillDeps:
     """
 
     user_info: UserInfo = field(default_factory=lambda: ANONYMOUS_USER)
-    smartcmp_client: Optional[Any] = None   # httpx.AsyncClient
+    provider_client: Optional[Any] = None   # httpx.AsyncClient
     peer_id: str = ""
     session_key: str = ""
     channel: str = ""
@@ -87,7 +87,7 @@ class SkillDeps:
         user_info: Optional[UserInfo] = None,
         *,
         user_token: Optional[str] = None,
-        smartcmp_client: Optional[Any] = None,
+        provider_client: Optional[Any] = None,
         peer_id: str = "",
         session_key: str = "",
         channel: str = "",
@@ -117,7 +117,7 @@ class SkillDeps:
             )
 
         self.user_info = resolved_user
-        self.smartcmp_client = smartcmp_client
+        self.provider_client = provider_client
         self.peer_id = peer_id
         self.session_key = session_key
         self.channel = channel
