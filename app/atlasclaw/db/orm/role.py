@@ -13,13 +13,73 @@ from typing import Any, Dict, List, Optional
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.atlasclaw.channels.registry import ChannelRegistry
+from app.atlasclaw.core.config import get_config
 from app.atlasclaw.db.models import RoleModel
+from app.atlasclaw.db.orm.service_provider_config import ServiceProviderConfigService
 from app.atlasclaw.db.schemas import RoleCreate, RoleUpdate
 
 logger = logging.getLogger(__name__)
 
 
 SYSTEM_MANAGED_BUILTIN_ROLE_IDENTIFIERS = frozenset({"admin", "user"})
+
+
+def get_registered_channel_permission_entries() -> List[Dict[str, Any]]:
+    """Return allow entries for currently registered channels."""
+    seen: set[str] = set()
+    entries: List[Dict[str, Any]] = []
+    for channel in ChannelRegistry.list_channels():
+        if not isinstance(channel, dict):
+            continue
+        channel_type = str(channel.get("type") or "").strip()
+        if not channel_type:
+            continue
+        if channel_type in seen:
+            continue
+        seen.add(channel_type)
+        channel_name = str(channel.get("name") or channel_type).strip() or channel_type
+        entries.append({
+            "channel_type": channel_type,
+            "channel_name": channel_name,
+            "allowed": True,
+        })
+    return entries
+
+
+async def get_registered_provider_permission_entries(session: AsyncSession) -> List[Dict[str, Any]]:
+    """Return allow entries for currently configured provider instances."""
+    entries: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def append_instances(provider_instances: Any) -> None:
+        if not isinstance(provider_instances, dict):
+            return
+        for provider_type, instances in provider_instances.items():
+            if not isinstance(instances, dict):
+                continue
+            normalized_provider_type = str(provider_type or "").strip()
+            if not normalized_provider_type:
+                continue
+            for instance_name in instances.keys():
+                normalized_instance_name = str(instance_name or "").strip()
+                if not normalized_instance_name:
+                    continue
+                key = (normalized_provider_type, normalized_instance_name)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append({
+                    "provider_type": normalized_provider_type,
+                    "instance_name": normalized_instance_name,
+                    "allowed": True,
+                })
+
+    append_instances(getattr(get_config(), "service_providers", None))
+    db_provider_instances = await ServiceProviderConfigService.list_active_as_nested(session)
+    append_instances(db_provider_instances)
+
+    return entries
 
 
 def _normalize_skill_permissions(entries: Any) -> List[Dict[str, Any]]:
@@ -71,16 +131,64 @@ def _normalize_provider_permissions(entries: Any) -> List[Dict[str, Any]]:
         normalized.append({
             "provider_type": provider_type,
             "instance_name": instance_name,
-            "allowed": entry.get("allowed") is not False,
+            "allowed": entry.get("allowed") is True,
         })
 
     return normalized
+
+
+def _normalize_channel_permissions(entries: Any) -> List[Dict[str, Any]]:
+    """Normalize per-channel-type permissions into a predictable list shape."""
+    if not isinstance(entries, list):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+
+        channel_type = str(entry.get("channel_type") or "").strip()
+        if not channel_type or channel_type in seen:
+            continue
+        seen.add(channel_type)
+
+        channel_name = str(entry.get("channel_name") or channel_type).strip()
+        normalized.append({
+            "channel_type": channel_type,
+            "channel_name": channel_name or channel_type,
+            "allowed": entry.get("allowed") is True,
+        })
+
+    return normalized
+
+
+def _normalize_channel_permission_block(value: Any) -> Dict[str, Any]:
+    """Normalize channel permissions to the channel-type allowlist shape."""
+    manage_permissions = False
+    channel_permissions: Any = []
+    if isinstance(value, dict):
+        module_permissions = value.get("module_permissions")
+        if isinstance(module_permissions, dict):
+            manage_permissions = bool(module_permissions.get("manage_permissions", False))
+        channel_permissions = value.get("channel_permissions", [])
+
+    return {
+        "module_permissions": {
+            "manage_permissions": manage_permissions,
+        },
+        "channel_permissions": _normalize_channel_permissions(channel_permissions),
+    }
 
 
 def _merge_permission_dicts(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
     """Deep-merge role permissions while preserving the known default shape."""
     merged = copy.deepcopy(base)
     for key, value in overrides.items():
+        if key == "channels":
+            merged[key] = _normalize_channel_permission_block(value)
+            continue
+
         if key == "skill_permissions":
             merged[key] = _normalize_skill_permissions(value)
             continue
@@ -116,11 +224,10 @@ def build_default_permissions() -> Dict[str, Any]:
             "provider_permissions": [],
         },
         "channels": {
-            "view": False,
-            "create": False,
-            "edit": False,
-            "delete": False,
-            "manage_permissions": False,
+            "module_permissions": {
+                "manage_permissions": False,
+            },
+            "channel_permissions": [],
         },
         "tokens": {
             "view": False,
@@ -180,11 +287,33 @@ def _build_all_enabled_permissions() -> Dict[str, Any]:
         if module_id == "providers":
             config["module_permissions"]["manage_permissions"] = True
             continue
+        if module_id == "channels":
+            config["module_permissions"]["manage_permissions"] = True
+            config["channel_permissions"] = get_registered_channel_permission_entries()
+            continue
 
         for permission_name in list(config.keys()):
             config[permission_name] = True
 
     return permissions
+
+
+async def _refresh_allowed_runtime_defaults(
+    session: AsyncSession,
+    permissions: Dict[str, Any],
+    *,
+    include_provider_permissions: bool,
+    include_channel_permissions: bool,
+) -> Dict[str, Any]:
+    """Return initial role permissions with runtime allowlists populated."""
+    refreshed = copy.deepcopy(permissions)
+    providers = refreshed.get("providers")
+    if include_provider_permissions and isinstance(providers, dict):
+        providers["provider_permissions"] = await get_registered_provider_permission_entries(session)
+    channels = refreshed.get("channels")
+    if include_channel_permissions and isinstance(channels, dict):
+        channels["channel_permissions"] = get_registered_channel_permission_entries()
+    return refreshed
 
 
 BUILTIN_ROLE_DEFINITIONS: tuple[Dict[str, Any], ...] = (
@@ -202,18 +331,17 @@ BUILTIN_ROLE_DEFINITIONS: tuple[Dict[str, Any], ...] = (
             **build_default_permissions(),
             "skills": {
                 "module_permissions": {
-                    "view": True,
+                    "view": False,
                     "enable_disable": False,
                     "manage_permissions": False,
                 },
                 "skill_permissions": [],
             },
             "channels": {
-                "view": True,
-                "create": True,
-                "edit": True,
-                "delete": True,
-                "manage_permissions": False,
+                "module_permissions": {
+                    "manage_permissions": False,
+                },
+                "channel_permissions": get_registered_channel_permission_entries(),
             },
         },
     },
@@ -232,11 +360,10 @@ BUILTIN_ROLE_DEFINITIONS: tuple[Dict[str, Any], ...] = (
                 "skill_permissions": [],
             },
             "channels": {
-                "view": True,
-                "create": False,
-                "edit": False,
-                "delete": False,
-                "manage_permissions": False,
+                "module_permissions": {
+                    "manage_permissions": False,
+                },
+                "channel_permissions": get_registered_channel_permission_entries(),
             },
             "tokens": {
                 "view": True,
@@ -282,7 +409,7 @@ class RoleService:
 
     @staticmethod
     async def ensure_builtin_roles(session: AsyncSession) -> None:
-        """Ensure built-in roles exist while repairing system-managed defaults."""
+        """Ensure built-in roles exist while syncing locked metadata."""
         result = await session.execute(select(RoleModel))
         existing = {role.identifier: role for role in result.scalars().all()}
 
@@ -291,23 +418,24 @@ class RoleService:
             identifier = definition["identifier"]
             current = existing.get(identifier)
             normalized_definition_permissions = RoleService.normalize_permissions(
-                definition["permissions"]
+                await _refresh_allowed_runtime_defaults(
+                    session,
+                    definition["permissions"],
+                    include_provider_permissions=identifier in SYSTEM_MANAGED_BUILTIN_ROLE_IDENTIFIERS,
+                    include_channel_permissions=True,
+                )
             )
             if current:
                 normalized_current_permissions = RoleService.normalize_permissions(current.permissions)
                 if is_system_managed_builtin_role(identifier):
-                    # Reset locked modules to canonical defaults, but preserve
-                    # user-managed runtime access permissions from DB.
+                    # Reset locked modules to canonical defaults; runtime access
+                    # modules are user-managed after initial seeding.
                     target_permissions = dict(normalized_definition_permissions)
-                    current_skills = normalized_current_permissions.get("skills")
-                    if isinstance(current_skills, dict) and current_skills.get("skill_permissions"):
-                        target_permissions["skills"] = current_skills
-                    current_providers = normalized_current_permissions.get("providers")
-                    if (
-                        isinstance(current_providers, dict)
-                        and current_providers.get("provider_permissions")
-                    ):
-                        target_permissions["providers"] = current_providers
+                    for module_id in ("skills", "providers", "channels"):
+                        target_permissions[module_id] = normalized_current_permissions.get(
+                            module_id,
+                            target_permissions[module_id],
+                        )
                 else:
                     target_permissions = normalized_current_permissions
                 if current.is_builtin and (

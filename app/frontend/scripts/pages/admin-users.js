@@ -36,7 +36,9 @@ let documentKeydownHandler = null
 const ROLE_FILTER_FETCH_PAGE_SIZE = 100
 const NON_ADMIN_ASSIGNABLE_PERMISSION_PATHS = new Set([
   'skills.module_permissions.view',
-  'channels.view',
+  'skills.skill_permissions',
+  'providers.provider_permissions',
+  'channels.channel_permissions',
   'tokens.view',
   'agent_configs.view',
   'provider_configs.view',
@@ -217,7 +219,7 @@ function buildFallbackRolePermissions(identifier) {
   if (identifier === 'viewer') {
     return {
       skills: { module_permissions: { view: true }, skill_permissions: [] },
-      channels: { view: true },
+      channels: { module_permissions: { manage_permissions: false }, channel_permissions: [] },
       tokens: { view: true },
       users: { view: true },
       roles: { view: true }
@@ -226,14 +228,14 @@ function buildFallbackRolePermissions(identifier) {
 
   if (identifier === 'user') {
     return {
-      skills: { module_permissions: { view: true }, skill_permissions: [] }
+      skills: { module_permissions: { view: false }, skill_permissions: [] }
     }
   }
 
   if (identifier === 'admin') {
     return {
       skills: { module_permissions: { view: true, enable_disable: true, manage_permissions: true }, skill_permissions: [] },
-      channels: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
+      channels: { module_permissions: { manage_permissions: true }, channel_permissions: [] },
       tokens: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
       agent_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
       provider_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
@@ -307,6 +309,18 @@ function collectEnabledPermissionPaths(value, prefix = '') {
     if (
       prefix === 'skills.skill_permissions'
       && value.some(entry => entry && typeof entry === 'object' && (entry.authorized === true || entry.enabled === true))
+    ) {
+      return [prefix]
+    }
+    if (
+      prefix === 'providers.provider_permissions'
+      && value.some(entry => entry && typeof entry === 'object' && entry.allowed === true)
+    ) {
+      return [prefix]
+    }
+    if (
+      prefix === 'channels.channel_permissions'
+      && value.some(entry => entry && typeof entry === 'object' && entry.allowed === true)
     ) {
       return [prefix]
     }

@@ -158,8 +158,11 @@ def test_host_cookie_mode_auth_me_accepts_configured_host_cookies(tmp_path: Path
             assert body["auth_type"] == "cookie"
             assert body["tenant_id"] == "tenant-a"
             assert body["roles"] == ["user"]
-            assert body["permissions"]["channels"]["view"] is True
-            assert body["permissions"]["channels"]["create"] is True
+            assert body["permissions"]["channels"]["module_permissions"]["manage_permissions"] is False
+            assert any(
+                entry["allowed"] is True
+                for entry in body["permissions"]["channels"]["channel_permissions"]
+            )
 
             login_response = client.post(
                 "/api/auth/local/login",

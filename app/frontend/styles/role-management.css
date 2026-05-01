@@ -153,7 +153,6 @@
 .role-summary-card,
 .role-module-panel,
 .role-module-nav,
-.role-skill-note,
 .role-skill-card,
 .role-provider-card {
   border-radius: 22px;
@@ -247,7 +246,6 @@
 .role-module-copy span,
 .role-module-panel-header p,
 .role-skill-copy p,
-.role-skill-note p,
 .modal-description,
 .confirm-message {
   color: #64748b;
@@ -256,16 +254,8 @@
 }
 
 .role-list-card p,
-.role-skill-copy p,
-.role-skill-note p {
+.role-skill-copy p {
   margin: 12px 0 0;
-}
-
-.role-skill-toolbar p,
-.role-skill-note p {
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.55;
 }
 
 .role-list-card-meta,
@@ -353,7 +343,6 @@
 .role-summary-card,
 .role-module-panel,
 .role-module-nav,
-.role-skill-note,
 .role-skill-card,
 .role-provider-card {
   padding: 22px;
@@ -476,8 +465,7 @@
 
 .role-module-copy strong,
 .role-module-panel-header h3,
-.role-skill-toolbar h3,
-.role-skill-note strong {
+.role-skill-toolbar h3 {
   color: #0f172a;
   font-size: 14px;
 }
@@ -663,18 +651,6 @@
   margin-top: 18px;
 }
 
-.role-skill-note {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-}
-
-.role-skill-note-copy {
-  flex: 1;
-  min-width: 0;
-}
-
 .role-skill-master-toggle {
   display: inline-flex;
   align-items: center;
@@ -778,13 +754,23 @@
   align-items: flex-end;
 }
 
-.role-skill-toolbar > div {
+.role-skill-toolbar-title {
   flex: 1;
+  min-width: 0;
+}
+
+.role-allowlist-toolbar-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
 .role-skill-search {
   max-width: 340px;
+  flex: 1 1 240px;
 }
 
 .role-skill-list {
@@ -966,11 +952,22 @@
   .role-editor-topbar,
   .role-module-panel-header,
   .role-skill-toolbar,
-  .role-skill-note,
   .role-skill-card,
   .role-provider-card,
   .role-editor-footer {
     flex-direction: column;
+  }
+
+  .role-allowlist-toolbar-controls {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .role-allowlist-toolbar-controls .role-skill-search,
+  .role-allowlist-toolbar-controls .role-skill-master-toggle {
+    width: 100%;
+    max-width: none;
   }
 
   .role-editor-footer {

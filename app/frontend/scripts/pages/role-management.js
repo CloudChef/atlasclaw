@@ -38,11 +38,7 @@ const MODULE_PERMISSION_DEFINITIONS = {
     ['manage_permissions', 'roles.permissions.managePermissions', 'Manage Permissions', 'roles.providerPermissions.managePermissionsDescription', 'Edit which provider instances roles may access at runtime.']
   ],
   channels: [
-    ['view', 'roles.permissions.view', 'View', 'roles.channelPermissions.viewDescription', 'Review connected channels, owners, and health status.'],
-    ['create', 'roles.permissions.create', 'Create', 'roles.channelPermissions.createDescription', 'Create new channel connections for supported platforms.'],
-    ['edit', 'roles.permissions.edit', 'Edit', 'roles.channelPermissions.editDescription', 'Update credentials, callback URLs, and runtime settings.'],
-    ['delete', 'roles.permissions.delete', 'Delete', 'roles.channelPermissions.deleteDescription', 'Remove obsolete or compromised channel connections.'],
-    ['manage_permissions', 'roles.permissions.managePermissions', 'Manage Permissions', 'roles.channelPermissions.managePermissionsDescription', 'Edit the channel permission model available to other roles.']
+    ['manage_permissions', 'roles.permissions.managePermissions', 'Manage Permissions', 'roles.channelPermissions.managePermissionsDescription', 'Edit which channel types roles may access at runtime.']
   ],
   tokens: [
     ['view', 'roles.permissions.view', 'View', 'roles.tokenPermissions.viewDescription', 'Inspect token names, providers, and current health status.'],
@@ -112,10 +108,12 @@ let roles = []
 let skills = []
 let providerSkills = []
 let providerInstances = []
+let channelTypes = []
 let selectedRoleId = null
 let roleSearch = ''
 let skillSearch = ''
 let providerSearch = ''
+let channelSearch = ''
 let activeModuleId = 'skills'
 let draftRoleState = null
 let identifierTouched = false
@@ -237,7 +235,7 @@ function buildDefaultPermissions() {
   return {
     skills: { module_permissions: { view: false, enable_disable: false, manage_permissions: false }, skill_permissions: [] },
     providers: { module_permissions: { manage_permissions: false }, provider_permissions: [] },
-    channels: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
+    channels: { module_permissions: { manage_permissions: false }, channel_permissions: [] },
     tokens: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
     agent_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
     provider_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
@@ -254,10 +252,17 @@ function buildAllEnabledPermissions() {
       config.module_permissions.view = true
       config.module_permissions.enable_disable = true
       config.module_permissions.manage_permissions = true
+      config.skill_permissions = buildSkillPermissionsFromCatalog(true)
       return
     }
     if (moduleId === 'providers') {
       config.module_permissions.manage_permissions = true
+      config.provider_permissions = buildProviderPermissionsFromCatalog(true)
+      return
+    }
+    if (moduleId === 'channels') {
+      config.module_permissions.manage_permissions = true
+      config.channel_permissions = buildChannelPermissionsFromCatalog(true)
       return
     }
     Object.keys(config).forEach(key => {
@@ -271,13 +276,15 @@ function getRoleTemplate(identifier = '') {
   if (identifier === 'admin') return buildAllEnabledPermissions()
   if (identifier === 'user') {
     const permissions = buildDefaultPermissions()
-    permissions.skills.module_permissions.view = true
+    permissions.skills.skill_permissions = buildSkillPermissionsFromCatalog(true)
+    permissions.providers.provider_permissions = buildProviderPermissionsFromCatalog(true)
+    permissions.channels.channel_permissions = buildChannelPermissionsFromCatalog(true)
     return permissions
   }
   if (identifier === 'viewer') {
     const permissions = buildDefaultPermissions()
     permissions.skills.module_permissions.view = true
-    permissions.channels.view = true
+    permissions.channels.channel_permissions = buildChannelPermissionsFromCatalog(true)
     permissions.tokens.view = true
     permissions.users.view = true
     permissions.roles.view = true
@@ -286,41 +293,12 @@ function getRoleTemplate(identifier = '') {
   return buildDefaultPermissions()
 }
 
-function shouldDefaultAdminSkillsEnabled(role, storedSkillPermissions = []) {
-  if (role?.identifier !== 'admin') return false
-  if (!role?.is_builtin) return false
-  if (storedSkillPermissions.length > 0) return false
-
-  const modulePermissions = role?.permissions?.skills?.module_permissions || {}
-  return (
-    modulePermissions.view === true
-    && modulePermissions.enable_disable === true
-    && modulePermissions.manage_permissions === true
-  )
-}
-
-function shouldPersistImplicitAdminSkillAccess(role) {
-  if (role?.identifier !== 'admin') return false
-  if (!role?.is_builtin) return false
-
-  const modulePermissions = role?.permissions?.skills?.module_permissions || {}
-  const skillPermissions = Array.isArray(role?.permissions?.skills?.skill_permissions)
-    ? role.permissions.skills.skill_permissions
-    : []
-  const runtimeSkillPermissions = skillPermissions.filter(skill => skill.runtime_enabled !== false)
-  const allKnownSkillsEnabled = runtimeSkillPermissions.every(skill => (
-    skill?.authorized === true && skill?.enabled === true
-  ))
-
-  return (
-    modulePermissions.view === true
-    && modulePermissions.enable_disable === true
-    && allKnownSkillsEnabled
-  )
-}
-
 function providerPermissionKey(providerType, instanceName) {
   return `${String(providerType || '').trim()}::${String(instanceName || '').trim()}`
+}
+
+function channelPermissionKey(channelType) {
+  return String(channelType || '').trim()
 }
 
 function getProviderDisplayName(provider) {
@@ -331,9 +309,60 @@ function getProviderDisplayDescription(provider) {
   return provider?.base_url || translateOrFallback('roles.defaultProviderDescription', 'Registered service provider instance.')
 }
 
+function buildSkillPermissionsFromCatalog(defaultEnabled = true) {
+  return skills.map(skill => {
+    const skillName = String(skill?.name || '').trim()
+    const runtimeEnabled = skill?.runtime_enabled !== false
+    return {
+      skill_id: skillName,
+      skill_name: skillName,
+      description: String(skill?.description || ''),
+      runtime_enabled: runtimeEnabled,
+      authorized: runtimeEnabled && defaultEnabled,
+      enabled: runtimeEnabled && defaultEnabled
+    }
+  }).filter(skill => skill.skill_id)
+}
+
+function buildProviderPermissionsFromCatalog(defaultAllowed = true) {
+  return providerInstances.map(provider => {
+    const providerType = String(provider?.provider_type || '').trim()
+    const instanceName = String(provider?.instance_name || '').trim()
+    return {
+      provider_type: providerType,
+      display_name: String(provider?.display_name || providerType),
+      instance_name: instanceName,
+      base_url: String(provider?.base_url || ''),
+      auth_type: provider?.auth_type || '',
+      allowed: defaultAllowed
+    }
+  }).filter(provider => provider.provider_type && provider.instance_name)
+}
+
+function getChannelDisplayName(channel) {
+  return channel?.channel_name || channel?.name || channel?.type || channel?.channel_type || ''
+}
+
+function getChannelDisplayDescription(channel) {
+  const mode = channel?.mode ? String(channel.mode) : ''
+  return mode
+    ? translateOrFallback('roles.defaultChannelDescriptionWithMode', `Channel type using ${mode} mode.`).replace('{{mode}}', mode)
+    : translateOrFallback('roles.defaultChannelDescription', 'Registered channel type available to workspace users.')
+}
+
+function buildChannelPermissionsFromCatalog(defaultAllowed = true) {
+  return channelTypes.map(channel => {
+    const channelType = String(channel?.type || channel?.channel_type || '').trim()
+    return {
+      channel_type: channelType,
+      channel_name: String(channel?.name || channel?.channel_name || channelType),
+      mode: channel?.mode || '',
+      allowed: defaultAllowed
+    }
+  }).filter(channel => channel.channel_type)
+}
+
 function normalizeProviderPermissions(storedPermissions = [], providerCatalog = []) {
-  // Provider access is default-allow; stored entries only override catalog rows
-  // when they explicitly deny an instance.
   const storedByKey = new Map()
   for (const entry of Array.isArray(storedPermissions) ? storedPermissions : []) {
     const providerType = String(entry?.provider_type || '').trim()
@@ -345,32 +374,55 @@ function normalizeProviderPermissions(storedPermissions = [], providerCatalog = 
       instance_name: instanceName,
       base_url: String(entry?.base_url || ''),
       auth_type: entry?.auth_type || '',
-      allowed: entry.allowed !== false
+      allowed: entry.allowed === true
     })
   }
 
   const normalized = []
-  const seen = new Set()
   for (const provider of providerCatalog) {
     const providerType = String(provider?.provider_type || '').trim()
     const instanceName = String(provider?.instance_name || '').trim()
     if (!providerType || !instanceName) continue
     const key = providerPermissionKey(providerType, instanceName)
     const existing = storedByKey.get(key)
-    seen.add(key)
     normalized.push({
       provider_type: providerType,
       display_name: String(provider?.display_name || existing?.display_name || providerType),
       instance_name: instanceName,
       base_url: String(provider?.base_url || existing?.base_url || ''),
       auth_type: provider?.auth_type || existing?.auth_type || '',
-      allowed: existing ? existing.allowed !== false : true
+      allowed: existing ? existing.allowed === true : false
     })
   }
 
-  for (const [key, entry] of storedByKey.entries()) {
-    if (seen.has(key)) continue
-    normalized.push(entry)
+  return normalized
+}
+
+function normalizeChannelPermissions(storedPermissions = [], channelCatalog = []) {
+  const storedByType = new Map()
+  for (const entry of Array.isArray(storedPermissions) ? storedPermissions : []) {
+    const channelType = String(entry?.channel_type || '').trim()
+    if (!channelType) continue
+    storedByType.set(channelPermissionKey(channelType), {
+      channel_type: channelType,
+      channel_name: String(entry?.channel_name || channelType),
+      mode: entry?.mode || '',
+      allowed: entry.allowed === true
+    })
+  }
+
+  const normalized = []
+  for (const channel of channelCatalog) {
+    const channelType = String(channel?.type || channel?.channel_type || '').trim()
+    if (!channelType) continue
+    const key = channelPermissionKey(channelType)
+    const existing = storedByType.get(key)
+    normalized.push({
+      channel_type: channelType,
+      channel_name: String(channel?.name || existing?.channel_name || channelType),
+      mode: channel?.mode || existing?.mode || '',
+      allowed: existing ? existing.allowed === true : false
+    })
   }
 
   return normalized
@@ -383,24 +435,31 @@ function buildPermissionsPayload(role) {
     delete permissions.users.reset_password
   }
   if (permissions.providers && typeof permissions.providers === 'object') {
-    // Persist only explicit denies. Missing provider rows are intentional and
-    // mean "allowed" for existing roles and newly registered provider instances.
     permissions.providers.provider_permissions = Array.isArray(permissions.providers.provider_permissions)
       ? permissions.providers.provider_permissions
-        .filter(provider => provider?.allowed === false)
+        .filter(provider => !role?.isNew || provider?.allowed === true)
+        .filter(provider => provider?.provider_type && provider?.instance_name)
         .map(provider => ({
           provider_type: provider.provider_type,
           instance_name: provider.instance_name,
-          allowed: false
+          allowed: provider.allowed === true
         }))
       : []
   }
-
-  if (shouldPersistImplicitAdminSkillAccess(role)) {
-    permissions.skills = {
-      ...(permissions.skills || {}),
-      skill_permissions: []
-    }
+  if (permissions.channels && typeof permissions.channels === 'object') {
+    const channelPermissions = Array.isArray(permissions.channels.channel_permissions)
+      ? permissions.channels.channel_permissions
+      : []
+    permissions.channels.channel_permissions = Array.isArray(permissions.channels.channel_permissions)
+      ? channelPermissions
+        .filter(channel => !role?.isNew || channel?.allowed === true)
+        .filter(channel => channel?.channel_type)
+        .map(channel => ({
+          channel_type: channel.channel_type,
+          channel_name: channel.channel_name || channel.channel_type,
+          allowed: channel.allowed === true
+        }))
+      : []
   }
 
   return permissions
@@ -443,29 +502,31 @@ function normalizeRole(role, skillCatalog = []) {
         normalized.permissions.providers?.provider_permissions,
         providerInstances
       )
+    },
+    channels: {
+      module_permissions: {
+        ...basePermissions.channels.module_permissions,
+        ...(normalized.permissions.channels?.module_permissions || {})
+      },
+      channel_permissions: normalizeChannelPermissions(
+        normalized.permissions.channels?.channel_permissions,
+        channelTypes
+      )
     }
   }
   const storedSkillPermissions = new Map(
     normalized.permissions.skills.skill_permissions.map(skill => [skill.skill_id || skill.skill_name, skill])
   )
-  const defaultAllSkillsEnabled = shouldDefaultAdminSkillsEnabled(
-    normalized,
-    normalized.permissions.skills.skill_permissions
-  )
   normalized.permissions.skills.skill_permissions = skillCatalog.map(skill => {
     const existing = storedSkillPermissions.get(skill.name) || {}
     const runtimeEnabled = skill.runtime_enabled !== false
-    // When admin has no stored permissions, only enable executable (built-in) skills.
-    // Markdown/standalone skills (pptx, docx, pdf, etc.) default to disabled.
-    const isExecutable = skill.type === 'executable'
-    const defaultEnabled = defaultAllSkillsEnabled ? isExecutable : false
     return {
       skill_id: skill.name,
       skill_name: skill.name,
       description: skill.description || '',
       runtime_enabled: runtimeEnabled,
-      authorized: runtimeEnabled && (defaultAllSkillsEnabled ? defaultEnabled : existing.authorized === true),
-      enabled: runtimeEnabled && (defaultAllSkillsEnabled ? defaultEnabled : existing.enabled === true)
+      authorized: runtimeEnabled && existing.authorized === true,
+      enabled: runtimeEnabled && existing.enabled === true
     }
   })
   // Auto-include provider skills as always authorized+enabled (they auto-load from provider config)
@@ -526,8 +587,13 @@ function countEnabledPermissions(role, moduleId) {
   }
   if (moduleId === 'providers') {
     const moduleFlags = permissions.module_permissions?.manage_permissions ? 1 : 0
-    const allowedProviders = (permissions.provider_permissions || []).filter(provider => provider.allowed !== false).length
+    const allowedProviders = (permissions.provider_permissions || []).filter(provider => provider.allowed === true).length
     return moduleFlags + allowedProviders
+  }
+  if (moduleId === 'channels') {
+    const moduleFlags = permissions.module_permissions?.manage_permissions ? 1 : 0
+    const allowedChannels = (permissions.channel_permissions || []).filter(channel => channel.allowed === true).length
+    return moduleFlags + allowedChannels
   }
   return Object.values(permissions).filter(Boolean).length
 }
@@ -572,7 +638,10 @@ function countModuleSummaryEnabledPermissions(role, moduleId) {
     return governanceFlags + skillFlags
   }
   if (moduleId === 'providers') {
-    return (permissions.provider_permissions || []).filter(provider => provider.allowed !== false).length
+    return (permissions.provider_permissions || []).filter(provider => provider.allowed === true).length
+  }
+  if (moduleId === 'channels') {
+    return (permissions.channel_permissions || []).filter(channel => channel.allowed === true).length
   }
   return countEnabledPermissions(role, moduleId)
 }
@@ -707,6 +776,21 @@ function getFilteredProviderRows(providerPermissions = []) {
   })
 }
 
+function getFilteredChannelRows(channelPermissions = []) {
+  const search = channelSearch.trim().toLowerCase()
+  return channelPermissions.filter(channel => {
+    if (!search) return true
+    const searchContent = [
+      channel.channel_type,
+      channel.channel_name,
+      channel.mode || '',
+      getChannelDisplayName(channel),
+      getChannelDisplayDescription(channel)
+    ].join(' ').toLowerCase()
+    return searchContent.includes(search)
+  })
+}
+
 function syncSkillModulePermissions() {
   if (!draftRoleState) return
   const modulePermissions = draftRoleState.permissions.skills.module_permissions || {}
@@ -730,27 +814,22 @@ function renderSkillsModule() {
     ${renderModulePermissionTable('skills', permissions.module_permissions || {}, { canManage: canManageSkills })}
     <section class="role-skill-section">
       <div class="role-skill-toolbar">
-        <div>
-          <h3 data-i18n="roles.skillsListTitle">Skill Management</h3>
-          <p data-i18n="roles.skillsListDescription">Search the live skill catalog and decide which skills this role can enable.</p>
+        <div class="role-skill-toolbar-title">
+          <h3 data-i18n="roles.skillsListTitle">Skill Access</h3>
         </div>
-        <label class="role-skill-search" for="skillsSearchInput">
-          ${ICONS.search}
-          <input type="text" id="skillsSearchInput" value="${escapeHtml(skillSearch)}" data-i18n-placeholder="roles.skillSearchPlaceholder" placeholder="Search skills...">
-        </label>
-      </div>
-      <div class="role-skill-note">
-        <div class="role-skill-note-copy">
-          <strong data-i18n="roles.skillBehaviorTitle">New skill behavior</strong>
-          <p data-i18n="roles.skillBehaviorDescription">Use the master switch to enable or disable all visible skills below at once.</p>
+        <div class="role-allowlist-toolbar-controls">
+          <label class="role-skill-search" for="skillsSearchInput">
+            ${ICONS.search}
+            <input type="text" id="skillsSearchInput" value="${escapeHtml(skillSearch)}" data-i18n-placeholder="roles.skillSearchPlaceholder" placeholder="Search skills...">
+          </label>
+          <label class="role-skill-master-toggle">
+            <span class="role-skill-master-label" data-i18n="roles.enableAllToggle">Enable all</span>
+            <span class="toggle-switch">
+              <input type="checkbox" data-skill-master-toggle="enabled" ${allVisibleSkillsEnabled ? 'checked' : ''} ${canManageSkills ? '' : 'disabled'}>
+              <span></span>
+            </span>
+          </label>
         </div>
-        <label class="role-skill-master-toggle">
-          <span class="role-skill-master-label" data-i18n="roles.enableAllToggle">Enable all</span>
-          <span class="toggle-switch">
-            <input type="checkbox" data-skill-master-toggle="enabled" ${allVisibleSkillsEnabled ? 'checked' : ''} ${canManageSkills ? '' : 'disabled'}>
-            <span></span>
-          </span>
-        </label>
       </div>
       <div class="role-skill-list">
         ${skillRows.length ? skillRows.map(skill => {
@@ -788,34 +867,29 @@ function renderSkillsModule() {
 function renderProvidersModule() {
   const permissions = draftRoleState.permissions.providers || { module_permissions: {}, provider_permissions: [] }
   const providerRows = getFilteredProviderRows(permissions.provider_permissions || [])
-  const allVisibleProvidersAllowed = providerRows.length > 0 && providerRows.every(provider => provider.allowed !== false)
+  const allVisibleProvidersAllowed = providerRows.length > 0 && providerRows.every(provider => provider.allowed === true)
   const canManageProviders = canManageModule('providers')
 
   return `
     ${renderModulePermissionTable('providers', permissions.module_permissions || {}, { canManage: canManageProviders })}
     <section class="role-provider-section">
       <div class="role-skill-toolbar">
-        <div>
+        <div class="role-skill-toolbar-title">
           <h3 data-i18n="roles.providersListTitle">Provider Access</h3>
-          <p data-i18n="roles.providersListDescription">Search registered provider instances and decide which ones this role can use.</p>
         </div>
-        <label class="role-skill-search" for="providersSearchInput">
-          ${ICONS.search}
-          <input type="text" id="providersSearchInput" value="${escapeHtml(providerSearch)}" data-i18n-placeholder="roles.providerSearchPlaceholder" placeholder="Search providers...">
-        </label>
-      </div>
-      <div class="role-skill-note">
-        <div class="role-skill-note-copy">
-          <strong data-i18n="roles.providerBehaviorTitle">Default allow behavior</strong>
-          <p data-i18n="roles.providerBehaviorDescription">Provider instances are allowed unless this role explicitly turns access off.</p>
+        <div class="role-allowlist-toolbar-controls">
+          <label class="role-skill-search" for="providersSearchInput">
+            ${ICONS.search}
+            <input type="text" id="providersSearchInput" value="${escapeHtml(providerSearch)}" data-i18n-placeholder="roles.providerSearchPlaceholder" placeholder="Search providers...">
+          </label>
+          <label class="role-skill-master-toggle">
+            <span class="role-skill-master-label" data-i18n="roles.allowAllProvidersToggle">Allow all</span>
+            <span class="toggle-switch">
+              <input type="checkbox" data-provider-master-toggle="allowed" ${allVisibleProvidersAllowed ? 'checked' : ''} ${canManageProviders ? '' : 'disabled'}>
+              <span></span>
+            </span>
+          </label>
         </div>
-        <label class="role-skill-master-toggle">
-          <span class="role-skill-master-label" data-i18n="roles.allowAllProvidersToggle">Allow all</span>
-          <span class="toggle-switch">
-            <input type="checkbox" data-provider-master-toggle="allowed" ${allVisibleProvidersAllowed ? 'checked' : ''} ${canManageProviders ? '' : 'disabled'}>
-            <span></span>
-          </span>
-        </label>
       </div>
       <div class="role-provider-list">
         ${providerRows.length ? providerRows.map(provider => {
@@ -832,7 +906,7 @@ function renderProvidersModule() {
               <label class="role-inline-toggle">
                 <span data-i18n="roles.allowToggle">Allow</span>
                 <span class="toggle-switch compact">
-                  <input type="checkbox" data-provider-key="${escapeHtml(providerKey)}" data-provider-toggle="allowed" ${provider.allowed !== false ? 'checked' : ''} ${canManageProviders ? '' : 'disabled'}>
+                  <input type="checkbox" data-provider-key="${escapeHtml(providerKey)}" data-provider-toggle="allowed" ${provider.allowed === true ? 'checked' : ''} ${canManageProviders ? '' : 'disabled'}>
                   <span></span>
                 </span>
               </label>
@@ -842,6 +916,65 @@ function renderProvidersModule() {
           <div class="role-list-empty role-list-empty-compact">
             <strong data-i18n="roles.noProvidersTitle">No providers match</strong>
             <p data-i18n="roles.noProvidersDescription">Adjust the search term or register provider instances first.</p>
+          </div>
+        `}
+      </div>
+    </section>
+  `
+}
+
+function renderChannelsModule() {
+  const permissions = draftRoleState.permissions.channels || { module_permissions: {}, channel_permissions: [] }
+  const channelRows = getFilteredChannelRows(permissions.channel_permissions || [])
+  const allVisibleChannelsAllowed = channelRows.length > 0 && channelRows.every(channel => channel.allowed === true)
+  const canManageChannels = canManageModule('channels')
+
+  return `
+    ${renderModulePermissionTable('channels', permissions.module_permissions || {}, { canManage: canManageChannels })}
+    <section class="role-provider-section">
+      <div class="role-skill-toolbar">
+        <div class="role-skill-toolbar-title">
+          <h3 data-i18n="roles.channelsListTitle">Channel Access</h3>
+        </div>
+        <div class="role-allowlist-toolbar-controls">
+          <label class="role-skill-search" for="channelsSearchInput">
+            ${ICONS.search}
+            <input type="text" id="channelsSearchInput" value="${escapeHtml(channelSearch)}" data-i18n-placeholder="roles.channelSearchPlaceholder" placeholder="Search channels...">
+          </label>
+          <label class="role-skill-master-toggle">
+            <span class="role-skill-master-label" data-i18n="roles.allowAllChannelsToggle">Allow all</span>
+            <span class="toggle-switch">
+              <input type="checkbox" data-channel-master-toggle="allowed" ${allVisibleChannelsAllowed ? 'checked' : ''} ${canManageChannels ? '' : 'disabled'}>
+              <span></span>
+            </span>
+          </label>
+        </div>
+      </div>
+      <div class="role-provider-list">
+        ${channelRows.length ? channelRows.map(channel => {
+          const channelKey = channelPermissionKey(channel.channel_type)
+          return `
+          <div class="role-provider-card">
+            <div class="role-skill-copy">
+              <div class="role-skill-header">
+                <strong>${escapeHtml(getChannelDisplayName(channel))}</strong>
+              </div>
+              <p>${escapeHtml(getChannelDisplayDescription(channel))}</p>
+            </div>
+            <div class="role-skill-controls">
+              <label class="role-inline-toggle">
+                <span data-i18n="roles.allowToggle">Allow</span>
+                <span class="toggle-switch compact">
+                  <input type="checkbox" data-channel-key="${escapeHtml(channelKey)}" data-channel-toggle="allowed" ${channel.allowed === true ? 'checked' : ''} ${canManageChannels ? '' : 'disabled'}>
+                  <span></span>
+                </span>
+              </label>
+            </div>
+          </div>
+        `}).join('') : `
+          <div class="role-list-empty role-list-empty-compact">
+            <strong data-i18n="roles.noChannelsTitle">No channels match</strong>
+            <p data-i18n="roles.noChannelsDescription">Adjust the search term or register channel handlers first.</p>
           </div>
         `}
       </div>
@@ -863,7 +996,9 @@ function renderEditor() {
   const module = MODULES.find(item => item.id === activeModuleId) || MODULES[0]
   const moduleMarkup = activeModuleId === 'skills'
     ? renderSkillsModule()
-    : (activeModuleId === 'providers' ? renderProvidersModule() : renderPermissionTable(activeModuleId))
+    : (activeModuleId === 'providers'
+        ? renderProvidersModule()
+        : (activeModuleId === 'channels' ? renderChannelsModule() : renderPermissionTable(activeModuleId)))
   const roleDisplayName = getRoleDisplayName(draftRoleState) || translateOrFallback('roles.untitledRole', 'Untitled Role')
   const roleDisplayDescription = getRoleDisplayDescription(draftRoleState)
   const roleNameValue = draftRoleState.is_builtin ? roleDisplayName : draftRoleState.name
@@ -876,7 +1011,7 @@ function renderEditor() {
   const canDeleteCurrentRole = canDeleteRoles() && !draftRoleState.is_builtin && !draftRoleState.isNew
   const canSaveCurrentRole = canSaveRole()
   const canManageActiveModule = canManageModule(activeModuleId) && (
-    !isSystemManagedBuiltinRole(draftRoleState) || ['skills', 'providers'].includes(activeModuleId)
+    !isSystemManagedBuiltinRole(draftRoleState) || ['skills', 'providers', 'channels'].includes(activeModuleId)
   )
 
   editorEl.innerHTML = `
@@ -990,6 +1125,16 @@ async function loadProviders() {
   }
 }
 
+async function loadChannels() {
+  try {
+    const data = await fetchJson('/api/channels?include_all=true')
+    channelTypes = Array.isArray(data) ? data : []
+  } catch (error) {
+    channelTypes = []
+    console.warn('[RoleManagement] Failed to load channel types:', error)
+  }
+}
+
 async function loadRoles(preserveRoleId = selectedRoleId) {
   const data = await fetchJson('/api/roles?page=1&page_size=100')
   const rawRoles = Array.isArray(data?.roles) ? data.roles : []
@@ -1033,6 +1178,7 @@ function selectRole(roleId) {
   activeModuleId = 'skills'
   skillSearch = ''
   providerSearch = ''
+  channelSearch = ''
   draftRoleState = normalizeRole(role, skills)
   identifierTouched = true
   renderPage()
@@ -1066,12 +1212,14 @@ function updateDraftField(field, value, shouldRender = true) {
 
 function toggleModulePermission(moduleId, permissionId, checked) {
   if (!draftRoleState) return
-  if (isSystemManagedBuiltinRole(draftRoleState) && !['skills', 'providers'].includes(moduleId)) return
+  if (isSystemManagedBuiltinRole(draftRoleState) && !['skills', 'providers', 'channels'].includes(moduleId)) return
   if (!canManageModule(moduleId)) return
   if (moduleId === 'skills') {
     draftRoleState.permissions.skills.module_permissions[permissionId] = checked
   } else if (moduleId === 'providers') {
     draftRoleState.permissions.providers.module_permissions[permissionId] = checked
+  } else if (moduleId === 'channels') {
+    draftRoleState.permissions.channels.module_permissions[permissionId] = checked
   } else {
     draftRoleState.permissions[moduleId][permissionId] = checked
   }
@@ -1155,9 +1303,39 @@ function toggleAllVisibleProviders(checked) {
   renderPage()
 }
 
+function toggleChannelPermission(channelKey, checked) {
+  if (!draftRoleState) return
+  if (!canManageModule('channels')) return
+  const channel = draftRoleState.permissions.channels.channel_permissions.find(item => (
+    channelPermissionKey(item.channel_type) === channelKey
+  ))
+  if (!channel) return
+  channel.allowed = checked
+  renderPage()
+}
+
+function toggleAllVisibleChannels(checked) {
+  if (!draftRoleState) return
+  if (!canManageModule('channels')) return
+  const visibleChannelKeys = new Set(
+    getFilteredChannelRows(draftRoleState.permissions.channels.channel_permissions)
+      .map(channel => channelPermissionKey(channel.channel_type))
+  )
+  draftRoleState.permissions.channels.channel_permissions = draftRoleState.permissions.channels.channel_permissions.map(channel => {
+    if (!visibleChannelKeys.has(channelPermissionKey(channel.channel_type))) {
+      return channel
+    }
+    return {
+      ...channel,
+      allowed: checked
+    }
+  })
+  renderPage()
+}
+
 function applyModuleAction(action) {
   if (!draftRoleState) return
-  if (isSystemManagedBuiltinRole(draftRoleState) && !['skills', 'providers'].includes(activeModuleId)) return
+  if (isSystemManagedBuiltinRole(draftRoleState) && !['skills', 'providers', 'channels'].includes(activeModuleId)) return
   if (!canManageModule(activeModuleId)) return
   if (action === 'restore-defaults') {
     const template = getRoleTemplate(draftRoleState.identifier)
@@ -1167,6 +1345,10 @@ function applyModuleAction(action) {
       draftRoleState.permissions.providers = normalizeRole({
         permissions: { providers: template.providers }
       }, skills).permissions.providers
+    } else if (activeModuleId === 'channels') {
+      draftRoleState.permissions.channels = normalizeRole({
+        permissions: { channels: template.channels }
+      }, skills).permissions.channels
     } else {
       draftRoleState.permissions[activeModuleId] = cloneData(template[activeModuleId])
     }
@@ -1190,6 +1372,14 @@ function applyModuleAction(action) {
         ...provider,
         allowed: true
       }))
+    } else if (activeModuleId === 'channels') {
+      Object.keys(draftRoleState.permissions.channels.module_permissions).forEach(key => {
+        draftRoleState.permissions.channels.module_permissions[key] = true
+      })
+      draftRoleState.permissions.channels.channel_permissions = draftRoleState.permissions.channels.channel_permissions.map(channel => ({
+        ...channel,
+        allowed: true
+      }))
     } else {
       Object.keys(draftRoleState.permissions[activeModuleId]).forEach(key => {
         draftRoleState.permissions[activeModuleId][key] = true
@@ -1205,6 +1395,7 @@ function createNewRole() {
   activeModuleId = 'skills'
   skillSearch = ''
   providerSearch = ''
+  channelSearch = ''
   identifierTouched = false
   draftRoleState = createEmptyRole()
   renderPage()
@@ -1228,6 +1419,7 @@ function cancelDraftChanges() {
   }
   skillSearch = ''
   providerSearch = ''
+  channelSearch = ''
   identifierTouched = true
   renderPage()
 }
@@ -1330,6 +1522,7 @@ function handleEditorClick(event) {
     activeModuleId = moduleButton.getAttribute('data-module-id')
     skillSearch = ''
     providerSearch = ''
+    channelSearch = ''
     renderPage()
     return
   }
@@ -1360,6 +1553,14 @@ function handleEditorInput(event) {
     providerSearch = event.target.value
     renderPage()
     restoreInputFocus(editorEl, '#providersSearchInput', selectionStart, selectionEnd)
+    return
+  }
+  if (event.target.id === 'channelsSearchInput') {
+    const selectionStart = event.target.selectionStart
+    const selectionEnd = event.target.selectionEnd
+    channelSearch = event.target.value
+    renderPage()
+    restoreInputFocus(editorEl, '#channelsSearchInput', selectionStart, selectionEnd)
   }
 }
 
@@ -1400,6 +1601,19 @@ function handleEditorChange(event) {
   const masterProviderToggle = event.target.getAttribute('data-provider-master-toggle')
   if (masterProviderToggle === 'allowed') {
     toggleAllVisibleProviders(event.target.checked)
+    return
+  }
+
+  const channelKey = event.target.getAttribute('data-channel-key')
+  const channelToggle = event.target.getAttribute('data-channel-toggle')
+  if (channelKey && channelToggle === 'allowed') {
+    toggleChannelPermission(channelKey, event.target.checked)
+    return
+  }
+
+  const masterChannelToggle = event.target.getAttribute('data-channel-master-toggle')
+  if (masterChannelToggle === 'allowed') {
+    toggleAllVisibleChannels(event.target.checked)
   }
 }
 
@@ -1456,6 +1670,7 @@ export async function mount(containerEl) {
   setupEventListeners()
   await loadSkills()
   await loadProviders()
+  await loadChannels()
   await loadRoles()
   renderPage()
 }
@@ -1472,10 +1687,12 @@ export async function unmount() {
   skills = []
   providerSkills = []
   providerInstances = []
+  channelTypes = []
   selectedRoleId = null
   roleSearch = ''
   skillSearch = ''
   providerSearch = ''
+  channelSearch = ''
   activeModuleId = 'skills'
   draftRoleState = null
   identifierTouched = false

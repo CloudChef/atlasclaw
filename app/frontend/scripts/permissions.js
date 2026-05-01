@@ -4,6 +4,7 @@
 
 const SKILL_MODULE_PERMISSION_KEYS = new Set(['view', 'enable_disable', 'manage_permissions'])
 const PROVIDER_MODULE_PERMISSION_KEYS = new Set(['manage_permissions'])
+const CHANNEL_MODULE_PERMISSION_KEYS = new Set(['manage_permissions'])
 
 export const ROLE_MANAGEMENT_ACCESS_PERMISSIONS = [
   'roles.view',
@@ -22,10 +23,7 @@ export const USER_MANAGEMENT_ACCESS_PERMISSIONS = [
 ]
 
 export const CHANNEL_MANAGEMENT_ACCESS_PERMISSIONS = [
-  'channels.view',
-  'channels.create',
-  'channels.edit',
-  'channels.delete'
+  'channels.manage_permissions'
 ]
 
 export const MODEL_MANAGEMENT_ACCESS_PERMISSIONS = [
@@ -53,6 +51,9 @@ function normalizePermissionPath(permissionPath) {
   }
   if (parts.length === 2 && parts[0] === 'providers' && PROVIDER_MODULE_PERMISSION_KEYS.has(parts[1])) {
     return ['providers', 'module_permissions', parts[1]]
+  }
+  if (parts.length === 2 && parts[0] === 'channels' && CHANNEL_MODULE_PERMISSION_KEYS.has(parts[1])) {
+    return ['channels', 'module_permissions', parts[1]]
   }
 
   return parts
@@ -95,7 +96,11 @@ export function canAccessUserManagement(authInfo) {
 }
 
 export function canAccessChannelManagement(authInfo) {
-  return hasAnyPermission(authInfo, CHANNEL_MANAGEMENT_ACCESS_PERMISSIONS)
+  if (hasAnyPermission(authInfo, CHANNEL_MANAGEMENT_ACCESS_PERMISSIONS)) {
+    return true
+  }
+  const channelPermissions = authInfo?.permissions?.channels?.channel_permissions
+  return Array.isArray(channelPermissions) && channelPermissions.some(channel => channel?.allowed === true)
 }
 
 export function canAccessModelManagement(authInfo) {
@@ -103,5 +108,9 @@ export function canAccessModelManagement(authInfo) {
 }
 
 export function canAccessProviderManagement(authInfo) {
-  return hasAnyPermission(authInfo, PROVIDER_MANAGEMENT_ACCESS_PERMISSIONS)
+  if (hasAnyPermission(authInfo, PROVIDER_MANAGEMENT_ACCESS_PERMISSIONS)) {
+    return true
+  }
+  const providerPermissions = authInfo?.permissions?.providers?.provider_permissions
+  return Array.isArray(providerPermissions) && providerPermissions.some(provider => provider?.allowed === true)
 }

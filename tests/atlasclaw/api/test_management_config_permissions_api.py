@@ -463,10 +463,13 @@ class TestManagementConfigPermissionsAPI:
                 "description": "Manages channel connections.",
                 "permissions": {
                     "channels": {
-                        "view": True,
-                        "create": True,
-                        "edit": True,
-                        "delete": True,
+                        "channel_permissions": [
+                            {
+                                "channel_type": "websocket",
+                                "channel_name": "WebSocket",
+                                "allowed": True,
+                            },
+                        ],
                     },
                     "users": {
                         "assign_roles": True,
@@ -525,8 +528,8 @@ class TestManagementConfigPermissionsAPI:
 
         regular_headers = {"AtlasClaw-Authenticate": _login_as(client, "regularuser", "userpass123")}
         blocked_channel_resp = client.get("/api/channels", headers=regular_headers)
-        assert blocked_channel_resp.status_code == 403
-        assert "channels.view" in blocked_channel_resp.json()["detail"].lower()
+        assert blocked_channel_resp.status_code == 200
+        assert blocked_channel_resp.json() == []
 
         _cleanup_manager(manager)
 

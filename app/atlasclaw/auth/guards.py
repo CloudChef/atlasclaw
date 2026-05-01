@@ -28,6 +28,7 @@ from app.atlasclaw.skills.permission_service import skill_permission_service
 
 SKILL_MODULE_PERMISSION_KEYS = {"view", "enable_disable", "manage_permissions"}
 PROVIDER_MODULE_PERMISSION_KEYS = {"manage_permissions"}
+CHANNEL_MODULE_PERMISSION_KEYS = {"manage_permissions"}
 
 
 @dataclass
@@ -146,45 +147,73 @@ def _provider_rule_key(entry: dict[str, Any]) -> tuple[str, str]:
 def _merge_effective_provider_permissions(
     role_permissions: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Merge provider-instance permissions using allow-priority semantics.
-
-    Missing provider entries are treated as allowed, so an effective denial is
-    present only when every active role explicitly denies the same instance.
-    """
-    role_rule_maps: list[dict[tuple[str, str], bool]] = []
-    all_keys: set[tuple[str, str]] = set()
-
+    """Merge provider-instance permissions using additive allowlist semantics."""
+    merged: dict[tuple[str, str], dict[str, Any]] = {}
     for permissions in role_permissions:
         entries = (
             permissions.get("providers", {}).get("provider_permissions", [])
             if isinstance(permissions, dict)
             else []
         )
-        rule_map: dict[tuple[str, str], bool] = {}
-        if isinstance(entries, list):
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                key = _provider_rule_key(entry)
-                if not key[0] or not key[1]:
-                    continue
-                rule_map[key] = entry.get("allowed") is not False
-                all_keys.add(key)
-        role_rule_maps.append(rule_map)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            key = _provider_rule_key(entry)
+            if not key[0] or not key[1]:
+                continue
+            allowed = entry.get("allowed") is True
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = {
+                    "provider_type": key[0],
+                    "instance_name": key[1],
+                    "allowed": allowed,
+                }
+                continue
+            existing["allowed"] = bool(existing.get("allowed", False)) or allowed
 
-    if not role_rule_maps:
-        return []
+    return list(merged.values())
 
-    effective_denials: list[dict[str, Any]] = []
-    for provider_type, instance_name in sorted(all_keys):
-        if all(rule_map.get((provider_type, instance_name), True) is False for rule_map in role_rule_maps):
-            effective_denials.append({
-                "provider_type": provider_type,
-                "instance_name": instance_name,
-                "allowed": False,
-            })
 
-    return effective_denials
+def _channel_rule_key(entry: dict[str, Any]) -> str:
+    return str(entry.get("channel_type") or "").strip()
+
+
+def _merge_effective_channel_permissions(
+    role_permissions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge channel-type permissions using additive allowlist semantics."""
+    merged: dict[str, dict[str, Any]] = {}
+    for permissions in role_permissions:
+        entries = (
+            permissions.get("channels", {}).get("channel_permissions", [])
+            if isinstance(permissions, dict)
+            else []
+        )
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            channel_type = _channel_rule_key(entry)
+            if not channel_type:
+                continue
+            existing = merged.get(channel_type)
+            allowed = entry.get("allowed") is True
+            if existing is None:
+                merged[channel_type] = {
+                    "channel_type": channel_type,
+                    "channel_name": str(entry.get("channel_name") or channel_type),
+                    "allowed": allowed,
+                }
+                continue
+            existing["allowed"] = bool(existing.get("allowed", False)) or allowed
+            if not existing.get("channel_name") and entry.get("channel_name"):
+                existing["channel_name"] = str(entry.get("channel_name"))
+
+    return list(merged.values())
 
 
 def _merge_permissions(current: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
@@ -215,6 +244,8 @@ def _normalize_permission_path(permission_path: str) -> list[str]:
         return ["skills", "module_permissions", parts[1]]
     if len(parts) == 2 and parts[0] == "providers" and parts[1] in PROVIDER_MODULE_PERMISSION_KEYS:
         return ["providers", "module_permissions", parts[1]]
+    if len(parts) == 2 and parts[0] == "channels" and parts[1] in CHANNEL_MODULE_PERMISSION_KEYS:
+        return ["channels", "module_permissions", parts[1]]
     return parts
 
 
@@ -274,14 +305,9 @@ def has_permission(authz: AuthorizationContext, permission_path: str) -> bool:
 
 def has_skill_access(authz: AuthorizationContext, skill_name: str) -> bool:
     """Check whether the current user may execute a specific skill."""
-    if not has_permission(authz, "skills.view"):
-        return False
-
     skill_permissions = authz.permissions.get("skills", {}).get("skill_permissions", [])
     if not isinstance(skill_permissions, list) or not skill_permissions:
-        # Admin with an empty list (e.g. frontend saved a full-enable as [])
-        # retains open access; all other roles are deny-all.
-        return authz.is_admin
+        return False
 
     return skill_permission_service.is_skill_enabled(skill_permissions, skill_name)
 
@@ -302,8 +328,8 @@ def has_provider_instance_access(
         if isinstance(authz.permissions, dict)
         else []
     )
-    if not isinstance(provider_permissions, list):
-        return True
+    if not isinstance(provider_permissions, list) or not provider_permissions:
+        return False
 
     for entry in provider_permissions:
         if not isinstance(entry, dict):
@@ -312,8 +338,43 @@ def has_provider_instance_access(
             str(entry.get("provider_type") or "").strip() == normalized_provider_type
             and str(entry.get("instance_name") or "").strip() == normalized_instance_name
         ):
-            return entry.get("allowed") is not False
-    return True
+            return entry.get("allowed") is True
+    return False
+
+
+def has_channel_type_access(authz: AuthorizationContext, channel_type: str) -> bool:
+    """Return whether the user may manage own connections for a channel type."""
+    normalized_channel_type = str(channel_type or "").strip()
+    if not normalized_channel_type:
+        return False
+
+    channel_permissions = (
+        authz.permissions.get("channels", {}).get("channel_permissions", [])
+        if isinstance(authz.permissions, dict)
+        else []
+    )
+    if not isinstance(channel_permissions, list) or not channel_permissions:
+        return False
+
+    for entry in channel_permissions:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("channel_type") or "").strip() == normalized_channel_type:
+            return entry.get("allowed") is True
+    return False
+
+
+def filter_channel_types_for_authz(
+    authz: AuthorizationContext,
+    channels: Sequence[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return channel catalog entries allowed for the current authorization context."""
+    return [
+        dict(channel)
+        for channel in channels
+        if isinstance(channel, dict)
+        and has_channel_type_access(authz, str(channel.get("type") or ""))
+    ]
 
 
 def filter_provider_instances_for_authz(
@@ -388,6 +449,21 @@ def ensure_provider_instance_access(
     raise HTTPException(
         status_code=403,
         detail=detail or f"Missing permission to access provider instance: {provider_type}.{instance_name}",
+    )
+
+
+def ensure_channel_type_access(
+    authz: AuthorizationContext,
+    channel_type: str,
+    *,
+    detail: Optional[str] = None,
+) -> None:
+    """Raise 403 if the user cannot manage own connections for a channel type."""
+    if has_channel_type_access(authz, channel_type):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail=detail or f"Missing permission to access channel type: {channel_type}",
     )
 
 
@@ -533,6 +609,10 @@ async def resolve_authorization_context(
         effective_permissions.setdefault("providers", {})
         effective_permissions["providers"]["provider_permissions"] = (
             _merge_effective_provider_permissions(normalized_role_permissions)
+        )
+        effective_permissions.setdefault("channels", {})
+        effective_permissions["channels"]["channel_permissions"] = (
+            _merge_effective_channel_permissions(normalized_role_permissions)
         )
 
     is_admin = any(identifier.lower() == "admin" for identifier in role_identifiers)

@@ -9,16 +9,17 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.atlasclaw.auth.guards import (
     AuthorizationContext,
-    ensure_any_permission,
-    ensure_permission,
+    ensure_channel_type_access,
+    filter_channel_types_for_authz,
     get_authorization_context,
+    has_permission,
 )
 from app.atlasclaw.channels.manager import ChannelManager
 from app.atlasclaw.channels.registry import ChannelRegistry
@@ -55,6 +56,18 @@ def _expand_channel_config_for_response(config: Optional[Dict[str, Any]]) -> Dic
     expanded_config.pop("provider_binding", None)
     expanded_config.pop("provider_bindings", None)
     return expanded_config
+
+
+async def _ensure_owned_channel_connection(
+    session: AsyncSession,
+    *,
+    user_id: str,
+    channel_type: str,
+    connection_id: str,
+) -> None:
+    channel = await ChannelConfigService.get_by_id(session, connection_id)
+    if not channel or channel.user_id != user_id or channel.type != channel_type:
+        raise HTTPException(status_code=404, detail=f"Connection not found: {connection_id}")
 
 
 def _normalize_channel_schema(schema: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -154,6 +167,7 @@ class ConfigValidationRequest(BaseModel):
 @router.get("")
 async def list_channel_types(
     request: Request,
+    include_all: bool = Query(False, description="Return the full catalog for permission governance"),
     session: AsyncSession = Depends(get_db_session),
     authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> List[ChannelTypeResponse]:
@@ -162,9 +176,19 @@ async def list_channel_types(
     Returns:
         List of channel types with their info
     """
-    ensure_permission(authz, "channels.view", detail="Missing permission: channels.view")
     user_id = authz.user.user_id
     channels = ChannelRegistry.list_channels()
+    if include_all:
+        if not (
+            has_permission(authz, "roles.manage_permissions")
+            or has_permission(authz, "channels.manage_permissions")
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail="Missing permission to access full channel catalog",
+            )
+    else:
+        channels = filter_channel_types_for_authz(authz, channels)
     
     result = []
     for channel in channels:
@@ -197,10 +221,10 @@ async def get_channel_schema(
     Returns:
         JSON Schema for channel configuration
     """
-    ensure_permission(authz, "channels.view", detail="Missing permission: channels.view")
     handler_class = ChannelRegistry.get(channel_type)
     if not handler_class:
         raise HTTPException(status_code=404, detail=f"Channel type not found: {channel_type}")
+    ensure_channel_type_access(authz, channel_type)
     
     # Create temporary instance to get schema
     try:
@@ -231,12 +255,12 @@ async def list_connections(
     Returns:
         List of connections with runtime status
     """
-    ensure_permission(authz, "channels.view", detail="Missing permission: channels.view")
     user_id = authz.user.user_id
     
     handler_class = ChannelRegistry.get(channel_type)
     if not handler_class:
         raise HTTPException(status_code=404, detail=f"Channel type not found: {channel_type}")
+    ensure_channel_type_access(authz, channel_type)
     
     connections = await ChannelConfigService.list_by_user_and_type(
         session, user_id, channel_type
@@ -276,12 +300,12 @@ async def create_connection(
     Returns:
         Created connection
     """
-    ensure_permission(authz, "channels.create", detail="Missing permission: channels.create")
     user_id = authz.user.user_id
     
     handler_class = ChannelRegistry.get(channel_type)
     if not handler_class:
         raise HTTPException(status_code=404, detail=f"Channel type not found: {channel_type}")
+    ensure_channel_type_access(authz, channel_type)
 
     try:
         normalized_config = _normalize_channel_config(user_id, data.config)
@@ -339,7 +363,10 @@ async def update_connection(
     Returns:
         Updated connection
     """
-    ensure_permission(authz, "channels.edit", detail="Missing permission: channels.edit")
+    handler_class = ChannelRegistry.get(channel_type)
+    if not handler_class:
+        raise HTTPException(status_code=404, detail=f"Channel type not found: {channel_type}")
+    ensure_channel_type_access(authz, channel_type)
     user_id = authz.user.user_id
     
     channel = await ChannelConfigService.get_by_id(session, connection_id)
@@ -393,7 +420,10 @@ async def delete_connection(
     Returns:
         Success response
     """
-    ensure_permission(authz, "channels.delete", detail="Missing permission: channels.delete")
+    handler_class = ChannelRegistry.get(channel_type)
+    if not handler_class:
+        raise HTTPException(status_code=404, detail=f"Channel type not found: {channel_type}")
+    ensure_channel_type_access(authz, channel_type)
     user_id = authz.user.user_id
     
     # Verify ownership
@@ -427,15 +457,10 @@ async def validate_config(
     Returns:
         Validation result
     """
-    ensure_any_permission(
-        authz,
-        ("channels.create", "channels.edit"),
-        detail="Missing permission: channels.create or channels.edit",
-    )
-    
     handler_class = ChannelRegistry.get(channel_type)
     if not handler_class:
         raise HTTPException(status_code=404, detail=f"Channel type not found: {channel_type}")
+    ensure_channel_type_access(authz, channel_type)
 
     try:
         normalized_config = _normalize_channel_config(authz.user.user_id, data.config)
@@ -477,7 +502,7 @@ async def verify_connection(
     Returns:
         Validation result
     """
-    ensure_permission(authz, "channels.edit", detail="Missing permission: channels.edit")
+    ensure_channel_type_access(authz, channel_type)
     user_id = authz.user.user_id
     
     channel = await ChannelConfigService.get_by_id(session, connection_id)
@@ -519,6 +544,7 @@ async def enable_connection(
     connection_id: str,
     request: Request,
     manager: ChannelManager = Depends(get_channel_manager),
+    session: AsyncSession = Depends(get_db_session),
     authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> JSONResponse:
     """Enable a channel connection.
@@ -530,8 +556,14 @@ async def enable_connection(
     Returns:
         Success response
     """
-    ensure_permission(authz, "channels.edit", detail="Missing permission: channels.edit")
+    ensure_channel_type_access(authz, channel_type)
     user_id = authz.user.user_id
+    await _ensure_owned_channel_connection(
+        session,
+        user_id=user_id,
+        channel_type=channel_type,
+        connection_id=connection_id,
+    )
     
     if not await manager.enable_connection(user_id, channel_type, connection_id):
         raise HTTPException(status_code=500, detail="Failed to enable connection")
@@ -545,6 +577,7 @@ async def disable_connection(
     connection_id: str,
     request: Request,
     manager: ChannelManager = Depends(get_channel_manager),
+    session: AsyncSession = Depends(get_db_session),
     authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> JSONResponse:
     """Disable a channel connection.
@@ -556,8 +589,14 @@ async def disable_connection(
     Returns:
         Success response
     """
-    ensure_permission(authz, "channels.edit", detail="Missing permission: channels.edit")
+    ensure_channel_type_access(authz, channel_type)
     user_id = authz.user.user_id
+    await _ensure_owned_channel_connection(
+        session,
+        user_id=user_id,
+        channel_type=channel_type,
+        connection_id=connection_id,
+    )
     
     if not await manager.disable_connection(user_id, channel_type, connection_id):
         raise HTTPException(status_code=500, detail="Failed to disable connection")
