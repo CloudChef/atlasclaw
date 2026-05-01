@@ -603,6 +603,11 @@ def test_build_scoped_deps_filters_provider_instances_by_runtime_permissions(tmp
                         "provider_type": "smartcmp",
                         "instance_name": "default",
                         "allowed": False,
+                    },
+                    {
+                        "provider_type": "jira",
+                        "instance_name": "prod",
+                        "allowed": True,
                     }
                 ]
             }
@@ -664,7 +669,13 @@ def test_build_scoped_deps_keeps_provider_tools_when_instance_is_allowed(tmp_pat
         "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
         extra={
             "context": {
-                "_provider_permissions": []
+                "_provider_permissions": [
+                    {
+                        "provider_type": "smartcmp",
+                        "instance_name": "default",
+                        "allowed": True,
+                    }
+                ]
             }
         },
     )
@@ -705,7 +716,17 @@ def test_build_scoped_deps_keeps_provider_tools_when_visible_instance_lacks_user
         ctx,
         user,
         "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
-        extra={"context": {"_provider_permissions": []}},
+        extra={
+            "context": {
+                "_provider_permissions": [
+                    {
+                        "provider_type": "smartcmp",
+                        "instance_name": "cmp",
+                        "allowed": True,
+                    }
+                ]
+            }
+        },
     )
 
     tool_names = {tool["name"] for tool in deps.extra["tools_snapshot"]}

@@ -7,10 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import AsyncGenerator
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +21,8 @@ from app.atlasclaw.api.api_routes import router as api_router
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
 from app.atlasclaw.auth.config import AuthConfig
 from app.atlasclaw.auth.middleware import setup_auth_middleware
+from app.atlasclaw.channels import ChannelRegistry
+from app.atlasclaw.channels.handlers import WebSocketHandler
 from app.atlasclaw.db import get_db_session
 from app.atlasclaw.db.database import DatabaseConfig, DatabaseManager, init_database
 from app.atlasclaw.db.models import RoleModel
@@ -119,6 +123,28 @@ def _cleanup_manager(manager):
     asyncio.run(manager.close())
 
 
+@contextmanager
+def _registered_test_channels(*channel_types: str):
+    original_handlers = dict(ChannelRegistry._handlers)
+    original_instances = dict(ChannelRegistry._instances)
+    original_connections = dict(ChannelRegistry._connections)
+    ChannelRegistry._handlers.clear()
+    ChannelRegistry._instances.clear()
+    ChannelRegistry._connections.clear()
+    for channel_type in channel_types:
+        ChannelRegistry.register(channel_type, WebSocketHandler)
+
+    try:
+        yield
+    finally:
+        ChannelRegistry._handlers.clear()
+        ChannelRegistry._handlers.update(original_handlers)
+        ChannelRegistry._instances.clear()
+        ChannelRegistry._instances.update(original_instances)
+        ChannelRegistry._connections.clear()
+        ChannelRegistry._connections.update(original_connections)
+
+
 def _get_auth_config() -> AuthConfig:
     return AuthConfig(
         provider='local',
@@ -132,6 +158,12 @@ def _get_auth_config() -> AuthConfig:
     )
 
 
+@pytest.fixture(autouse=True)
+def _registered_websocket_channel():
+    with _registered_test_channels('websocket'):
+        yield
+
+
 def _login_as(client: TestClient, username: str, password: str) -> str:
     response = client.post('/api/auth/local/login', json={'username': username, 'password': password})
     assert response.status_code == 200, f'Login failed: {response.json()}'
@@ -141,27 +173,93 @@ def _login_as(client: TestClient, username: str, password: str) -> str:
 class TestRoleCRUDAPI:
     """Tests for role management endpoints."""
 
+    def test_channel_permissions_require_explicit_allowed_true(self, tmp_path):
+        permissions = RoleService.normalize_permissions({
+            'channels': {
+                'channel_permissions': [
+                    {'channel_type': 'websocket', 'channel_name': 'WebSocket'},
+                    {'channel_type': 'feishu', 'channel_name': 'Feishu', 'allowed': True},
+                ],
+            },
+        })
+
+        permissions_by_type = {
+            entry['channel_type']: entry
+            for entry in permissions['channels']['channel_permissions']
+        }
+        assert permissions_by_type['websocket']['allowed'] is False
+        assert permissions_by_type['feishu']['allowed'] is True
+
     def test_list_roles_auto_seeds_builtin_roles(self, tmp_path):
-        manager = _init_database_sync(tmp_path)
-        client = _build_client(tmp_path, _get_auth_config())
-        token = _login_as(client, 'admin', 'adminpass123')
+        manager = None
 
-        response = client.get('/api/roles?page=1&page_size=20', headers={'AtlasClaw-Authenticate': token})
+        with _registered_test_channels('websocket'):
+            try:
+                manager = _init_database_sync(tmp_path)
 
-        assert response.status_code == 200
-        payload = response.json()
-        identifiers = {role['identifier'] for role in payload['roles']}
-        assert {'admin', 'user', 'viewer'}.issubset(identifiers)
-        roles_by_identifier = {role['identifier']: role for role in payload['roles']}
-        assert roles_by_identifier['admin']['permissions']['agent_configs']['view'] is True
-        assert roles_by_identifier['admin']['permissions']['providers']['module_permissions']['manage_permissions'] is True
-        assert roles_by_identifier['user']['permissions']['providers']['provider_permissions'] == []
-        assert roles_by_identifier['user']['permissions']['agent_configs']['view'] is False
-        assert roles_by_identifier['viewer']['permissions']['agent_configs']['view'] is False
-        assert roles_by_identifier['viewer']['permissions']['provider_configs']['view'] is False
-        assert roles_by_identifier['viewer']['permissions']['model_configs']['view'] is False
+                async def _seed_provider():
+                    async with _test_db_manager.get_session() as session:
+                        await ServiceProviderConfigService.create(
+                            session,
+                            ServiceProviderConfigCreate(
+                                provider_type='smartcmp',
+                                instance_name='default',
+                                config={
+                                    'base_url': 'https://cmp.example.com',
+                                    'auth_type': 'user_token',
+                                },
+                                is_active=True,
+                            ),
+                        )
 
-        _cleanup_manager(manager)
+                asyncio.run(_seed_provider())
+                client = _build_client(tmp_path, _get_auth_config())
+                token = _login_as(client, 'admin', 'adminpass123')
+
+                response = client.get('/api/roles?page=1&page_size=20', headers={'AtlasClaw-Authenticate': token})
+
+                assert response.status_code == 200
+                payload = response.json()
+                identifiers = {role['identifier'] for role in payload['roles']}
+                assert {'admin', 'user', 'viewer'}.issubset(identifiers)
+                roles_by_identifier = {role['identifier']: role for role in payload['roles']}
+                assert roles_by_identifier['admin']['permissions']['agent_configs']['view'] is True
+                assert roles_by_identifier['admin']['permissions']['providers']['module_permissions']['manage_permissions'] is True
+                assert roles_by_identifier['admin']['permissions']['channels']['module_permissions']['manage_permissions'] is True
+                admin_channel_types = {
+                    entry['channel_type']
+                    for entry in roles_by_identifier['admin']['permissions']['channels']['channel_permissions']
+                    if entry['allowed'] is True
+                }
+                assert admin_channel_types == {'websocket'}
+                admin_provider_keys = {
+                    (entry['provider_type'], entry['instance_name'])
+                    for entry in roles_by_identifier['admin']['permissions']['providers']['provider_permissions']
+                    if entry['allowed'] is True
+                }
+                assert admin_provider_keys == {('jira', 'dev'), ('smartcmp', 'default')}
+                user_provider_keys = {
+                    (entry['provider_type'], entry['instance_name'])
+                    for entry in roles_by_identifier['user']['permissions']['providers']['provider_permissions']
+                    if entry['allowed'] is True
+                }
+                assert user_provider_keys == admin_provider_keys
+                user_channel_types = {
+                    entry['channel_type']
+                    for entry in roles_by_identifier['user']['permissions']['channels']['channel_permissions']
+                    if entry['allowed'] is True
+                }
+                assert user_channel_types == admin_channel_types
+                assert roles_by_identifier['user']['permissions']['skills']['module_permissions']['view'] is False
+                assert roles_by_identifier['user']['permissions']['agent_configs']['view'] is False
+                assert roles_by_identifier['user']['permissions']['provider_configs']['view'] is False
+                assert roles_by_identifier['viewer']['permissions']['agent_configs']['view'] is False
+                assert roles_by_identifier['viewer']['permissions']['provider_configs']['view'] is False
+                assert roles_by_identifier['viewer']['permissions']['model_configs']['view'] is False
+                assert roles_by_identifier['viewer']['permissions']['providers']['provider_permissions'] == []
+            finally:
+                if manager is not None:
+                    _cleanup_manager(manager)
 
     def test_list_roles_preserves_builtin_permissions_while_syncing_metadata(self, tmp_path):
         manager = _init_database_sync(tmp_path)
@@ -200,10 +298,84 @@ class TestRoleCRUDAPI:
         assert viewer['permissions']['agent_configs']['view'] is True
         assert viewer['permissions']['provider_configs']['view'] is True
         assert viewer['permissions']['model_configs']['view'] is True
-        assert viewer['permissions']['channels']['view'] is False
+        assert viewer['permissions']['channels']['module_permissions']['manage_permissions'] is False
         assert viewer['permissions']['skills']['module_permissions']['view'] is True
 
         _cleanup_manager(manager)
+
+    def test_builtin_role_sync_preserves_existing_runtime_access_permissions(self, tmp_path):
+        manager = None
+
+        async def _seed_user_role_with_existing_channel_choice():
+            async with _test_db_manager.get_session() as session:
+                await ServiceProviderConfigService.create(
+                    session,
+                    ServiceProviderConfigCreate(
+                        provider_type='smartcmp',
+                        instance_name='default',
+                        config={
+                            'base_url': 'https://cmp.example.com',
+                            'auth_type': 'user_token',
+                        },
+                        is_active=True,
+                    ),
+                )
+                session.add(
+                    RoleModel(
+                        name='Standard User',
+                        identifier='user',
+                        description='stale user',
+                        permissions={
+                            **RoleService.normalize_permissions({}),
+                            'channels': {
+                                'module_permissions': {'manage_permissions': False},
+                                'channel_permissions': [
+                                    {
+                                        'channel_type': 'websocket',
+                                        'channel_name': 'WebSocket',
+                                        'allowed': False,
+                                    },
+                                    {
+                                        'channel_type': 'ghost',
+                                        'channel_name': 'Ghost',
+                                        'allowed': True,
+                                    },
+                                ],
+                            },
+                        },
+                        is_builtin=True,
+                        is_active=True,
+                    )
+                )
+                await session.flush()
+
+        with _registered_test_channels('websocket', 'matrix'):
+            try:
+                manager = _init_database_sync(tmp_path)
+                asyncio.run(_seed_user_role_with_existing_channel_choice())
+                client = _build_client(tmp_path, _get_auth_config())
+                token = _login_as(client, 'admin', 'adminpass123')
+
+                response = client.get('/api/roles?page=1&page_size=20', headers={'AtlasClaw-Authenticate': token})
+
+                assert response.status_code == 200
+                user_role = next(role for role in response.json()['roles'] if role['identifier'] == 'user')
+                channels_by_type = {
+                    entry['channel_type']: entry
+                    for entry in user_role['permissions']['channels']['channel_permissions']
+                }
+                assert channels_by_type['websocket']['allowed'] is False
+                assert channels_by_type['ghost']['allowed'] is True
+                assert 'matrix' not in channels_by_type
+                provider_keys = {
+                    (entry['provider_type'], entry['instance_name'])
+                    for entry in user_role['permissions']['providers']['provider_permissions']
+                    if entry['allowed'] is True
+                }
+                assert provider_keys == set()
+            finally:
+                if manager is not None:
+                    _cleanup_manager(manager)
 
     def test_create_update_and_delete_custom_role(self, tmp_path):
         manager = _init_database_sync(tmp_path)
@@ -218,7 +390,16 @@ class TestRoleCRUDAPI:
                 'description': 'Operations role',
                 'permissions': {
                     'skills': {'module_permissions': {'view': True, 'enable_disable': False}, 'skill_permissions': []},
-                    'channels': {'view': True, 'create': True, 'edit': False, 'delete': False},
+                    'channels': {
+                        'module_permissions': {'manage_permissions': False},
+                        'channel_permissions': [
+                            {
+                                'channel_type': 'websocket',
+                                'channel_name': 'WebSocket',
+                                'allowed': True,
+                            },
+                        ],
+                    },
                     'tokens': {'view': False, 'create': False, 'edit': False, 'delete': False},
                     'users': {'view': True, 'create': False, 'edit': False, 'delete': False},
                     'roles': {'view': False, 'create': False, 'edit': False, 'delete': False},
@@ -412,7 +593,7 @@ class TestRoleCRUDAPI:
                 'permissions': {
                     'skills': {
                         'module_permissions': {
-                            'view': True,
+                            'view': False,
                         },
                         'skill_permissions': [
                             {
@@ -488,11 +669,13 @@ class TestRoleCRUDAPI:
 
         assert update_response.status_code == 200
         payload = update_response.json()
-        assert payload['permissions']['channels']['view'] is True
-        assert payload['permissions']['channels']['create'] is True
-        assert payload['permissions']['channels']['edit'] is True
-        assert payload['permissions']['channels']['delete'] is True
-        assert payload['permissions']['channels']['manage_permissions'] is False
+        assert payload['permissions']['channels']['module_permissions']['manage_permissions'] is False
+        payload_channel_types = {
+            entry['channel_type']
+            for entry in payload['permissions']['channels']['channel_permissions']
+            if entry['allowed'] is True
+        }
+        assert payload_channel_types
         assert payload['permissions']['skills']['module_permissions']['view'] is True
         assert payload['permissions']['skills']['skill_permissions'] == [
             {
@@ -591,6 +774,23 @@ class TestRoleCRUDAPI:
 
     def test_builtin_user_provider_permissions_can_be_modified_via_api(self, tmp_path):
         manager = _init_database_sync(tmp_path)
+
+        async def _seed_provider():
+            async with _test_db_manager.get_session() as session:
+                await ServiceProviderConfigService.create(
+                    session,
+                    ServiceProviderConfigCreate(
+                        provider_type='smartcmp',
+                        instance_name='default',
+                        config={
+                            'base_url': 'https://cmp.example.com',
+                            'auth_type': 'user_token',
+                        },
+                        is_active=True,
+                    ),
+                )
+
+        asyncio.run(_seed_provider())
         client = _build_client(tmp_path, _get_auth_config())
         token = _login_as(client, 'admin', 'adminpass123')
         headers = {'AtlasClaw-Authenticate': token}
@@ -652,7 +852,7 @@ class TestRoleCRUDAPI:
                 'allowed': False,
             },
         ]
-        assert update_response.json()['permissions']['channels']['view'] is True
+        assert update_response.json()['permissions']['channels']['channel_permissions']
         assert update_response.json()['permissions']['skills']['skill_permissions'] == [
             {
                 'skill_id': 'echo-skill',
@@ -686,7 +886,7 @@ class TestRoleCRUDAPI:
 
         _cleanup_manager(manager)
 
-    def test_provider_permissions_default_allow_and_multi_role_allow_priority(self, tmp_path):
+    def test_provider_permissions_require_explicit_allow_and_multi_role_allow_priority(self, tmp_path):
         manager = _init_database_sync(tmp_path)
 
         async def _seed_roles_and_resolve():
@@ -715,10 +915,20 @@ class TestRoleCRUDAPI:
                 allow_role = await RoleService.create(
                     session,
                     RoleCreate(
-                        name='Provider Default Allow',
-                        identifier='provider_default_allow',
-                        description='Omits provider rules.',
-                        permissions={},
+                        name='Provider Allow',
+                        identifier='provider_allow',
+                        description='Allows one provider instance.',
+                        permissions={
+                            'providers': {
+                                'provider_permissions': [
+                                    {
+                                        'provider_type': 'smartcmp',
+                                        'instance_name': 'default',
+                                        'allowed': True,
+                                    },
+                                ],
+                            },
+                        },
                         is_active=True,
                     ),
                 )
@@ -737,10 +947,40 @@ class TestRoleCRUDAPI:
                         auth_type='local',
                     ),
                 )
-                return authz.permissions['providers']['provider_permissions']
+                allowed_permissions = authz.permissions['providers']['provider_permissions']
 
-        effective_provider_permissions = asyncio.run(_seed_roles_and_resolve())
-        assert effective_provider_permissions == []
+                await UserService.update(
+                    session,
+                    user.id,
+                    UserUpdate(roles={deny_role.identifier: True}),
+                )
+                denied_authz = await resolve_authorization_context(
+                    session,
+                    UserInfo(
+                        user_id='regularuser',
+                        display_name='Regular User',
+                        roles=[],
+                        auth_type='local',
+                    ),
+                )
+                denied_permissions = denied_authz.permissions['providers']['provider_permissions']
+                return allowed_permissions, denied_permissions
+
+        allowed_permissions, denied_permissions = asyncio.run(_seed_roles_and_resolve())
+        assert allowed_permissions == [
+            {
+                'provider_type': 'smartcmp',
+                'instance_name': 'default',
+                'allowed': True,
+            },
+        ]
+        assert denied_permissions == [
+            {
+                'provider_type': 'smartcmp',
+                'instance_name': 'default',
+                'allowed': False,
+            },
+        ]
 
         _cleanup_manager(manager)
 
@@ -817,13 +1057,13 @@ class TestRoleCRUDAPI:
         assert full_catalog_resp.status_code == 200
         assert full_catalog_resp.json()['providers'][0]['provider_type'] == 'smartcmp'
 
-        async def _add_default_allow_role():
+        async def _add_empty_provider_role():
             async with _test_db_manager.get_session() as session:
-                allow_role = await RoleService.create(
+                empty_role = await RoleService.create(
                     session,
                     RoleCreate(
-                        name='Provider Runtime Default Allow',
-                        identifier='provider_runtime_default_allow',
+                        name='Provider Runtime Empty',
+                        identifier='provider_runtime_empty',
                         description='Omits provider access rules.',
                         permissions={},
                         is_active=True,
@@ -836,12 +1076,54 @@ class TestRoleCRUDAPI:
                     UserUpdate(
                         roles={
                             'provider_deny_runtime': True,
+                            empty_role.identifier: True,
+                        },
+                    ),
+                )
+
+        asyncio.run(_add_empty_provider_role())
+        regular_token = _login_as(client, 'regularuser', 'userpass123')
+        regular_headers = {'AtlasClaw-Authenticate': regular_token}
+        still_denied_catalog_resp = client.get('/api/service-providers/available-instances', headers=regular_headers)
+        assert still_denied_catalog_resp.status_code == 200
+        assert still_denied_catalog_resp.json()['providers'] == []
+
+        async def _add_explicit_allow_role():
+            async with _test_db_manager.get_session() as session:
+                allow_role = await RoleService.create(
+                    session,
+                    RoleCreate(
+                        name='Provider Runtime Allow',
+                        identifier='provider_runtime_allow',
+                        description='Allows smartcmp default.',
+                        permissions={
+                            'providers': {
+                                'provider_permissions': [
+                                    {
+                                        'provider_type': 'smartcmp',
+                                        'instance_name': 'default',
+                                        'allowed': True,
+                                    },
+                                ],
+                            },
+                        },
+                        is_active=True,
+                    ),
+                )
+                user = await UserService.get_by_username(session, 'regularuser')
+                await UserService.update(
+                    session,
+                    user.id,
+                    UserUpdate(
+                        roles={
+                            'provider_deny_runtime': True,
+                            'provider_runtime_empty': True,
                             allow_role.identifier: True,
                         },
                     ),
                 )
 
-        asyncio.run(_add_default_allow_role())
+        asyncio.run(_add_explicit_allow_role())
         regular_token = _login_as(client, 'regularuser', 'userpass123')
         regular_headers = {'AtlasClaw-Authenticate': regular_token}
         allowed_catalog_resp = client.get('/api/service-providers/available-instances', headers=regular_headers)
@@ -900,11 +1182,16 @@ class TestRoleCRUDAPI:
             json={
                 'permissions': {
                     'channels': {
-                        'view': True,
-                        'create': False,
-                        'edit': False,
-                        'delete': False,
-                        'manage_permissions': True,
+                        'module_permissions': {
+                            'manage_permissions': True,
+                        },
+                        'channel_permissions': [
+                            {
+                                'channel_type': 'websocket',
+                                'channel_name': 'WebSocket',
+                                'allowed': False,
+                            },
+                        ],
                     },
                 },
             },
@@ -912,26 +1199,69 @@ class TestRoleCRUDAPI:
         )
 
         assert update_response.status_code == 200
-        assert update_response.json()['permissions']['channels']['create'] is False
-        assert update_response.json()['permissions']['channels']['edit'] is False
+        assert update_response.json()['permissions']['channels']['module_permissions']['manage_permissions'] is True
+        assert update_response.json()['permissions']['channels']['channel_permissions'] == [
+            {
+                'channel_type': 'websocket',
+                'channel_name': 'WebSocket',
+                'allowed': False,
+            },
+        ]
 
         refreshed_roles_response = client.get('/api/roles', headers={'AtlasClaw-Authenticate': token})
         refreshed_viewer_role = next(
             role for role in refreshed_roles_response.json()['roles'] if role['identifier'] == 'viewer'
         )
-        assert refreshed_viewer_role['permissions']['channels']['create'] is False
-        assert refreshed_viewer_role['permissions']['channels']['edit'] is False
+        assert refreshed_viewer_role['permissions']['channels']['module_permissions']['manage_permissions'] is True
+        refreshed_channels_by_type = {
+            entry['channel_type']: entry
+            for entry in refreshed_viewer_role['permissions']['channels']['channel_permissions']
+        }
+        assert refreshed_channels_by_type['websocket']['allowed'] is False
 
         _cleanup_manager(manager)
 
-    def test_builtin_admin_permissions_are_repaired_during_builtin_sync(self, tmp_path):
+    def test_builtin_admin_locked_permissions_are_repaired_during_builtin_sync(self, tmp_path):
         manager = _init_database_sync(tmp_path)
 
         async def _seed_restricted_admin_permissions():
             async with _test_db_manager.get_session() as session:
+                await ServiceProviderConfigService.create(
+                    session,
+                    ServiceProviderConfigCreate(
+                        provider_type='smartcmp',
+                        instance_name='default',
+                        config={
+                            'base_url': 'https://cmp.example.com',
+                            'auth_type': 'user_token',
+                        },
+                        is_active=True,
+                    ),
+                )
                 await RoleService.ensure_builtin_roles(session)
                 admin_role = await RoleService.get_by_identifier(session, 'admin')
                 admin_role.permissions = {
+                    'skills': {
+                        'module_permissions': {
+                            'view': True,
+                            'enable_disable': True,
+                            'manage_permissions': True,
+                        },
+                        'skill_permissions': [
+                            {
+                                'skill_id': 'group:runtime',
+                                'skill_name': 'group:runtime',
+                                'authorized': False,
+                                'enabled': False,
+                            },
+                        ],
+                    },
+                    'providers': {
+                        'module_permissions': {
+                            'manage_permissions': True,
+                        },
+                        'provider_permissions': [],
+                    },
                     'roles': {
                         'view': False,
                         'create': False,
@@ -960,6 +1290,17 @@ class TestRoleCRUDAPI:
         assert admin_role['permissions']['roles']['view'] is True
         assert admin_role['permissions']['tokens']['view'] is True
         assert admin_role['permissions']['tokens']['create'] is True
+        admin_skill_entries = admin_role['permissions']['skills']['skill_permissions']
+        assert len(admin_skill_entries) == 1
+        assert admin_skill_entries[0]['skill_id'] == 'group:runtime'
+        assert admin_skill_entries[0]['authorized'] is False
+        assert admin_skill_entries[0]['enabled'] is False
+        admin_provider_keys = {
+            (entry['provider_type'], entry['instance_name'])
+            for entry in admin_role['permissions']['providers']['provider_permissions']
+            if entry['allowed'] is True
+        }
+        assert admin_provider_keys == set()
 
         token_config_response = client.get('/api/token-configs?page=1&page_size=20', headers=headers)
         assert token_config_response.status_code == 200

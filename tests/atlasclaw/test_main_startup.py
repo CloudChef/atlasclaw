@@ -256,8 +256,8 @@ class TestMainStartup:
     async def test_builtin_role_skill_permission_bootstrap_seeds_admin_and_user(self, tmp_path):
         """Startup bootstrap should seed only core system-managed role skills.
 
-        Admin receives the core catalog (built-in + standalone).
-        User does not receive provider-originated skills here.
+        Admin and user receive the core catalog (built-in + standalone).
+        Provider-originated skills remain governed by provider access.
         Viewer remains untouched (empty skill_permissions).
         """
         import importlib
@@ -336,14 +336,16 @@ class TestMainStartup:
             assert BUILTIN_TOOL_NAME in admin_skill_ids
             assert STANDALONE_SKILL_ID in admin_skill_ids
 
-            # User should not be bootstrapped with provider or built-in skills.
+            # User receives the same initialized core skill access as admin,
+            # while provider-bound skills remain governed by provider access.
             user_skill_ids = {
                 entry["skill_id"]
                 for entry in user_role.permissions["skills"]["skill_permissions"]
             }
             assert provider_ids.isdisjoint(user_skill_ids)
-            assert BUILTIN_TOOL_NAME not in user_skill_ids
-            assert STANDALONE_SKILL_ID not in user_skill_ids
+            assert BUILTIN_TOOL_NAME in user_skill_ids
+            assert STANDALONE_SKILL_ID in user_skill_ids
+            assert user_role.permissions["skills"]["module_permissions"]["view"] is False
 
             # Viewer remains untouched
             assert viewer_role.permissions["skills"]["skill_permissions"] == []

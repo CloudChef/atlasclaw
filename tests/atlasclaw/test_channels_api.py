@@ -31,14 +31,22 @@ from app.atlasclaw.db.orm.role import build_default_permissions
 
 def _build_channel_authz(user_info: UserInfo, *, is_admin: bool) -> AuthorizationContext:
     permissions = build_default_permissions()
-    permissions["channels"].update(
-        {
-            "view": True,
-            "create": True,
-            "edit": True,
-            "delete": True,
-        }
-    )
+    channel_type = user_info.extra.get("channel_type", "websocket")
+    channel_allowed = user_info.extra.get("channel_allowed", True)
+    channel_permissions = []
+    if channel_type:
+        channel_permissions.append({
+            "channel_type": channel_type,
+            "channel_name": channel_type,
+            "allowed": channel_allowed,
+        })
+    permissions["channels"] = {
+        "module_permissions": {
+            "manage_permissions": user_info.extra.get("can_manage_channels", False),
+        },
+        "channel_permissions": channel_permissions,
+    }
+    permissions["roles"]["manage_permissions"] = user_info.extra.get("can_manage_roles", False)
     return AuthorizationContext(
         user=user_info,
         role_identifiers=["admin"] if is_admin else ["channel_operator"],
@@ -64,7 +72,19 @@ def app():
             user_id=user_id,
             display_name=user_id,
             roles=["admin"] if is_admin else ["channel_operator"],
-            extra={"is_admin": is_admin},
+            extra={
+                "is_admin": is_admin,
+                "channel_type": request.headers.get("X-Test-Channel-Type", "websocket"),
+                "channel_allowed": request.headers.get(
+                    "X-Test-Channel-Allowed", "true"
+                ).strip().lower() in {"1", "true", "yes", "on"},
+                "can_manage_channels": request.headers.get(
+                    "X-Test-Can-Manage-Channels", "false"
+                ).strip().lower() in {"1", "true", "yes", "on"},
+                "can_manage_roles": request.headers.get(
+                    "X-Test-Can-Manage-Roles", "false"
+                ).strip().lower() in {"1", "true", "yes", "on"},
+            },
             auth_type="test",
         )
         request.state.user_info = user_info
@@ -165,6 +185,51 @@ class TestChannelTypesAPI:
 
         assert response.status_code == 200
 
+    def test_list_channel_types_filters_to_allowed_types(self, client, channel_manager):
+        """Normal catalog listing only returns allowed channel types."""
+        ChannelRegistry.register("feishu", FeishuHandler)
+
+        response = client.get("/api/channels")
+
+        assert response.status_code == 200
+        channel_types = {item["type"] for item in response.json()}
+        assert channel_types == {"websocket"}
+
+    def test_empty_allowlist_returns_no_channel_types(self, client, channel_manager):
+        """Missing/empty channel permissions deny all normal catalog access."""
+        response = client.get("/api/channels", headers={"X-Test-Channel-Type": ""})
+
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_explicit_denial_returns_no_channel_types(self, client, channel_manager):
+        """An explicit false channel rule denies that type."""
+        response = client.get(
+            "/api/channels",
+            headers={"X-Test-Channel-Allowed": "false"},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_include_all_requires_channel_or_role_governance(self, client, channel_manager):
+        """Full catalog is only available to permission governors."""
+        denied = client.get("/api/channels?include_all=true")
+        assert denied.status_code == 403
+
+        allowed = client.get(
+            "/api/channels?include_all=true",
+            headers={"X-Test-Can-Manage-Channels": "true"},
+        )
+        assert allowed.status_code == 200
+        assert any(item["type"] == "websocket" for item in allowed.json())
+
+        role_allowed = client.get(
+            "/api/channels?include_all=true",
+            headers={"X-Test-Can-Manage-Roles": "true"},
+        )
+        assert role_allowed.status_code == 200
+
 
 class TestChannelSchemaAPI:
     """Test channel schema API."""
@@ -196,7 +261,10 @@ class TestChannelSchemaAPI:
         """Enterprise channel schemas should not receive provider-binding fields."""
         ChannelRegistry.register(channel_type, handler_class)
 
-        response = client.get(f"/api/channels/{channel_type}/schema")
+        response = client.get(
+            f"/api/channels/{channel_type}/schema",
+            headers={"X-Test-Channel-Type": channel_type},
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -288,6 +356,50 @@ class TestConnectionsAPI:
         )
 
         assert response.status_code == 200
+
+    def test_denied_channel_type_blocks_lifecycle_endpoints(self, client, channel_manager):
+        """Lifecycle endpoints require access to the requested channel type."""
+        headers = {"X-Test-Channel-Allowed": "false"}
+
+        assert client.get("/api/channels/websocket/schema", headers=headers).status_code == 403
+        assert client.get("/api/channels/websocket/connections", headers=headers).status_code == 403
+        assert client.post(
+            "/api/channels/websocket/connections",
+            headers=headers,
+            json={"name": "Denied", "config": {}},
+        ).status_code == 403
+        assert client.post(
+            "/api/channels/websocket/validate-config",
+            headers=headers,
+            json={"config": {}},
+        ).status_code == 403
+
+        create_response = client.post(
+            "/api/channels/websocket/connections",
+            json={"name": "Allowed", "config": {}},
+        )
+        connection_id = create_response.json()["id"]
+        assert client.patch(
+            f"/api/channels/websocket/connections/{connection_id}",
+            headers=headers,
+            json={"name": "Denied Update"},
+        ).status_code == 403
+        assert client.post(
+            f"/api/channels/websocket/connections/{connection_id}/verify",
+            headers=headers,
+        ).status_code == 403
+        assert client.post(
+            f"/api/channels/websocket/connections/{connection_id}/enable",
+            headers=headers,
+        ).status_code == 403
+        assert client.post(
+            f"/api/channels/websocket/connections/{connection_id}/disable",
+            headers=headers,
+        ).status_code == 403
+        assert client.delete(
+            f"/api/channels/websocket/connections/{connection_id}",
+            headers=headers,
+        ).status_code == 403
 
     def test_channel_routes_require_authenticated_user(self, client, channel_manager):
         """Test channel routes return 401 for anonymous users."""
@@ -441,3 +553,27 @@ class TestConnectionEnableDisableAPI:
         
         # Note: disable may fail if connection was never initialized
         assert response.status_code in [200, 500]
+
+    def test_enable_disable_blocks_other_user_connection(self, client, channel_manager):
+        """Enable/disable can only target the current user's own connection."""
+        owner_headers = {"X-Test-User-Id": "channel-owner"}
+        other_headers = {"X-Test-User-Id": "other-channel-user"}
+        create_response = client.post(
+            "/api/channels/websocket/connections",
+            headers=owner_headers,
+            json={"name": "Owner Connection", "config": {}, "enabled": False},
+        )
+        assert create_response.status_code == 200
+        connection_id = create_response.json()["id"]
+
+        enable_response = client.post(
+            f"/api/channels/websocket/connections/{connection_id}/enable",
+            headers=other_headers,
+        )
+        assert enable_response.status_code == 404
+
+        disable_response = client.post(
+            f"/api/channels/websocket/connections/{connection_id}/disable",
+            headers=other_headers,
+        )
+        assert disable_response.status_code == 404

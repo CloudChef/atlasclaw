@@ -188,26 +188,17 @@ async def _collect_runtime_user_ids(
         if user_id and user_id not in {"default", "anonymous"}
     )
 
-# Roles in this set receive the core skill catalog (built-in tools +
-# standalone markdown skills). Provider capabilities are governed by provider
-# permissions and are not duplicated into role skill_permissions.
-_FULL_CATALOG_ROLE_IDENTIFIERS = frozenset({"admin"})
+# Roles in this set receive the core skill catalog during initialization.
+_FULL_CATALOG_ROLE_IDENTIFIERS = frozenset({"admin", "user"})
 
 
 async def _ensure_builtin_role_skill_permissions(skill_registry) -> None:
-    """Seed / incrementally merge skill_permissions for system-managed
-    built-in roles from the skill catalog.
+    """Seed skill_permissions for system-managed built-in roles from the skill catalog.
 
-    - **admin** receives the core catalog (built-in tools and standalone
-      markdown skills) so it never loses platform capabilities.
-    - **user** receives no default skill entries here; provider skills/tools are
-      controlled by provider permissions instead of skills.skill_permissions.
+    - **admin** and **user** receive the core catalog (built-in tools and
+      standalone markdown skills) as initial runtime access data.
 
-    Behaviour:
-      - Fresh install (no stored permissions): write the role-appropriate catalog.
-      - Upgrade (existing permissions): append any NEW skills that are in the
-        catalog but missing from stored permissions.  Existing user choices
-        (enabled/disabled) are preserved.
+    Existing skill_permissions are left unchanged.
     """
     try:
         from app.atlasclaw.db.database import get_db_manager
@@ -275,11 +266,11 @@ async def _ensure_builtin_role_skill_permissions(skill_registry) -> None:
             if not full_catalog:
                 return
 
-            # ---- Per-role incremental merge ----
+            # ---- Per-role initialization ----
             changed = False
             for role in managed_roles:
-                # Admin gets the core catalog; other system-managed roles keep
-                # their skill_permissions untouched unless explicitly updated.
+                # Admin/user get the core catalog only when no skill permissions
+                # have been initialized yet.
                 catalog_entries = (
                     full_catalog
                     if role.identifier in _FULL_CATALOG_ROLE_IDENTIFIERS
@@ -295,45 +286,22 @@ async def _ensure_builtin_role_skill_permissions(skill_registry) -> None:
                 if not isinstance(existing_perms, list):
                     existing_perms = []
 
-                existing_ids: set[str] = {
-                    str(e.get("skill_id", "")).strip()
-                    for e in existing_perms
-                    if str(e.get("skill_id", "")).strip()
-                }
-
-                new_entries = [
-                    entry for entry in catalog_entries
-                    if entry["skill_id"] not in existing_ids
-                ]
-
-                if not existing_perms:
-                    merged = list(catalog_entries)
-                    action = "bootstrapped"
-                elif new_entries:
-                    merged = existing_perms + new_entries
-                    action = "merged"
-                else:
+                if existing_perms:
                     continue
 
                 new_perms = dict(perms)
                 new_perms["skills"] = {
                     **(perms.get("skills") or {}),
-                    "skill_permissions": merged,
+                    "skill_permissions": list(catalog_entries),
                 }
                 role.permissions = new_perms
                 changed = True
 
-                if action == "bootstrapped":
-                    print(
-                        f"[AtlasClaw] Bootstrapped {role.identifier} default skill permissions "
-                        f"({len(merged)} entries: "
-                        f"{core_tool_count} executable + {core_md_count} markdown)"
-                    )
-                else:
-                    print(
-                        f"[AtlasClaw] Merged {len(new_entries)} new skill(s) into "
-                        f"{role.identifier} permissions (was {len(existing_perms)}, now {len(merged)})"
-                    )
+                print(
+                    f"[AtlasClaw] Bootstrapped {role.identifier} default skill permissions "
+                    f"({len(catalog_entries)} entries: "
+                    f"{core_tool_count} executable + {core_md_count} markdown)"
+                )
 
             if changed:
                 await session.commit()
@@ -557,10 +525,8 @@ async def lifespan(app: FastAPI):
         f"[AtlasClaw] Loaded {loaded_standalone_skill_count} standalone markdown skills"
     )
 
-    # Bootstrap admin role default skill permissions if not yet stored.
-    # This replaces a problematic frontend auto-PUT that was triggered on
-    # every role-management page load.  The backend is the right place to
-    # seed permissions because it has access to the loaded skill catalog.
+    # Bootstrap built-in role skill permissions if not yet stored.
+    # The backend has access to the loaded skill catalog at startup.
     if db_initialized:
         await _ensure_builtin_role_skill_permissions(_skill_registry)
 

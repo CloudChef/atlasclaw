@@ -133,7 +133,7 @@ def _filter_provider_instances_by_permissions(
     provider_instances: dict[str, dict[str, dict[str, Any]]],
     provider_permissions: list[dict[str, Any]] | None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
-    """Filter instances using the same default-allow rule as authorization guards."""
+    """Filter instances using provider allowlist semantics when rules are present."""
     if provider_permissions is None:
         return provider_instances
 

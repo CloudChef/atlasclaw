@@ -53,6 +53,7 @@ def _build_context(tmp_path) -> APIContext:
 
 def _authz(
     *,
+    skill_view: bool = False,
     provider_allowed: bool = True,
     provider_skill_enabled: bool = True,
     standalone_skill_enabled: bool = True,
@@ -75,7 +76,7 @@ def _authz(
         user=UserInfo(user_id="user"),
         permissions={
             "skills": {
-                "module_permissions": {"view": True},
+                "module_permissions": {"view": skill_view},
                 "skill_permissions": skill_permissions,
             },
             "providers": {

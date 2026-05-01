@@ -69,7 +69,7 @@ describe('header.js', () => {
         permissions: {
           roles: { view: true },
           users: { view: true },
-          channels: { view: false },
+          channels: { module_permissions: { manage_permissions: false }, channel_permissions: [] },
           model_configs: { view: false }
         }
       }
@@ -90,11 +90,10 @@ describe('header.js', () => {
         is_admin: false,
         permissions: {
           channels: {
-            view: true,
-            create: true,
-            edit: true,
-            delete: true,
-            manage_permissions: false
+            module_permissions: { manage_permissions: false },
+            channel_permissions: [
+              { channel_type: 'websocket', channel_name: 'WebSocket', allowed: true }
+            ]
           },
           users: {
             view: false,
@@ -145,11 +144,8 @@ describe('header.js', () => {
             }
           },
           channels: {
-            view: false,
-            create: false,
-            edit: false,
-            delete: false,
-            manage_permissions: false
+            module_permissions: { manage_permissions: false },
+            channel_permissions: []
           }
         }
       }
@@ -173,11 +169,8 @@ describe('header.js', () => {
         is_admin: false,
         permissions: {
           channels: {
-            view: true,
-            create: false,
-            edit: false,
-            delete: false,
-            manage_permissions: true
+            module_permissions: { manage_permissions: true },
+            channel_permissions: []
           },
           users: {
             view: false,
@@ -227,11 +220,8 @@ describe('header.js', () => {
             delete: false
           },
           channels: {
-            view: false,
-            create: false,
-            edit: false,
-            delete: false,
-            manage_permissions: false
+            module_permissions: { manage_permissions: false },
+            channel_permissions: []
           }
         }
       }

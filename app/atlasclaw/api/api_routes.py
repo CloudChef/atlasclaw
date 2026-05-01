@@ -110,7 +110,9 @@ USER_MANAGEMENT_ACCESS_PERMISSIONS = (
 SENSITIVE_ROLE_IDENTIFIERS = frozenset({"admin"})
 NON_ADMIN_ASSIGNABLE_PERMISSION_PATHS = frozenset({
     "skills.module_permissions.view",
-    "channels.view",
+    "skills.skill_permissions",
+    "providers.provider_permissions",
+    "channels.channel_permissions",
     "tokens.view",
     "agent_configs.view",
     "provider_configs.view",
@@ -250,6 +252,16 @@ def _iter_enabled_permission_paths(
         if prefix == "skills.skill_permissions" and any(
             isinstance(entry, dict)
             and (bool(entry.get("authorized", False)) or bool(entry.get("enabled", False)))
+            for entry in value
+        ):
+            return [prefix]
+        if prefix == "providers.provider_permissions" and any(
+            isinstance(entry, dict) and entry.get("allowed") is True
+            for entry in value
+        ):
+            return [prefix]
+        if prefix == "channels.channel_permissions" and any(
+            isinstance(entry, dict) and entry.get("allowed") is True
             for entry in value
         ):
             return [prefix]
@@ -1153,7 +1165,7 @@ async def update_role(
                 if isinstance(role_data.permissions, dict)
                 else set()
             )
-            user_managed_modules = {"skills", "providers"}
+            user_managed_modules = {"skills", "providers", "channels"}
             # Force-restore locked modules and omitted user-managed modules on
             # partial permission updates for system roles.
             for module_id in list(new_perms.keys()):

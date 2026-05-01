@@ -11,7 +11,6 @@ from typing import Any
 from app.atlasclaw.auth.guards import (
     AuthorizationContext,
     filter_provider_instances_for_authz,
-    has_permission,
 )
 from app.atlasclaw.skills.permission_service import skill_permission_service
 
@@ -150,26 +149,22 @@ def _get_visible_skill_snapshots(
     tools_snapshot = _get_registry_tools_snapshot(ctx)
     md_skills_snapshot = _get_registry_md_snapshot(ctx)
 
-    if authz is not None and not has_permission(authz, "skills.view"):
-        tools_snapshot = []
-        md_skills_snapshot = []
-    elif authz is not None:
+    if authz is not None:
         skill_permissions = authz.permissions.get("skills", {}).get("skill_permissions", [])
-        if not (authz.is_admin and not skill_permissions):
-            if isinstance(skill_permissions, list):
-                md_tool_skill_refs = _build_md_tool_skill_refs(
-                    ctx.skill_registry,
-                    md_skills_snapshot,
-                )
-                tools_snapshot, md_skills_snapshot = _filter_snapshot_by_permissions(
-                    tools_snapshot,
-                    md_skills_snapshot,
-                    skill_permissions,
-                    md_tool_skill_refs,
-                )
-            else:
-                tools_snapshot = []
-                md_skills_snapshot = []
+        if isinstance(skill_permissions, list):
+            md_tool_skill_refs = _build_md_tool_skill_refs(
+                ctx.skill_registry,
+                md_skills_snapshot,
+            )
+            tools_snapshot, md_skills_snapshot = _filter_snapshot_by_permissions(
+                tools_snapshot,
+                md_skills_snapshot,
+                skill_permissions,
+                md_tool_skill_refs,
+            )
+        else:
+            tools_snapshot = []
+            md_skills_snapshot = []
 
     tools_snapshot, md_skills_snapshot = skill_permission_service.filter_provider_bound_snapshots(
         tools_snapshot,

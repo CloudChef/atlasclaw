@@ -119,7 +119,11 @@ def test_role_management_full_lifecycle(
             admin_role = next(role for role in builtin_roles if role["identifier"] == "admin")
             assert admin_role["permissions"]["roles"]["manage_permissions"] is True
             assert admin_role["permissions"]["users"]["assign_roles"] is True
-            assert admin_role["permissions"]["channels"]["manage_permissions"] is True
+            assert admin_role["permissions"]["channels"]["module_permissions"]["manage_permissions"] is True
+            assert any(
+                entry["allowed"] is True
+                for entry in admin_role["permissions"]["channels"]["channel_permissions"]
+            )
 
             create_user_resp = client.post(
                 "/api/users",
@@ -177,11 +181,16 @@ def test_role_management_full_lifecycle(
                             ],
                         },
                         "channels": {
-                            "view": True,
-                            "create": False,
-                            "edit": True,
-                            "delete": False,
-                            "manage_permissions": True,
+                            "module_permissions": {
+                                "manage_permissions": True,
+                            },
+                            "channel_permissions": [
+                                {
+                                    "channel_type": "websocket",
+                                    "channel_name": "WebSocket",
+                                    "allowed": True,
+                                }
+                            ],
                         },
                         "tokens": {
                             "view": False,
@@ -213,7 +222,7 @@ def test_role_management_full_lifecycle(
             assert create_role_resp.status_code == 201
             created_role = create_role_resp.json()
             role_id = created_role["id"]
-            assert created_role["permissions"]["channels"]["manage_permissions"] is True
+            assert created_role["permissions"]["channels"]["module_permissions"]["manage_permissions"] is True
             assert created_role["permissions"]["skills"]["skill_permissions"][0]["skill_id"] == first_skill
             assert created_role["permissions"]["skills"]["skill_permissions"][0]["enabled"] is True
 
@@ -240,11 +249,16 @@ def test_role_management_full_lifecycle(
                             ],
                         },
                         "channels": {
-                            "view": True,
-                            "create": False,
-                            "edit": True,
-                            "delete": False,
-                            "manage_permissions": False,
+                            "module_permissions": {
+                                "manage_permissions": False,
+                            },
+                            "channel_permissions": [
+                                {
+                                    "channel_type": "websocket",
+                                    "channel_name": "WebSocket",
+                                    "allowed": True,
+                                }
+                            ],
                         },
                         "tokens": {
                             "view": False,
