@@ -1057,7 +1057,7 @@ class RunnerExecutionFlowPostMixin:
                     )
                 else:
                     failure_message = (
-                        "A grounded tool-backed answer is required for this request, but required tools did not "
+                        "This request needs tool execution, but required tools did not "
                         f"succeed: {', '.join(missing_required_tools)}."
                     )
             if isinstance(repeated_tool_failure, dict):
@@ -1089,8 +1089,103 @@ class RunnerExecutionFlowPostMixin:
                 fallback_reasons.append(
                     f"The runtime never produced the requested {artifact_label}; only intermediate lookup results were available."
                 )
-            fallback_answer = ""
-            if self._should_attempt_missing_tool_evidence_fallback(
+            recovery_answer = ""
+            answer_phase = "tool_failure_fallback"
+            max_tool_policy_retries = int(self.TOOL_POLICY_MAX_RETRIES or 0)
+            unsupported_tool_request_exhausted = (
+                tool_execution_required
+                and not tool_required_has_real_execution
+                and tool_execution_retry_count >= max_tool_policy_retries
+            )
+            if unsupported_tool_request_exhausted:
+                yield StreamEvent.runtime_update(
+                    "reasoning",
+                    "Generating response for unsupported tool request.",
+                    metadata={
+                        "phase": "unsupported_tool_request",
+                        "attempt": current_model_attempt,
+                        "elapsed": round(time.monotonic() - start_time, 1),
+                    },
+                )
+                _log_step(
+                    "unsupported_tool_request_answer_start",
+                    missing_required_tools=list(missing_required_tools),
+                    available_tool_count=len(state.get("available_tools") or []),
+                )
+                try:
+                    required_tool_names = [
+                        str(name or "").strip()
+                        for name in missing_required_tools
+                        if str(name or "").strip()
+                    ]
+                    required_tool_name_set = set(required_tool_names)
+                    relevant_tools = []
+                    for tool in list(state.get("available_tools") or []):
+                        if not isinstance(tool, dict):
+                            continue
+                        tool_name = str(tool.get("name", "") or "").strip()
+                        if required_tool_name_set and tool_name not in required_tool_name_set:
+                            continue
+                        schema = {}
+                        for schema_key in ("parameters_schema", "parameters", "input_schema", "schema"):
+                            candidate = tool.get(schema_key)
+                            if isinstance(candidate, dict):
+                                schema = candidate
+                                break
+                        relevant_tools.append(
+                            {
+                                "name": tool_name,
+                                "parameters_schema": schema,
+                            }
+                        )
+                    facts = {
+                        "user_request": str(user_message or "").strip(),
+                        "required_tools_without_successful_execution": required_tool_names,
+                        "available_tool_count": len(
+                            [tool for tool in state.get("available_tools") or [] if isinstance(tool, dict)]
+                        ),
+                        "relevant_tools": relevant_tools,
+                    }
+                    run_single = getattr(self, "run_single", None)
+                    if callable(run_single):
+                        raw_output = await run_single(
+                            (
+                                "Structured facts for the unsupported tool request:\n"
+                                f"{json.dumps(facts, ensure_ascii=False, indent=2)}\n\n"
+                                "Return only the final user-facing answer."
+                            ),
+                            deps,
+                            system_prompt=(
+                                "You are AtlasClaw. The runtime could not execute the "
+                                "tool-backed operation requested in this turn. Write a concise "
+                                "final answer in the user's language. Use only the structured "
+                                "facts. State clearly that no action was executed. Explain that "
+                                "the requested operation is not supported by the available "
+                                "runtime tool, or that no matching runtime tool is available "
+                                "when available_tool_count is zero. If enum values in a tool "
+                                "schema show supported options, mention them. Do not claim a "
+                                "tool ran or that any external object changed state."
+                            ),
+                            agent=state.get("runtime_agent") or getattr(self, "agent", None),
+                            allowed_tool_names=[],
+                        )
+                        recovery_answer = str(raw_output or "").strip()
+                        looks_like_tool_call = self._looks_like_plaintext_tool_call_attempt(
+                            recovery_answer
+                        )
+                        if recovery_answer.startswith("[Error:") or looks_like_tool_call:
+                            recovery_answer = ""
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.warning("unsupported_tool_request_answer failed: %s", exc)
+                    _log_step("unsupported_tool_request_answer_error", error=str(exc))
+                    recovery_answer = ""
+                else:
+                    _log_step(
+                        "unsupported_tool_request_answer_done",
+                        answered=bool(recovery_answer.strip()),
+                    )
+                answer_phase = "unsupported_tool_request"
+            elif self._should_attempt_missing_tool_evidence_fallback(
                 state=state,
                 tool_required_has_real_execution=tool_required_has_real_execution,
                 missing_required_tools=missing_required_tools,
@@ -1118,7 +1213,7 @@ class RunnerExecutionFlowPostMixin:
                     failure_reasons=list(fallback_reasons),
                 )
                 try:
-                    fallback_answer = await self._generate_missing_tool_evidence_fallback_answer(
+                    recovery_answer = await self._generate_missing_tool_evidence_fallback_answer(
                         user_message=user_message,
                         deps=deps,
                         final_messages=final_messages,
@@ -1130,14 +1225,14 @@ class RunnerExecutionFlowPostMixin:
                 except Exception as exc:  # pragma: no cover - defensive logging
                     logger.warning("tool_failure_fallback_answer failed: %s", exc)
                     _log_step("tool_failure_fallback_error", error=str(exc))
-                    fallback_answer = ""
+                    recovery_answer = ""
                 else:
                     _log_step(
                         "tool_failure_fallback_done",
-                        answered=bool(fallback_answer.strip()),
+                        answered=bool(recovery_answer.strip()),
                     )
-            if fallback_answer.strip():
-                final_assistant = fallback_answer.strip()
+            if recovery_answer.strip():
+                final_assistant = recovery_answer.strip()
                 final_assistant = self._strip_workspace_download_link_paths(
                     final_assistant,
                     state.get("workspace_download_reference_keys") or [],
@@ -1149,17 +1244,18 @@ class RunnerExecutionFlowPostMixin:
                     clear_tool_planning_text=tool_execution_required,
                 )
                 if not assistant_output_streamed:
-                    state.get("thinking_emitter").assistant_emitted = True
+                    thinking_emitter = state.get("thinking_emitter")
+                    if thinking_emitter is not None:
+                        thinking_emitter.assistant_emitted = True
                     assistant_output_streamed = True
                     yield StreamEvent.assistant_delta(final_assistant)
-                answered_elapsed = round(time.monotonic() - start_time, 1)
                 yield StreamEvent.runtime_update(
                     "answered",
                     "Final answer ready.",
                     metadata={
-                        "phase": "tool_failure_fallback",
+                        "phase": answer_phase,
                         "attempt": current_model_attempt,
-                        "elapsed": answered_elapsed,
+                        "elapsed": round(time.monotonic() - start_time, 1),
                     },
                 )
                 state["answer_committed"] = True

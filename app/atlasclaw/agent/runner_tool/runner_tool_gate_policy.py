@@ -725,15 +725,15 @@ class RunnerToolGatePolicyMixin:
                 extra_count = len(display_missing) - 5
                 display_missing = [*display_missing[:5], f"...({extra_count} more)"]
             return (
-                "A grounded tool-backed answer is required for this request, but required tools were not executed: "
+                "This request needs tool execution, but the needed tools did not run: "
                 f"{', '.join(display_missing)}."
             )
         if candidate_names:
             return (
-                "A grounded tool-backed answer is required for this request, but no usable tool "
+                "This request needs tool execution, but no usable tool "
                 f"evidence was produced in this run. Required tools: {', '.join(candidate_names)}."
             )
         return (
-            "A grounded tool-backed answer is required for this request, but no usable tool "
+            "This request needs tool execution, but no usable tool "
             "evidence was produced in this run."
         )

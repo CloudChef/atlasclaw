@@ -245,11 +245,18 @@ class _PostRunner(
     RunnerToolEvidenceMixin,
     RunnerExecutionFlowPostMixin,
 ):
+    TOOL_POLICY_MAX_RETRIES = 1
+
     def __init__(self) -> None:
         self.history = _History()
         self.runtime_events = _RuntimeEvents()
         self.fallback_answer = ""
         self.fallback_calls = []
+        self.unsupported_answer = (
+            "I can't execute that operation with the available runtime tool. "
+            "No action was executed. Supported options are `enable` and `disable`."
+        )
+        self.unsupported_calls = []
         self.direct_answer_recovery_answer = ""
         self.direct_answer_recovery_calls = []
         self.lookup_dump_recovery_answer = ""
@@ -287,6 +294,17 @@ class _PostRunner(
     async def _generate_missing_tool_evidence_fallback_answer(self, **kwargs):
         self.fallback_calls.append(kwargs)
         return self.fallback_answer
+
+    async def run_single(self, user_message, deps, *, system_prompt=None, agent=None, allowed_tool_names=None):
+        self.unsupported_calls.append(
+            {
+                "user_message": user_message,
+                "system_prompt": system_prompt,
+                "agent": agent,
+                "allowed_tool_names": allowed_tool_names,
+            }
+        )
+        return self.unsupported_answer
 
     async def _generate_direct_answer_recovery_answer(self, **kwargs):
         self.direct_answer_recovery_calls.append(kwargs)
@@ -565,6 +583,122 @@ async def test_tool_required_turn_does_not_accept_fast_path_text_without_real_to
     assistant_chunks = [event for event in events if event.type == "assistant"]
     assert answered_states == []
     assert assistant_chunks == []
+
+
+@pytest.mark.asyncio
+async def test_tool_required_missing_tool_after_retry_asks_llm_for_unsupported_tool_message() -> None:
+    runner = _PostRunner()
+    session_manager = _SessionManager()
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-unsupported-tool",
+        "session_manager": session_manager,
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-unsupported-tool",
+        "user_message": "archive item 1",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=True,
+            needs_external_system=True,
+            reason="external item operation",
+            policy=ToolPolicyMode.MUST_USE_TOOL,
+        ),
+        "tool_match_result": SimpleNamespace(
+            missing_capabilities=[],
+            tool_candidates=[
+                SimpleNamespace(
+                    name="item_operation",
+                    capability_class="workflow:item",
+                )
+            ],
+        ),
+        "available_tools": [
+            {
+                "name": "item_operation",
+                "capability_class": "workflow:item",
+                "parameters_schema": {
+                    "type": "object",
+                    "required": ["item_ids", "operation"],
+                    "properties": {
+                        "item_ids": {"type": "array", "items": {"type": "string"}},
+                        "operation": {"type": "string", "enum": ["enable", "disable"]},
+                    },
+                },
+            }
+        ],
+        "tool_execution_required": True,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 1,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 2,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_tool_names=["item_operation"],
+            reason="external item operation",
+        ),
+    }
+
+    def _missing_required_tool_names(**kwargs):
+        return ["item_operation"]
+
+    runner._missing_required_tool_names = _missing_required_tool_names  # type: ignore[method-assign]
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(
+            [
+                {"role": "user", "content": "archive item 1"},
+                {"role": "assistant", "content": "I need to operate that item."},
+            ]
+        ),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+
+    assistant_text = "".join(event.content for event in events if event.type == "assistant")
+    failed_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "failed"
+    ]
+    answered_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "answered"
+    ]
+
+    assert failed_states == []
+    assert answered_states
+    assert "No action was executed" in assistant_text
+    assert "Supported options are `enable` and `disable`" in assistant_text
+    assert "A grounded tool-backed answer" not in assistant_text
+    assert runner.retry_after_missing_tool_execution_calls == []
+    assert runner.fallback_calls == []
+    assert len(runner.unsupported_calls) == 1
+    assert runner.unsupported_calls[0]["allowed_tool_names"] == []
+    assert "item_operation" in runner.unsupported_calls[0]["user_message"]
+    assert '"enable"' in runner.unsupported_calls[0]["user_message"]
+    assert '"disable"' in runner.unsupported_calls[0]["user_message"]
+    await runner._await_background_post_success_tasks()
+    assert session_manager.persisted_messages is not None
 
 
 @pytest.mark.asyncio
