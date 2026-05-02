@@ -35,6 +35,8 @@ const DEFAULT_TEXT_KEYS = {
   saveFailed: ['account.providerTokenSaveFailed', 'Unable to save provider token']
 }
 
+let activeSave = false
+
 function createProviderTokenState() {
   return {
     serviceProviders: [],
@@ -292,7 +294,7 @@ export function createProviderUserTokenController(options = {}) {
   }
 
   async function saveModal() {
-    if (saving || disposed || !state.modal) {
+    if (saving || activeSave || disposed || !state.modal) {
       return
     }
 
@@ -310,6 +312,7 @@ export function createProviderUserTokenController(options = {}) {
     }
 
     saving = true
+    activeSave = true
     if (saveBtn) {
       saveBtn.disabled = true
       saveBtn.textContent = text('saving')
@@ -347,6 +350,7 @@ export function createProviderUserTokenController(options = {}) {
       render()
     } finally {
       saving = false
+      activeSave = false
     }
   }
 
