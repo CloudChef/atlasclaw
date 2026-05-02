@@ -313,6 +313,22 @@ class TestLimits:
         # Should be limited by character count
         assert len(result["recent_tool_metadata"]) < 5
 
+    def test_single_oversized_metadata_entry_is_omitted(self):
+        history = [
+            _tool_msg(
+                "smartcmp_list_pending",
+                [{"requestId": f"REQ{i}", "payload": "x" * 1000} for i in range(50)],
+            )
+        ]
+
+        assert (
+            build_target_md_skill_workflow_context(
+                recent_history=history,
+                max_chars=6000,
+            )
+            is None
+        )
+
 
 # ---------------------------------------------------------------------------
 # Test D: Mixed metadata (some with trace, some without)

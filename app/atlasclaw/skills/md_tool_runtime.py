@@ -449,13 +449,18 @@ def _normalize_script_result(
     result: dict[str, Any],
 ) -> dict[str, Any]:
     """Apply generic normalization to script output before returning it to the runtime."""
-    del py_file, provider_type, tool_name
+    del py_file, tool_name
     normalized = dict(result)
     output = normalized.get("output")
     if not isinstance(output, str):
         return normalized
 
     normalized["output"] = output.replace("\r\n", "\n")
+    normalized["output"] = _normalize_provider_auth_failure_output(
+        output=normalized["output"],
+        provider_type=provider_type,
+        success=bool(normalized.get("success")),
+    )
     if should_hide_lookup_output(
         result_mode=result_mode,
         success_contract=success_contract,
@@ -466,6 +471,35 @@ def _normalize_script_result(
         normalized["output"] = ""
         normalized["_lookup_output_hidden"] = True
     return normalized
+
+
+def _normalize_provider_auth_failure_output(
+    *,
+    output: str,
+    provider_type: Optional[str],
+    success: bool,
+) -> str:
+    if success or not str(provider_type or "").strip():
+        return output
+    lowered = output.lower()
+    if not any(
+        marker in lowered
+        for marker in (
+            "401 client error",
+            "403 client error",
+            "http 401",
+            "http 403",
+            "status 401",
+            "status 403",
+            "401 unauthorized",
+            "403 forbidden",
+        )
+    ):
+        return output
+    return (
+        "[ERROR] Provider authentication failed. The provider service rejected "
+        "or expired the configured authentication credential.\n"
+    )
 
 
 def register_executable_tools_from_md(
@@ -558,7 +592,10 @@ def _register_md_tool_entry(
 
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
     provider_type = str(metadata.get("provider_type", "")).strip() or entry.provider or None
+    capability_class = _extract_capability_class(metadata, provider_type, tool_id=tool_id)
     result_mode = _extract_result_mode(metadata, tool_id=tool_id)
+    if _capability_is_artifact(capability_class) and result_mode == "llm":
+        result_mode = "tool_only_ok"
     success_contract = _extract_success_contract(metadata, tool_id=tool_id)
     try:
         invocation_config = _extract_script_invocation_config(metadata, tool_id=tool_id)
@@ -583,10 +620,11 @@ def _register_md_tool_entry(
 
     description = tool_description if tool_description else entry.description
     group_ids = _extract_group_ids(metadata, entry.provider, tool_id=tool_id)
-    capability_class = _extract_capability_class(metadata, provider_type, tool_id=tool_id)
     priority = _extract_priority(metadata, tool_id=tool_id)
     parameters_schema = _extract_parameters_schema(metadata, tool_id=tool_id)
     source = "provider" if provider_type else "md_skill"
+    if _capability_is_artifact(capability_class):
+        handler = _wrap_artifact_handler(handler, capability_class=capability_class)
     meta = skill_metadata_cls(
         name=tool_name,
         description=description,
@@ -616,6 +654,54 @@ def _register_md_tool_entry(
     )
     registry.register(meta, handler)
     registered.add(tool_name)
+
+
+def _wrap_artifact_handler(handler: Callable, *, capability_class: str) -> Callable:
+    """Apply minimal filename guarding for artifact-producing skill handlers."""
+    if not _capability_is_artifact(capability_class):
+        return handler
+
+    async def artifact_handler(ctx=None, **kwargs) -> dict[str, Any]:
+        if "output_filename" in kwargs and kwargs.get("output_filename") is not None:
+            try:
+                kwargs["output_filename"] = _sanitize_artifact_output_filename(
+                    kwargs.get("output_filename"),
+                )
+            except ValueError as exc:
+                return {
+                    "success": False,
+                    "error": str(exc),
+                }
+
+        result = handler(ctx, **kwargs) if ctx is not None else handler(**kwargs)
+        import inspect as _inspect
+
+        if _inspect.isawaitable(result):
+            result = await result
+        return result
+
+    artifact_handler.__name__ = getattr(handler, "__name__", "artifact_handler")
+    artifact_handler.__qualname__ = getattr(handler, "__qualname__", artifact_handler.__name__)
+    artifact_handler.__doc__ = getattr(handler, "__doc__", None)
+    return artifact_handler
+
+
+def _sanitize_artifact_output_filename(output_filename: Any) -> str:
+    value = str(output_filename or "artifact").strip()
+    if not value:
+        value = "artifact"
+    if "\x00" in value or "/" in value or "\\" in value:
+        raise ValueError("output_filename must be a file name, not a path")
+    if Path(value).is_absolute() or value.startswith("~"):
+        raise ValueError("output_filename must be a file name, not a path")
+    if value in {".", ".."}:
+        raise ValueError("output_filename must be a safe file name")
+    return value
+
+
+def _capability_is_artifact(capability_class: str) -> bool:
+    normalized = str(capability_class or "").strip().lower()
+    return normalized == "artifact" or normalized.startswith("artifact:")
 
 
 def _extract_group_ids(

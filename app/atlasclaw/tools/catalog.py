@@ -11,7 +11,6 @@ from typing import Optional
 
 # Group identifiers used by tool profiles.
 GROUP_FS = "group:fs"
-GROUP_RUNTIME = "group:runtime"
 GROUP_WEB = "group:web"
 GROUP_AUTOMATION = "group:automation"
 GROUP_ATLASCLAW = "group:atlasclaw"
@@ -22,13 +21,13 @@ GROUP_UI = "group:ui"
 GROUP_PROVIDERS = "group:providers"
 
 # Tools included in each logical group.
+# This map is role-facing. Internal coordination tools are listed separately
+# below and are not exposed as permission groups.
 GROUP_TOOLS: dict[str, list[str]] = {
-    GROUP_RUNTIME: ["exec", "process"],
-    GROUP_FS: ["read", "write", "edit", "delete"],
+    GROUP_FS: ["read"],
     GROUP_WEB: ["web_search", "web_fetch", "openmeteo_weather"],
     GROUP_UI: ["browser"],
     GROUP_AUTOMATION: [],
-    GROUP_CATALOG: ["atlasclaw_catalog_query"],
     GROUP_MEMORY: ["memory_search", "memory_get"],
     GROUP_SESSIONS: [
         "sessions_list",
@@ -55,17 +54,31 @@ def _dedupe(items: list[str]) -> list[str]:
 
 GROUP_TOOLS[GROUP_ATLASCLAW] = _dedupe(
     [
-        *GROUP_TOOLS[GROUP_RUNTIME],
         *GROUP_TOOLS[GROUP_FS],
         *GROUP_TOOLS[GROUP_WEB],
         *GROUP_TOOLS[GROUP_UI],
         *GROUP_TOOLS[GROUP_AUTOMATION],
-        *GROUP_TOOLS[GROUP_CATALOG],
         *GROUP_TOOLS[GROUP_MEMORY],
         *GROUP_TOOLS[GROUP_SESSIONS],
         *GROUP_TOOLS[GROUP_PROVIDERS],
     ]
 )
+
+INTERNAL_TOOL_GROUPS: set[str] = {
+    GROUP_CATALOG,
+}
+
+INTERNAL_TOOL_NAMES: set[str] = {"atlasclaw_catalog_query"}
+
+STANDARD_SKILL_RUNTIME_TOOL_NAMES: set[str] = {
+    "skill_read",
+    "skill_write",
+    "skill_edit",
+    "skill_delete",
+    "skill_exec",
+    "skill_process",
+}
+
 
 # Flattened list of all registered tool names.
 ALL_TOOLS: list[str] = _dedupe(
@@ -92,7 +105,6 @@ PROFILE_DEFINITIONS: dict[ToolProfile, list[str]] = {
     ToolProfile.MINIMAL: ["session_status"],
     ToolProfile.CODING: [
         GROUP_FS,
-        GROUP_RUNTIME,
         GROUP_WEB,
         GROUP_SESSIONS,
         GROUP_MEMORY,

@@ -14,7 +14,10 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from app.atlasclaw.tools.catalog import GROUP_ATLASCLAW, GROUP_TOOLS
+from app.atlasclaw.tools.catalog import (
+    GROUP_ATLASCLAW,
+    GROUP_TOOLS,
+)
 
 
 class SkillPermissionService:
@@ -39,7 +42,7 @@ class SkillPermissionService:
         key = self.normalize_key(value)
         if not key:
             return ""
-        for group_id in GROUP_TOOLS:
+        for group_id in self.role_tool_group_ids:
             if self.normalize_key(group_id) == key:
                 return group_id
         return ""
@@ -95,14 +98,6 @@ class SkillPermissionService:
         if not isinstance(tool, dict):
             return False
         return self.normalize_key(tool.get("source")) == "md_skill"
-
-    def is_core_catalog_tool_snapshot(self, tool: dict[str, Any]) -> bool:
-        """Return True when an executable tool should appear directly in core catalog."""
-        return (
-            isinstance(tool, dict)
-            and not self.is_provider_bound_tool_snapshot(tool)
-            and not self.is_markdown_backed_tool_snapshot(tool)
-        )
 
     def visible_provider_types(
         self,
@@ -163,11 +158,26 @@ class SkillPermissionService:
         group_id = self.permission_entry_tool_group_id(entry)
         if not group_id:
             return []
-        member_ids = entry.get("member_skill_ids")
-        source_members = member_ids if isinstance(member_ids, list) else GROUP_TOOLS[group_id]
+        static_members = [
+            self.normalize_id(member)
+            for member in GROUP_TOOLS.get(group_id, [])
+            if self.normalize_id(member)
+        ]
+        raw_member_ids = entry.get("member_skill_ids")
+        if isinstance(raw_member_ids, list):
+            allowed_keys = {
+                self.normalize_key(member)
+                for member in raw_member_ids
+                if self.normalize_key(member)
+            }
+            static_members = [
+                member
+                for member in static_members
+                if self.normalize_key(member) in allowed_keys
+            ]
         members: list[str] = []
         seen: set[str] = set()
-        for member in source_members:
+        for member in static_members:
             member_id = self.normalize_id(member)
             if member_id and member_id not in seen:
                 seen.add(member_id)
@@ -204,28 +214,13 @@ class SkillPermissionService:
                 return self.is_permission_entry_enabled(entry)
         return False
 
-    def _tool_group_members_from_snapshot(
-        self,
-        tools_snapshot: list[dict[str, Any]],
-    ) -> dict[str, list[str]]:
-        """Build role-facing built-in tool groups from the visible tool snapshot."""
-        available_builtin_tools = {
-            self.normalize_id(tool.get("name"))
-            for tool in tools_snapshot
-            if isinstance(tool, dict)
-            and self.normalize_id(tool.get("name"))
-            and self.is_core_catalog_tool_snapshot(tool)
+    def _role_tool_group_members(self) -> dict[str, list[str]]:
+        """Return static role-facing tool-group members."""
+        return {
+            group_id: list(GROUP_TOOLS.get(group_id, []))
+            for group_id in self.role_tool_group_ids
+            if GROUP_TOOLS.get(group_id)
         }
-        result: dict[str, list[str]] = {}
-        for group_id in self.role_tool_group_ids:
-            members = [
-                tool_name
-                for tool_name in GROUP_TOOLS.get(group_id, [])
-                if tool_name in available_builtin_tools
-            ]
-            if members:
-                result[group_id] = members
-        return result
 
     def tool_group_description(self, group_id: str, members: list[str]) -> str:
         """Build the display description for a role-facing built-in tool group."""
@@ -259,28 +254,6 @@ class SkillPermissionService:
                     "priority": 100,
                     "location": "built-in",
                     "source": "builtin",
-                }
-            )
-        return row
-
-    def _build_executable_row(self, tool: dict[str, Any], *, include_metadata: bool) -> dict[str, Any]:
-        """Build one role catalog row for a standalone executable tool."""
-        row = {
-            "name": tool["name"],
-            "description": tool.get("description", ""),
-            "category": tool.get("category", "utility"),
-            "type": "executable",
-            "runtime_enabled": True,
-        }
-        if include_metadata:
-            row.update(
-                {
-                    "provider_type": tool.get("provider_type", ""),
-                    "group_ids": list(tool.get("group_ids", []) or []),
-                    "capability_class": tool.get("capability_class", ""),
-                    "priority": int(tool.get("priority", 100) or 100),
-                    "location": tool.get("location", "built-in"),
-                    "source": tool.get("source", "builtin"),
                 }
             )
         return row
@@ -321,11 +294,18 @@ class SkillPermissionService:
         """Build the role-management skill catalog from runtime snapshots."""
         rows: list[dict[str, Any]] = []
 
-        tool_groups = self._tool_group_members_from_snapshot(tools_snapshot)
-        covered_tools = {
-            tool_name
-            for members in tool_groups.values()
-            for tool_name in members
+        available_tool_names = {
+            self.normalize_id(tool.get("name"))
+            for tool in tools_snapshot
+            if isinstance(tool, dict) and self.normalize_id(tool.get("name"))
+        }
+        tool_groups = {
+            group_id: [
+                tool_name
+                for tool_name in members
+                if tool_name in available_tool_names
+            ]
+            for group_id, members in self._role_tool_group_members().items()
         }
         for group_id in self.role_tool_group_ids:
             members = tool_groups.get(group_id, [])
@@ -337,16 +317,6 @@ class SkillPermissionService:
                         include_metadata=include_metadata,
                     )
                 )
-
-        for tool in tools_snapshot:
-            if not isinstance(tool, dict):
-                continue
-            tool_name = self.normalize_id(tool.get("name"))
-            if not tool_name or tool_name in covered_tools:
-                continue
-            if not self.is_core_catalog_tool_snapshot(tool):
-                continue
-            rows.append(self._build_executable_row(tool, include_metadata=include_metadata))
 
         for skill in md_skills:
             if not isinstance(skill, dict) or self.is_provider_bound_md_skill_snapshot(skill):
@@ -426,6 +396,7 @@ class SkillPermissionService:
             return result
 
         provider_bound = self.collect_provider_bound_skill_ids(skill_registry)
+        role_group_members = self._role_tool_group_members()
         expanded: list[dict[str, Any]] = []
         seen: set[str] = set()
 
@@ -459,6 +430,8 @@ class SkillPermissionService:
                 continue
 
             group_id = self.canonical_tool_group_id(skill_id)
+            if group_id and group_id not in role_group_members:
+                continue
             if ":" in skill_id and not group_id:
                 continue
             if group_id:
@@ -488,13 +461,14 @@ class SkillPermissionService:
             return result
 
         provider_bound = self.collect_provider_bound_skill_ids(skill_registry)
+        role_group_members = self._role_tool_group_members()
         member_to_group = {
             tool_name: group_id
-            for group_id in self.role_tool_group_ids
-            for tool_name in GROUP_TOOLS.get(group_id, [])
+            for group_id, members in role_group_members.items()
+            for tool_name in members
         }
         grouped_entries: dict[str, dict[str, dict[str, Any]]] = {
-            group_id: {} for group_id in self.role_tool_group_ids
+            group_id: {} for group_id in role_group_members
         }
         retained: list[dict[str, Any]] = []
 
@@ -510,6 +484,8 @@ class SkillPermissionService:
                 continue
 
             group_id = self.canonical_tool_group_id(skill_id)
+            if group_id and group_id not in role_group_members:
+                continue
             if ":" in skill_id and not group_id:
                 continue
             if group_id:
@@ -531,11 +507,16 @@ class SkillPermissionService:
             )
 
         collapsed: list[dict[str, Any]] = []
-        for group_id in self.role_tool_group_ids:
+        for group_id in role_group_members:
             member_entries = grouped_entries.get(group_id, {})
             if not member_entries:
                 continue
-            members = list(GROUP_TOOLS.get(group_id, []))
+            members = list(role_group_members.get(group_id, []))
+            present_members = [
+                member
+                for member in members
+                if member in member_entries
+            ]
             complete = all(member in member_entries for member in members)
             authorized_values = [
                 bool(member_entries[member].get("authorized", False))
@@ -563,7 +544,7 @@ class SkillPermissionService:
                     "enabled": enabled,
                     "type": "tool_group",
                     "group_id": group_id,
-                    "member_skill_ids": members,
+                    "member_skill_ids": members if complete else present_members,
                     "runtime_enabled": True,
                     "partial": partial,
                 }

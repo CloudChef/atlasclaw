@@ -28,9 +28,8 @@
 
   "skills_root": "../atlasclaw-providers/skills",
   "skills": {
-    "_comment": "Built-in tool registration controls. tools_exclusive removes named built-in tools or groups at startup. allow_script_execution controls local high-risk file/exec built-ins only.",
-    "tools_exclusive": [],
-    "allow_script_execution": true
+    "_comment": "Built-in tool registration controls. tools_exclusive removes named built-in tools or groups at startup.",
+    "tools_exclusive": []
   },
 
   "model": {

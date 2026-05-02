@@ -78,7 +78,6 @@ def register_agent_routes(router: APIRouter) -> None:
         request_cookies = dict(request_obj.cookies)
         provider_config = build_provider_config(ctx)
         safe_message = normalize_user_message(request.message)
-        init_run(ctx, run_id, request.session_key, safe_message, request.timeout_seconds)
 
         # Resolve user skill permissions for agent context filtering.
         # This is fail-closed: if permission resolution fails, the run is
@@ -149,7 +148,7 @@ def register_agent_routes(router: APIRouter) -> None:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Selected skill or provider capability is not available.",
-                )
+            )
             request_context[SELECTED_CAPABILITY_KEY] = canonical_capability
 
         # Always pass RBAC result to runtime when DB is available (including
@@ -165,6 +164,8 @@ def register_agent_routes(router: APIRouter) -> None:
                 **(request_context or {}),
                 "_provider_permissions": user_provider_permissions,
             }
+
+        init_run(ctx, run_id, request.session_key, safe_message, request.timeout_seconds)
 
         background_tasks.add_task(
             execute_agent_run,

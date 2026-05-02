@@ -347,6 +347,9 @@ def test_no_provider_no_skill_role_uses_prompt_policy_without_hard_block(
         assert "Hello." in greeting_text
         assert "No provider, skill, or tool is available" not in greeting_text
         assert client.app.state.test_agent.iter_calls
-        assert client.app.state.test_agent.run_calls == []
+        assert not any(
+            call.get("user_message") in {"申请 1C2G Linux", "确定这是新建的 VM", "hi"}
+            for call in client.app.state.test_agent.run_calls
+        )
     finally:
         _cleanup_manager(manager)

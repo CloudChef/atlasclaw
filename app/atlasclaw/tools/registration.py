@@ -8,7 +8,14 @@ from __future__ import annotations
 from typing import Optional, TYPE_CHECKING
 
 from app.atlasclaw.tools.base import ToolMetadata
-from app.atlasclaw.tools.catalog import GROUP_ATLASCLAW, ToolCatalog, ToolProfile
+from app.atlasclaw.tools.catalog import (
+    GROUP_ATLASCLAW,
+    GROUP_CATALOG,
+    INTERNAL_TOOL_NAMES,
+    STANDARD_SKILL_RUNTIME_TOOL_NAMES,
+    ToolCatalog,
+    ToolProfile,
+)
 from app.atlasclaw.skills.registry import SkillRegistry, SkillMetadata
 
 if TYPE_CHECKING:
@@ -16,47 +23,6 @@ if TYPE_CHECKING:
 
 # Registry entries map tool names to metadata and import targets.
 _TOOL_REGISTRY: dict[str, tuple[ToolMetadata, str, str]] = {
-    # Runtime tools
-    "exec": (
-        ToolMetadata(
-            name="exec",
-            description="Execute shell command",
-            group="runtime",
-            capability_class="runtime_exec",
-            routing_visibility="contextual",
-            aliases=["run command", "execute command", "shell command", "terminal command"],
-            keywords=["exec", "run", "command", "shell", "terminal", "script"],
-            use_when=[
-                "User asks to execute a local shell command or script",
-                "A workspace task requires running a command in the local environment",
-            ],
-            avoid_when=[
-                "A safer dedicated tool can satisfy the request without local command execution",
-            ],
-        ),
-        "app.atlasclaw.tools.runtime.exec_tool",
-        "exec_tool",
-    ),
-    "process": (
-        ToolMetadata(
-            name="process",
-            description="Manage long-running process",
-            group="runtime",
-            capability_class="runtime_process",
-            routing_visibility="contextual",
-            aliases=["manage process", "background process", "check process"],
-            keywords=["process", "background", "pid", "status", "stop", "restart"],
-            use_when=[
-                "User asks to inspect or manage a long-running local process",
-                "A previously started background command needs status or lifecycle management",
-            ],
-            avoid_when=[
-                "The task only needs a one-shot command execution",
-            ],
-        ),
-        "app.atlasclaw.tools.runtime.process_tool",
-        "process_tool",
-    ),
     # Filesystem tools
     "read": (
         ToolMetadata(
@@ -78,68 +44,6 @@ _TOOL_REGISTRY: dict[str, tuple[ToolMetadata, str, str]] = {
         ),
         "app.atlasclaw.tools.filesystem.read_tool",
         "read_tool",
-    ),
-    "write": (
-        ToolMetadata(
-            name="write",
-            description="Write file content",
-            group="fs",
-            capability_class="fs_write",
-            routing_visibility="contextual",
-            aliases=["write file", "create file", "save file", "create text file"],
-            keywords=["write", "create", "file", "save", "content", "overwrite"],
-            use_when=[
-                "User asks to create a local file or write text content to a file",
-                "A workspace task requires saving generated content into a file",
-            ],
-            avoid_when=[
-                "The task should modify an existing file incrementally instead of replacing it",
-            ],
-            result_mode="tool_only_ok",
-        ),
-        "app.atlasclaw.tools.filesystem.write_tool",
-        "write_tool",
-    ),
-    "edit": (
-        ToolMetadata(
-            name="edit",
-            description="Edit file by string replacement",
-            group="fs",
-            capability_class="fs_edit",
-            routing_visibility="contextual",
-            aliases=["edit file", "replace in file", "update file"],
-            keywords=["edit", "replace", "update", "modify", "file"],
-            use_when=[
-                "User asks to update an existing local file without rewriting it from scratch",
-                "A workspace task requires targeted text replacement in a file",
-            ],
-            avoid_when=[
-                "The task should create a brand-new file instead of editing an existing one",
-            ],
-            result_mode="tool_only_ok",
-        ),
-        "app.atlasclaw.tools.filesystem.edit_tool",
-        "edit_tool",
-    ),
-    "delete": (
-        ToolMetadata(
-            name="delete",
-            description="Delete a file from disk",
-            group="fs",
-            capability_class="fs_delete",
-            routing_visibility="contextual",
-            aliases=["delete file", "remove file"],
-            keywords=["delete", "remove", "file"],
-            use_when=[
-                "User explicitly asks to delete or remove a local file",
-            ],
-            avoid_when=[
-                "The task only needs to clear or replace file contents without deleting the file",
-            ],
-            result_mode="tool_only_ok",
-        ),
-        "app.atlasclaw.tools.filesystem.delete_tool",
-        "delete_file_tool",
     ),
     "browser": (
         ToolMetadata(
@@ -170,7 +74,7 @@ _TOOL_REGISTRY: dict[str, tuple[ToolMetadata, str, str]] = {
             description="Query AtlasClaw runtime catalogs for available providers, skills, tools, and groups",
             group="catalog",
             capability_class="atlasclaw_catalog",
-            routing_visibility="general",
+            routing_visibility="internal",
             aliases=["catalog", "skills catalog", "tool catalog", "provider catalog", "runtime catalog"],
             keywords=[
                 "available skills",
@@ -192,9 +96,88 @@ _TOOL_REGISTRY: dict[str, tuple[ToolMetadata, str, str]] = {
                 "The user wants to execute an external provider action rather than inspect the runtime catalog",
             ],
             result_mode="tool_only_ok",
+            coordination_only=True,
         ),
-        "app.atlasclaw.tools.runtime.catalog_query_tool",
+        "app.atlasclaw.tools.discovery.catalog_query_tool",
         "atlasclaw_catalog_query_tool",
+    ),
+    "skill_read": (
+        ToolMetadata(
+            name="skill_read",
+            description="Internal skill runtime: read from the current work_dir or selected skill files",
+            group="skill_runtime",
+            capability_class="skill_runtime:read",
+            routing_visibility="internal",
+            coordination_only=True,
+        ),
+        "app.atlasclaw.tools.skill_runtime_tools",
+        "skill_read_tool",
+    ),
+    "skill_write": (
+        ToolMetadata(
+            name="skill_write",
+            description="Internal skill runtime: write text files under the current work_dir",
+            group="skill_runtime",
+            capability_class="skill_runtime:write",
+            routing_visibility="internal",
+            coordination_only=True,
+        ),
+        "app.atlasclaw.tools.skill_runtime_tools",
+        "skill_write_tool",
+    ),
+    "skill_edit": (
+        ToolMetadata(
+            name="skill_edit",
+            description="Internal skill runtime: edit text files under the current work_dir",
+            group="skill_runtime",
+            capability_class="skill_runtime:edit",
+            routing_visibility="internal",
+            coordination_only=True,
+        ),
+        "app.atlasclaw.tools.skill_runtime_tools",
+        "skill_edit_tool",
+    ),
+    "skill_delete": (
+        ToolMetadata(
+            name="skill_delete",
+            description="Internal skill runtime: delete files under the current work_dir",
+            group="skill_runtime",
+            capability_class="skill_runtime:delete",
+            routing_visibility="internal",
+            coordination_only=True,
+        ),
+        "app.atlasclaw.tools.skill_runtime_tools",
+        "skill_delete_tool",
+    ),
+    "skill_exec": (
+        ToolMetadata(
+            name="skill_exec",
+            description=(
+                "Internal skill runtime: execute shell commands for the selected skill. "
+                "Commands run from the current work_dir by default. If the command creates "
+                "a user-facing downloadable file, download_paths is required and must contain "
+                "only that final file's work_dir-relative path. Do not use this tool to install "
+                "packages or run package managers."
+            ),
+            group="skill_runtime",
+            capability_class="skill_runtime:exec",
+            routing_visibility="internal",
+            coordination_only=True,
+        ),
+        "app.atlasclaw.tools.skill_runtime_tools",
+        "skill_exec_tool",
+    ),
+    "skill_process": (
+        ToolMetadata(
+            name="skill_process",
+            description="Internal skill runtime: manage background processes for the selected skill",
+            group="skill_runtime",
+            capability_class="skill_runtime:process",
+            routing_visibility="internal",
+            coordination_only=True,
+        ),
+        "app.atlasclaw.tools.skill_runtime_tools",
+        "skill_process_tool",
     ),
     # Session tools
     "sessions_list": (
@@ -447,7 +430,6 @@ def register_builtin_tools(
     allow: Optional[list[str]] = None,
     deny: Optional[list[str]] = None,
     tools_exclusive: Optional[list[str]] = None,
-    allow_script_execution: bool = True,
 ) -> list[str]:
     """Register built-in tools into the skill registry.
 
@@ -467,14 +449,27 @@ def register_builtin_tools(
     filtered_tools = ToolCatalog.filter_tools(profile_tools, allow=allow, deny=deny)
     if tools_exclusive:
         filtered_tools = ToolCatalog.filter_tools(filtered_tools, deny=list(tools_exclusive))
-    if not allow_script_execution:
-        filtered_tools = ToolCatalog.filter_tools(
-            filtered_tools,
-            deny=["read", "write", "edit", "delete", "exec"],
-        )
+
+    filtered_tool_names = list(filtered_tools)
+    excluded_tool_names = set(ToolCatalog.expand_groups(list(tools_exclusive or [])))
+    raw_exclusions = {
+        str(item or "").strip()
+        for item in (tools_exclusive or [])
+        if str(item or "").strip()
+    }
+    excluded_tool_names.update(item for item in raw_exclusions if not item.startswith("group:"))
+    if GROUP_CATALOG in raw_exclusions or GROUP_ATLASCLAW in raw_exclusions:
+        excluded_tool_names.update(INTERNAL_TOOL_NAMES)
+    if GROUP_ATLASCLAW in raw_exclusions:
+        excluded_tool_names.update(STANDARD_SKILL_RUNTIME_TOOL_NAMES)
+    for internal_tool_name in sorted(INTERNAL_TOOL_NAMES | STANDARD_SKILL_RUNTIME_TOOL_NAMES):
+        if "*" in excluded_tool_names or internal_tool_name in excluded_tool_names:
+            continue
+        if internal_tool_name in _TOOL_REGISTRY and internal_tool_name not in filtered_tool_names:
+            filtered_tool_names.append(internal_tool_name)
 
     registered: list[str] = []
-    for tool_name in filtered_tools:
+    for tool_name in filtered_tool_names:
         if tool_name not in _TOOL_REGISTRY:
             continue
 
@@ -490,7 +485,11 @@ def register_builtin_tools(
             description=tool_meta.description,
             category=f"builtin:{tool_meta.group}",
             location="built-in",
-            source="builtin",
+            source=(
+                "internal_runtime"
+                if tool_name in STANDARD_SKILL_RUNTIME_TOOL_NAMES
+                else "builtin"
+            ),
             group_ids=_resolve_builtin_group_ids(tool_meta),
             capability_class=_resolve_builtin_capability_class(tool_name, tool_meta),
             routing_visibility=str(tool_meta.routing_visibility or "").strip() or "contextual",

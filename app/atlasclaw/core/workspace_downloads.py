@@ -38,6 +38,9 @@ def is_safe_workspace_relative_path(path: str) -> bool:
     normalized = str(path or "").strip().replace("\\", "/")
     if not normalized or normalized.startswith("/") or normalized.startswith("~"):
         return False
+    normalized_lower = normalized.lower()
+    if normalized_lower == ".atlasclaw" or normalized_lower.startswith(".atlasclaw/"):
+        return False
     if "\x00" in normalized:
         return False
     if ":" in normalized.split("/", 1)[0]:
@@ -214,7 +217,12 @@ def _resolve_workspace_artifact_candidate(
     try:
         root_resolved = root.resolve()
         resolved = candidate.resolve()
-        resolved.relative_to(root_resolved)
+        relative_path = resolved.relative_to(root_resolved).as_posix()
+        if not is_safe_workspace_relative_path(relative_path):
+            raise WorkspaceDownloadError(
+                "forbidden",
+                "Requested file is outside the allowed workspace area",
+            )
     except ValueError as exc:
         raise WorkspaceDownloadError(
             "forbidden",
@@ -256,4 +264,6 @@ def workspace_download_reference_for_path(
         root = workspace_download_root(workspace_path, user_id).resolve()
         return {"path": resolved.relative_to(root).as_posix()}
     except WorkspaceDownloadError:
+        return None
+    except ValueError:
         return None

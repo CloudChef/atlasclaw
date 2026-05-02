@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.atlasclaw.tools.runtime.catalog_query_tool import atlasclaw_catalog_query_tool
+from app.atlasclaw.tools.discovery.catalog_query_tool import atlasclaw_catalog_query_tool
 
 
 @pytest.mark.asyncio

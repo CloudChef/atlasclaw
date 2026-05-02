@@ -175,10 +175,6 @@ class SkillsConfig(BaseModel):
         default_factory=list,
         description="Built-in tools or tool groups to exclude at startup registration time",
     )
-    allow_script_execution: bool = Field(
-        default=True,
-        description="Whether high-risk built-in filesystem and exec tools may be registered",
-    )
 
 
 class HookScriptHandlerConfig(BaseModel):

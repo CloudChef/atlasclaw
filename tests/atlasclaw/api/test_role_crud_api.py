@@ -742,7 +742,7 @@ class TestRoleCRUDAPI:
             response_by_id = {entry['skill_id']: entry for entry in response_entries}
             assert 'group:fs' in response_by_id
             assert response_by_id['group:fs']['type'] == 'tool_group'
-            assert response_by_id['group:fs']['member_skill_ids'] == ['read', 'write', 'edit', 'delete']
+            assert response_by_id['group:fs']['member_skill_ids'] == ['read']
             for concrete_tool in ('read', 'write', 'edit', 'delete'):
                 assert concrete_tool not in response_by_id
 
@@ -755,7 +755,8 @@ class TestRoleCRUDAPI:
                     }
 
             stored_skill_ids = asyncio.run(_stored_skill_ids())
-            assert {'read', 'write', 'edit', 'delete'}.issubset(stored_skill_ids)
+            assert 'read' in stored_skill_ids
+            assert {'write', 'edit', 'delete'}.isdisjoint(stored_skill_ids)
             assert 'group:fs' not in stored_skill_ids
 
             refreshed_roles_response = client.get('/api/roles', headers=headers)
@@ -1037,7 +1038,11 @@ class TestRoleCRUDAPI:
         regular_headers = {'AtlasClaw-Authenticate': regular_token}
         denied_catalog_resp = client.get('/api/service-providers/available-instances', headers=regular_headers)
         assert denied_catalog_resp.status_code == 200
-        assert denied_catalog_resp.json()['providers'] == []
+        denied_provider_keys = {
+            (item['provider_type'], item['instance_name'])
+            for item in denied_catalog_resp.json()['providers']
+        }
+        assert ('smartcmp', 'default') not in denied_provider_keys
 
         denied_settings_resp = client.put(
             '/api/users/me/provider-settings',
@@ -1055,7 +1060,11 @@ class TestRoleCRUDAPI:
             headers=admin_headers,
         )
         assert full_catalog_resp.status_code == 200
-        assert full_catalog_resp.json()['providers'][0]['provider_type'] == 'smartcmp'
+        full_provider_keys = {
+            (item['provider_type'], item['instance_name'])
+            for item in full_catalog_resp.json()['providers']
+        }
+        assert ('smartcmp', 'default') in full_provider_keys
 
         async def _add_empty_provider_role():
             async with _test_db_manager.get_session() as session:
@@ -1128,7 +1137,11 @@ class TestRoleCRUDAPI:
         regular_headers = {'AtlasClaw-Authenticate': regular_token}
         allowed_catalog_resp = client.get('/api/service-providers/available-instances', headers=regular_headers)
         assert allowed_catalog_resp.status_code == 200
-        assert allowed_catalog_resp.json()['providers'][0]['provider_type'] == 'smartcmp'
+        allowed_provider_keys = {
+            (item['provider_type'], item['instance_name'])
+            for item in allowed_catalog_resp.json()['providers']
+        }
+        assert ('smartcmp', 'default') in allowed_provider_keys
 
         _cleanup_manager(manager)
 
@@ -1249,8 +1262,8 @@ class TestRoleCRUDAPI:
                         },
                         'skill_permissions': [
                             {
-                                'skill_id': 'group:runtime',
-                                'skill_name': 'group:runtime',
+                                'skill_id': 'group:fs',
+                                'skill_name': 'group:fs',
                                 'authorized': False,
                                 'enabled': False,
                             },
@@ -1292,7 +1305,7 @@ class TestRoleCRUDAPI:
         assert admin_role['permissions']['tokens']['create'] is True
         admin_skill_entries = admin_role['permissions']['skills']['skill_permissions']
         assert len(admin_skill_entries) == 1
-        assert admin_skill_entries[0]['skill_id'] == 'group:runtime'
+        assert admin_skill_entries[0]['skill_id'] == 'group:fs'
         assert admin_skill_entries[0]['authorized'] is False
         assert admin_skill_entries[0]['enabled'] is False
         admin_provider_keys = {

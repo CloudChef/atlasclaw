@@ -18,6 +18,7 @@ from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import MdSkillEntry, SkillMetadata, SkillRegistry
+from app.atlasclaw.tools.registration import register_builtin_tools
 
 
 def _handler():
@@ -126,6 +127,50 @@ def test_agent_capabilities_hide_denied_provider_instance(tmp_path):
     commands = {item["command"] for item in payload["capabilities"]}
     assert "/default.linux-vm-request" not in commands
     assert "/no-provider-vm-request" in commands
+
+
+def test_agent_capabilities_hide_internal_catalog_and_show_authorized_artifact_tools(tmp_path):
+    registry = SkillRegistry()
+    register_builtin_tools(registry)
+    registry.register(
+        SkillMetadata(
+            name="txt_create_document",
+            description="Create a TXT artifact from explicit content.",
+            source="md_skill",
+            capability_class="artifact:txt",
+            group_ids=["group:txt"],
+        ),
+        _handler,
+    )
+    ctx = APIContext(
+        session_manager=SessionManager(agents_dir=str(tmp_path / "agents")),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+    )
+    authz = AuthorizationContext(
+        user=UserInfo(user_id="user"),
+        permissions={
+            "skills": {
+                "module_permissions": {"view": True},
+                "skill_permissions": [
+                    {
+                        "skill_id": "txt_create_document",
+                        "skill_name": "txt_create_document",
+                        "authorized": True,
+                        "enabled": True,
+                    }
+                ],
+            },
+            "providers": {"provider_permissions": []},
+        },
+    )
+
+    payload = build_agent_capabilities(ctx=ctx, authz=authz, provider_instances={})
+
+    commands = {item["command"]: item for item in payload["capabilities"]}
+    assert "/txt_create_document" in commands
+    assert commands["/txt_create_document"]["target_tool_names"] == ["txt_create_document"]
+    assert "/atlasclaw_catalog_query" not in commands
 
 
 def test_resolve_selected_capability_rejects_disabled_standalone_skill(tmp_path):

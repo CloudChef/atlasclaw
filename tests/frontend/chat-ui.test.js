@@ -1322,7 +1322,8 @@ describe('chat-ui.js handler mode', () => {
         expect(htmlPayload).toContain('class="workspace-download-link"');
         expect(htmlPayload).toContain('download');
         expect(htmlPayload).toContain('/api/workspace/files/download?path=conversation_2026-04-28.txt');
-        expect(htmlPayload).toContain('conversation record');
+        expect(htmlPayload).toContain('<span class="workspace-download-text">conversation_2026-04-28.txt</span>');
+        expect(htmlPayload).not.toContain('conversation record');
         expect(htmlPayload).not.toContain('target="_blank"');
     });
 
@@ -1338,17 +1339,14 @@ describe('chat-ui.js handler mode', () => {
         expect(htmlPayload).not.toContain('target="_blank"');
     });
 
-    test('handler renders file written output as a workspace download control', async () => {
+    test('handler does not render hidden runtime workspace references as download controls', async () => {
         const htmlPayload = await renderAssistantHtml(
-            'File written: .atlasclaw/history.txt',
-            'run-file-written-link'
+            'Download workspace://.AtlasClaw/skills/skill-pdf/tmp/debug.pdf',
+            'run-hidden-runtime-workspace-link'
         );
 
-        expect(htmlPayload).not.toContain('File written:');
-        expect(htmlPayload).toContain('class="workspace-download-link"');
-        expect(htmlPayload).toContain('/api/workspace/files/download?path=.atlasclaw%2Fhistory.txt');
-        expect(htmlPayload).toContain('<span class="workspace-download-text">history.txt</span>');
-        expect(htmlPayload).not.toContain('workspace-download-text">.atlasclaw');
+        expect(htmlPayload).not.toContain('class="workspace-download-link"');
+        expect(htmlPayload).not.toContain('/api/workspace/files/download');
     });
 
     test('handler renders runtime workspace artifacts as download controls', async () => {
@@ -1430,7 +1428,7 @@ describe('chat-ui.js handler mode', () => {
         await new Promise(r => setTimeout(r, 100));
         const stream = MockEventSource.instances.at(-1);
         stream.simulateEvent('assistant', {
-            text: 'File written: conversation.txt',
+            text: 'workspace://conversation.txt',
             is_delta: true
         });
         stream.simulateEvent('runtime', {
@@ -1499,48 +1497,15 @@ describe('chat-ui.js handler mode', () => {
         await handlerPromise;
     });
 
-    test('handler treats nested file-written paths as work-dir relative paths', async () => {
+    test('handler does not linkify unsafe local markdown links', async () => {
         const htmlPayload = await renderAssistantHtml(
-            'File written: downloads/report.txt',
-            'run-file-written-nested-path'
-        );
-
-        expect(htmlPayload).not.toContain('File written:');
-        expect(htmlPayload).toContain('/api/workspace/files/download?path=downloads%2Freport.txt');
-        expect(htmlPayload).toContain('<span class="workspace-download-text">report.txt</span>');
-    });
-
-    test('handler does not linkify unsafe local file paths', async () => {
-        const htmlPayload = await renderAssistantHtml(
-            'File written: /etc/passwd\n[local](/etc/passwd)',
+            '[local](/etc/passwd)',
             'run-unsafe-local-link'
         );
 
         expect(htmlPayload).not.toContain('workspace-download-link');
         expect(htmlPayload).not.toContain('/api/workspace/files/download');
         expect(htmlPayload).toContain('<a href="#"');
-    });
-
-    test('handler does not linkify external file-written URLs as workspace downloads', async () => {
-        const htmlPayload = await renderAssistantHtml(
-            'File written: https://example.com/users/bob/work_dir/report.txt',
-            'run-external-file-written-url'
-        );
-
-        expect(htmlPayload).not.toContain('workspace-download-link');
-        expect(htmlPayload).not.toContain('/api/workspace/files/download');
-        expect(htmlPayload).toContain('https://example.com/users/bob/work_dir/report.txt');
-    });
-
-    test('handler does not linkify absolute user workspace-looking paths', async () => {
-        const htmlPayload = await renderAssistantHtml(
-            'File written: /tmp/workspace/users/bob/work_dir/report.txt',
-            'run-absolute-user-path'
-        );
-
-        expect(htmlPayload).not.toContain('workspace-download-link');
-        expect(htmlPayload).not.toContain('/api/workspace/files/download');
-        expect(htmlPayload).toContain('File written: /tmp/workspace/users/bob/work_dir/report.txt');
     });
 
     test('handler preserves external links as normal links', async () => {

@@ -1,4 +1,4 @@
 # -*- coding: utf-8 -*-
 # Copyright 2026  Qianyun, Inc., www.cloudchef.io, All rights reserved.
 
-"""Runtime tools (`group:runtime`)."""
+"""Internal discovery and coordination tools."""

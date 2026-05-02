@@ -274,7 +274,8 @@ class TestMainStartup:
         )
         await manager.create_tables()
 
-        BUILTIN_TOOL_NAME = "exec"
+        BUILTIN_TOOL_NAME = "read"
+        BUILTIN_TOOL_GROUP = "group:fs"
         STANDALONE_SKILL_ID = "release-helper"
 
         class _FakeRegistry:
@@ -289,11 +290,11 @@ class TestMainStartup:
                     }
                     for tool_name in SMARTCMP_REQUEST_TOOL_NAMES
                 ]
-                # Built-in tool (high-privilege)
+                # Built-in tool
                 builtin_tools = [
                     {
                         "name": BUILTIN_TOOL_NAME,
-                        "description": "Execute shell command",
+                        "description": "Read file content",
                         "source": "builtin",
                     },
                 ]
@@ -333,7 +334,7 @@ class TestMainStartup:
                 for entry in admin_role.permissions["skills"]["skill_permissions"]
             }
             assert provider_ids.isdisjoint(admin_skill_ids)
-            assert BUILTIN_TOOL_NAME in admin_skill_ids
+            assert BUILTIN_TOOL_GROUP in admin_skill_ids
             assert STANDALONE_SKILL_ID in admin_skill_ids
 
             # User receives the same initialized core skill access as admin,
@@ -343,7 +344,7 @@ class TestMainStartup:
                 for entry in user_role.permissions["skills"]["skill_permissions"]
             }
             assert provider_ids.isdisjoint(user_skill_ids)
-            assert BUILTIN_TOOL_NAME in user_skill_ids
+            assert BUILTIN_TOOL_GROUP in user_skill_ids
             assert STANDALONE_SKILL_ID in user_skill_ids
             assert user_role.permissions["skills"]["module_permissions"]["view"] is False
 

@@ -20,6 +20,7 @@ from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     build_finalize_payload,
     build_lookup_dump_recovery_payload,
     build_tool_failure_fallback_payload,
+    provider_auth_diagnostic_user_message,
     select_provider_auth_diagnostic,
 )
 from app.atlasclaw.agent.runner_tool.runner_execution_retry import RunnerExecutionRetryMixin
@@ -78,7 +79,7 @@ def test_build_tool_failure_fallback_payload_forbids_inferred_side_effect_claims
     assert "Never infer that a side-effecting action" in payload["system_prompt"]
     assert "Never infer that an unavailable external or private-system action" in payload["system_prompt"]
     assert "service the user is trying to use is currently unavailable" in payload["system_prompt"]
-    assert "personal provider access credential (`user_token`) is not configured" in payload["system_prompt"]
+    assert "personal provider access credential is not configured" in payload["system_prompt"]
     assert "personal account settings" in payload["system_prompt"]
     assert "contact an administrator" in payload["system_prompt"]
     assert "diagnostic questions about backend setup" in payload["system_prompt"]
@@ -133,7 +134,8 @@ def test_provider_auth_diagnostic_sanitizes_user_token_failure() -> None:
     )
 
     assert diagnostic and diagnostic["missing_user_token"] is True
-    assert "personal provider access credential (`user_token`) is not configured" in payload["user_prompt"]
+    assert "personal provider access credential is not configured" in payload["user_prompt"]
+    assert "`user_token`" not in payload["user_prompt"]
     assert "contact an administrator" not in payload["user_prompt"]
     assert "atlasclaw.json" not in payload["user_prompt"]
     assert "HTTP request" not in payload["user_prompt"]
@@ -183,7 +185,8 @@ def test_provider_auth_diagnostic_sanitizes_rejected_user_token_failure() -> Non
     )
 
     assert diagnostic and diagnostic["user_token_configured"] is True
-    assert "personal provider access credential (`user_token`) was rejected" in payload["user_prompt"]
+    assert "personal provider access credential was rejected" in payload["user_prompt"]
+    assert "`user_token`" not in payload["user_prompt"]
     assert "personal account settings" in payload["user_prompt"]
     assert "contact an administrator" not in payload["user_prompt"]
     assert "HTTP 401" not in payload["user_prompt"]
@@ -323,6 +326,38 @@ class _SlowPostRunner(_PostRunner):
     async def _maybe_finalize_title(self, **kwargs):
         await asyncio.sleep(0.2)
         return None
+
+
+def test_strips_generated_workspace_download_paths_from_markdown_links() -> None:
+    answer = (
+        "Files: [download](./report.xlsx), "
+        "[PDF](workspace://exports/report.pdf), "
+        "[sandbox](sandbox:/tmp/work/report.xlsx), "
+        "[api](/api/atlasclaw/skills/xlsx/download?file=report.xlsx), "
+        "[external](https://example.com/report.xlsx)."
+    )
+
+    normalized = _PostRunner._strip_workspace_download_link_paths(
+        answer,
+        {"report.xlsx", "exports/report.pdf"},
+    )
+
+    assert normalized == (
+        "Files: report.xlsx, report.pdf, report.xlsx, report.xlsx, "
+        "[external](https://example.com/report.xlsx)."
+    )
+
+
+def test_provider_auth_diagnostic_user_message_guides_user_token_setup() -> None:
+    missing = provider_auth_diagnostic_user_message({"missing_user_token": True})
+    assert "personal account settings" in missing
+    assert "`user_token`" not in missing
+    assert "not configured" in missing
+
+    rejected = provider_auth_diagnostic_user_message({"user_token_configured": True})
+    assert "Update it in personal account settings" in rejected
+    assert "`user_token`" not in rejected
+    assert "invalid" in rejected
 
 
 class _AgentRun:
@@ -856,6 +891,16 @@ def test_repeated_tool_loop_limit_detects_same_tool_before_dispatch() -> None:
     assert exceeded == ["web_search"]
 
 
+def test_repeated_tool_loop_limit_does_not_block_standard_skill_runtime_tools() -> None:
+    exceeded = _StreamRunner._collect_repeated_tool_names(
+        planned_tool_calls=[{"name": "skill_exec"}],
+        executed_tool_names=["skill_exec", "skill_exec"],
+        repeat_limit=2,
+    )
+
+    assert exceeded == []
+
+
 def test_merge_runtime_messages_with_session_prefix_restores_full_turn_view() -> None:
     merged = _PayloadRunner._merge_runtime_messages_with_session_prefix(
         session_message_history=[
@@ -1215,6 +1260,108 @@ async def test_artifact_request_with_only_lookup_results_falls_back_in_same_turn
     assert answered_states
     assert runner.fallback_calls
     assert any("没有真正生成 PPT 文件" in chunk for chunk in assistant_chunks)
+
+
+@pytest.mark.asyncio
+async def test_artifact_download_evidence_skips_repeat_loop_failure_fallback() -> None:
+    runner = _PostRunner()
+    runner.fallback_answer = "无法生成文件。"
+    session_manager = _SessionManager()
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-artifact-download",
+        "session_manager": session_manager,
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-artifact-download",
+        "user_message": "/xlsx 生成表格",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=True,
+            reason="artifact request",
+            policy=ToolPolicyMode.PREFER_TOOL,
+        ),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "available_tools": [
+            {
+                "name": "skill_exec",
+                "group": "skill_runtime",
+                "capability_class": "skill_runtime:process",
+                "result_mode": "tool_only_ok",
+            }
+        ],
+        "artifact_goal": {"kind": "xlsx", "label": "Excel workbook"},
+        "tool_execution_required": True,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 0,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [{"name": "skill_exec", "args": {}}],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 1,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "workspace_download_reference_keys": ["users/admin/work_dir/skill-only.xlsx"],
+        "repeated_tool_no_progress": {"tool_name": "skill_exec", "count": 2},
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.CREATE_ARTIFACT,
+            target_tool_names=["skill_exec"],
+            reason="artifact request",
+        ),
+    }
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(
+            [
+                {"role": "user", "content": "/xlsx 生成表格"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "tc-1", "name": "skill_exec", "args": {}}],
+                },
+                {
+                    "role": "tool",
+                    "tool_name": "skill_exec",
+                    "content": {
+                        "is_error": False,
+                        "details": {"download_path": ["skill-only.xlsx"]},
+                    },
+                },
+            ]
+        ),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+
+    failed_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "failed"
+    ]
+    answered_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "answered"
+    ]
+    assistant_chunks = [event.content for event in events if event.type == "assistant"]
+
+    assert failed_states == []
+    assert answered_states
+    assert runner.fallback_calls == []
+    assert any("download_path" in chunk or "skill-only.xlsx" in chunk for chunk in assistant_chunks)
 
 
 @pytest.mark.asyncio
@@ -1597,6 +1744,38 @@ def test_should_finalize_from_tool_results_when_tool_is_tool_only_ok() -> None:
     assert should_finalize is True
 
 
+def test_should_not_finalize_provider_result_when_standard_skill_runtime_is_visible() -> None:
+    runner = _StreamRunnerWithEvidence()
+
+    should_finalize = runner._should_finalize_from_tool_results(
+        messages=[
+            {"role": "user", "content": "把待审批生成 excel"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"id": "tc-1", "name": "smartcmp_list_pending", "args": {}}],
+            },
+            {
+                "role": "tool",
+                "tool_name": "smartcmp_list_pending",
+                "content": {"output": "待审批列表"},
+            },
+        ],
+        start_index=1,
+        planned_tool_names=["smartcmp_list_pending"],
+        available_tools=[
+            {
+                "name": "smartcmp_list_pending",
+                "capability_class": "provider:smartcmp",
+                "result_mode": "tool_only_ok",
+            },
+            {"name": "skill_exec", "capability_class": "skill_runtime_exec"},
+        ],
+    )
+
+    assert should_finalize is False
+
+
 def test_should_finalize_from_embedded_tool_results_when_tool_is_tool_only_ok() -> None:
     runner = _StreamRunnerWithEvidence()
 
@@ -1952,7 +2131,7 @@ def test_should_not_finalize_tool_only_result_when_artifact_goal_is_unsatisfied(
     assert should_finalize is False
 
 
-def test_should_finalize_tool_only_result_when_artifact_goal_uses_generic_result_file_key() -> None:
+def test_should_finalize_tool_only_result_when_artifact_goal_returns_artifact_path() -> None:
     runner = _StreamRunnerWithEvidence()
 
     should_finalize = runner._should_finalize_from_tool_results(
@@ -1967,7 +2146,7 @@ def test_should_finalize_tool_only_result_when_artifact_goal_uses_generic_result
                 "role": "tool",
                 "tool_name": "pdf_create_document",
                 "content": {
-                    "result_file": "C:/workspace/exports/pending-approvals.pdf",
+                    "artifact_path": "exports/pending-approvals.pdf",
                     "pages": 3,
                 },
             },
@@ -1985,6 +2164,160 @@ def test_should_finalize_tool_only_result_when_artifact_goal_uses_generic_result
     )
 
     assert should_finalize is True
+
+
+def test_should_finalize_tool_only_result_when_artifact_goal_returns_download_path_list() -> None:
+    runner = _StreamRunnerWithEvidence()
+
+    should_finalize = runner._should_finalize_from_tool_results(
+        messages=[
+            {"role": "user", "content": "生成 PDF"},
+            {
+                "role": "tool",
+                "tool_name": "skill_exec",
+                "content": {
+                    "is_error": False,
+                    "details": {"download_path": ["pending.pdf"]},
+                },
+            },
+        ],
+        start_index=0,
+        planned_tool_names=["skill_exec"],
+        available_tools=[
+            {
+                "name": "skill_exec",
+                "capability_class": "artifact:pdf",
+                "result_mode": "tool_only_ok",
+            }
+        ],
+        artifact_goal={"kind": "pdf", "label": "PDF document"},
+    )
+
+    assert should_finalize is True
+
+
+def test_should_not_finalize_artifact_goal_from_failed_download_path_payload() -> None:
+    runner = _StreamRunnerWithEvidence()
+
+    should_finalize = runner._should_finalize_from_tool_results(
+        messages=[
+            {"role": "user", "content": "生成 PDF"},
+            {
+                "role": "tool",
+                "tool_name": "skill_exec",
+                "content": {
+                    "is_error": True,
+                    "details": {"download_path": ["stale.pdf"]},
+                },
+            },
+        ],
+        start_index=0,
+        planned_tool_names=["skill_exec"],
+        available_tools=[
+            {
+                "name": "skill_exec",
+                "capability_class": "artifact:pdf",
+                "result_mode": "tool_only_ok",
+            }
+        ],
+        artifact_goal={"kind": "pdf", "label": "PDF document"},
+    )
+
+    assert should_finalize is False
+
+
+def test_should_finalize_tool_only_result_for_absolute_artifact_inside_user_work_dir(tmp_path) -> None:
+    runner = _StreamRunnerWithEvidence()
+    artifact_path = tmp_path / "users" / "admin" / "work_dir" / "exports" / "pending.pdf"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_bytes(b"%PDF-1.4\n")
+
+    should_finalize = runner._should_finalize_from_tool_results(
+        messages=[
+            {"role": "user", "content": "生成 PDF"},
+            {
+                "role": "tool",
+                "tool_name": "pdf_create_document",
+                "content": {"artifact_path": str(artifact_path)},
+            },
+        ],
+        start_index=0,
+        planned_tool_names=["pdf_create_document"],
+        available_tools=[
+            {
+                "name": "pdf_create_document",
+                "capability_class": "artifact:pdf",
+                "result_mode": "tool_only_ok",
+            }
+        ],
+        artifact_goal={"kind": "pdf", "label": "PDF document"},
+        workspace_path=tmp_path,
+        user_id="admin",
+    )
+
+    assert should_finalize is True
+
+
+def test_should_not_finalize_tool_only_result_for_absolute_artifact_outside_user_work_dir(tmp_path) -> None:
+    runner = _StreamRunnerWithEvidence()
+    artifact_path = tmp_path / "outside.pdf"
+    artifact_path.write_bytes(b"%PDF-1.4\n")
+
+    should_finalize = runner._should_finalize_from_tool_results(
+        messages=[
+            {"role": "user", "content": "生成 PDF"},
+            {
+                "role": "tool",
+                "tool_name": "pdf_create_document",
+                "content": {"artifact_path": str(artifact_path)},
+            },
+        ],
+        start_index=0,
+        planned_tool_names=["pdf_create_document"],
+        available_tools=[
+            {
+                "name": "pdf_create_document",
+                "capability_class": "artifact:pdf",
+                "result_mode": "tool_only_ok",
+            }
+        ],
+        artifact_goal={"kind": "pdf", "label": "PDF document"},
+        workspace_path=tmp_path,
+        user_id="admin",
+    )
+
+    assert should_finalize is False
+
+
+def test_should_not_finalize_tool_only_result_for_hidden_runtime_artifact_path() -> None:
+    runner = _StreamRunnerWithEvidence()
+
+    should_finalize = runner._should_finalize_from_tool_results(
+        messages=[
+            {"role": "user", "content": "将这些申请整理成一个新的PDF文件"},
+            {
+                "role": "tool",
+                "tool_name": "skill_exec",
+                "content": {
+                    "details": {
+                        "download_path": ".atlasclaw/skills/skill-pdf/tmp/debug.pdf",
+                    },
+                },
+            },
+        ],
+        start_index=0,
+        planned_tool_names=["skill_exec"],
+        available_tools=[
+            {
+                "name": "skill_exec",
+                "capability_class": "artifact:pdf",
+                "result_mode": "tool_only_ok",
+            }
+        ],
+        artifact_goal={"kind": "pdf", "label": "PDF document"},
+    )
+
+    assert should_finalize is False
 
 
 @pytest.mark.asyncio
@@ -2217,7 +2550,7 @@ def test_build_finalize_payload_is_minimal_for_tool_backed_answer() -> None:
 
     assert "bootstrap" not in payload["system_prompt"].lower()
     assert "service the user is trying to use is currently unavailable" in payload["system_prompt"]
-    assert "personal provider access credential (`user_token`) is not configured" in payload["system_prompt"]
+    assert "personal provider access credential is not configured" in payload["system_prompt"]
     assert "personal account settings" in payload["system_prompt"]
     assert "contact an administrator" in payload["system_prompt"]
     assert "diagnostic questions about backend setup" in payload["system_prompt"]

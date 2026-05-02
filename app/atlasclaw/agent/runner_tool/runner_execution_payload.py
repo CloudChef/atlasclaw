@@ -18,14 +18,14 @@ def _provider_auth_diagnostic_message(diagnostic: dict[str, Any] | None) -> str:
     if bool(diagnostic.get("missing_user_token")):
         return (
             "Provider authentication diagnostic: the requested provider service is currently "
-            "unavailable because the user's personal provider access credential (`user_token`) "
+            "unavailable because the user's personal provider access credential "
             "is not configured. Tell the user to configure it in personal account settings, "
             "then retry."
         )
     if bool(diagnostic.get("user_token_configured")):
         return (
             "Provider authentication diagnostic: the requested provider service is currently "
-            "unavailable because the user's personal provider access credential (`user_token`) "
+            "unavailable because the user's personal provider access credential "
             "was rejected or may be invalid or expired. Tell the user to update it in personal "
             "account settings, then retry."
         )
@@ -34,6 +34,70 @@ def _provider_auth_diagnostic_message(diagnostic: dict[str, Any] | None) -> str:
             "Provider authentication diagnostic: the requested provider service is currently "
             "unavailable because the provider instance is not configured or authorized for "
             "runtime access. Tell the user to contact an administrator, then retry."
+        )
+    return ""
+
+
+def provider_auth_diagnostic_user_message(diagnostic: dict[str, Any] | None) -> str:
+    """Return a concise user-facing provider authentication message."""
+    if not isinstance(diagnostic, dict):
+        return ""
+    if bool(diagnostic.get("missing_user_token")):
+        return (
+            "The requested provider service is unavailable because your personal provider "
+            "access credential is not configured. Configure it in personal "
+            "account settings, then retry."
+        )
+    if bool(diagnostic.get("user_token_configured")):
+        return (
+            "The requested provider service is unavailable because your personal provider "
+            "access credential was rejected, invalid, or expired. Update it "
+            "in personal account settings, then retry."
+        )
+    if bool(diagnostic.get("contact_admin")):
+        return (
+            "The requested provider service is unavailable because the provider instance is "
+            "not configured or authorized for runtime access. Contact an administrator, then retry."
+        )
+    return ""
+
+
+def _provider_auth_system_instruction(diagnostic: dict[str, Any] | None) -> str:
+    if not isinstance(diagnostic, dict):
+        return (
+            "If the tool failure indicates missing, rejected, invalid, or expired provider "
+            "authentication or access credentials, first say the service the user is trying "
+            "to use is currently unavailable. Do not expose backend setup details, internal "
+            "field names, low-level credential mechanics, or configuration file paths. If a "
+            "user-owned personal provider access credential is not configured or may be "
+            "invalid/expired, ask the user to configure or update it in personal account "
+            "settings. For provider instance or server-side configuration problems, "
+            "or when the credential owner is unclear, tell the user to contact an "
+            "administrator. Do not ask diagnostic questions about backend setup, and do not "
+            "ask the user to paste access credentials into chat."
+        )
+    if bool(diagnostic.get("missing_user_token")):
+        return (
+            "The provider authentication diagnostic for this turn is authoritative: the "
+            "user's personal provider access credential is not configured. "
+            "Tell the user the requested service is currently unavailable and ask them to "
+            "configure the provider access credential or token in personal account settings, "
+            "then retry. Do not mention contacting an administrator."
+        )
+    if bool(diagnostic.get("user_token_configured")):
+        return (
+            "The provider authentication diagnostic for this turn is authoritative: the "
+            "user's personal provider access credential was rejected or may "
+            "be invalid or expired. Tell the user the requested service is currently "
+            "unavailable and ask them to update the provider access credential or token in "
+            "personal account settings, then retry. Do not mention contacting an administrator."
+        )
+    if bool(diagnostic.get("contact_admin")):
+        return (
+            "The provider authentication diagnostic for this turn is authoritative: the "
+            "provider instance is not configured or authorized for runtime access. Tell the "
+            "user the requested service is currently unavailable and ask them to contact an "
+            "administrator. Do not mention personal credential setup."
         )
     return ""
 
@@ -191,21 +255,16 @@ def build_finalize_payload(
     if not evidence_lines:
         evidence_lines.append("- tool: no tool output available")
 
+    provider_auth_instruction = _provider_auth_system_instruction(provider_auth_diagnostic)
     return {
         "system_prompt": (
             "You are AtlasClaw. Produce a concise markdown answer using only the supplied tool evidence. "
             "Do not fabricate facts or mention hidden reasoning. "
             "If a Provider authentication diagnostic appears in the supplied evidence, follow that diagnostic exactly: "
-            "when it says `user_token` is not configured, rejected, invalid, or expired, do not also tell the user to contact an administrator; "
-            "when it says to contact an administrator, do not also mention `user_token`. "
-            "If tool evidence shows missing, rejected, invalid, or expired provider authentication or access credentials, first say the "
-            "service the user is trying to use is currently unavailable. Do not expose backend setup details, "
-            "internal field names, low-level credential mechanics, or configuration file paths. If the "
-            "credential is, or appears to be, a user-owned `user_token`, explicitly say their "
-            "personal provider access credential (`user_token`) is not configured or may be invalid/expired "
-            "and they should configure or update it in personal account settings. For provider instance or server-side configuration problems, "
-            "or when the credential owner is unclear, tell the user to contact an administrator. Do not ask "
-            "diagnostic questions about backend setup, and do not ask the user to paste access credentials into chat. "
+            "when it says a personal provider access credential is not configured, rejected, invalid, or expired, "
+            "do not also tell the user to contact an administrator; "
+            "when it says to contact an administrator, do not also mention personal credential setup. "
+            f"{provider_auth_instruction} "
             "Do not add wrapper headings like 'Answer' or 'Result' unless the user explicitly asked for them."
         ),
         "user_prompt": (
@@ -270,23 +329,18 @@ def build_tool_failure_fallback_payload(
     if not failure_lines:
         failure_lines.append("- Tool execution did not yield usable evidence.")
 
+    provider_auth_instruction = _provider_auth_system_instruction(provider_auth_diagnostic)
     return {
         "system_prompt": (
             "You are AtlasClaw. The runtime attempted tools first, but they did not produce a usable final answer. "
             "Produce a concise markdown answer.\n"
             "If a Provider authentication diagnostic appears below, follow that diagnostic exactly: "
-            "when it says `user_token` is not configured, rejected, invalid, or expired, do not also tell the user to contact an administrator; "
-            "when it says to contact an administrator, do not also mention `user_token`.\n"
+            "when it says a personal provider access credential is not configured, rejected, invalid, or expired, "
+            "do not also tell the user to contact an administrator; "
+            "when it says to contact an administrator, do not also mention personal credential setup.\n"
             "If the request depends on private, enterprise, provider-backed, or otherwise unavailable data that the tools "
             "did not return, do not invent it. Explain the limitation, missing parameter, or retry path instead.\n"
-            "If the tool failure indicates missing, rejected, invalid, or expired provider authentication or access credentials, first say the "
-            "service the user is trying to use is currently unavailable. Do not expose backend setup details, "
-            "internal field names, low-level credential mechanics, or configuration file paths. If the "
-            "credential is, or appears to be, a user-owned `user_token`, explicitly say their "
-            "personal provider access credential (`user_token`) is not configured or may be invalid/expired "
-            "and they should configure or update it in personal account settings. For provider instance or server-side configuration problems, "
-            "or when the credential owner is unclear, tell the user to contact an administrator. Do not ask "
-            "diagnostic questions about backend setup, and do not ask the user to paste access credentials into chat.\n"
+            f"{provider_auth_instruction}\n"
             "If the request is a public recommendation or general knowledge question, you may provide a best-effort answer "
             "from model knowledge, but clearly say it was not verified by tools.\n"
             "Never claim a tool ran unless it appears under Attempted tools.\n"
