@@ -14,6 +14,7 @@ from app.atlasclaw.agent.runner_tool.runner_execution_prepare import RunnerExecu
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
     _infer_active_skill_from_workflow_context,
     prune_auto_selected_provider_instance_tools,
+    toolset_has_only_coordination_support_tools,
 )
 from app.atlasclaw.agent.runner_tool.runner_llm_routing import build_llm_first_guidance_plan
 from app.atlasclaw.agent.runner_tool.runner_tool_gate_routing import RunnerToolGateRoutingMixin
@@ -30,7 +31,6 @@ from app.atlasclaw.agent.tool_gate_models import (
 class _GateRunner(RunnerToolGateModelMixin, RunnerToolGateRoutingMixin):
     TOOL_GATE_SHORT_CIRCUIT_MIN_CONFIDENCE = 0.55
     TOOL_GATE_MUST_USE_MIN_CONFIDENCE = 0.85
-    TOOL_HINT_RANKER_MIN_METADATA_CONFIDENCE = 0.30
 
 
 class _PrepareRunner(RunnerExecutionPreparePhaseMixin):
@@ -58,100 +58,234 @@ class _ClassifierAgent:
         )
 
 
-def test_metadata_fallback_routes_workspace_file_creation_to_write_tool() -> None:
-    runner = _GateRunner()
+class _SelectorAgent:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.messages: list[str] = []
 
-    plan = runner._build_metadata_fallback_tool_intent_plan(
-        user_message="请创建一个对话记录 TXT 文件，路径为 `conversation_2026-04-28.txt`。",
-        metadata_candidates={
-            "confidence": 0.0,
-            "preferred_tool_names": [],
-        },
-        available_tools=[
+    async def run(self, user_message, *, deps):
+        self.messages.append(str(user_message))
+        return SimpleNamespace(output=json.dumps(self.payload))
+
+
+def test_coordination_only_toolset_is_not_executable_runtime_capability() -> None:
+    assert toolset_has_only_coordination_support_tools(
+        [
             {
-                "name": "write",
-                "description": "Write file content",
-                "qualified_skill_name": "write",
-                "skill_name": "write",
-                "group_ids": ["group:fs", "group:atlasclaw"],
-                "capability_class": "fs_write",
+                "name": "atlasclaw_catalog_query",
+                "capability_class": "atlasclaw_catalog",
+                "coordination_only": True,
             }
-        ],
+        ]
+    )
+    assert not toolset_has_only_coordination_support_tools(
+        [
+            {
+                "name": "skill_exec",
+                "group": "skill_runtime",
+                "capability_class": "skill_runtime:exec",
+                "coordination_only": True,
+            }
+        ]
+    )
+    assert not toolset_has_only_coordination_support_tools(
+        [
+            {
+                "name": "atlasclaw_catalog_query",
+                "capability_class": "atlasclaw_catalog",
+                "coordination_only": True,
+            },
+            {
+                "name": "example_runtime_tool",
+                "capability_class": "example",
+            },
+        ]
+    )
+
+
+def test_capability_selector_uses_authorized_xlsx_skill_without_pptx_substitution() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "action": "use_tools",
+            "targets": ["skill:xlsx"],
+            "reason": "User requested a spreadsheet artifact.",
+        }
+    )
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="生成 Excel",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "skill:xlsx",
+                    "kind": "md_skill",
+                    "name": "xlsx",
+                    "description": "Create spreadsheet files.",
+                    "declared_tool_names": [],
+                },
+                {
+                    "capability_id": "tool:pptx_create_deck",
+                    "kind": "tool",
+                    "name": "pptx_create_deck",
+                    "description": "Create presentation decks.",
+                    "declared_tool_names": ["pptx_create_deck"],
+                    "artifact_types": ["pptx"],
+                },
+            ],
+        )
     )
 
     assert plan is not None
     assert plan.action is ToolIntentAction.USE_TOOLS
-    assert plan.target_tool_names == ["write"]
-    assert plan.target_skill_names == ["write"]
+    assert plan.target_skill_names == ["xlsx"]
+    assert plan.target_tool_names == []
+    assert "pptx_create_deck" not in plan.target_tool_names
+    assert selector.messages
 
 
-def test_metadata_fallback_does_not_force_write_for_export_only_request() -> None:
+def test_capability_selector_prompt_uses_descriptions_only_for_capabilities() -> None:
     runner = _GateRunner()
 
-    plan = runner._build_metadata_fallback_tool_intent_plan(
-        user_message="请导出审批请求报告。",
-        metadata_candidates={
-            "confidence": 0.0,
-            "preferred_tool_names": [],
-        },
-        available_tools=[
+    prompt = runner._build_capability_selector_prompt(
+        capability_index=[
             {
-                "name": "write",
-                "description": "Write file content",
-                "qualified_skill_name": "write",
-                "skill_name": "write",
-                "group_ids": ["group:fs", "group:atlasclaw"],
-                "capability_class": "fs_write",
+                "capability_id": "skill:xlsx",
+                "kind": "md_skill",
+                "name": "xlsx",
+                "description": "Create spreadsheet files.",
+                "provider_type": "smartcmp",
+                "artifact_types": ["xlsx"],
+                "declared_tool_names": ["hidden_export_tool"],
             }
-        ],
+        ]
+    )
+
+    assert "skill:xlsx" in prompt
+    assert "Create spreadsheet files." in prompt
+    assert "provider=" not in prompt
+    assert "artifact=" not in prompt
+    assert "declared_tools=" not in prompt
+    assert "smartcmp" not in prompt
+    assert "hidden_export_tool" not in prompt
+
+
+def test_capability_selector_can_select_provider_and_standard_skill_targets() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "action": "use_tools",
+            "targets": ["provider:smartcmp", "skill:xlsx"],
+            "reason": "Fetch provider data and export as spreadsheet.",
+        }
+    )
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="把待审批生成 excel",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "skill:xlsx",
+                    "kind": "md_skill",
+                    "name": "xlsx",
+                    "description": "Create spreadsheet files.",
+                    "declared_tool_names": [],
+                },
+                {
+                    "capability_id": "provider:smartcmp",
+                    "kind": "provider",
+                    "name": "smartcmp",
+                    "description": "Query approval data.",
+                    "provider_type": "smartcmp",
+                    "declared_tool_names": ["smartcmp_query_approvals"],
+                },
+                {
+                    "capability_id": "tool:smartcmp_query_approvals",
+                    "kind": "tool",
+                    "name": "smartcmp_query_approvals",
+                    "description": "Query approval data.",
+                    "provider_type": "smartcmp",
+                    "declared_tool_names": ["smartcmp_query_approvals"],
+                },
+            ],
+        )
+    )
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.USE_TOOLS
+    assert plan.target_provider_types == ["smartcmp"]
+    assert plan.target_skill_names == ["xlsx"]
+
+
+def test_capability_selector_requires_explicit_provider_capability_id() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "action": "use_tools",
+            "targets": ["provider:smartcmp"],
+            "reason": "Provider target was not listed in the authorized capability index.",
+        }
+    )
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="查待审批",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "tool:smartcmp_query_approvals",
+                    "kind": "tool",
+                    "name": "smartcmp_query_approvals",
+                    "description": "Query approval data.",
+                    "provider_type": "smartcmp",
+                    "declared_tool_names": ["smartcmp_query_approvals"],
+                },
+            ],
+        )
     )
 
     assert plan is None
 
 
-def test_metadata_fallback_keeps_explicit_artifact_over_workspace_write_fallback() -> None:
+def test_capability_selector_drops_unauthorized_targets() -> None:
     runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "action": "use_tools",
+            "targets": ["skill:xlsx", "tool:pptx_create_deck"],
+            "reason": "One requested target is not authorized.",
+        }
+    )
 
-    plan = runner._build_metadata_fallback_tool_intent_plan(
-        user_message="create an empty deck file named deck.bundle",
-        metadata_candidates={
-            "confidence": 0.9,
-            "reason": "artifact metadata matched",
-            "tool_candidates": [
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="生成 Excel",
+            recent_history=[],
+            capability_index=[
                 {
-                    "tool_name": "deck_artifact_create",
-                    "score": 100,
-                    "has_strong_anchor": True,
-                    "tool_names": ["deck_artifact_create"],
-                    "capability_classes": ["artifact:presentation"],
+                    "capability_id": "skill:xlsx",
+                    "kind": "md_skill",
+                    "name": "xlsx",
+                    "description": "Create spreadsheet files.",
+                    "declared_tool_names": [],
                 }
             ],
-        },
-        available_tools=[
-            {
-                "name": "write",
-                "description": "Write file content",
-                "qualified_skill_name": "write",
-                "skill_name": "write",
-                "group_ids": ["group:fs", "group:atlasclaw"],
-                "capability_class": "fs_write",
-            },
-            {
-                "name": "deck_artifact_create",
-                "description": "Create a presentation artifact file",
-                "qualified_skill_name": "deck",
-                "skill_name": "deck",
-                "group_ids": ["group:artifact"],
-                "capability_class": "artifact:presentation",
-                "priority": 120,
-            },
-        ],
+        )
     )
 
     assert plan is not None
-    assert plan.action is ToolIntentAction.USE_TOOLS
-    assert plan.target_tool_names == ["deck_artifact_create"]
-    assert plan.target_capability_classes == ["artifact:presentation"]
+    assert plan.target_skill_names == ["xlsx"]
+    assert plan.target_tool_names == []
 
 
 def test_tool_gate_classifier_resolves_async_agent_factory() -> None:
@@ -401,62 +535,6 @@ def test_tool_gate_classifier_prompt_does_not_force_public_realtime_queries_into
     assert "Use answer_direct when the request can be handled from model knowledge" in prompt
 
 
-def test_metadata_targets_only_generic_web_treats_web_tools_as_fallback_not_clear_match() -> None:
-    runner = _GateRunner()
-
-    assert runner._metadata_targets_only_generic_web(
-        available_tools=[
-            {
-                "name": "web_search",
-                "description": "Search the public web",
-                "capability_class": "web_search",
-                "public_web": True,
-            }
-        ],
-        target_provider_types=[],
-        target_skill_names=[],
-        target_capability_classes=["web_search"],
-        target_tool_names=["web_search"],
-    )
-
-
-def test_metadata_fallback_accepts_single_provider_tool_consensus_below_threshold() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "smartcmp_list_services",
-            "description": "List SmartCMP service catalogs",
-            "capability_class": "provider:smartcmp",
-            "provider_type": "smartcmp",
-        },
-        {
-            "name": "smartcmp_get_request_detail",
-            "description": "Get SmartCMP request detail",
-            "capability_class": "provider:smartcmp",
-            "provider_type": "smartcmp",
-        },
-    ]
-
-    plan = runner._build_metadata_fallback_tool_intent_plan(
-        metadata_candidates={
-            "confidence": 0.08,
-            "preferred_provider_types": ["smartcmp"],
-            "preferred_capability_classes": ["provider:smartcmp"],
-            "preferred_tool_names": [
-                "smartcmp_list_services",
-                "smartcmp_get_request_detail",
-            ],
-            "reason": "metadata_recall_matched",
-        },
-        available_tools=available_tools,
-    )
-
-    assert plan is not None
-    assert plan.action.value == "use_tools"
-    assert plan.target_provider_types == ["smartcmp"]
-    assert plan.target_tool_names == ["smartcmp_list_services", "smartcmp_get_request_detail"]
-
-
 def test_projected_toolset_short_circuit_uses_single_tool_only_ok() -> None:
     runner = _GateRunner()
 
@@ -562,142 +640,6 @@ def test_direct_answer_gate_decision_keeps_hint_classes_without_requiring_tool_e
     assert decision.needs_tool is False
     assert decision.needs_external_system is True
     assert decision.suggested_tool_classes == ["provider:smartcmp"]
-
-
-def test_metadata_recall_prefers_higher_scored_catalog_tool_over_provider_bundle() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "atlasclaw_catalog_query",
-            "description": "Query AtlasClaw runtime catalogs for available providers, skills, tools, and groups",
-            "capability_class": "atlasclaw_catalog",
-            "group_ids": ["group:catalog", "group:atlasclaw"],
-            "aliases": ["catalog", "skills catalog", "tool catalog", "provider catalog", "runtime catalog"],
-            "keywords": ["available skills", "available tools", "providers", "catalog", "capabilities"],
-            "use_when": ["User asks which skills or tools are available for a specific provider"],
-            "priority": 40,
-        },
-        {
-            "name": "smartcmp_list_pending",
-            "description": "List SmartCMP pending approvals",
-            "provider_type": "smartcmp",
-            "capability_class": "provider:smartcmp",
-            "group_ids": ["group:cmp", "group:smartcmp"],
-            "priority": 100,
-        },
-        {
-            "name": "smartcmp_list_services",
-            "description": "List SmartCMP service catalogs",
-            "provider_type": "smartcmp",
-            "capability_class": "provider:smartcmp",
-            "group_ids": ["group:cmp", "group:smartcmp"],
-            "priority": 100,
-        },
-    ]
-    provider_hint_docs = [
-        {
-            "hint_id": "provider:smartcmp",
-            "provider_type": "smartcmp",
-            "display_name": "SmartCMP",
-            "aliases": ["cmp"],
-            "keywords": ["approval", "service catalog", "cmp"],
-            "capabilities": ["provider:smartcmp"],
-            "use_when": ["Query SmartCMP requests or service catalogs"],
-            "avoid_when": [],
-            "tool_names": ["smartcmp_list_pending", "smartcmp_list_services"],
-            "group_ids": ["group:cmp", "group:smartcmp"],
-            "capability_classes": ["provider:smartcmp"],
-            "priority": 80,
-            "hint_text": "SmartCMP enterprise service management cmp approval service catalog",
-        }
-    ]
-    tool_hint_docs = runner._build_tool_hint_docs(available_tools=available_tools)
-
-    metadata = runner._recall_provider_skill_candidates_from_metadata(
-        user_message="CMP现在有哪些skills可以使用",
-        recent_history=[],
-        used_follow_up_context=False,
-        available_tools=available_tools,
-        provider_hint_docs=provider_hint_docs,
-        skill_hint_docs=[],
-        tool_hint_docs=tool_hint_docs,
-        top_k_provider=2,
-        top_k_skill=3,
-    )
-
-    assert metadata["tool_candidates"][0]["tool_name"] == "atlasclaw_catalog_query"
-    assert metadata["preferred_tool_names"][0] == "atlasclaw_catalog_query"
-
-
-def test_metadata_fallback_prefers_dominant_tool_candidate_over_broad_provider_bundle() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "atlasclaw_catalog_query",
-            "description": "Query AtlasClaw runtime catalogs",
-            "capability_class": "atlasclaw_catalog",
-            "group_ids": ["group:catalog", "group:atlasclaw"],
-            "result_mode": "tool_only_ok",
-            "priority": 40,
-        },
-        {
-            "name": "smartcmp_list_pending",
-            "description": "List SmartCMP pending approvals",
-            "provider_type": "smartcmp",
-            "capability_class": "provider:smartcmp",
-            "group_ids": ["group:cmp", "group:smartcmp"],
-            "priority": 100,
-        },
-        {
-            "name": "smartcmp_list_services",
-            "description": "List SmartCMP service catalogs",
-            "provider_type": "smartcmp",
-            "capability_class": "provider:smartcmp",
-            "group_ids": ["group:cmp", "group:smartcmp"],
-            "priority": 100,
-        },
-    ]
-
-    plan = runner._build_metadata_fallback_tool_intent_plan(
-        metadata_candidates={
-            "confidence": 0.86,
-            "preferred_provider_types": ["smartcmp"],
-            "preferred_group_ids": ["group:cmp", "group:catalog"],
-            "preferred_capability_classes": ["provider:smartcmp", "atlasclaw_catalog"],
-            "preferred_tool_names": [
-                "atlasclaw_catalog_query",
-                "smartcmp_list_pending",
-                "smartcmp_list_services",
-            ],
-            "tool_candidates": [
-                {
-                    "hint_id": "tool:atlasclaw_catalog_query",
-                    "tool_name": "atlasclaw_catalog_query",
-                    "score": 12,
-                    "has_strong_anchor": True,
-                    "tool_names": ["atlasclaw_catalog_query"],
-                    "group_ids": ["group:catalog", "group:atlasclaw"],
-                    "capability_classes": ["atlasclaw_catalog"],
-                },
-                {
-                    "hint_id": "tool:smartcmp_list_pending",
-                    "tool_name": "smartcmp_list_pending",
-                    "score": 4,
-                    "has_strong_anchor": False,
-                    "tool_names": ["smartcmp_list_pending"],
-                    "group_ids": ["group:cmp", "group:smartcmp"],
-                    "capability_classes": ["provider:smartcmp"],
-                },
-            ],
-            "reason": "metadata_recall_matched",
-        },
-        available_tools=available_tools,
-    )
-
-    assert plan is not None
-    assert plan.target_tool_names == ["atlasclaw_catalog_query"]
-    assert plan.target_capability_classes == ["atlasclaw_catalog"]
-    assert plan.target_provider_types == []
 
 
 def test_classifier_history_ignores_recent_history_for_complete_new_request() -> None:
@@ -954,318 +896,6 @@ def xtest_build_recent_follow_up_tool_intent_plan_recovers_recent_md_skill_scope
     ]
 
 
-def test_metadata_recall_ignores_history_when_not_follow_up() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "openmeteo_weather",
-            "description": "Get weather forecast",
-            "capability_class": "weather",
-            "group_ids": ["group:web"],
-        },
-        {
-            "name": "smartcmp_list_pending",
-            "description": "List SmartCMP pending approvals",
-            "capability_class": "provider:smartcmp",
-            "provider_type": "smartcmp",
-            "group_ids": ["group:cmp"],
-        },
-    ]
-    provider_hint_docs = [
-        {
-            "hint_id": "provider:smartcmp",
-            "provider_type": "smartcmp",
-            "display_name": "SmartCMP",
-            "description": "List SmartCMP approvals",
-            "aliases": ["cmp"],
-            "keywords": ["cmp", "approval", "pending"],
-            "capabilities": [],
-            "use_when": [],
-            "avoid_when": [],
-            "tool_names": ["smartcmp_list_pending"],
-            "group_ids": ["group:cmp"],
-            "capability_classes": ["provider:smartcmp"],
-            "hint_text": "keywords: cmp approval pending workflow request",
-            "priority": 50,
-        }
-    ]
-    skill_hint_docs = [
-        {
-            "hint_id": "skill:weather",
-            "skill_name": "weather",
-            "qualified_skill_name": "builtin:weather",
-            "provider_type": "",
-            "display_name": "weather",
-            "description": "Get weather forecast",
-            "aliases": ["builtin:weather"],
-            "keywords": ["天气", "预报", "明天", "上海", "温度", "下雨"],
-            "capabilities": [],
-            "use_when": [],
-            "avoid_when": [],
-            "tool_names": ["openmeteo_weather"],
-            "group_ids": ["group:web"],
-            "capability_classes": ["weather"],
-            "hint_text": "keywords: 天气 预报 明天 上海 温度 下雨",
-            "priority": 20,
-        }
-    ]
-
-    recalled = runner._recall_provider_skill_candidates_from_metadata(
-        user_message="明天上海天气如何",
-        recent_history=[
-            {"role": "user", "content": "查下CMP 里目前所有待审批"},
-            {"role": "assistant", "content": "好的，我帮你列出来。"},
-        ],
-        used_follow_up_context=False,
-        available_tools=available_tools,
-        provider_hint_docs=provider_hint_docs,
-        skill_hint_docs=skill_hint_docs,
-        tool_hint_docs=[],
-        top_k_provider=2,
-        top_k_skill=2,
-    )
-
-    assert recalled["preferred_provider_types"] == []
-    assert "weather" in recalled["preferred_capability_classes"]
-    assert recalled["preferred_tool_names"] == ["openmeteo_weather"]
-
-
-def test_metadata_recall_requires_strong_provider_anchor_for_public_query() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "web_search",
-            "description": "Search the public web",
-            "capability_class": "web_search",
-            "group_ids": ["group:web"],
-        },
-        {
-            "name": "smartcmp_list_services",
-            "description": "List SmartCMP services",
-            "capability_class": "provider:smartcmp",
-            "provider_type": "smartcmp",
-            "group_ids": ["group:cmp"],
-        },
-    ]
-    provider_hint_docs = [
-        {
-            "hint_id": "provider:smartcmp",
-            "provider_type": "smartcmp",
-            "display_name": "SmartCMP",
-            "description": "List SmartCMP services",
-            "aliases": ["cmp"],
-            "keywords": ["cmp", "approval", "request"],
-            "capabilities": [],
-            "use_when": ["查看待审批和服务目录"],
-            "avoid_when": [],
-            "tool_names": ["smartcmp_list_services"],
-            "group_ids": ["group:cmp"],
-            "capability_classes": ["provider:smartcmp"],
-            "hint_text": "description: 查看服务目录和请求详情 | use_when: 查看待审批和服务目录",
-            "priority": 50,
-        }
-    ]
-
-    recalled = runner._recall_provider_skill_candidates_from_metadata(
-        user_message="查看上海周边有哪些自行车骑行公园",
-        recent_history=[],
-        used_follow_up_context=False,
-        available_tools=available_tools,
-        provider_hint_docs=provider_hint_docs,
-        skill_hint_docs=[],
-        tool_hint_docs=[],
-        top_k_provider=2,
-        top_k_skill=2,
-    )
-
-    assert recalled["preferred_provider_types"] == []
-    assert recalled["preferred_tool_names"] == []
-
-
-def test_tool_hint_docs_support_weather_metadata_recall() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "openmeteo_weather",
-            "description": "Get current and forecast weather via Open-Meteo APIs",
-            "source": "builtin",
-            "capability_class": "weather",
-            "group_ids": ["group:web"],
-            "aliases": ["weather", "forecast", "openmeteo"],
-            "keywords": ["weather", "forecast", "temperature", "rain", "wind", "天气", "预报", "气温", "降雨"],
-            "use_when": ["User asks for current or forecast weather conditions for a place and date"],
-            "avoid_when": [],
-            "priority": 100,
-        }
-    ]
-
-    builtin_docs = runner._build_tool_hint_docs(available_tools=available_tools)
-    recalled = runner._recall_provider_skill_candidates_from_metadata(
-        user_message="明天上海天气如何",
-        recent_history=[],
-        used_follow_up_context=False,
-        available_tools=available_tools,
-        provider_hint_docs=[],
-        skill_hint_docs=[],
-        tool_hint_docs=builtin_docs,
-        top_k_provider=2,
-        top_k_skill=2,
-    )
-
-    assert "weather" in recalled["preferred_capability_classes"]
-    assert recalled["preferred_tool_names"] == ["openmeteo_weather"]
-    assert recalled["confidence"] > 0.0
-
-
-def test_tool_hint_docs_include_provider_tools() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "smartcmp_get_request_detail",
-            "description": "Get CMP request detail by identifier",
-            "source": "provider",
-            "provider_type": "smartcmp",
-            "group_ids": ["group:cmp"],
-            "capability_class": "provider:smartcmp",
-            "keywords": ["detail", "request detail", "workflow"],
-            "use_when": ["User asks for CMP request detail"],
-            "avoid_when": [],
-        }
-    ]
-
-    docs = runner._build_tool_hint_docs(available_tools=available_tools)
-
-    assert docs == [
-        {
-            "hint_id": "tool:smartcmp_get_request_detail",
-            "hint_type": "tool",
-            "tool_name": "smartcmp_get_request_detail",
-            "provider_type": "smartcmp",
-            "display_name": "smartcmp_get_request_detail",
-            "description": "Get CMP request detail by identifier",
-            "aliases": [],
-            "keywords": ["detail", "request detail", "workflow"],
-            "capabilities": ["provider:smartcmp"],
-            "use_when": ["User asks for CMP request detail"],
-            "avoid_when": [],
-            "tool_names": ["smartcmp_get_request_detail"],
-            "group_ids": ["group:cmp"],
-            "capability_classes": ["provider:smartcmp"],
-            "hint_text": (
-                "name: smartcmp_get_request_detail | description: Get CMP request detail by "
-                "identifier | keywords: detail; request detail; workflow | capabilities: "
-                "provider:smartcmp | use_when: User asks for CMP request detail"
-            ),
-            "priority": 100,
-        }
-    ]
-
-
-def test_tool_hint_docs_support_provider_metadata_recall() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "smartcmp_get_request_detail",
-            "description": "Get CMP request detail by identifier",
-            "source": "provider",
-            "provider_type": "smartcmp",
-            "group_ids": ["group:cmp", "group:request"],
-            "capability_class": "provider:smartcmp",
-            "aliases": ["cmp request detail", "工单详情"],
-            "keywords": ["cmp", "request detail", "workflow", "详情", "工单"],
-            "use_when": ["User asks for a CMP request detail page", "User asks for 工单详情"],
-            "avoid_when": [],
-        }
-    ]
-
-    tool_docs = runner._build_tool_hint_docs(available_tools=available_tools)
-    recalled = runner._recall_provider_skill_candidates_from_metadata(
-        user_message="我要看下TIC20260316000001的详情",
-        recent_history=[],
-        used_follow_up_context=False,
-        available_tools=available_tools,
-        provider_hint_docs=[],
-        skill_hint_docs=[],
-        tool_hint_docs=tool_docs,
-        top_k_provider=2,
-        top_k_skill=2,
-    )
-
-    assert recalled["preferred_provider_types"] == ["smartcmp"]
-    assert recalled["preferred_capability_classes"] == ["provider:smartcmp"]
-    assert recalled["preferred_tool_names"] == ["smartcmp_get_request_detail"]
-
-
-def test_metadata_recall_follow_up_ignores_assistant_artifact_noise_for_request_thread() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "smartcmp_list_services",
-            "description": "List SmartCMP services",
-            "source": "provider",
-            "provider_type": "smartcmp",
-            "group_ids": ["group:cmp", "group:request"],
-            "capability_class": "provider:smartcmp",
-            "keywords": ["cmp", "service", "catalog", "申请", "虚拟机"],
-            "use_when": ["User starts a SmartCMP request workflow"],
-            "avoid_when": [],
-        },
-        {
-            "name": "smartcmp_submit_request",
-            "description": "Submit SmartCMP request",
-            "source": "provider",
-            "provider_type": "smartcmp",
-            "group_ids": ["group:cmp", "group:request"],
-            "capability_class": "provider:smartcmp",
-            "keywords": ["cmp", "request", "submit", "申请", "提交"],
-            "use_when": ["User asks to submit a CMP request"],
-            "avoid_when": [],
-        },
-        {
-            "name": "pptx_create_deck",
-            "description": "Create a .pptx presentation in the AtlasClaw workspace from structured items.",
-            "source": "md_skill",
-            "group_ids": ["group:pptx", "group:fs"],
-            "capability_class": "artifact:pptx",
-            "keywords": ["ppt", "pptx", "slides", "presentation", "演示文稿"],
-            "use_when": ["User wants a real PPTX file"],
-            "avoid_when": [],
-        },
-    ]
-
-    recalled = runner._recall_provider_skill_candidates_from_metadata(
-        user_message="我要申请一台 2C4G 的 Linux 虚拟机\n好",
-        recent_history=[
-            {"role": "user", "content": "我要申请一台 2C4G 的 Linux 虚拟机"},
-            {
-                "role": "assistant",
-                "content": (
-                    "No PPTX artifact was generated. The runtime only performed intermediate "
-                    "lookups and did not produce the final requested file."
-                ),
-            },
-            {"role": "user", "content": "好"},
-        ],
-        used_follow_up_context=True,
-        available_tools=available_tools,
-        provider_hint_docs=[],
-        skill_hint_docs=[],
-        tool_hint_docs=runner._build_tool_hint_docs(available_tools=available_tools),
-        top_k_provider=2,
-        top_k_skill=2,
-    )
-
-    assert recalled["preferred_provider_types"] == ["smartcmp"]
-    assert recalled["preferred_tool_names"][:2] == [
-        "smartcmp_list_services",
-        "smartcmp_submit_request",
-    ]
-    assert "artifact:pptx" not in recalled["preferred_capability_classes"]
-    assert "group:pptx" not in recalled["preferred_group_ids"]
-    assert "pptx" not in recalled["preferred_skill_names"]
-    assert "pptx_create_deck" not in recalled["preferred_tool_names"]
-
-
 def test_infer_active_skill_from_workflow_context_prefers_explicit_request_parent_role() -> None:
     workflow_context = {
         "recent_tool_metadata": [
@@ -1306,562 +936,6 @@ def test_infer_active_skill_from_workflow_context_prefers_explicit_request_paren
             md_skills_snapshot=md_skills_snapshot,
         )
         == "smartcmp:submit-flow"
-    )
-
-
-def test_metadata_fallback_prefers_local_write_tool_over_generic_provider_create_hints() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "write",
-            "description": "Write file content",
-            "source": "builtin",
-            "group_ids": ["group:fs", "group:atlasclaw"],
-            "capability_class": "fs_write",
-            "aliases": ["write file", "create file", "save file", "create text file"],
-            "keywords": ["write", "create", "file", "save", "content", "overwrite"],
-            "use_when": [
-                "User asks to create a local file or write text content to a file",
-            ],
-            "avoid_when": [],
-            "result_mode": "tool_only_ok",
-        },
-        {
-            "name": "smartcmp_submit_request",
-            "description": "Submit SmartCMP request",
-            "source": "provider",
-            "provider_type": "smartcmp",
-            "group_ids": ["group:cmp", "group:request"],
-            "capability_class": "provider:smartcmp",
-            "aliases": ["cmp request submit"],
-            "keywords": ["cmp", "request", "submit", "create"],
-            "use_when": ["User asks to create or submit a CMP request"],
-            "avoid_when": [],
-        },
-        {
-            "name": "jira_issue_create",
-            "description": "Create Jira issue",
-            "source": "provider",
-            "provider_type": "jira",
-            "group_ids": ["group:jira", "group:issue"],
-            "capability_class": "provider:jira",
-            "aliases": ["create jira issue"],
-            "keywords": ["jira", "issue", "ticket", "create"],
-            "use_when": ["User asks to create a Jira issue"],
-            "avoid_when": [],
-        },
-    ]
-
-    provider_hint_docs = [
-        {
-            "hint_id": "provider:smartcmp",
-            "provider_type": "smartcmp",
-            "display_name": "SmartCMP",
-            "description": "Manage SmartCMP requests and services",
-            "aliases": ["cmp"],
-            "keywords": ["cmp", "request", "submit", "create"],
-            "capabilities": ["provider:smartcmp"],
-            "use_when": ["User asks to create or submit a CMP request"],
-            "avoid_when": [],
-            "tool_names": ["smartcmp_submit_request"],
-            "group_ids": ["group:cmp", "group:request"],
-            "capability_classes": ["provider:smartcmp"],
-            "hint_text": "description: Manage SmartCMP requests and services | use_when: User asks to create or submit a CMP request",
-            "priority": 50,
-        },
-        {
-            "hint_id": "provider:jira",
-            "provider_type": "jira",
-            "display_name": "Jira",
-            "description": "Manage Jira issues",
-            "aliases": ["jira"],
-            "keywords": ["jira", "issue", "ticket", "create"],
-            "capabilities": ["provider:jira"],
-            "use_when": ["User asks to create a Jira issue"],
-            "avoid_when": [],
-            "tool_names": ["jira_issue_create"],
-            "group_ids": ["group:jira", "group:issue"],
-            "capability_classes": ["provider:jira"],
-            "hint_text": "description: Manage Jira issues | use_when: User asks to create a Jira issue",
-            "priority": 50,
-        },
-    ]
-    tool_hint_docs = runner._build_tool_hint_docs(available_tools=available_tools)
-    metadata = runner._recall_provider_skill_candidates_from_metadata(
-        user_message='create a file, which name is "test1.txt" and content is "hello ac"',
-        recent_history=[
-            {"role": "user", "content": "CMP里面有多少待审批的"},
-            {"role": "assistant", "content": "我帮你列出来。"},
-        ],
-        used_follow_up_context=False,
-        available_tools=available_tools,
-        provider_hint_docs=provider_hint_docs,
-        skill_hint_docs=[],
-        tool_hint_docs=tool_hint_docs,
-        top_k_provider=2,
-        top_k_skill=2,
-    )
-    plan = runner._build_metadata_fallback_tool_intent_plan(
-        metadata_candidates=metadata,
-        available_tools=available_tools,
-    )
-
-    assert plan is not None
-    assert plan.action is ToolIntentAction.USE_TOOLS
-    assert plan.target_tool_names == ["write"]
-    assert plan.target_provider_types == []
-    assert plan.target_capability_classes == ["fs_write"]
-
-
-def test_metadata_fallback_keeps_explicit_artifact_candidate_instead_of_collapsing_to_generic_write() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "write",
-            "description": "Write file content",
-            "source": "builtin",
-            "group_ids": ["group:fs", "group:atlasclaw"],
-            "capability_class": "fs_write",
-            "aliases": ["write file", "create file", "save file", "create text file"],
-            "keywords": ["write", "create", "file", "save", "content", "overwrite"],
-            "use_when": [
-                "User asks to create a local file or write text content to a file",
-            ],
-            "avoid_when": [],
-            "result_mode": "tool_only_ok",
-        },
-        {
-            "name": "pptx_create_deck",
-            "description": "Create a .pptx presentation in the AtlasClaw workspace from structured items.",
-            "source": "md_skill",
-            "group_ids": ["group:pptx", "group:fs"],
-            "capability_class": "artifact:pptx",
-            "priority": 120,
-            "skill_name": "pptx",
-            "qualified_skill_name": "pptx",
-            "aliases": ["pptx"],
-            "keywords": ["ppt", "pptx", "slides", "presentation"],
-            "use_when": [
-                "User wants a real PPTX file to be created from structured content",
-                "User asks to save current results into a PowerPoint deck",
-            ],
-            "avoid_when": [],
-        },
-        {
-            "name": "smartcmp_get_request_detail",
-            "description": "Get SmartCMP request detail",
-            "source": "provider",
-            "provider_type": "smartcmp",
-            "group_ids": ["group:cmp", "group:request"],
-            "capability_class": "provider:smartcmp",
-            "keywords": ["cmp", "request", "detail", "approval"],
-            "use_when": ["User asks for CMP request detail"],
-            "avoid_when": [],
-        },
-    ]
-    tool_hint_docs = runner._build_tool_hint_docs(available_tools=available_tools)
-    metadata = runner._recall_provider_skill_candidates_from_metadata(
-        user_message="write the request data into a PPT",
-        recent_history=[
-            {"role": "user", "content": "查下CMP现在的审批数据"},
-            {"role": "assistant", "content": "我已经列出了当前待审批数据。"},
-        ],
-        used_follow_up_context=False,
-        available_tools=available_tools,
-        provider_hint_docs=[],
-        skill_hint_docs=[],
-        tool_hint_docs=tool_hint_docs,
-        top_k_provider=2,
-        top_k_skill=2,
-    )
-
-    plan = runner._build_metadata_fallback_tool_intent_plan(
-        metadata_candidates=metadata,
-        available_tools=available_tools,
-    )
-
-    assert plan is not None
-    assert plan.action is ToolIntentAction.USE_TOOLS
-    assert "pptx_create_deck" in plan.target_tool_names
-    assert "artifact:pptx" in plan.target_capability_classes
-    assert plan.target_tool_names != ["write"]
-
-
-def test_metadata_recall_keeps_explicit_artifact_tool_in_top_candidates_for_english_ppt_follow_up() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "write",
-            "description": "Write file content",
-            "source": "builtin",
-            "group_ids": ["group:fs", "group:atlasclaw"],
-            "capability_class": "fs_write",
-            "aliases": ["write file", "create file", "save file", "create text file"],
-            "keywords": ["write", "create", "file", "save", "content", "overwrite"],
-            "use_when": ["User asks to create a local file or write text content to a file"],
-            "avoid_when": [],
-            "result_mode": "tool_only_ok",
-        },
-        {
-            "name": "pptx_create_deck",
-            "description": "Create a .pptx presentation in the AtlasClaw workspace from structured items.",
-            "source": "md_skill",
-            "group_ids": ["group:pptx", "group:fs"],
-            "capability_class": "artifact:pptx",
-            "priority": 120,
-            "skill_name": "pptx",
-            "qualified_skill_name": "pptx",
-            "aliases": ["pptx"],
-            "keywords": ["ppt", "pptx", "slides", "presentation"],
-            "use_when": [
-                "User wants a real PPTX file to be created from structured content",
-                "User asks to save current results into a PowerPoint deck",
-            ],
-            "avoid_when": [],
-        },
-        {
-            "name": "smartcmp_get_request_detail",
-            "description": "Get SmartCMP request detail",
-            "source": "provider",
-            "provider_type": "smartcmp",
-            "group_ids": ["group:cmp", "group:request"],
-            "capability_class": "provider:smartcmp",
-            "keywords": ["cmp", "request", "detail", "approval"],
-            "use_when": ["User asks for CMP request detail"],
-            "avoid_when": [],
-        },
-        {
-            "name": "smartcmp_list_services",
-            "description": "List SmartCMP service catalogs",
-            "source": "provider",
-            "provider_type": "smartcmp",
-            "group_ids": ["group:cmp", "group:request"],
-            "capability_class": "provider:smartcmp",
-            "keywords": ["cmp", "request", "service", "catalog"],
-            "use_when": ["User asks for CMP services"],
-            "avoid_when": [],
-        },
-    ]
-    tool_hint_docs = runner._build_tool_hint_docs(available_tools=available_tools)
-
-    metadata = runner._recall_provider_skill_candidates_from_metadata(
-        user_message="write the request data into a PPT",
-        recent_history=[],
-        used_follow_up_context=False,
-        available_tools=available_tools,
-        provider_hint_docs=[],
-        skill_hint_docs=[],
-        tool_hint_docs=tool_hint_docs,
-        top_k_provider=2,
-        top_k_skill=2,
-    )
-
-    assert "pptx_create_deck" in metadata["preferred_tool_names"]
-    assert "artifact:pptx" in metadata["preferred_capability_classes"]
-    artifact_tool_candidates = [
-        item for item in metadata["tool_candidates"] if item.get("tool_name") == "pptx_create_deck"
-    ]
-    assert artifact_tool_candidates, metadata
-
-
-def test_metadata_fallback_builds_weather_plan_from_builtin_tool_candidates() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "openmeteo_weather",
-            "description": "Get current and forecast weather via Open-Meteo APIs",
-            "source": "builtin",
-            "capability_class": "weather",
-            "group_ids": ["group:web"],
-        }
-    ]
-
-    plan = runner._build_metadata_fallback_tool_intent_plan(
-        metadata_candidates={
-            "confidence": 0.42,
-            "preferred_provider_types": [],
-            "preferred_capability_classes": ["weather"],
-            "preferred_tool_names": ["openmeteo_weather"],
-            "reason": "metadata_recall_matched_builtin_weather",
-        },
-        available_tools=available_tools,
-    )
-
-    assert plan is not None
-    assert plan.action.value == "use_tools"
-    assert plan.target_capability_classes == ["weather"]
-    assert plan.target_tool_names == ["openmeteo_weather"]
-
-
-def test_metadata_fallback_accepts_single_builtin_tool_consensus_below_threshold() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "openmeteo_weather",
-            "description": "Get current and forecast weather via Open-Meteo APIs",
-            "source": "builtin",
-            "capability_class": "weather",
-            "group_ids": ["group:web"],
-        },
-        {
-            "name": "web_search",
-            "description": "Search the public web",
-            "source": "builtin",
-            "capability_class": "web_search",
-            "group_ids": ["group:web"],
-        },
-    ]
-
-    plan = runner._build_metadata_fallback_tool_intent_plan(
-        metadata_candidates={
-            "confidence": 0.04,
-            "preferred_provider_types": [],
-            "preferred_capability_classes": ["weather"],
-            "preferred_tool_names": ["openmeteo_weather"],
-            "builtin_tool_candidates": [
-                {
-                    "hint_id": "builtin:openmeteo_weather",
-                    "tool_name": "openmeteo_weather",
-                    "score": 7,
-                    "has_strong_anchor": True,
-                    "tool_names": ["openmeteo_weather"],
-                    "group_ids": ["group:web"],
-                    "capability_classes": ["weather"],
-                }
-            ],
-            "reason": "metadata_recall_single_builtin_tool",
-        },
-        available_tools=available_tools,
-    )
-
-    assert plan is not None
-    assert plan.action.value == "use_tools"
-    assert plan.target_capability_classes == ["weather"]
-    assert plan.target_tool_names == ["openmeteo_weather"]
-
-
-def test_metadata_fallback_accepts_single_tool_consensus_from_tool_candidates() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "openmeteo_weather",
-            "description": "Get current and forecast weather via Open-Meteo APIs",
-            "source": "builtin",
-            "capability_class": "weather",
-            "group_ids": ["group:web"],
-        },
-        {
-            "name": "web_search",
-            "description": "Search the public web",
-            "source": "builtin",
-            "capability_class": "web_search",
-            "group_ids": ["group:web"],
-        },
-    ]
-
-    plan = runner._build_metadata_fallback_tool_intent_plan(
-        metadata_candidates={
-            "confidence": 0.04,
-            "preferred_provider_types": [],
-            "preferred_capability_classes": ["weather"],
-            "preferred_tool_names": ["openmeteo_weather"],
-            "tool_candidates": [
-                {
-                    "hint_id": "tool:openmeteo_weather",
-                    "tool_name": "openmeteo_weather",
-                    "score": 7,
-                    "has_strong_anchor": True,
-                    "tool_names": ["openmeteo_weather"],
-                    "group_ids": ["group:web"],
-                    "capability_classes": ["weather"],
-                }
-            ],
-            "reason": "metadata_recall_single_tool",
-        },
-        available_tools=available_tools,
-    )
-
-    assert plan is not None
-    assert plan.action.value == "use_tools"
-    assert plan.target_capability_classes == ["weather"]
-    assert plan.target_tool_names == ["openmeteo_weather"]
-
-
-def test_metadata_fallback_ignores_generic_web_only_hint_without_explicit_search_request() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "web_search",
-            "description": "Search the public web",
-            "source": "builtin",
-            "capability_class": "web_search",
-            "group_ids": ["group:web"],
-            "public_web": True,
-        }
-    ]
-
-    plan = runner._build_metadata_fallback_tool_intent_plan(
-        metadata_candidates={
-            "confidence": 0.82,
-            "preferred_provider_types": [],
-            "preferred_capability_classes": ["web_search"],
-            "preferred_tool_names": ["web_search"],
-            "tool_candidates": [
-                {
-                    "hint_id": "tool:web_search",
-                    "tool_name": "web_search",
-                    "score": 4,
-                    "has_strong_anchor": False,
-                    "tool_names": ["web_search"],
-                    "group_ids": ["group:web"],
-                    "capability_classes": ["web_search"],
-                }
-            ],
-            "reason": "metadata_recall_single_tool",
-        },
-        available_tools=available_tools,
-    )
-
-    assert plan is None
-
-
-def test_metadata_fallback_keeps_generic_web_only_hint_for_explicit_search_request() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "web_search",
-            "description": "Search the public web",
-            "source": "builtin",
-            "capability_class": "web_search",
-            "group_ids": ["group:web"],
-        }
-    ]
-
-    plan = runner._build_metadata_fallback_tool_intent_plan(
-        metadata_candidates={
-            "confidence": 0.82,
-            "preferred_provider_types": [],
-            "preferred_capability_classes": ["web_search"],
-            "preferred_tool_names": ["web_search"],
-            "tool_candidates": [
-                {
-                    "hint_id": "tool:web_search",
-                    "tool_name": "web_search",
-                    "score": 12,
-                    "has_strong_anchor": True,
-                    "tool_names": ["web_search"],
-                    "group_ids": ["group:web"],
-                    "capability_classes": ["web_search"],
-                }
-            ],
-            "reason": "metadata_recall_single_tool",
-        },
-        available_tools=available_tools,
-    )
-
-    assert plan is not None
-    assert plan.action.value == "use_tools"
-    assert plan.target_capability_classes == ["web_search"]
-    assert plan.target_tool_names == ["web_search"]
-
-
-def test_metadata_plan_requires_strong_match_before_direct_answer_turn_keeps_tools_visible() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "smartcmp_list_pending",
-            "description": "List SmartCMP pending approvals",
-            "source": "provider",
-            "provider_type": "smartcmp",
-            "capability_class": "provider:smartcmp",
-            "group_ids": ["group:cmp"],
-        },
-        {
-            "name": "smartcmp_list_services",
-            "description": "List SmartCMP services",
-            "source": "provider",
-            "provider_type": "smartcmp",
-            "capability_class": "provider:smartcmp",
-            "group_ids": ["group:cmp"],
-        },
-    ]
-    metadata_plan = runner._build_metadata_fallback_tool_intent_plan(
-        metadata_candidates={
-            "confidence": 0.06,
-            "preferred_provider_types": ["smartcmp"],
-            "preferred_capability_classes": ["provider:smartcmp"],
-            "preferred_tool_names": ["smartcmp_list_pending", "smartcmp_list_services"],
-            "reason": "metadata_recall_matched",
-        },
-        available_tools=available_tools,
-    )
-
-    assert metadata_plan is not None
-    assert (
-        runner._metadata_plan_represents_explicit_capability_match(
-            metadata_candidates={
-                "confidence": 0.06,
-                "preferred_provider_types": ["smartcmp"],
-                "preferred_capability_classes": ["provider:smartcmp"],
-                "preferred_tool_names": ["smartcmp_list_pending", "smartcmp_list_services"],
-                "reason": "metadata_recall_matched",
-            },
-            metadata_plan=metadata_plan,
-            available_tools=available_tools,
-        )
-        is False
-    )
-
-
-def test_metadata_plan_keeps_single_tool_consensus_visible_for_direct_answer_turn() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "openmeteo_weather",
-            "description": "Get current and forecast weather via Open-Meteo APIs",
-            "source": "builtin",
-            "capability_class": "weather",
-            "group_ids": ["group:web"],
-        },
-        {
-            "name": "web_search",
-            "description": "Search the public web",
-            "source": "builtin",
-            "capability_class": "web_search",
-            "group_ids": ["group:web"],
-        },
-    ]
-    metadata_candidates = {
-        "confidence": 0.04,
-        "preferred_provider_types": [],
-        "preferred_capability_classes": ["weather"],
-        "preferred_tool_names": ["openmeteo_weather"],
-        "tool_candidates": [
-            {
-                "hint_id": "tool:openmeteo_weather",
-                "tool_name": "openmeteo_weather",
-                "score": 7,
-                "has_strong_anchor": True,
-                "tool_names": ["openmeteo_weather"],
-                "group_ids": ["group:web"],
-                "capability_classes": ["weather"],
-            }
-        ],
-        "reason": "metadata_recall_single_tool",
-    }
-    metadata_plan = runner._build_metadata_fallback_tool_intent_plan(
-        metadata_candidates=metadata_candidates,
-        available_tools=available_tools,
-    )
-
-    assert metadata_plan is not None
-    assert (
-        runner._metadata_plan_represents_explicit_capability_match(
-            metadata_candidates=metadata_candidates,
-            metadata_plan=metadata_plan,
-            available_tools=available_tools,
-        )
-        is True
     )
 
 

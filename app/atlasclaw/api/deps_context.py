@@ -33,6 +33,7 @@ from ..session.queue import SessionQueue
 from ..session.router import SessionManagerRouter
 from ..skills.permission_service import skill_permission_service
 from ..skills.registry import SkillRegistry
+from ..tools.catalog import INTERNAL_TOOL_NAMES
 from ..hooks.runtime import HookRuntime
 from ..hooks.runtime_sinks import ContextSink, MemorySink
 from ..hooks.runtime_store import HookStateStore
@@ -442,6 +443,11 @@ def _build_md_tool_skill_refs(
     return tool_refs
 
 
+def _is_internal_runtime_tool(tool: dict[str, Any]) -> bool:
+    name = str((tool or {}).get("name", "") or "").strip()
+    return bool(name) and name in INTERNAL_TOOL_NAMES
+
+
 def _filter_snapshot_by_permissions(
     tools_snapshot: list[dict],
     md_skills_snapshot: list[dict],
@@ -457,6 +463,9 @@ def _filter_snapshot_by_permissions(
 
     filtered_tools = []
     for tool in tools_snapshot:
+        if _is_internal_runtime_tool(tool):
+            filtered_tools.append(tool)
+            continue
         if skill_permission_service.is_provider_bound_tool_snapshot(tool):
             filtered_tools.append(tool)
             continue
@@ -527,6 +536,15 @@ def build_scoped_deps(
         tools_snapshot = tools_snapshot_builder()
     else:
         tools_snapshot = ctx.skill_registry.snapshot()
+    internal_runtime_tools_builder = getattr(
+        ctx.skill_registry,
+        "internal_runtime_tools_snapshot",
+        None,
+    )
+    if callable(internal_runtime_tools_builder):
+        internal_runtime_tools_snapshot = internal_runtime_tools_builder()
+    else:
+        internal_runtime_tools_snapshot = []
 
     tool_groups_builder = getattr(ctx.skill_registry, "tool_groups_snapshot", None)
     if callable(tool_groups_builder):
@@ -698,6 +716,7 @@ def build_scoped_deps(
         "tool_groups_snapshot": tool_groups_snapshot,
         "skills_snapshot": skills_snapshot,
         "md_skills_snapshot": md_skills_snapshot,
+        "internal_runtime_tools_snapshot": internal_runtime_tools_snapshot,
         "work_dir": str(
             ensure_user_work_dir(
                 str(scoped_session_mgr.workspace_path),

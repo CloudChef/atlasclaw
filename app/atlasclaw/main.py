@@ -221,47 +221,29 @@ async def _ensure_builtin_role_skill_permissions(skill_registry) -> None:
             if not managed_roles:
                 return
 
-            # ---- Build catalog entries ----
-            tools_snap = skill_registry.tools_snapshot()
-            md_skills = skill_registry.md_snapshot()
-
-            def _make_entry(skill_id: str, skill_name: str, description: str) -> dict:
+            def _make_entry(row: dict) -> dict:
+                skill_id = str(row.get("qualified_name") or row.get("name") or "").strip()
+                skill_name = str(row.get("name") or skill_id).strip()
                 return {
                     "skill_id": skill_id,
                     "skill_name": skill_name,
-                    "description": description,
+                    "description": row.get("description", ""),
                     "runtime_enabled": True,
                     "authorized": True,
                     "enabled": True,
                 }
 
-            # Core catalog: non-provider executable tools + standalone md skills
-            # for admin. Markdown-backed executable tools are represented by
-            # their markdown skill entry.
-            full_catalog: list[dict] = []
-            full_seen: set[str] = set()
-            core_tool_count = 0
-            core_md_count = 0
-            for tool in tools_snap:
-                if not skill_permission_service.is_core_catalog_tool_snapshot(tool):
-                    continue
-                tool_name = str(tool.get("name", "") or "").strip()
-                if not tool_name or tool_name in full_seen:
-                    continue
-                full_seen.add(tool_name)
-                core_tool_count += 1
-                full_catalog.append(_make_entry(tool_name, tool_name, tool.get("description", "")))
-            for md in md_skills:
-                if skill_permission_service.is_provider_bound_md_skill_snapshot(md):
-                    continue
-                md_name = str(md.get("name", "") or "").strip()
-                md_qname = str(md.get("qualified_name", "") or "").strip()
-                skill_id = md_qname or md_name
-                if not skill_id or skill_id in full_seen:
-                    continue
-                full_seen.add(skill_id)
-                core_md_count += 1
-                full_catalog.append(_make_entry(skill_id, md_name, md.get("description", "")))
+            # Core catalog for admin: role-facing built-in tool groups plus
+            # standalone markdown skills. Provider-bound and internal tools are
+            # excluded by the permission service.
+            role_catalog = skill_permission_service.build_role_skill_catalog(
+                tools_snapshot=skill_registry.tools_snapshot(),
+                md_skills=skill_registry.md_snapshot(),
+                include_metadata=True,
+            )
+            full_catalog = [_make_entry(row) for row in role_catalog]
+            core_tool_group_count = sum(1 for row in role_catalog if row.get("type") == "tool_group")
+            core_md_count = sum(1 for row in role_catalog if row.get("type") == "markdown")
 
             if not full_catalog:
                 return
@@ -300,7 +282,7 @@ async def _ensure_builtin_role_skill_permissions(skill_registry) -> None:
                 print(
                     f"[AtlasClaw] Bootstrapped {role.identifier} default skill permissions "
                     f"({len(catalog_entries)} entries: "
-                    f"{core_tool_count} executable + {core_md_count} markdown)"
+                    f"{core_tool_group_count} tool groups + {core_md_count} markdown)"
                 )
 
             if changed:
@@ -486,12 +468,11 @@ async def lifespan(app: FastAPI):
         if instances:
             available_providers[provider_type] = instances
     
-    # Register built-in tools (exec, read, write, web_search, etc.)
+    # Register built-in tools (read, web_search, UI tools, coordination tools, etc.)
     registered_tools = register_builtin_tools(
         _skill_registry,
         profile=ToolProfile.FULL,
         tools_exclusive=list(config.skills.tools_exclusive or []),
-        allow_script_execution=bool(config.skills.allow_script_execution),
     )
     print(f"[AtlasClaw] Registered {len(registered_tools)} built-in tools")
     

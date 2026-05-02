@@ -3,9 +3,15 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import unquote
 
 from app.atlasclaw.agent.tool_gate_models import ToolIntentAction, ToolIntentPlan
+from app.atlasclaw.core.workspace_downloads import (
+    is_safe_workspace_relative_path,
+    workspace_download_reference_for_path,
+)
 
 
 def _normalize_text(value: Any) -> str:
@@ -65,29 +71,50 @@ def _collect_artifact_path_candidates(payload: Any) -> list[str]:
     if payload is None:
         return candidates
     if isinstance(payload, dict):
+        if payload.get("is_error") is True or payload.get("success") is False:
+            return candidates
         for key, value in payload.items():
             normalized_key = _normalize_text(key).lower()
-            if (
-                normalized_key == "path"
-                or normalized_key.endswith("_path")
-                or normalized_key.endswith("_file")
-                or normalized_key.endswith("_filepath")
-            ):
-                normalized_value = _normalize_text(value)
-                if normalized_value:
-                    candidates.append(normalized_value)
+            if normalized_key in {"artifact_path", "download_path"}:
+                values = value if isinstance(value, list) else [value]
+                for item in values:
+                    normalized_value = _normalize_text(item)
+                    if normalized_value:
+                        candidates.append(normalized_value)
             candidates.extend(_collect_artifact_path_candidates(value))
         return candidates
     if isinstance(payload, list):
         for item in payload:
             candidates.extend(_collect_artifact_path_candidates(item))
         return candidates
-    text = _normalize_text(payload)
-    if not text:
-        return candidates
-    if "file written:" in text.lower():
-        candidates.append(text.split(":", 1)[-1].strip())
     return candidates
+
+
+def _is_valid_artifact_path_candidate(
+    candidate: str,
+    *,
+    workspace_path: str | Path | None = None,
+    user_id: str | None = None,
+) -> bool:
+    normalized = _normalize_text(candidate).replace("\\", "/")
+    if not normalized:
+        return False
+    normalized_workspace_path = _normalize_text(workspace_path)
+    normalized_user_id = _normalize_text(user_id)
+    if normalized_workspace_path and normalized_user_id and normalized_user_id != "anonymous":
+        return (
+            workspace_download_reference_for_path(
+                normalized,
+                workspace_path=normalized_workspace_path,
+                user_id=normalized_user_id,
+            )
+            is not None
+        )
+    if normalized.lower().startswith("workspace://"):
+        normalized = unquote(normalized.split("://", 1)[1])
+    if Path(normalized).is_absolute():
+        return False
+    return is_safe_workspace_relative_path(normalized)
 
 
 def tool_output_satisfies_artifact_goal(
@@ -95,6 +122,8 @@ def tool_output_satisfies_artifact_goal(
     tool_name: str,
     payload: Any,
     artifact_goal: Optional[dict[str, Any]],
+    workspace_path: str | Path | None = None,
+    user_id: str | None = None,
 ) -> bool:
     if not artifact_goal:
         return True
@@ -104,11 +133,19 @@ def tool_output_satisfies_artifact_goal(
         for item in list(artifact_goal.get("extensions", []) or [])
         if _normalize_text(item)
     ]
-    path_candidates = [item.lower() for item in _collect_artifact_path_candidates(payload)]
+    path_candidates = [
+        item
+        for item in _collect_artifact_path_candidates(payload)
+        if _is_valid_artifact_path_candidate(
+            item,
+            workspace_path=workspace_path,
+            user_id=user_id,
+        )
+    ]
 
     if extensions:
         for candidate in path_candidates:
-            if any(candidate.endswith(extension) for extension in extensions):
+            if any(candidate.lower().endswith(extension) for extension in extensions):
                 return True
 
     return bool(path_candidates)
@@ -120,6 +157,8 @@ def messages_satisfy_artifact_goal(
     start_index: int,
     target_tool_names: list[str],
     artifact_goal: Optional[dict[str, Any]],
+    workspace_path: str | Path | None = None,
+    user_id: str | None = None,
 ) -> bool:
     if not artifact_goal:
         return True
@@ -139,6 +178,8 @@ def messages_satisfy_artifact_goal(
                 tool_name=tool_name,
                 payload=message.get("content"),
                 artifact_goal=artifact_goal,
+                workspace_path=workspace_path,
+                user_id=user_id,
             ):
                 return True
         tool_results = message.get("tool_results")
@@ -154,6 +195,8 @@ def messages_satisfy_artifact_goal(
                 tool_name=tool_name,
                 payload=result.get("content", result),
                 artifact_goal=artifact_goal,
+                workspace_path=workspace_path,
+                user_id=user_id,
             ):
                 return True
     return False

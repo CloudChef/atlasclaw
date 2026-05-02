@@ -14,6 +14,7 @@ from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import (
     normalize_tool_description,
     normalize_tool_result_mode,
 )
+from app.atlasclaw.tools.catalog import STANDARD_SKILL_RUNTIME_TOOL_NAMES
 
 
 def build_system_prompt(
@@ -78,6 +79,7 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
     """Build a compact capability index snapshot for prompt rendering."""
     capability_index: list[dict] = []
     tool_names: set[str] = set()
+    provider_capabilities: dict[str, dict[str, Any]] = {}
 
     for item in collect_md_skills_snapshot(deps):
         name = str(item.get("qualified_name") or item.get("name") or "unknown").strip()
@@ -103,15 +105,36 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
                     metadata=metadata,
                 ),
                 "declared_tool_names": _extract_md_tool_names(item),
-                "input_hints": _build_capability_input_hints(
-                    keywords=metadata.get("triggers", []),
-                    use_when=metadata.get("use_when", []),
-                ),
+                "declares_executable_tools": _metadata_declares_executable_tool(metadata),
             }
         )
 
     for item in collect_tools_snapshot(agent=agent, deps=deps):
+        routing_visibility = _normalize_optional_text(
+            item.get("routing_visibility", item.get("planner_visibility", ""))
+        )
+        if routing_visibility in {"hidden", "internal"}:
+            continue
         tool_name = str(item.get("name") or "unknown").strip() or "unknown"
+        provider_type = _normalize_optional_text(item.get("provider_type", ""))
+        if provider_type and provider_type.lower() != "none":
+            provider_record = provider_capabilities.setdefault(
+                provider_type,
+                {
+                    "capability_id": _build_capability_id("provider", provider_type),
+                    "kind": "provider",
+                    "name": provider_type,
+                    "description": "",
+                    "locator": provider_type,
+                    "provider_type": provider_type,
+                    "artifact_types": [],
+                    "declared_tool_names": [],
+                },
+            )
+            provider_record["declared_tool_names"].append(tool_name)
+            tool_description = str(item.get("description", "") or "").strip()
+            if tool_description and not provider_record["description"]:
+                provider_record["description"] = tool_description
         tool_names.add(tool_name)
         capability_index.append(
             {
@@ -120,7 +143,7 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
                 "name": tool_name,
                 "description": str(item.get("description", "") or "").strip(),
                 "locator": _format_tool_locator(item),
-                "provider_type": _normalize_optional_text(item.get("provider_type", "")),
+                "provider_type": provider_type,
                 "artifact_types": _infer_artifact_types(
                     name=tool_name,
                     description=str(item.get("description", "") or "").strip(),
@@ -128,13 +151,21 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
                     metadata=item,
                 ),
                 "declared_tool_names": [tool_name],
-                "input_hints": _build_capability_input_hints(
-                    keywords=item.get("keywords", []),
-                    use_when=item.get("use_when", []),
-                    parameters_schema=item.get("parameters_schema", {}),
-                ),
             }
         )
+
+    for provider_type in sorted(provider_capabilities.keys()):
+        provider_record = provider_capabilities[provider_type]
+        provider_record["declared_tool_names"] = sorted(
+            {
+                str(name).strip()
+                for name in provider_record.get("declared_tool_names", [])
+                if str(name).strip()
+            }
+        )
+        if not provider_record["description"]:
+            provider_record["description"] = "Authorized provider capability."
+        capability_index.append(provider_record)
 
     for item in collect_skills_snapshot(deps):
         skill_name = str(item.get("name") or "unknown").strip() or "unknown"
@@ -160,10 +191,6 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
                 "declared_tool_names": _normalize_string_list(
                     [item.get("qualified_skill_name", ""), item.get("skill_name", "")]
                 ),
-                "input_hints": _build_capability_input_hints(
-                    keywords=item.get("keywords", []),
-                    use_when=item.get("use_when", []),
-                ),
             }
         )
 
@@ -175,6 +202,10 @@ def _build_capability_id(kind: str, name: str) -> str:
     normalized_name = str(name or "").strip()
     if normalized_kind == "tool":
         prefix = "tool"
+    elif normalized_kind == "provider":
+        prefix = "provider"
+    elif normalized_kind in {"capability", "group"}:
+        prefix = normalized_kind
     else:
         prefix = "skill"
     return f"{prefix}:{normalized_name or 'unknown'}"
@@ -224,35 +255,6 @@ def _infer_artifact_types(
                     continue
                 artifact_types.append(normalized_item)
     return _normalize_string_list(artifact_types)
-
-
-def _build_capability_input_hints(
-    *,
-    keywords: Any = None,
-    use_when: Any = None,
-    parameters_schema: Any = None,
-    limit: int = 4,
-) -> list[str]:
-    hints: list[str] = []
-    for item in _normalize_string_list(keywords):
-        hints.append(item)
-        if len(hints) >= limit:
-            return hints
-    for item in _normalize_string_list(use_when):
-        hints.append(item)
-        if len(hints) >= limit:
-            return hints
-    if isinstance(parameters_schema, dict):
-        properties = parameters_schema.get("properties")
-        if isinstance(properties, dict):
-            for key in properties.keys():
-                normalized = str(key or "").strip()
-                if not normalized:
-                    continue
-                hints.append(normalized)
-                if len(hints) >= limit:
-                    return hints
-    return _normalize_string_list(hints)[:limit]
 
 
 def collect_target_md_skill(deps) -> Optional[dict]:
@@ -391,6 +393,14 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
     ) -> None:
         normalized_name = str(name or "").strip()
         if not normalized_name or normalized_name in seen_names:
+            return
+        if (
+            normalized_name in STANDARD_SKILL_RUNTIME_TOOL_NAMES
+            and not (
+                isinstance(extra, dict)
+                and bool(extra.get("standard_skill_runtime_tools_visible"))
+            )
+        ):
             return
         indexed_meta = skill_meta_index.get(normalized_name, {})
         silent_backend = is_silent_backend_tool(
@@ -871,6 +881,30 @@ def _extract_md_tool_names(entry: dict) -> list[str]:
     return _normalize_string_list(names)
 
 
+def _metadata_declares_executable_tool(metadata: dict[str, Any]) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    if str(metadata.get("tool_name", "") or "").strip() and str(
+        metadata.get("entrypoint", "") or ""
+    ).strip():
+        return True
+
+    ids: set[str] = set()
+    for key in metadata.keys():
+        key_text = str(key or "")
+        if key_text.startswith("tool_") and key_text.endswith("_name"):
+            ids.add(key_text[len("tool_") : -len("_name")])
+        elif key_text.startswith("tool_") and key_text.endswith("_entrypoint"):
+            ids.add(key_text[len("tool_") : -len("_entrypoint")])
+
+    for tool_id in ids:
+        if str(metadata.get(f"tool_{tool_id}_name", "") or "").strip() and str(
+            metadata.get(f"tool_{tool_id}_entrypoint", "") or ""
+        ).strip():
+            return True
+    return False
+
+
 def _extract_md_tool_metadata_dict(
     entry: dict[str, Any],
     *,
@@ -929,8 +963,6 @@ def _infer_capability_class(
         return "weather"
     if "weather" in lowered_description or "forecast" in lowered_description:
         return "weather"
-    if "jira" in lowered_name or "jira" in lowered_description:
-        return "provider:jira"
     if "provider:" in lowered_description or lowered_category.startswith("provider"):
         return "provider:generic"
     if "skill" in lowered_category or lowered_category == "md_skill":

@@ -168,7 +168,7 @@ def _build_skills_markdown(
 ) -> str:
     lines = [f"## {provider_label} Skills", ""]
     if not md_skills:
-        lines.append("未找到符合条件的技能。")
+        lines.append("No matching skills found.")
         return "\n".join(lines)
 
     tool_index: dict[str, list[dict[str, Any]]] = {}
@@ -218,7 +218,7 @@ def _build_tools_markdown(
 ) -> str:
     lines = [f"## {provider_label} Tools", ""]
     if not tools_snapshot:
-        lines.append("未找到符合条件的工具。")
+        lines.append("No matching tools found.")
         return "\n".join(lines)
     for tool in tools_snapshot:
         lines.append(_format_tool_line(tool))
@@ -248,7 +248,7 @@ def _build_groups_markdown(
             continue
         matched.append((group_id, filtered_members))
     if not matched:
-        lines.append("未找到符合条件的工具分组。")
+        lines.append("No matching tool groups found.")
         return "\n".join(lines)
     for group_id, members in matched:
         lines.append(f"- `{group_id}`: {', '.join(f'`{name}`' for name in members)}")
@@ -265,8 +265,8 @@ async def atlasclaw_catalog_query_tool(
 
     Args:
         kind: One of summary, skills, tools, providers, or groups.
-        provider_type: Optional provider filter, for example ``smartcmp``.
-        group_id: Optional group filter, for example ``group:cmp``.
+        provider_type: Optional provider filter, for example ``provider_type``.
+        group_id: Optional group filter, for example ``group:example``.
     """
     extra = _coerce_context_payload(ctx)
     tools_snapshot = list(extra.get("tools_snapshot", []) or [])
@@ -317,7 +317,7 @@ async def atlasclaw_catalog_query_tool(
                 else:
                     provider_lines.append(f"- `{provider_key}` ({display_name})")
         else:
-            provider_lines.append("未找到可用 provider。")
+            provider_lines.append("No providers found.")
         text = "\n".join(provider_lines)
     else:
         section_lines = []

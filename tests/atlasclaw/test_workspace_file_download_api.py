@@ -78,6 +78,36 @@ def test_current_user_downloads_nested_work_dir_file(tmp_path):
     assert response.text == "id,value\n1,ok\n"
 
 
+def test_hidden_runtime_files_are_not_downloadable(tmp_path):
+    root = _user_area(tmp_path, "alice", "work_dir")
+    hidden_file = root / ".atlasclaw" / "skills" / "skill-xlsx" / "cache" / "debug.txt"
+    hidden_file.parent.mkdir(parents=True)
+    hidden_file.write_text("internal", encoding="utf-8")
+
+    client = _build_client(tmp_path, "alice")
+    response = client.get(
+        "/api/workspace/files/download",
+        params={"path": ".atlasclaw/skills/skill-xlsx/cache/debug.txt"},
+    )
+
+    assert response.status_code == 403
+
+
+def test_hidden_runtime_files_are_not_downloadable_with_mixed_case_path(tmp_path):
+    root = _user_area(tmp_path, "alice", "work_dir")
+    hidden_file = root / ".atlasclaw" / "skills" / "skill-xlsx" / "cache" / "debug.txt"
+    hidden_file.parent.mkdir(parents=True)
+    hidden_file.write_text("internal", encoding="utf-8")
+
+    client = _build_client(tmp_path, "alice")
+    response = client.get(
+        "/api/workspace/files/download",
+        params={"path": ".AtlasClaw/skills/skill-xlsx/cache/debug.txt"},
+    )
+
+    assert response.status_code == 403
+
+
 def test_current_user_absolute_work_dir_path_is_rejected(tmp_path):
     root = _user_area(tmp_path, "alice", "work_dir")
     note = root / "notes.txt"

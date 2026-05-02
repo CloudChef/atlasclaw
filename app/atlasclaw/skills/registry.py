@@ -260,6 +260,7 @@ class SkillRegistry:
                 "public_web": bool(meta.public_web),
             }
             for meta, _ in self._skills.values()
+            if str(meta.source or "").strip().lower() != "internal_runtime"
         ]
 
     def snapshot_builtins(self) -> list[dict]:
@@ -299,12 +300,15 @@ class SkillRegistry:
             }
             for meta, _ in self._skills.values()
             if meta.name not in md_derived
+            and str(meta.source or "").strip().lower() != "internal_runtime"
         ]
 
     def tools_snapshot(self) -> list[dict]:
         """Return normalized executable-tool metadata for runtime filtering."""
         normalized: list[dict] = []
         for meta, _ in self._skills.values():
+            if str(meta.source or "").strip().lower() == "internal_runtime":
+                continue
             source = self._resolve_tool_source(meta)
             provider_type = str(meta.provider_type or "").strip()
             capability_class = self._resolve_capability_class(meta, source)
@@ -333,6 +337,34 @@ class SkillRegistry:
                 "public_web": bool(meta.public_web),
             }
             normalized.append(record)
+        return normalized
+
+    def internal_runtime_tools_snapshot(self) -> list[dict]:
+        """Return tool metadata for runtime-only standard skill helpers."""
+        normalized: list[dict] = []
+        for meta, _ in self._skills.values():
+            if str(meta.source or "").strip().lower() != "internal_runtime":
+                continue
+            normalized.append(
+                {
+                    "name": meta.name,
+                    "description": meta.description,
+                    "source": "internal_runtime",
+                    "category": meta.category,
+                    "group_ids": list(meta.group_ids or []),
+                    "capability_class": meta.capability_class,
+                    "priority": int(meta.priority or 100),
+                    "parameters_schema": self._coerce_parameters_schema(meta.parameters_schema),
+                    "routing_visibility": str(meta.routing_visibility or "").strip(),
+                    "aliases": list(meta.aliases),
+                    "keywords": list(meta.keywords),
+                    "use_when": list(meta.use_when),
+                    "avoid_when": list(meta.avoid_when),
+                    "result_mode": str(meta.result_mode or "").strip(),
+                    "success_contract": dict(meta.success_contract or {}),
+                    "coordination_only": bool(meta.coordination_only),
+                }
+            )
         return normalized
 
     def tool_groups_snapshot(self) -> dict[str, list[str]]:
@@ -944,7 +976,7 @@ register name
 
     def _resolve_tool_source(self, meta: SkillMetadata) -> str:
         explicit_source = str(meta.source or "").strip().lower()
-        if explicit_source in {"builtin", "provider", "md_skill"}:
+        if explicit_source in {"builtin", "provider", "md_skill", "internal_runtime"}:
             return explicit_source
 
         category = str(meta.category or "").strip().lower()

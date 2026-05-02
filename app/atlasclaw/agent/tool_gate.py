@@ -72,6 +72,9 @@ class CapabilityMatcher:
             if inferred_class == capability:
                 matches.append(self._build_candidate(tool, inferred_class))
                 continue
+            if self._tool_name_matches_capability(tool, capability):
+                matches.append(self._build_candidate(tool, capability))
+                continue
             if desired_provider and inferred_class == "provider:generic":
                 description = str(tool.get("description", "")).lower()
                 name = str(tool.get("name", "")).lower()
@@ -97,8 +100,6 @@ class CapabilityMatcher:
         description = str(tool.get("description", "")).lower()
         if "skill" in category:
             return "skill"
-        if "jira" in description:
-            return "provider:jira"
         if "skill" in lowered_name or "skill" in description:
             return "skill"
         return "provider:generic" if "provider" in description else lowered_name
@@ -117,6 +118,20 @@ class CapabilityMatcher:
             metadata={
                 "description": str(tool.get("description", "")).strip(),
             },
+        )
+
+    @staticmethod
+    def _tool_name_matches_capability(tool: dict[str, Any], capability: str) -> bool:
+        normalized_name = str(tool.get("name", "") or "").strip().lower()
+        normalized_capability = str(capability or "").strip().lower()
+        if not normalized_name or not normalized_capability:
+            return False
+        if normalized_capability.startswith("provider:"):
+            return False
+        return (
+            normalized_name == normalized_capability
+            or normalized_name.startswith(f"{normalized_capability}_")
+            or normalized_name.endswith(f"_{normalized_capability}")
         )
 
     @staticmethod

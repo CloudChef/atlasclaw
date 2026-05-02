@@ -22,28 +22,13 @@ from app.atlasclaw.agent.runner_tool.runner_tool_messages import (
 )
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import turn_action_requires_tool_execution
 from app.atlasclaw.agent.stream import StreamEvent
+from app.atlasclaw.tools.catalog import STANDARD_SKILL_RUNTIME_TOOL_NAMES
 from app.atlasclaw.core.workspace_downloads import workspace_download_reference_for_path
 
 
 WORKSPACE_ARTIFACT_EXPLICIT_PATH_KEYS = {
     "artifact_path",
     "download_path",
-    "output_file",
-    "output_path",
-}
-
-WORKSPACE_ARTIFACT_CONDITIONAL_PATH_KEYS = {"file_path"}
-
-WORKSPACE_DOWNLOAD_TOOL_NAME_TOKENS = {
-    "artifact",
-    "create",
-    "docx",
-    "export",
-    "generate",
-    "pdf",
-    "pptx",
-    "write",
-    "xlsx",
 }
 
 
@@ -61,11 +46,6 @@ def _coerce_tool_result_payload(payload: Any) -> Any:
     return payload
 
 
-def _tool_name_can_emit_workspace_download(tool_name: str) -> bool:
-    normalized = str(tool_name or "").strip().lower()
-    return any(token in normalized for token in WORKSPACE_DOWNLOAD_TOOL_NAME_TOKENS)
-
-
 def _tool_result_payload_is_error(payload: dict[str, Any]) -> bool:
     if payload.get("is_error") is True:
         return True
@@ -73,7 +53,7 @@ def _tool_result_payload_is_error(payload: dict[str, Any]) -> bool:
     return isinstance(details, dict) and details.get("is_error") is True
 
 
-def _iter_workspace_file_path_candidates(payload: Any, *, tool_name: str) -> list[Any]:
+def _iter_workspace_file_path_candidates(payload: Any) -> list[Any]:
     normalized = _coerce_tool_result_payload(payload)
     if isinstance(normalized, dict):
         if _tool_result_payload_is_error(normalized):
@@ -81,31 +61,20 @@ def _iter_workspace_file_path_candidates(payload: Any, *, tool_name: str) -> lis
         candidates: list[Any] = []
         for key, value in normalized.items():
             normalized_key = str(key or "").strip()
-            if (
-                normalized_key in WORKSPACE_ARTIFACT_EXPLICIT_PATH_KEYS
-                or (
-                    normalized_key in WORKSPACE_ARTIFACT_CONDITIONAL_PATH_KEYS
-                    and _tool_name_can_emit_workspace_download(tool_name)
-                )
-            ):
+            if normalized_key in WORKSPACE_ARTIFACT_EXPLICIT_PATH_KEYS:
                 if isinstance(value, list):
                     candidates.extend(value)
                 else:
                     candidates.append(value)
                 continue
             if isinstance(value, (dict, list)):
-                candidates.extend(_iter_workspace_file_path_candidates(value, tool_name=tool_name))
+                candidates.extend(_iter_workspace_file_path_candidates(value))
         return candidates
     if isinstance(normalized, list):
         candidates: list[Any] = []
         for item in normalized:
-            candidates.extend(_iter_workspace_file_path_candidates(item, tool_name=tool_name))
+            candidates.extend(_iter_workspace_file_path_candidates(item))
         return candidates
-    if isinstance(normalized, str):
-        stripped = normalized.strip()
-        lowered = stripped.lower()
-        if _tool_name_can_emit_workspace_download(tool_name) and lowered.startswith("file written:"):
-            return [stripped.split(":", 1)[1].strip().strip("`")]
     return []
 
 
@@ -152,12 +121,12 @@ def collect_workspace_download_references_from_tool_results(
 ) -> list[dict[str, str]]:
     references: list[dict[str, str]] = []
     seen: set[str] = set()
-    for tool_name, payload in _iter_tool_result_payloads(
+    for _tool_name, payload in _iter_tool_result_payloads(
         messages=messages,
         start_index=start_index,
         target_tool_names=target_tool_names,
     ):
-        for candidate in _iter_workspace_file_path_candidates(payload, tool_name=tool_name):
+        for candidate in _iter_workspace_file_path_candidates(payload):
             reference = workspace_download_reference_for_path(
                 candidate,
                 workspace_path=workspace_path,
@@ -657,6 +626,27 @@ class RunnerExecutionFlowStreamMixin:
                                 "workspace_downloads": new_download_references,
                             },
                         )
+                if self._should_finalize_from_tool_results(
+                    messages=latest_messages,
+                    start_index=persist_run_output_start_index,
+                    planned_tool_names=current_node_tool_names,
+                    available_tools=list(state.get("available_tools") or []),
+                    artifact_goal=state.get("artifact_goal"),
+                    workspace_path=workspace_path,
+                    user_id=user_id,
+                ):
+                    state["force_tool_only_finalize"] = True
+                    yield StreamEvent.runtime_update(
+                        "reasoning",
+                        "Structured tool results are sufficient. Finalizing directly from tool output.",
+                        metadata={
+                            "phase": "tool_only_finalize",
+                            "attempt": state.get("current_model_attempt"),
+                            "elapsed": round(time.monotonic() - start_time, 1),
+                            "tools": current_node_tool_names,
+                        },
+                    )
+                    break
                 repeated_failure = self._detect_repeated_tool_failure(
                     messages=latest_messages,
                     start_index=persist_run_output_start_index,
@@ -704,25 +694,6 @@ class RunnerExecutionFlowStreamMixin:
                             "elapsed": round(time.monotonic() - start_time, 1),
                             "tool_name": repeated_no_progress["tool_name"],
                             "count": repeated_no_progress["count"],
-                        },
-                    )
-                    break
-                if self._should_finalize_from_tool_results(
-                    messages=latest_messages,
-                    start_index=persist_run_output_start_index,
-                    planned_tool_names=current_node_tool_names,
-                    available_tools=list(state.get("available_tools") or []),
-                    artifact_goal=state.get("artifact_goal"),
-                ):
-                    state["force_tool_only_finalize"] = True
-                    yield StreamEvent.runtime_update(
-                        "reasoning",
-                        "Structured tool results are sufficient. Finalizing directly from tool output.",
-                        metadata={
-                            "phase": "tool_only_finalize",
-                            "attempt": state.get("current_model_attempt"),
-                            "elapsed": round(time.monotonic() - start_time, 1),
-                            "tools": current_node_tool_names,
                         },
                     )
                     break
@@ -845,6 +816,8 @@ class RunnerExecutionFlowStreamMixin:
             normalized_name = str(tool_name or "").strip()
             if not normalized_name:
                 continue
+            if normalized_name in STANDARD_SKILL_RUNTIME_TOOL_NAMES:
+                continue
             prior_counts[normalized_name] = prior_counts.get(normalized_name, 0) + 1
             if prior_counts[normalized_name] > repeat_limit and normalized_name not in exceeded:
                 exceeded.append(normalized_name)
@@ -921,6 +894,8 @@ class RunnerExecutionFlowStreamMixin:
         planned_tool_names: list[str],
         available_tools: list[dict[str, Any]],
         artifact_goal: dict[str, Any] | None = None,
+        workspace_path: str | Path | None = None,
+        user_id: str | None = None,
     ) -> bool:
         normalized_planned = [
             str(name).strip()
@@ -929,11 +904,22 @@ class RunnerExecutionFlowStreamMixin:
         ]
         if not normalized_planned:
             return False
-        if artifact_goal and not messages_satisfy_artifact_goal(
-            messages=messages,
-            start_index=start_index,
-            target_tool_names=normalized_planned,
-            artifact_goal=artifact_goal,
+        if artifact_goal:
+            return messages_satisfy_artifact_goal(
+                messages=messages,
+                start_index=start_index,
+                target_tool_names=normalized_planned,
+                artifact_goal=artifact_goal,
+                workspace_path=workspace_path,
+                user_id=user_id,
+            )
+        available_tool_names = {
+            str(tool.get("name", "") or "").strip()
+            for tool in available_tools
+            if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+        }
+        if available_tool_names.intersection(STANDARD_SKILL_RUNTIME_TOOL_NAMES) and not (
+            set(normalized_planned).intersection(STANDARD_SKILL_RUNTIME_TOOL_NAMES)
         ):
             return False
         tool_index = {

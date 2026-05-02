@@ -705,7 +705,16 @@ function configureHandler(element) {
       })
 
       if (!response.ok) {
-        signals.onResponse({ html: `<p style="color: #d32f2f;">Error: ${response.status} ${response.statusText}</p>` })
+        let errorMessage = `Error: ${response.status} ${response.statusText}`
+        try {
+          const errorData = await response.json()
+          if (errorData?.detail) {
+            errorMessage = errorData.detail
+          }
+        } catch (_) {
+          // Keep the HTTP status fallback when the response body is not JSON.
+        }
+        signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(errorMessage)}</p>` })
         signals.onClose()
         return
       }
@@ -1020,10 +1029,12 @@ function isSafeWorkspaceRelativePath(path) {
   if (!normalized || normalized.startsWith('/') || normalized.startsWith('~')) return false
   if (/^[a-z][a-z0-9+.-]*:/i.test(normalized)) return false
   if (/^[a-z]:\//i.test(normalized)) return false
+  const normalizedLower = normalized.toLowerCase()
+  if (normalizedLower === '.atlasclaw' || normalizedLower.startsWith('.atlasclaw/')) return false
   return normalized.split('/').every((part) => part && part !== '.' && part !== '..')
 }
 
-function normalizeWorkspaceDownloadReference(rawValue, { allowRelativeWorkDir = false } = {}) {
+function normalizeWorkspaceDownloadReference(rawValue) {
   const decoded = decodeHtmlEntities(rawValue).trim().replace(/\\/g, '/')
   if (!decoded) return null
 
@@ -1036,10 +1047,6 @@ function normalizeWorkspaceDownloadReference(rawValue, { allowRelativeWorkDir = 
   }
 
   if (/^[a-z][a-z0-9+.-]*:/i.test(decoded)) return null
-
-  if (allowRelativeWorkDir && isSafeWorkspaceRelativePath(decoded)) {
-    return { path: decoded }
-  }
   return null
 }
 
@@ -1057,9 +1064,7 @@ function buildWorkspaceDownloadAnchor(labelHtml, path) {
 function renderWorkspaceDownloadLink(labelHtml, rawReference, options = {}) {
   const reference = normalizeWorkspaceDownloadReference(rawReference, options)
   if (!reference) return null
-  const effectiveLabel = options.labelFromPath
-    ? escapeHtml(getWorkspaceDownloadDisplayName(reference.path))
-    : labelHtml
+  const effectiveLabel = escapeHtml(getWorkspaceDownloadDisplayName(reference.path))
   return buildWorkspaceDownloadAnchor(effectiveLabel, reference.path)
 }
 
@@ -1096,7 +1101,7 @@ function normalizeWorkspaceDownloadArtifact(item) {
     const reference = normalizeWorkspaceDownloadReference(String(rawReference))
     return reference ? {
       ...reference,
-      label: String(item.label || item.name || getWorkspaceDownloadDisplayName(reference.path)).trim()
+      label: getWorkspaceDownloadDisplayName(reference.path)
     } : null
   }
 
@@ -1104,7 +1109,7 @@ function normalizeWorkspaceDownloadArtifact(item) {
   if (!isSafeWorkspaceRelativePath(path)) return null
   return {
     path: path.replace(/\\/g, '/'),
-    label: String(item.label || item.name || getWorkspaceDownloadDisplayName(path)).trim()
+    label: getWorkspaceDownloadDisplayName(path)
   }
 }
 
@@ -1144,15 +1149,6 @@ function responseContentHasWorkspaceDownloadReference(responseContent, reference
     }
   }
 
-  const fileWrittenPattern = /\bFile written:\s*(?:`([^`]+)`|([^<\s]+))/gi
-  let fileMatch = null
-  while ((fileMatch = fileWrittenPattern.exec(content)) !== null) {
-    const rawPath = fileMatch[1] || fileMatch[2] || ''
-    const fileReference = normalizeWorkspaceDownloadReference(rawPath, { allowRelativeWorkDir: true })
-    if (fileReference && workspaceDownloadReferenceKey(fileReference) === targetKey) {
-      return true
-    }
-  }
   return false
 }
 
@@ -1166,19 +1162,6 @@ function buildGeneratedWorkspaceDownloadsHtml(references, responseContent) {
     })
     .join('')
   return anchors ? `<div class="workspace-generated-downloads">${anchors}</div>` : ''
-}
-
-function linkifyFileWrittenReferences(html) {
-  return html.replace(/\b(File written:\s*)(?:`([^`]+)`|([^<\s]+))/gi, (match, prefix, quotedPath, barePath, offset) => {
-    if (offset > 0 && html[offset - 1] === '[') return match
-    const rawPath = quotedPath || barePath || ''
-    const link = renderWorkspaceDownloadLink(
-      escapeHtml(decodeHtmlEntities(rawPath)),
-      rawPath,
-      { allowRelativeWorkDir: true, labelFromPath: true },
-    )
-    return link || match
-  })
 }
 
 function linkifyBareWorkspaceReferences(html) {
@@ -1230,7 +1213,6 @@ function stripWrapperHeading(text) {
 
 function renderInlineMarkdown(line) {
   let html = line || ''
-  html = linkifyFileWrittenReferences(html)
   html = linkifyBareWorkspaceReferences(html)
   html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, url) => {
     const workspaceLink = renderWorkspaceDownloadLink(label, url)

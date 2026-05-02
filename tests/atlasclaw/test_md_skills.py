@@ -705,8 +705,8 @@ class TestPromptBuilderMdSkills:
         assert "smartcmp:preapproval-agent" in output
         assert "/skills/preapproval-agent/SKILL.md" in output
 
-    def test_target_md_skill_body_rendered_in_minimal_mode(self):
-        """定向 markdown skill 在 MINIMAL 模式下也会注入已加载正文"""
+    def test_target_md_skill_loaded_instructions_rendered_in_minimal_mode(self):
+        """Render loaded SKILL.md instructions for the selected markdown skill in minimal mode."""
         b = self._builder(mode=PromptMode.MINIMAL)
         output = b.build(
             md_skills=[_make_md_skill()],
@@ -714,13 +714,16 @@ class TestPromptBuilderMdSkills:
                 "provider": "pptx",
                 "qualified_name": "pptx",
                 "file_path": "/skills/pptx/SKILL.md",
-                "content": "# PPTX Skill\n\nUse this skill to create slides.",
+                "instructions": "Use this skill to create slides.",
+                "content": "# PPTX Skill\n\nFull body should not be inlined.",
             },
         )
 
         assert "Target Markdown Skill" in output
-        assert "This skill body was loaded specifically for the current turn." in output
-        assert "# PPTX Skill" in output
+        assert "Loaded SKILL.md for the selected skill:" in output
+        assert "Use this skill to create slides." in output
+        assert "# PPTX Skill" not in output
+        assert "Full body should not be inlined." not in output
         assert "## Skills" not in output
 
     def test_response_language_policy_precedes_target_md_skill_in_minimal_mode(self):
@@ -738,14 +741,14 @@ class TestPromptBuilderMdSkills:
         assert "dominant language of the current user message" in output
         assert output.index("## Response Language") < output.index("## Target Markdown Skill")
 
-    def test_target_md_skill_body_sanitizes_backend_narration(self):
+    def test_target_md_skill_loaded_instructions_sanitize_backend_narration(self):
         b = self._builder(mode=PromptMode.MINIMAL)
         output = b.build(
             target_md_skill={
                 "provider": "smartcmp",
                 "qualified_name": "smartcmp:request",
                 "file_path": "/skills/request/SKILL.md",
-                "content": (
+                "instructions": (
                     "This is a hidden backend step for cloud-resource requests:\n"
                     "- Do NOT tell the user you are checking component info, node types, or backend metadata.\n"
                 ),
@@ -758,15 +761,15 @@ class TestPromptBuilderMdSkills:
         assert "actual parameter metadata overrides all static examples" not in output
         assert "Do not show multiple selection lists in the same assistant turn" not in output
 
-    def test_target_md_skill_body_preserves_json_preview_instruction(self):
-        """SmartCMP request skill 注入 prompt 时保留 JSON 预览确认要求"""
+    def test_target_md_skill_loaded_instructions_preserve_json_preview_instruction(self):
+        """Preserve JSON preview guidance from loaded selected-skill instructions."""
         b = self._builder(mode=PromptMode.MINIMAL)
         output = b.build(
             target_md_skill={
                 "provider": "smartcmp",
                 "qualified_name": "smartcmp:request",
                 "file_path": "/skills/request/SKILL.md",
-                "content": (
+                "instructions": (
                     "Before submit, show JSON 预览.\n"
                     "Render the constructed request body in a fenced json block.\n"
                     "Mask credentialPassword as \"******\" in the preview.\n"
@@ -821,14 +824,14 @@ class TestPromptBuilderMdSkills:
 
     def test_budget_with_truncation_comment(self):
         """总预算超出时附加截断注释"""
-        b = self._builder(md_skills_max_index_chars=900)  # Increased for new header with guidance
+        b = self._builder(md_skills_max_index_chars=1100)
         skills = [
             _make_md_skill(name=f"s{i:03d}", description="D" * 100)
             for i in range(10)
         ]
         output = b._build_md_skills_index(skills)
 
-        assert len(output) <= 900
+        assert len(output) <= 1100
         assert "Showing" in output
         assert "10" in output  # 总数
 
@@ -858,8 +861,7 @@ class TestPromptBuilderMdSkills:
         b = self._builder()
         output = b._build_md_skills_index([_make_md_skill()])
 
-        assert "call the `read` tool" in output
-        assert "Do not assume the full skill file is already loaded in context." in output
+        assert "Detailed instructions are loaded after an authorized skill is selected" in output
         assert "Format: `name | description | file_path`" in output
 
     def test_path_compression(self):
@@ -977,7 +979,6 @@ class TestConfigSchema:
         assert cfg.capability_index_max_chars == 3000
         assert cfg.md_skills_max_file_bytes == 262144
         assert cfg.tools_exclusive == []
-        assert cfg.allow_script_execution is True
 
     def test_custom_values(self):
         """自定义值验证"""
@@ -1006,16 +1007,19 @@ class TestConfigSchema:
 class TestBuiltinToolCatalog:
     """Built-in tool registration and group coverage tests."""
 
-    def test_full_profile_includes_runtime_and_fs_tools(self):
+    def test_full_profile_includes_read_but_not_high_risk_tools(self):
         tools = ToolCatalog.get_tools_by_profile(ToolProfile.FULL)
 
-        for tool_name in ("read", "write", "edit", "delete", "exec", "process"):
-            assert tool_name in tools
+        assert "read" in tools
+        for tool_name in ("write", "edit", "delete", "exec", "process"):
+            assert tool_name not in tools
 
-    def test_register_builtin_tools_includes_runtime_and_fs_tools(self):
+    def test_register_builtin_tools_includes_read_but_not_high_risk_tools(self):
         reg = SkillRegistry()
         registered = register_builtin_tools(reg, profile=ToolProfile.FULL)
 
-        for tool_name in ("read", "write", "edit", "delete", "exec", "process"):
-            assert tool_name in registered
-            assert reg.get(tool_name) is not None
+        assert "read" in registered
+        assert reg.get("read") is not None
+        for tool_name in ("write", "edit", "delete", "exec", "process"):
+            assert tool_name not in registered
+            assert reg.get(tool_name) is None

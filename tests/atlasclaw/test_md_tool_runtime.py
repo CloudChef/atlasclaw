@@ -5,9 +5,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from pathlib import Path
 
-from app.atlasclaw.skills.md_tool_runtime import ScriptInvocationConfig, create_script_wrapper
+from app.atlasclaw.skills.md_tool_runtime import (
+    ScriptInvocationConfig,
+    create_script_wrapper,
+    register_executable_tools_from_md,
+)
+from app.atlasclaw.skills.registry import MdSkillEntry, SkillMetadata, SkillRegistry
 
 
 def test_script_wrapper_serializes_positional_and_flag_arguments(tmp_path: Path) -> None:
@@ -175,6 +181,72 @@ def test_script_wrapper_normalizes_crlf_output(tmp_path: Path) -> None:
     assert "\r" not in result["output"]
     assert "line1" in result["output"]
     assert "line2" in result["output"]
+
+
+def test_script_wrapper_sanitizes_provider_http_auth_errors(tmp_path: Path) -> None:
+    script = tmp_path / "auth_fail.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import sys",
+                "print('[ERROR] Request failed: 401 Client Error: for url: https://provider.example/api')",
+                "sys.exit(1)",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    wrapper = create_script_wrapper(
+        script,
+        provider_type="provider",
+        tool_name="provider_list_pending",
+    )
+    result = asyncio.run(wrapper())
+
+    assert result["success"] is False
+    assert "401 Client Error" not in result["output"]
+    assert "Provider authentication failed" in result["output"]
+    assert "user_token" not in result["output"]
+    assert "personal provider access credential" not in result["output"]
+
+
+def test_artifact_md_tool_defaults_to_tool_only_result_mode(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "artifact"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "handler.py").write_text(
+        "\n".join(
+            [
+                "def create_handler(ctx=None, **kwargs):",
+                "    return {'success': True, 'artifact_path': '/tmp/example.txt'}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("---\nname: artifact\n---\n", encoding="utf-8")
+    entry = MdSkillEntry(
+        name="artifact",
+        description="Create an artifact",
+        file_path=str(skill_file),
+        qualified_name="artifact",
+        metadata={
+            "tool_create_name": "artifact_create",
+            "tool_create_entrypoint": "scripts/handler.py:create_handler",
+            "tool_create_capability_class": "artifact:custom",
+        },
+    )
+    registry = SkillRegistry()
+
+    register_executable_tools_from_md(
+        registry=registry,
+        skill_metadata_cls=SkillMetadata,
+        entry=entry,
+        logger=logging.getLogger(__name__),
+    )
+
+    metadata, _handler = registry.get("artifact_create")
+    assert metadata.result_mode == "tool_only_ok"
 
 
 def test_script_wrapper_hides_silent_lookup_output_when_internal_metadata_exists(

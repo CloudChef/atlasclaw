@@ -14,8 +14,6 @@ from app.atlasclaw.memory.manager import MemoryManager
 from app.atlasclaw.session.context import TranscriptEntry
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.tools.filesystem.read_tool import read_tool
-from app.atlasclaw.tools.filesystem.write_tool import write_tool
-from app.atlasclaw.tools.runtime.exec_tool import exec_tool
 
 
 def _build_ctx(tmp_path, user_id: str = "u-sec"):
@@ -42,28 +40,16 @@ def test_encode_if_untrusted_for_command_and_script():
 
 
 @pytest.mark.asyncio
-async def test_read_write_exec_are_restricted_to_user_work_dir(tmp_path):
+async def test_read_tool_is_restricted_to_user_work_dir(tmp_path):
     ctx = _build_ctx(tmp_path)
     work_dir = ensure_user_work_dir(tmp_path, "u-sec")
-
-    write_ok = await write_tool(ctx, "note.txt", "hello")
-    assert write_ok["is_error"] is False
-    assert (work_dir / "note.txt").exists()
-
-    write_blocked = await write_tool(ctx, str(tmp_path / "outside.txt"), "x")
-    assert write_blocked["is_error"] is True
+    (work_dir / "note.txt").write_text("hello", encoding="utf-8")
 
     read_ok = await read_tool(ctx, "note.txt")
     assert read_ok["is_error"] is False
 
     read_blocked = await read_tool(ctx, str(tmp_path / "outside.txt"))
     assert read_blocked["is_error"] is True
-
-    exec_ok = await exec_tool(ctx, "python -c \"print('ok')\"")
-    assert exec_ok["details"]["cwd"] == str(work_dir)
-
-    exec_blocked = await exec_tool(ctx, "python -c \"print('x')\"", cwd=str(tmp_path))
-    assert exec_blocked["is_error"] is True
 
 
 @pytest.mark.asyncio

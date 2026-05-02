@@ -126,9 +126,9 @@ def test_collect_tools_snapshot_preserves_normalized_metadata_from_deps() -> Non
                     "name": "cmp_list_pending",
                     "description": "List pending CMP approvals",
                     "source": "provider",
-                    "provider_type": "smartcmp",
+                    "provider_type": "acme",
                     "group_ids": ["group:cmp"],
-                    "capability_class": "provider:smartcmp",
+                    "capability_class": "provider:acme",
                     "priority": 150,
                     "parameters_schema": {
                         "type": "object",
@@ -159,9 +159,9 @@ def test_collect_tools_snapshot_preserves_normalized_metadata_from_deps() -> Non
             "name": "cmp_list_pending",
             "description": "List pending CMP approvals",
             "source": "provider",
-            "provider_type": "smartcmp",
+            "provider_type": "acme",
             "group_ids": ["group:cmp"],
-            "capability_class": "provider:smartcmp",
+            "capability_class": "provider:acme",
             "priority": 150,
             "parameters_schema": {
                 "type": "object",
@@ -290,8 +290,8 @@ def test_collect_tools_snapshot_prefers_tool_specific_md_success_contract() -> N
             "md_skills_snapshot": [
                 {
                     "name": "request",
-                    "qualified_name": "smartcmp:request",
-                    "provider": "smartcmp",
+                    "qualified_name": "acme:request",
+                    "provider": "acme",
                     "metadata": {
                         "success_contract": {
                             "type": "identifier_presence",
@@ -313,9 +313,9 @@ def test_collect_tools_snapshot_prefers_tool_specific_md_success_contract() -> N
 
     assert len(snapshot) == 1
     assert snapshot[0]["name"] == "provider_submit_request"
-    assert snapshot[0]["provider_type"] == "smartcmp"
+    assert snapshot[0]["provider_type"] == "acme"
     assert snapshot[0]["result_mode"] == "tool_only_ok"
-    assert snapshot[0]["capability_class"] == "provider:smartcmp"
+    assert snapshot[0]["capability_class"] == "provider:acme"
     assert snapshot[0]["success_contract"] == {
         "type": "identifier_presence",
         "fields": ["requestId"],
@@ -505,7 +505,8 @@ def test_collect_capability_index_snapshot_orders_sources_and_omits_bodies() -> 
     assert snapshot[2]["locator"] == "built-in"
     assert snapshot[0]["provider_type"] == "jira"
     assert snapshot[0]["declared_tool_names"] == ["jira_search", "jira"]
-    assert snapshot[0]["input_hints"][:2] == ["jira", "issue"]
+    assert "input_hints" not in snapshot[0]
+    assert "use_instructions" not in snapshot[0]
     assert snapshot[1]["declared_tool_names"] == ["web_search"]
     assert all("body" not in item for item in snapshot)
 
@@ -563,6 +564,32 @@ def test_collect_capability_index_snapshot_does_not_infer_artifacts_from_plain_t
 
     assert snapshot[0]["capability_id"] == "tool:presentation_helper"
     assert snapshot[0]["artifact_types"] == []
+
+
+def test_collect_capability_index_snapshot_omits_internal_tools() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [
+                {
+                    "name": "atlasclaw_catalog_query",
+                    "description": "Query runtime catalogs",
+                    "routing_visibility": "internal",
+                },
+                {
+                    "name": "public_lookup",
+                    "description": "Visible lookup tool",
+                    "routing_visibility": "general",
+                },
+            ],
+            "md_skills_snapshot": [],
+            "skills_snapshot": [],
+        }
+    )
+
+    snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
+
+    assert [item["capability_id"] for item in snapshot] == ["tool:public_lookup"]
 
 
 def test_build_system_prompt_uses_unified_capability_index_surface(tmp_path) -> None:
@@ -655,7 +682,8 @@ def test_build_system_prompt_includes_provider_auth_diagnostics(tmp_path) -> Non
 
     assert "## Provider Authentication Diagnostics" in prompt
     assert "provider:example-provider instance:default" in prompt
-    assert "personal provider access credential (`user_token`) is not configured" in prompt
+    assert "personal provider access credential is not configured" in prompt
+    assert "`user_token`" not in prompt
     assert "personal account settings" in prompt
     assert "Do not also tell them to contact an administrator for this case." in prompt
     assert "atlasclaw.json" not in prompt
@@ -799,7 +827,7 @@ def test_select_explicit_tool_execution_target_skips_when_target_md_skill_is_loa
     assert target is None
 
 
-def test_resolve_selected_md_skill_target_loads_only_matching_skill_body(tmp_path) -> None:
+def test_resolve_selected_md_skill_target_loads_selected_skill_instructions(tmp_path) -> None:
     skill_dir = tmp_path / "pptx"
     skill_dir.mkdir()
     skill_path = skill_dir / "SKILL.md"
@@ -839,16 +867,164 @@ def test_resolve_selected_md_skill_target_loads_only_matching_skill_body(tmp_pat
     assert target is not None
     assert target["qualified_name"] == "pptx"
     assert target["file_path"] == str(skill_path)
-    assert "# PPTX Skill" in target["content"]
+    assert "PPTX Skill" in target["instructions"]
+    assert "Create PPTX decks." in target["instructions"]
+    assert "content" not in target
+
+
+def test_resolve_selected_md_skill_target_loads_full_provider_skill_instructions(tmp_path) -> None:
+    skill_dir = tmp_path / "acme-request"
+    skill_dir.mkdir()
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text(
+        "# Request Skill\n\n"
+        "Short intro.\n\n"
+        + "\n".join(f"filler line {index}" for index in range(80))
+        + "\n\nCRITICAL TAIL RULE: request body must follow the selected skill instructions.",
+        encoding="utf-8",
+    )
+    deps = SimpleNamespace(
+        extra={
+            "md_skills_snapshot": [
+                {
+                    "name": "acme:request",
+                    "qualified_name": "acme:request",
+                    "description": "Submit provider requests",
+                    "file_path": str(skill_path),
+                    "provider": "acme",
+                    "metadata": {
+                        "provider_type": "acme",
+                        "tool_submit_name": "acme_submit_request",
+                        "tool_submit_entrypoint": "scripts/submit.py",
+                    },
+                }
+            ]
+        }
+    )
+
+    target = resolve_selected_md_skill_target(
+        agent=SimpleNamespace(tools=[]),
+        deps=deps,
+        intent_plan=ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_skill_names=["acme:request"],
+            target_provider_types=["acme"],
+            target_tool_names=["acme_submit_request"],
+        ),
+        max_file_bytes=10_000,
+    )
+
+    assert target is not None
+    assert target["qualified_name"] == "acme:request"
+    assert "instructions_mode" not in target
+    assert "CRITICAL TAIL RULE" in target["instructions"]
+
+
+def test_resolve_selected_md_skill_target_loads_full_docs_only_skill(tmp_path) -> None:
+    skill_dir = tmp_path / "xlsx"
+    skill_dir.mkdir()
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text(
+        "# XLSX Skill\n\n"
+        "Create Excel workbooks.\n\n"
+        + "\n".join(f"filler line {index}" for index in range(200))
+        + "\n\nTAIL SHOULD NOT BE INCLUDED",
+        encoding="utf-8",
+    )
+    deps = SimpleNamespace(
+        extra={
+            "md_skills_snapshot": [
+                {
+                    "name": "xlsx",
+                    "qualified_name": "xlsx",
+                    "description": "Create Excel workbooks",
+                    "file_path": str(skill_path),
+                    "provider": "",
+                    "metadata": {},
+                }
+            ]
+        }
+    )
+
+    target = resolve_selected_md_skill_target(
+        agent=SimpleNamespace(tools=[]),
+        deps=deps,
+        intent_plan=ToolIntentPlan(
+            action=ToolIntentAction.CREATE_ARTIFACT,
+            target_skill_names=["xlsx"],
+            target_capability_classes=["artifact:xlsx"],
+        ),
+        max_file_bytes=10_000,
+    )
+
+    assert target is not None
+    assert target["qualified_name"] == "xlsx"
+    assert "instructions_mode" not in target
+    assert "XLSX Skill" in target["instructions"]
+    assert "TAIL SHOULD NOT BE INCLUDED" in target["instructions"]
+
+
+def test_resolve_selected_md_skill_target_prefers_docs_only_skill_for_multi_skill_turn(tmp_path) -> None:
+    provider_dir = tmp_path / "acme"
+    provider_dir.mkdir()
+    provider_path = provider_dir / "SKILL.md"
+    provider_path.write_text("# Approval Skill\n\nQuery pending approvals.", encoding="utf-8")
+    xlsx_dir = tmp_path / "xlsx"
+    xlsx_dir.mkdir()
+    xlsx_path = xlsx_dir / "SKILL.md"
+    xlsx_path.write_text("# XLSX Skill\n\nCreate Excel workbooks.", encoding="utf-8")
+    deps = SimpleNamespace(
+        extra={
+            "md_skills_snapshot": [
+                {
+                    "name": "acme:approval",
+                    "qualified_name": "acme:approval",
+                    "description": "Query pending approvals",
+                    "file_path": str(provider_path),
+                    "provider": "acme",
+                    "metadata": {
+                        "provider_type": "acme",
+                        "tool_query_name": "acme_list_pending",
+                        "tool_query_entrypoint": "scripts/approval.py:list_pending",
+                    },
+                },
+                {
+                    "name": "xlsx",
+                    "qualified_name": "xlsx",
+                    "description": "Create Excel workbooks",
+                    "file_path": str(xlsx_path),
+                    "provider": "",
+                    "metadata": {},
+                },
+            ]
+        }
+    )
+
+    target = resolve_selected_md_skill_target(
+        agent=SimpleNamespace(tools=[]),
+        deps=deps,
+        intent_plan=ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_skill_names=["acme:approval", "xlsx"],
+            target_provider_types=["acme"],
+        ),
+        max_file_bytes=1024,
+    )
+
+    assert target is not None
+    assert target["qualified_name"] == "xlsx"
+    assert "XLSX Skill" in target["instructions"]
+    assert "Create Excel workbooks." in target["instructions"]
+    assert "content" not in target
 
 
 def test_preselected_md_skill_plan_overrides_routing_skill_for_webhook() -> None:
     deps = SimpleNamespace(
         extra={
-            "webhook_skill": "smartcmp:preapproval-agent",
+            "webhook_skill": "acme:preapproval-agent",
             "target_md_skill": {
-                "provider": "smartcmp",
-                "qualified_name": "smartcmp:preapproval-agent",
+                "provider": "acme",
+                "qualified_name": "acme:preapproval-agent",
                 "file_path": "/tmp/preapproval-agent/SKILL.md",
             },
         }
@@ -858,24 +1034,24 @@ def test_preselected_md_skill_plan_overrides_routing_skill_for_webhook() -> None
 
     assert plan is not None
     assert plan.action == ToolIntentAction.USE_TOOLS
-    assert plan.target_provider_types == ["smartcmp"]
-    assert plan.target_skill_names == ["smartcmp:preapproval-agent"]
-    assert plan.target_group_ids == ["group:smartcmp"]
+    assert plan.target_provider_types == ["acme"]
+    assert plan.target_skill_names == ["acme:preapproval-agent"]
+    assert plan.target_group_ids == ["group:acme"]
     assert plan.reason == "preselected_target_md_skill"
 
 
 def test_enrich_target_md_skill_with_workflow_context_attaches_structured_context() -> None:
     enriched = enrich_target_md_skill_with_workflow_context(
         target_md_skill={
-            "provider": "smartcmp",
-            "qualified_name": "smartcmp:request",
+            "provider": "acme",
+            "qualified_name": "acme:request",
             "file_path": "/skills/request/SKILL.md",
             "content": "# request",
         },
         workflow_trace={
             "recent_tool_metadata": [
                 {
-                    "tool_name": "smartcmp_list_services",
+                    "tool_name": "acme_list_services",
                     "metadata": [
                         {
                             "index": 1,
@@ -889,12 +1065,12 @@ def test_enrich_target_md_skill_with_workflow_context_attaches_structured_contex
     )
 
     assert isinstance(enriched, dict)
-    assert enriched["provider"] == "smartcmp"
-    assert enriched["qualified_name"] == "smartcmp:request"
+    assert enriched["provider"] == "acme"
+    assert enriched["qualified_name"] == "acme:request"
     assert enriched["workflow_context"] == {
         "recent_tool_metadata": [
             {
-                "tool_name": "smartcmp_list_services",
+                "tool_name": "acme_list_services",
                 "metadata": [
                     {
                         "index": 1,
@@ -941,8 +1117,8 @@ def test_build_target_md_skill_workflow_context_collects_recent_tool_internal_me
 def test_build_target_md_skill_renders_current_workflow_context_block() -> None:
     rendered = prompt_sections.build_target_md_skill(
         {
-            "provider": "smartcmp",
-            "qualified_name": "smartcmp:request",
+            "provider": "acme",
+            "qualified_name": "acme:request",
             "file_path": "/skills/request/SKILL.md",
             "content": "# request",
             "workflow_context": {
@@ -964,8 +1140,8 @@ def test_build_target_md_skill_renders_current_workflow_context_block() -> None:
 def test_build_target_md_skill_sanitizes_workflow_only_lookup_text() -> None:
     rendered = prompt_sections.build_target_md_skill(
         {
-            "provider": "smartcmp",
-            "qualified_name": "smartcmp:request",
+            "provider": "acme",
+            "qualified_name": "acme:request",
             "file_path": "/skills/request/SKILL.md",
             "content": (
                 "Silent backend lookup for request workflow.\n"
@@ -993,8 +1169,8 @@ def test_should_resolve_target_md_skill_for_llm_first_skill_hint_plan() -> None:
     assert should_resolve_target_md_skill(
         ToolIntentPlan(
             action=ToolIntentAction.DIRECT_ANSWER,
-            target_skill_names=["smartcmp:request"],
-            target_provider_types=["smartcmp"],
+            target_skill_names=["acme:request"],
+            target_provider_types=["acme"],
         )
     )
 
@@ -1003,8 +1179,8 @@ def test_should_resolve_target_md_skill_for_llm_first_tool_hint_plan() -> None:
     assert should_resolve_target_md_skill(
         ToolIntentPlan(
             action=ToolIntentAction.DIRECT_ANSWER,
-            target_provider_types=["smartcmp"],
-            target_tool_names=["smartcmp_submit_request"],
+            target_provider_types=["acme"],
+            target_tool_names=["acme_submit_request"],
         )
     )
 
@@ -1042,7 +1218,7 @@ def test_select_explicit_tool_execution_target_allows_silent_backend_tools_on_fo
         intent_plan=ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
             target_tool_names=["smartcmp_list_components"],
-            target_skill_names=["smartcmp:request"],
+            target_skill_names=["acme:request"],
         ),
         is_follow_up=True,
         projected_tools=[

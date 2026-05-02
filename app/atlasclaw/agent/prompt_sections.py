@@ -14,17 +14,42 @@ from typing import Any, Optional
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import sanitize_workflow_only_text
 
 
+def build_standard_skill_runtime_policy(target_md_skill: dict[str, Any]) -> list[str]:
+    """Return execution-only instructions for selected standard markdown skills."""
+    tool_names = target_md_skill.get("standard_runtime_tool_names")
+    tool_list = ", ".join(str(item) for item in tool_names or [] if str(item).strip())
+    lines = [
+        "This standard skill has an internal runtime for the current turn. "
+        "Use it only to follow this selected skill's instructions."
+    ]
+    if tool_list:
+        lines.append(f"Internal runtime tools available for this skill: {tool_list}.")
+    lines.extend(
+        [
+            "`skill_exec` runs from the current work_dir by default. Use "
+            "`$ATLASCLAW_SKILL_DIR/...` only when running files that belong to the selected skill.",
+            "Write user-facing outputs under `$ATLASCLAW_WORK_DIR` and expose only final files via "
+            "work_dir-relative `download_paths`.",
+            "Do not expose scripts, logs, temp files, cache files, or hidden runtime files as downloads.",
+            "Use the dependencies already available in the runtime; if a required dependency is missing, "
+            "report it instead of installing packages.",
+            "`HOME`, `TMPDIR`, `XDG_CONFIG_HOME`, and `XDG_CACHE_HOME` are scoped under the current "
+            "user's work_dir for this skill run.",
+        ]
+    )
+    return lines
+
+
 def build_target_md_skill(target_md_skill: dict[str, Any]) -> str:
     """Build a focused section for stage-two markdown skill execution."""
     qualified_name = target_md_skill.get("qualified_name", "")
     file_path = target_md_skill.get("file_path", "")
     provider = target_md_skill.get("provider", "")
     workflow_context = target_md_skill.get("workflow_context")
-    loaded_body = sanitize_workflow_only_text(
-        target_md_skill.get("content", ""),
+    instructions = sanitize_workflow_only_text(
+        target_md_skill.get("instructions", ""),
         collapse_whitespace=False,
     )
-    body_truncated = bool(target_md_skill.get("content_truncated"))
     lines = ["## Target Markdown Skill", ""]
     if qualified_name:
         lines.append(f"Qualified name: {qualified_name}")
@@ -32,15 +57,18 @@ def build_target_md_skill(target_md_skill: dict[str, Any]) -> str:
         lines.append(f"Provider: {provider}")
     if file_path:
         lines.append(f"File path: {file_path}")
-    if loaded_body:
-        lines.append("This skill body was loaded specifically for the current turn.")
+    if instructions:
+        lines.append("Loaded SKILL.md for the selected skill:")
+        lines.append("")
+        lines.append(instructions)
     else:
         lines.append(
-            "This skill was selected for the current turn. If you need its detailed instructions, "
-            "read the referenced `SKILL.md` before executing."
+            "This skill was selected for the current turn, but its `SKILL.md` content could not be loaded."
         )
     lines.append("You must use only this markdown skill for the current run.")
     lines.append("Prefer any executable tool already registered for this skill.")
+    if bool(target_md_skill.get("standard_runtime_enabled")):
+        lines.extend(build_standard_skill_runtime_policy(target_md_skill))
     lines.append(
         "If the workflow needs intermediate metadata lookups, treat them as internal-only steps "
         "and continue directly to the next user-facing question or confirmation after the lookup result is available."
@@ -97,18 +125,6 @@ def build_target_md_skill(target_md_skill: dict[str, Any]) -> str:
                 "```",
             ]
         )
-    if loaded_body:
-        lines.extend(
-            [
-                "",
-                "### Loaded SKILL.md",
-                "",
-                loaded_body,
-            ]
-        )
-        if body_truncated:
-            lines.append("")
-            lines.append("Note: the loaded SKILL.md content was truncated to stay within prompt limits.")
     return "\n".join(lines)
 
 
@@ -376,7 +392,7 @@ def build_provider_auth_diagnostics(diagnostics: Optional[dict[str, dict]]) -> s
                 label += f" instance:{normalized_instance_name}"
             if bool(diagnostic.get("missing_user_token")):
                 entries.append(
-                    f"- {label}: the user's personal provider access credential (`user_token`) "
+                    f"- {label}: the user's personal provider access credential "
                     "is not configured. If a tool result reports missing authentication for "
                     "this provider, tell the user the requested service is currently "
                     "unavailable and ask them to configure the provider access credential or "
@@ -386,7 +402,7 @@ def build_provider_auth_diagnostics(diagnostics: Optional[dict[str, dict]]) -> s
             elif bool(diagnostic.get("user_token_configured")):
                 entries.append(
                     f"- {label}: this run is using the user's personal provider access "
-                    "credential (`user_token`). If a tool result reports that authentication "
+                    "credential. If a tool result reports that authentication "
                     "was rejected, invalid, expired, unauthorized, forbidden, or returned "
                     "HTTP 401/403 for this provider, tell the user the requested service is "
                     "currently unavailable and ask them to update the provider access "
@@ -484,8 +500,7 @@ def build_md_skills_index(
         "## Skills",
         "",
         "Skills are listed as compact metadata only to save context tokens.",
-        "When you need detailed instructions for a skill, call the `read` tool on the skill `file_path` (`SKILL.md`) before executing.",
-        "Do not assume the full skill file is already loaded in context.",
+        "Detailed instructions are loaded after an authorized skill is selected for execution.",
         "",
         "Format: `name | description | file_path`",
         "",
@@ -555,11 +570,6 @@ def build_capability_index(config, capability_index: list[dict]) -> str:
             for item in (raw_entry.get("declared_tool_names", []) or [])
             if str(item).strip()
         ]
-        input_hints = [
-            str(item).strip()
-            for item in (raw_entry.get("input_hints", []) or [])
-            if str(item).strip()
-        ]
         if locator.startswith(home_prefix):
             locator = "~" + locator[len(home_prefix) :]
         normalized_entries.append(
@@ -572,7 +582,6 @@ def build_capability_index(config, capability_index: list[dict]) -> str:
                 "provider_type": provider_type,
                 "artifact_types": artifact_types,
                 "declared_tool_names": declared_tool_names,
-                "input_hints": input_hints,
             }
         )
 
@@ -594,11 +603,8 @@ def build_capability_index(config, capability_index: list[dict]) -> str:
         "## Capabilities",
         "",
         "Capabilities are listed as compact metadata only to save context tokens.",
-        (
-            "When you need detailed instructions for a capability, use the referenced "
-            "locator rather than expecting a full body in context."
-        ),
-        "Format: `capability_id | name | description | provider/artifact/tools/hints | locator`",
+        "Detailed skill instructions are loaded after an authorized skill is selected for execution.",
+        "Format: `capability_id | name | description | provider/artifact/tools | locator`",
         "",
     ]
 
@@ -636,13 +642,6 @@ def build_capability_index(config, capability_index: list[dict]) -> str:
             ]
             if declared_tool_names:
                 detail_parts.append("tools:" + ",".join(declared_tool_names[:2]))
-            input_hints = [
-                str(item).strip()
-                for item in entry.get("input_hints", []) or []
-                if str(item).strip()
-            ]
-            if input_hints:
-                detail_parts.append("hints:" + ",".join(input_hints[:2]))
             detail_text = " ; ".join(detail_parts) if detail_parts else "-"
             line = (
                 f"- `{entry['capability_id']}` | {entry['name']} | {description} | "
@@ -685,13 +684,14 @@ def build_workspace_info(config) -> str:
 
 Working directory: `{workspace}`
 
-You can read and write files in this directory.
+You can read files in this directory when a read capability is available.
+General-purpose file writes are not supported. User-facing generated files
+must be produced by an authorized artifact skill.
 
-When you create or export a user-facing file, include a final-answer markdown download link
-using `workspace://<relative-path>`. Use paths relative to the current user's work
-directory only, not absolute filesystem paths. Do not place user-facing generated files
-under hidden internal directories such as `.atlasclaw`; prefer a readable top-level file
-name or a purpose-specific subdirectory."""
+When you create or export a user-facing file, mention only the file name in user-facing
+text. If you include a markdown download link, use `workspace://<filename>` with no
+absolute path, `./` prefix, or directory components. Do not place user-facing generated
+files under hidden internal directories such as `.atlasclaw`."""
 
 
 def build_documentation() -> str:

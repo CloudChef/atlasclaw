@@ -69,8 +69,6 @@ class RunnerExecutionFinalizePhaseMixin:
         toolset_filter_trace = state.get("toolset_filter_trace")
         tool_projection_trace = state.get("tool_projection_trace")
         used_toolset_fallback = state.get("used_toolset_fallback")
-        provider_hint_docs = state.get("provider_hint_docs")
-        skill_hint_docs = state.get("skill_hint_docs")
         metadata_candidates = state.get("metadata_candidates")
         ranking_trace = state.get("ranking_trace")
         # -- hook:agent_end --
@@ -149,8 +147,6 @@ class RunnerExecutionFinalizePhaseMixin:
             "toolset_filter_trace": toolset_filter_trace,
             "tool_projection_trace": tool_projection_trace,
             "used_toolset_fallback": used_toolset_fallback,
-            "provider_hint_docs": provider_hint_docs,
-            "skill_hint_docs": skill_hint_docs,
             "metadata_candidates": metadata_candidates,
             "ranking_trace": ranking_trace,
         })

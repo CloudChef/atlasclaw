@@ -153,8 +153,6 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             "toolset_filter_trace": [],
             "tool_projection_trace": {},
             "used_toolset_fallback": False,
-            "provider_hint_docs": [],
-            "skill_hint_docs": [],
             "metadata_candidates": {},
             "ranking_trace": {},
             "artifact_goal": None,

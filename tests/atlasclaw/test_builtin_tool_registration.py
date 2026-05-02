@@ -55,7 +55,39 @@ def test_register_builtin_tools_supports_tools_exclusive_single_name() -> None:
 
     assert "read" not in registered
     assert registry.get("read") is None
-    assert registry.get("write") is not None
+    assert registry.get("write") is None
+    assert registry.get("web_search") is not None
+
+
+def test_register_builtin_tools_supports_tools_exclusive_internal_runtime_tool() -> None:
+    registry = SkillRegistry()
+
+    registered = register_builtin_tools(registry, tools_exclusive=["skill_exec"])
+
+    assert "skill_exec" not in registered
+    assert registry.get("skill_exec") is None
+    assert registry.get("skill_write") is not None
+
+
+def test_register_builtin_tools_supports_tools_exclusive_internal_group() -> None:
+    registry = SkillRegistry()
+
+    registered = register_builtin_tools(registry, tools_exclusive=["group:catalog"])
+
+    assert "atlasclaw_catalog_query" not in registered
+    assert registry.get("atlasclaw_catalog_query") is None
+    assert registry.get("skill_exec") is not None
+
+
+def test_register_builtin_tools_supports_tools_exclusive_atlasclaw_group() -> None:
+    registry = SkillRegistry()
+
+    registered = register_builtin_tools(registry, tools_exclusive=["group:atlasclaw"])
+
+    assert registered == []
+    assert registry.get("read") is None
+    assert registry.get("atlasclaw_catalog_query") is None
+    assert registry.get("skill_exec") is None
 
 
 def test_register_builtin_tools_supports_tools_exclusive_group() -> None:
@@ -63,27 +95,15 @@ def test_register_builtin_tools_supports_tools_exclusive_group() -> None:
 
     registered = register_builtin_tools(registry, tools_exclusive=["group:fs"])
 
-    for tool_name in ("read", "write", "edit", "delete"):
+    for tool_name in ("read", "write", "edit", "delete", "exec", "process"):
         assert tool_name not in registered
         assert registry.get(tool_name) is None
-    assert registry.get("exec") is not None
-
-
-def test_allow_script_execution_false_only_disables_builtin_high_risk_tools() -> None:
-    registry = SkillRegistry()
-
-    registered = register_builtin_tools(registry, allow_script_execution=False)
-
-    for tool_name in ("read", "write", "edit", "delete", "exec"):
-        assert tool_name not in registered
-        assert registry.get(tool_name) is None
-    assert registry.get("process") is not None
     assert registry.get("web_search") is not None
 
 
 def test_skills_api_does_not_show_excluded_builtin_tools(tmp_path: Path) -> None:
     registry = SkillRegistry()
-    register_builtin_tools(registry, tools_exclusive=["group:fs"], allow_script_execution=False)
+    register_builtin_tools(registry, tools_exclusive=["group:fs"])
     client = _build_client(tmp_path, registry)
 
     response = client.get("/api/skills?include_metadata=true")
@@ -92,14 +112,15 @@ def test_skills_api_does_not_show_excluded_builtin_tools(tmp_path: Path) -> None
     payload = response.json()
     skills = {item["name"]: item for item in payload["skills"]}
 
-    for tool_name in ("read", "write", "edit", "delete", "exec"):
+    for tool_name in ("read", "write", "edit", "delete", "exec", "process"):
         assert tool_name not in skills
     assert "group:fs" not in skills
-    assert skills["group:runtime"]["type"] == "tool_group"
-    assert skills["group:runtime"]["member_skill_ids"] == ["process"]
+    assert "group:runtime" not in skills
+    assert "group:catalog" not in skills
+    assert "atlasclaw_catalog_query" not in skills
 
 
-def test_markdown_script_backed_tools_remain_enabled_when_builtin_script_execution_disabled(tmp_path: Path) -> None:
+def test_markdown_script_backed_tools_remain_enabled_without_builtin_high_risk_tools(tmp_path: Path) -> None:
     skill_dir = tmp_path / "skills" / "script-skill"
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
@@ -119,21 +140,31 @@ def test_markdown_script_backed_tools_remain_enabled_when_builtin_script_executi
     (skill_dir / "run.py").write_text("print('hello')\n", encoding="utf-8")
 
     registry = SkillRegistry()
-    register_builtin_tools(registry, allow_script_execution=False)
+    register_builtin_tools(registry)
     registry.load_from_directory(str(tmp_path / "skills"), location="workspace")
 
     assert registry.get("script_tool") is not None
 
 
-def test_builtin_write_tool_registration_exposes_strong_metadata() -> None:
+def test_builtin_high_risk_tools_are_not_registered() -> None:
     registry = SkillRegistry()
     register_builtin_tools(registry)
 
     tools = {item["name"]: item for item in registry.tools_snapshot()}
-    write_tool = tools["write"]
+    assert {"write", "edit", "delete", "exec", "process"}.isdisjoint(tools)
+    assert tools["read"]["capability_class"] == "fs_read"
+    assert tools["atlasclaw_catalog_query"]["coordination_only"] is True
+    assert tools["atlasclaw_catalog_query"]["routing_visibility"] == "internal"
 
-    assert write_tool["capability_class"] == "fs_write"
-    assert write_tool["result_mode"] == "tool_only_ok"
-    assert "create file" in write_tool["aliases"]
-    assert "content" in write_tool["keywords"]
-    assert write_tool["use_when"]
+
+def test_builtin_does_not_register_external_artifact_skill_tools() -> None:
+    registry = SkillRegistry()
+    register_builtin_tools(registry)
+
+    tools = {item["name"]: item for item in registry.tools_snapshot()}
+    assert {
+        "docx_create_document",
+        "excel_create_workbook",
+        "pdf_create_document",
+        "txt_create_document",
+    }.isdisjoint(tools)

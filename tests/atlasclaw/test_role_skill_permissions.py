@@ -87,10 +87,72 @@ def test_expand_role_skill_permissions_expands_groups_and_drops_provider_entries
 
     entries = expanded["skills"]["skill_permissions"]
     skill_ids = {entry["skill_id"] for entry in entries}
-    assert {"read", "write", "edit", "delete"}.issubset(skill_ids)
+    assert "read" in skill_ids
+    assert {"write", "edit", "delete"}.isdisjoint(skill_ids)
     assert "group:fs" not in skill_ids
     assert "smartcmp:request" not in skill_ids
     assert "smartcmp_create_request" not in skill_ids
+
+
+def test_tool_group_member_skill_ids_limit_group_permission_scope(tmp_path: Path) -> None:
+    registry = _build_registry(tmp_path)
+    permissions = {
+        "skills": {
+            "skill_permissions": [
+                {
+                    "skill_id": "group:web",
+                    "skill_name": "group:web",
+                    "member_skill_ids": ["web_search"],
+                    "authorized": True,
+                    "enabled": True,
+                },
+            ],
+        },
+    }
+
+    expanded = skill_permission_service.expand_role_skill_permissions_for_storage(
+        permissions,
+        skill_registry=registry,
+    )
+
+    entries = expanded["skills"]["skill_permissions"]
+    assert [entry["skill_id"] for entry in entries] == ["web_search"]
+    assert skill_permission_service.is_skill_enabled(
+        permissions["skills"]["skill_permissions"],
+        "web_search",
+    ) is True
+    assert skill_permission_service.is_skill_enabled(
+        permissions["skills"]["skill_permissions"],
+        "web_fetch",
+    ) is False
+    assert skill_permission_service.is_skill_enabled(
+        permissions["skills"]["skill_permissions"],
+        "openmeteo_weather",
+    ) is False
+
+
+def test_tool_group_empty_member_skill_ids_grants_no_group_members(tmp_path: Path) -> None:
+    registry = _build_registry(tmp_path)
+    permissions = {
+        "skills": {
+            "skill_permissions": [
+                {
+                    "skill_id": "group:web",
+                    "skill_name": "group:web",
+                    "member_skill_ids": [],
+                    "authorized": True,
+                    "enabled": True,
+                },
+            ],
+        },
+    }
+
+    expanded = skill_permission_service.expand_role_skill_permissions_for_storage(
+        permissions,
+        skill_registry=registry,
+    )
+
+    assert expanded["skills"]["skill_permissions"] == []
 
 
 def test_collapse_role_skill_permissions_groups_tools_and_hides_provider_entries(tmp_path: Path) -> None:
@@ -105,7 +167,7 @@ def test_collapse_role_skill_permissions_groups_tools_and_hides_provider_entries
                     "authorized": True,
                     "enabled": True,
                 }
-                for tool_name in ("read", "write", "edit", "delete")
+                for tool_name in ("read",)
             ]
             + [
                 {
@@ -140,11 +202,11 @@ def test_collapse_role_skill_permissions_groups_tools_and_hides_provider_entries
     by_id = {entry["skill_id"]: entry for entry in entries}
     assert "group:fs" in by_id
     assert by_id["group:fs"]["type"] == "tool_group"
-    assert by_id["group:fs"]["member_skill_ids"] == ["read", "write", "edit", "delete"]
+    assert by_id["group:fs"]["member_skill_ids"] == ["read"]
     assert by_id["group:fs"]["authorized"] is True
     assert by_id["group:fs"]["enabled"] is True
     assert by_id["group:fs"]["partial"] is False
-    for hidden_id in ("read", "write", "edit", "delete", "smartcmp:request", "smartcmp_create_request"):
+    for hidden_id in ("read", "smartcmp:request", "smartcmp_create_request"):
         assert hidden_id not in by_id
     assert by_id["standalone-helper"]["enabled"] is False
 
@@ -160,7 +222,7 @@ def test_collapse_role_skill_permissions_marks_only_mixed_groups_partial(tmp_pat
                     "authorized": False,
                     "enabled": False,
                 }
-                for tool_name in ("read", "write", "edit", "delete")
+                for tool_name in ("web_search", "web_fetch", "openmeteo_weather")
             ]
         },
     }
@@ -171,7 +233,7 @@ def test_collapse_role_skill_permissions_marks_only_mixed_groups_partial(tmp_pat
     )
 
     group_row = collapsed["skills"]["skill_permissions"][0]
-    assert group_row["skill_id"] == "group:fs"
+    assert group_row["skill_id"] == "group:web"
     assert group_row["authorized"] is False
     assert group_row["enabled"] is False
     assert group_row["partial"] is False
@@ -183,5 +245,32 @@ def test_collapse_role_skill_permissions_marks_only_mixed_groups_partial(tmp_pat
     )
 
     mixed_group_row = mixed["skills"]["skill_permissions"][0]
-    assert mixed_group_row["skill_id"] == "group:fs"
+    assert mixed_group_row["skill_id"] == "group:web"
     assert mixed_group_row["partial"] is True
+
+
+def test_collapse_role_skill_permissions_preserves_partial_group_scope(tmp_path: Path) -> None:
+    registry = _build_registry(tmp_path)
+    permissions = {
+        "skills": {
+            "skill_permissions": [
+                {
+                    "skill_id": "web_search",
+                    "skill_name": "web_search",
+                    "authorized": True,
+                    "enabled": True,
+                },
+            ]
+        },
+    }
+
+    collapsed = skill_permission_service.collapse_role_skill_permissions_for_response(
+        permissions,
+        skill_registry=registry,
+    )
+
+    group_row = collapsed["skills"]["skill_permissions"][0]
+    assert group_row["skill_id"] == "group:web"
+    assert group_row["member_skill_ids"] == ["web_search"]
+    assert group_row["partial"] is True
+    assert skill_permission_service.is_skill_enabled([group_row], "web_fetch") is False

@@ -20,7 +20,7 @@ def _user_area(tmp_path: Path, user_id: str, area: str) -> Path:
     return root
 
 
-def test_collects_artifact_from_absolute_tool_file_path(tmp_path: Path) -> None:
+def test_collects_artifact_from_absolute_artifact_path(tmp_path: Path) -> None:
     root = _user_area(tmp_path, "alice", "work_dir")
     artifact_path = root / "exported-file.bin"
     artifact_path.write_bytes(b"artifact")
@@ -30,7 +30,7 @@ def test_collects_artifact_from_absolute_tool_file_path(tmp_path: Path) -> None:
             {
                 "role": "tool",
                 "tool_name": "artifact_export",
-                "content": json.dumps({"success": True, "file_path": str(artifact_path)}),
+                "content": json.dumps({"success": True, "artifact_path": str(artifact_path)}),
             }
         ],
         start_index=0,
@@ -42,7 +42,7 @@ def test_collects_artifact_from_absolute_tool_file_path(tmp_path: Path) -> None:
     assert refs == [{"path": "exported-file.bin"}]
 
 
-def test_collects_artifact_from_relative_tool_file_path(tmp_path: Path) -> None:
+def test_collects_artifact_from_relative_download_path(tmp_path: Path) -> None:
     root = _user_area(tmp_path, "alice", "work_dir")
     artifact_path = root / "exported-file.bin"
     artifact_path.write_bytes(b"artifact")
@@ -52,7 +52,7 @@ def test_collects_artifact_from_relative_tool_file_path(tmp_path: Path) -> None:
             {
                 "role": "tool",
                 "tool_name": "artifact_export",
-                "content": {"success": True, "file_path": artifact_path.name},
+                "content": {"success": True, "download_path": artifact_path.name},
             }
         ],
         start_index=0,
@@ -64,25 +64,56 @@ def test_collects_artifact_from_relative_tool_file_path(tmp_path: Path) -> None:
     assert refs == [{"path": "exported-file.bin"}]
 
 
-def test_collects_file_written_relative_path_from_write_tool(tmp_path: Path) -> None:
+def test_ignores_hidden_runtime_download_paths(tmp_path: Path) -> None:
     root = _user_area(tmp_path, "alice", "work_dir")
-    (root / "conversation.txt").write_text("history", encoding="utf-8")
+    internal_file = root / ".atlasclaw" / "skills" / "skill-xlsx" / "cache" / "debug.txt"
+    internal_file.parent.mkdir(parents=True)
+    internal_file.write_text("internal", encoding="utf-8")
 
     refs = collect_workspace_download_references_from_tool_results(
         messages=[
             {
                 "role": "tool",
-                "tool_name": "write",
-                "content": "File written: conversation.txt",
+                "tool_name": "skill_exec",
+                "content": {
+                    "is_error": False,
+                    "details": {"download_path": ".atlasclaw/skills/skill-xlsx/cache/debug.txt"},
+                },
             }
         ],
         start_index=0,
-        target_tool_names=["write"],
+        target_tool_names=["skill_exec"],
         workspace_path=tmp_path,
         user_id="alice",
     )
 
-    assert refs == [{"path": "conversation.txt"}]
+    assert refs == []
+
+
+def test_ignores_absolute_hidden_runtime_download_paths(tmp_path: Path) -> None:
+    root = _user_area(tmp_path, "alice", "work_dir")
+    internal_file = root / ".atlasclaw" / "skills" / "skill-xlsx" / "cache" / "debug.txt"
+    internal_file.parent.mkdir(parents=True)
+    internal_file.write_text("internal", encoding="utf-8")
+
+    refs = collect_workspace_download_references_from_tool_results(
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "skill_exec",
+                "content": {
+                    "is_error": False,
+                    "details": {"download_path": str(internal_file)},
+                },
+            }
+        ],
+        start_index=0,
+        target_tool_names=["skill_exec"],
+        workspace_path=tmp_path,
+        user_id="alice",
+    )
+
+    assert refs == []
 
 
 def test_ignores_read_tool_file_path_metadata(tmp_path: Path) -> None:
@@ -103,6 +134,28 @@ def test_ignores_read_tool_file_path_metadata(tmp_path: Path) -> None:
         ],
         start_index=0,
         target_tool_names=["read"],
+        workspace_path=tmp_path,
+        user_id="alice",
+    )
+
+    assert refs == []
+
+
+def test_ignores_user_exports_outside_work_dir_as_direct_download_area(tmp_path: Path) -> None:
+    exports = _user_area(tmp_path, "alice", "exports")
+    artifact_path = exports / "exported.pptx"
+    artifact_path.write_bytes(b"artifact")
+
+    refs = collect_workspace_download_references_from_tool_results(
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "pptx_create_deck",
+                "content": {"success": True, "artifact_path": str(artifact_path)},
+            }
+        ],
+        start_index=0,
+        target_tool_names=["pptx_create_deck"],
         workspace_path=tmp_path,
         user_id="alice",
     )
@@ -146,11 +199,11 @@ def test_collects_embedded_tool_results_once(tmp_path: Path) -> None:
                 "tool_results": [
                     {
                         "tool_name": "artifact_export",
-                        "content": {"file_path": str(report)},
+                        "content": {"artifact_path": str(report)},
                     },
                     {
                         "tool_name": "artifact_export",
-                        "content": {"file_path": str(report)},
+                        "content": {"artifact_path": str(report)},
                     },
                 ],
             }
@@ -174,7 +227,7 @@ def test_ignores_other_user_artifact_path(tmp_path: Path) -> None:
             {
                 "role": "tool",
                 "tool_name": "artifact_export",
-                "content": {"file_path": str(artifact_path)},
+                "content": {"artifact_path": str(artifact_path)},
             }
         ],
         start_index=0,
@@ -201,7 +254,7 @@ def test_ignores_symlink_escape_artifact_path(tmp_path: Path) -> None:
             {
                 "role": "tool",
                 "tool_name": "artifact_export",
-                "content": {"file_path": str(linked)},
+                "content": {"artifact_path": str(linked)},
             }
         ],
         start_index=0,
@@ -229,7 +282,7 @@ def test_ignores_symlinked_workspace_work_dir_root(tmp_path: Path) -> None:
             {
                 "role": "tool",
                 "tool_name": "artifact_export",
-                "content": {"file_path": str(artifact_path)},
+                "content": {"artifact_path": str(artifact_path)},
             }
         ],
         start_index=0,

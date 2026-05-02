@@ -6,14 +6,18 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
+from pathlib import Path
 from typing import Any, AsyncIterator
+from urllib.parse import parse_qs, unquote, urlparse
 
 from app.atlasclaw.agent.plaintext_tool_calls import looks_like_plaintext_tool_call_attempt
 from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     build_direct_answer_recovery_payload,
     build_lookup_dump_recovery_payload,
     build_tool_failure_fallback_payload,
+    provider_auth_diagnostic_user_message,
     select_provider_auth_diagnostic,
 )
 from app.atlasclaw.agent.runner_tool.runner_llm_routing import messages_satisfy_artifact_goal
@@ -28,8 +32,60 @@ from app.atlasclaw.agent.tool_gate_models import ToolPolicyMode
 
 logger = logging.getLogger(__name__)
 
+_MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
+
 
 class RunnerExecutionFlowPostMixin:
+    @staticmethod
+    def _strip_workspace_download_link_paths(answer: str, download_keys: list[str] | set[str]) -> str:
+        """Replace generated-file markdown links with filename-only text."""
+        if not answer or not download_keys:
+            return answer
+
+        normalized_keys = {
+            str(key or "").strip().replace("\\", "/")
+            for key in download_keys
+            if str(key or "").strip()
+        }
+        if not normalized_keys:
+            return answer
+        download_names = {Path(key).name for key in normalized_keys if Path(key).name}
+
+        def _target_matches_download(raw_target: str) -> str:
+            target = str(raw_target or "").strip().strip("<>").replace("\\", "/")
+            if not target:
+                return ""
+            parsed = urlparse(target)
+            if parsed.query:
+                params = parse_qs(parsed.query)
+                for key in ("path", "file", "filename"):
+                    for item in params.get(key, []):
+                        item_name = Path(unquote(item).replace("\\", "/")).name
+                        if item_name in download_names:
+                            return item_name
+            if parsed.scheme:
+                if parsed.scheme.lower() in {"http", "https", "mailto"}:
+                    return ""
+                if target.lower().startswith("workspace://"):
+                    target = target.split("://", 1)[1]
+                else:
+                    target = target.split(":", 1)[1]
+            if target.startswith("./"):
+                target = target[2:]
+            target = unquote(target).strip()
+            if not target:
+                return ""
+            target_name = Path(target).name
+            if target in normalized_keys or target_name in download_names:
+                return target_name
+            return ""
+
+        def _replace(match: re.Match[str]) -> str:
+            filename = _target_matches_download(match.group(2))
+            return filename or match.group(0)
+
+        return _MARKDOWN_LINK_RE.sub(_replace, answer)
+
     def _schedule_background_post_success_task(self, task: asyncio.Task[Any]) -> None:
         background_tasks = getattr(self, "_background_post_success_tasks", None)
         if background_tasks is None:
@@ -630,6 +686,8 @@ class RunnerExecutionFlowPostMixin:
             executed_tool_names=state.get("executed_tool_names"),
         )
         artifact_goal = state.get("artifact_goal")
+        workspace_path = str(getattr(session_manager, "workspace_path", "") or "").strip()
+        user_id = str(getattr(getattr(deps, "user_info", None), "user_id", "") or "").strip()
         artifact_completion_missing = bool(artifact_goal) and not messages_satisfy_artifact_goal(
             messages=final_messages,
             start_index=persist_run_output_start_index,
@@ -639,9 +697,17 @@ class RunnerExecutionFlowPostMixin:
                 if isinstance(item, dict) and str(item.get("name", "") or "").strip()
             ],
             artifact_goal=artifact_goal,
+            workspace_path=workspace_path,
+            user_id=user_id,
+        )
+        has_workspace_download_evidence = bool(state.get("workspace_download_reference_keys"))
+        artifact_download_ready = (
+            bool(artifact_goal)
+            and has_workspace_download_evidence
+            and not artifact_completion_missing
         )
         preferred_tool_only_answer = ""
-        if tool_required_has_real_execution:
+        if tool_required_has_real_execution and not artifact_download_ready:
             candidate_tool_only_answer = self._build_tool_only_markdown_answer_from_messages(
                 messages=final_messages,
                 start_index=persist_run_output_start_index,
@@ -692,9 +758,14 @@ class RunnerExecutionFlowPostMixin:
             and (
                 not tool_required_has_real_execution
                 or bool(missing_required_tools)
-                or isinstance(state.get("repeated_tool_failure"), dict)
-                or isinstance(state.get("repeated_tool_no_progress"), dict)
-                or isinstance(state.get("repeated_tool_loop"), dict)
+                or (
+                    not has_workspace_download_evidence
+                    and (
+                        isinstance(state.get("repeated_tool_failure"), dict)
+                        or isinstance(state.get("repeated_tool_no_progress"), dict)
+                        or isinstance(state.get("repeated_tool_loop"), dict)
+                    )
+                )
             )
         ) or provider_auth_failure_needs_fallback
         should_block_assistant_emit = should_fail_for_missing_evidence
@@ -940,6 +1011,26 @@ class RunnerExecutionFlowPostMixin:
             should_fail_for_missing_evidence = True
             should_block_assistant_emit = True
 
+        provider_auth_message = provider_auth_diagnostic_user_message(
+            select_provider_auth_diagnostic(
+                extra=getattr(deps, "extra", {}),
+                attempted_tools=tool_call_summaries or list(state.get("executed_tool_names") or []),
+                failure_reasons=[final_assistant] if final_assistant else [],
+                tool_results=self._collect_recent_tool_result_records(
+                    final_messages=final_messages,
+                    start_index=persist_run_output_start_index,
+                    max_items=3,
+                ),
+            )
+        )
+        if provider_auth_message and final_assistant:
+            final_assistant = provider_auth_message
+
+        if final_assistant:
+            final_assistant = self._strip_workspace_download_link_paths(
+                final_assistant,
+                state.get("workspace_download_reference_keys") or [],
+            )
         persist_messages = self._sanitize_turn_messages_for_persistence(
             messages=final_messages,
             start_index=persist_run_output_start_index,
@@ -1047,6 +1138,10 @@ class RunnerExecutionFlowPostMixin:
                     )
             if fallback_answer.strip():
                 final_assistant = fallback_answer.strip()
+                final_assistant = self._strip_workspace_download_link_paths(
+                    final_assistant,
+                    state.get("workspace_download_reference_keys") or [],
+                )
                 persist_messages = self._sanitize_turn_messages_for_persistence(
                     messages=final_messages,
                     start_index=persist_run_output_start_index,
@@ -1156,13 +1251,48 @@ class RunnerExecutionFlowPostMixin:
 
         else:
             if not final_assistant.strip():
-                if tool_required_has_real_execution:
+                if artifact_download_ready:
+                    artifact_label = str(
+                        (artifact_goal or {}).get("label", "")
+                        or (artifact_goal or {}).get("kind", "")
+                    ).strip() or "requested artifact"
+                    download_names = [
+                        Path(str(key)).name
+                        for key in (state.get("workspace_download_reference_keys") or [])
+                        if str(key).strip()
+                    ]
+                    if download_names:
+                        final_assistant = (
+                            f"The {artifact_label} is ready for download: "
+                            f"{', '.join(download_names[:3])}."
+                        )
+                    else:
+                        final_assistant = f"The {artifact_label} is ready for download."
+                    final_assistant = self._strip_workspace_download_link_paths(
+                        final_assistant,
+                        state.get("workspace_download_reference_keys") or [],
+                    )
+                    persist_messages = self._sanitize_turn_messages_for_persistence(
+                        messages=final_messages,
+                        start_index=persist_run_output_start_index,
+                        final_assistant=final_assistant,
+                        clear_tool_planning_text=tool_execution_required,
+                    )
+                    if not assistant_output_streamed:
+                        state.get("thinking_emitter").assistant_emitted = True
+                        assistant_output_streamed = True
+                        yield StreamEvent.assistant_delta(final_assistant)
+                elif tool_required_has_real_execution:
                     tool_only_answer = preferred_tool_only_answer or self._build_tool_only_markdown_answer_from_messages(
                         messages=final_messages,
                         start_index=persist_run_output_start_index,
                     )
                     if tool_only_answer and not artifact_completion_missing:
                         final_assistant = tool_only_answer
+                        final_assistant = self._strip_workspace_download_link_paths(
+                            final_assistant,
+                            state.get("workspace_download_reference_keys") or [],
+                        )
                         persist_messages = self._sanitize_turn_messages_for_persistence(
                             messages=final_messages,
                             start_index=persist_run_output_start_index,
