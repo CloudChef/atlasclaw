@@ -38,7 +38,15 @@ let runtimeStatusPollTimer = null
 let runtimeStatusPollInFlight = false
 let verificationInFlight = false
 let providerTokenController = null
+let provisioningPollTimer = null
+let provisioningPollInFlight = false
+let activeProvisioningSession = null
+let provisioningCompletedHandled = false
+let provisioningAutoCloseTimer = null
 const VALIDATION_REQUEST_TIMEOUT_MS = 3600
+const PROVISIONING_POLL_INTERVAL_MS = 1800
+const PROVISIONING_MAX_POLL_INTERVAL_MS = 15000
+const PROVISIONING_COMPLETION_CLOSE_DELAY_MS = 900
 
 // ========== Channel Type SVG Icons ==========
 const CHANNEL_ICONS = {
@@ -294,6 +302,7 @@ function getPageTemplate() {
       </div>
 
       <div id="channelEditView" style="display: none;"></div>
+      <div id="channelProvisioningModalHost"></div>
 
       <div class="ch-delete-overlay" id="deleteDialog" style="display: none;">
         <div class="ch-delete-dialog">
@@ -383,6 +392,8 @@ export async function unmount() {
   syncChannelRailState = null
   suppressCardClick = false
   stopRuntimeStatusPolling()
+  stopProvisioningPolling()
+  clearProvisioningAutoCloseTimer()
   providerTokenController?.destroy()
 
   // Reset all module state
@@ -394,6 +405,10 @@ export async function unmount() {
   allChannels = []
   editingConnectionId = null
   pendingDeleteId = null
+  activeProvisioningSession = null
+  provisioningPollInFlight = false
+  provisioningCompletedHandled = false
+  provisioningAutoCloseTimer = null
 }
 
 // ========== Helper: Query within page container ==========
@@ -559,6 +574,31 @@ function getConnectionDisplayName(connection) {
   }
 
   return connection?.name || connection?.id || ''
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  })[char])
+}
+
+function getChannelProvisioning(channel) {
+  return channel?.provisioning && typeof channel.provisioning === 'object'
+    ? channel.provisioning
+    : {}
+}
+
+function supportsQrProvisioning(channel) {
+  const provisioning = getChannelProvisioning(channel)
+  return Boolean(provisioning.supported && provisioning.default_mode === 'qr')
+}
+
+function supportsManualConfig(channel) {
+  return getChannelProvisioning(channel).manual_config_available !== false
 }
 
 /**
@@ -1473,6 +1513,54 @@ async function validateConfigDraft(type, config) {
   return validateMockConfig(type, config)
 }
 
+async function createProvisioningSession(type) {
+  const res = await fetch(`/api/channels/${type}/provisioning-sessions`, {
+    method: 'POST'
+  })
+
+  if (!res.ok) {
+    throw new Error(await parseApiError(res))
+  }
+
+  return await res.json()
+}
+
+async function pollProvisioningSessionState(type, sessionId) {
+  const res = await fetch(`/api/channels/${type}/provisioning-sessions/${sessionId}/poll`, {
+    method: 'POST'
+  })
+
+  if (!res.ok) {
+    throw new Error(await parseApiError(res))
+  }
+
+  return await res.json()
+}
+
+async function refreshProvisioningSession(type, sessionId) {
+  const res = await fetch(`/api/channels/${type}/provisioning-sessions/${sessionId}/refresh`, {
+    method: 'POST'
+  })
+
+  if (!res.ok) {
+    throw new Error(await parseApiError(res))
+  }
+
+  return await res.json()
+}
+
+async function cancelProvisioningSession(type, sessionId) {
+  const res = await fetch(`/api/channels/${type}/provisioning-sessions/${sessionId}`, {
+    method: 'DELETE'
+  })
+
+  if (!res.ok) {
+    throw new Error(await parseApiError(res))
+  }
+
+  return await res.json()
+}
+
 function getRuntimeStatusMeta(runtimeStatus) {
   const normalizedStatus = normalizeRuntimeStatus(runtimeStatus)
   const statusMeta = {
@@ -1763,6 +1851,8 @@ async function renderActiveConnections(type) {
 
   const channelInfo = allChannels.find(c => c.type === type) || { type, name: type }
   const isPlanned = Boolean(channelInfo.planned)
+  const useQrProvisioning = !isPlanned && supportsQrProvisioning(channelInfo)
+  const useManualConfig = !isPlanned && supportsManualConfig(channelInfo)
   const data = await fetchConnections(type)
   const connections = data.connections || []
   const totalConnections = Number(channelInfo.connection_count || connections.length)
@@ -1777,10 +1867,18 @@ async function renderActiveConnections(type) {
             ? `<p class="ch-planned-note" data-i18n="channel.plannedChannelNotice">${t('channel.plannedChannelNotice')}</p>`
             : ''}
         </div>
-        <button class="ch-btn-create" id="btnCreateConnection" data-action="create" ${isPlanned ? 'disabled aria-disabled="true"' : ''}>
-          ${ACTION_ICONS.plus}
-          <span data-i18n="${isPlanned ? 'channel.comingSoon' : 'channel.createNewConnection'}">${t(isPlanned ? 'channel.comingSoon' : 'channel.createNewConnection')}</span>
-        </button>
+        <div class="ch-connection-actions">
+          ${useQrProvisioning
+            ? `<button class="ch-btn-create" id="btnScanProvisioning" data-action="scan-configure">
+                ${ACTION_ICONS.plus}
+                <span data-i18n="channel.scanToConfigure">${t('channel.scanToConfigure')}</span>
+              </button>`
+            : ''}
+          <button class="ch-btn-create ${useQrProvisioning ? 'ch-btn-create-secondary' : ''}" id="btnCreateConnection" data-action="create" ${isPlanned || !useManualConfig ? 'disabled aria-disabled="true"' : ''}>
+            ${ACTION_ICONS.plus}
+            <span data-i18n="${isPlanned ? 'channel.comingSoon' : 'channel.createNewConnection'}">${t(isPlanned ? 'channel.comingSoon' : 'channel.createNewConnection')}</span>
+          </button>
+        </div>
       </div>
       <div class="ch-table">
         <div class="ch-table-header">
@@ -1869,6 +1967,279 @@ function renderConnectionRow(conn) {
       </div>
     </div>
   `
+}
+
+function getProvisioningStatusMeta(status) {
+  const normalized = String(status || 'pending').toLowerCase()
+  const statusMap = {
+    pending: {
+      className: 'pending',
+      title: t('channel.provisioningPendingTitle'),
+      description: t('channel.provisioningPendingDesc')
+    },
+    scanned: {
+      className: 'active',
+      title: t('channel.provisioningScannedTitle'),
+      description: t('channel.provisioningScannedDesc')
+    },
+    authorizing: {
+      className: 'active',
+      title: t('channel.provisioningAuthorizingTitle'),
+      description: t('channel.provisioningAuthorizingDesc')
+    },
+    completed: {
+      className: 'success',
+      title: t('channel.provisioningCompletedTitle'),
+      description: t('channel.provisioningCompletedDesc')
+    },
+    expired: {
+      className: 'expired',
+      title: t('channel.provisioningExpiredTitle'),
+      description: t('channel.provisioningExpiredDesc')
+    },
+    failed: {
+      className: 'failed',
+      title: t('channel.provisioningFailedTitle'),
+      description: t('channel.provisioningFailedDesc')
+    },
+    cancelled: {
+      className: 'cancelled',
+      title: t('channel.provisioningCancelledTitle'),
+      description: t('channel.provisioningCancelledDesc')
+    }
+  }
+  return statusMap[normalized] || statusMap.pending
+}
+
+function renderProvisioningModal(type, session = null, { loading = false } = {}) {
+  const host = $('#channelProvisioningModalHost')
+  if (!host) return
+
+  const channelInfo = allChannels.find(channel => channel.type === type) || { type, name: type }
+  const statusMeta = getProvisioningStatusMeta(session?.status)
+  const channelName = getChannelName(channelInfo)
+  const showManualConfig = supportsManualConfig(channelInfo)
+  const canRefresh = Boolean(session?.session_id && !['completed', 'cancelled'].includes(session.status))
+  const qrContent = session?.qr_image_url
+    ? `<img src="${escapeHtml(session.qr_image_url)}" alt="${escapeHtml(t('channel.provisioningQrAlt', { type: channelName }))}">`
+    : `<div class="ch-provisioning-qr-fallback">
+        <span>${ACTION_ICONS.spinner}</span>
+        <strong>${escapeHtml(loading ? t('channel.provisioningQrLoading') : t('channel.provisioningQrReady'))}</strong>
+      </div>`
+  const qrLink = session?.qr_url
+    ? `<a class="ch-provisioning-link" href="${escapeHtml(session.qr_url)}" target="_blank" rel="noopener noreferrer" data-i18n="channel.provisioningOpenLink">${escapeHtml(t('channel.provisioningOpenLink'))}</a>`
+    : ''
+  const errorCopy = session?.error
+    ? `<p class="ch-provisioning-error">${escapeHtml(session.error)}</p>`
+    : ''
+
+  host.innerHTML = `
+    <div class="ch-provisioning-overlay" id="channelProvisioningModal">
+      <div class="ch-provisioning-dialog" role="dialog" aria-modal="true" aria-labelledby="channelProvisioningTitle">
+        <button type="button" class="ch-provisioning-close" data-provisioning-close aria-label="${escapeHtml(t('channel.close'))}">
+          ${ACTION_ICONS.close}
+        </button>
+        <div class="ch-provisioning-icon">
+          ${CHANNEL_ICONS[type] || CHANNEL_ICONS.default}
+        </div>
+        <h2 id="channelProvisioningTitle">${escapeHtml(t('channel.provisioningTitle', { type: channelName }))}</h2>
+        <p class="ch-provisioning-subtitle">${escapeHtml(t('channel.provisioningSubtitle', { type: channelName }))}</p>
+        ${showManualConfig
+          ? `<button type="button" class="ch-provisioning-manual" data-provisioning-manual data-i18n="channel.manualConfigure">${escapeHtml(t('channel.manualConfigure'))}</button>`
+          : ''}
+        <div class="ch-provisioning-qr ${loading ? 'is-loading' : ''}">
+          ${qrContent}
+        </div>
+        ${qrLink}
+        <div class="ch-provisioning-status ${statusMeta.className}">
+          <span class="ch-provisioning-status-dot"></span>
+          <div>
+            <strong>${escapeHtml(statusMeta.title)}</strong>
+            <p>${escapeHtml(statusMeta.description)}</p>
+            ${errorCopy}
+          </div>
+        </div>
+        <div class="ch-provisioning-actions">
+          <button type="button" class="ch-provisioning-refresh" data-provisioning-refresh ${canRefresh ? '' : 'disabled'}>
+            ${loading ? ACTION_ICONS.spinner : ACTION_ICONS.arrowRight}
+            <span data-i18n="channel.provisioningRefresh">${escapeHtml(t('channel.provisioningRefresh'))}</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  `
+
+  bindProvisioningModalEvents()
+  updatePageTranslations()
+}
+
+function bindProvisioningModalEvents() {
+  $('#channelProvisioningModal [data-provisioning-close]')?.addEventListener('click', () => {
+    closeProvisioningModal()
+  })
+  $('#channelProvisioningModal [data-provisioning-refresh]')?.addEventListener('click', () => {
+    handleProvisioningRefresh()
+  })
+  $('#channelProvisioningModal [data-provisioning-manual]')?.addEventListener('click', async () => {
+    const type = currentChannelType
+    await closeProvisioningModal()
+    navigateToChannel(type, 'new')
+  })
+}
+
+function stopProvisioningPolling() {
+  if (provisioningPollTimer) {
+    window.clearInterval(provisioningPollTimer)
+    provisioningPollTimer = null
+  }
+  provisioningPollInFlight = false
+}
+
+function clearProvisioningAutoCloseTimer() {
+  if (provisioningAutoCloseTimer) {
+    window.clearTimeout(provisioningAutoCloseTimer)
+    provisioningAutoCloseTimer = null
+  }
+}
+
+function getProvisioningPollInterval(session) {
+  const refreshSeconds = Number(session?.refresh_after_seconds || 0)
+  if (!Number.isFinite(refreshSeconds) || refreshSeconds <= 0) {
+    return PROVISIONING_POLL_INTERVAL_MS
+  }
+  return Math.min(
+    Math.max(refreshSeconds * 1000, PROVISIONING_POLL_INTERVAL_MS),
+    PROVISIONING_MAX_POLL_INTERVAL_MS
+  )
+}
+
+function startProvisioningPolling(type, sessionId, session = null) {
+  stopProvisioningPolling()
+  provisioningPollTimer = window.setInterval(() => {
+    pollProvisioningSession(type, sessionId)
+  }, getProvisioningPollInterval(session || activeProvisioningSession))
+}
+
+function scheduleProvisioningAutoClose(sessionId) {
+  clearProvisioningAutoCloseTimer()
+  provisioningAutoCloseTimer = window.setTimeout(() => {
+    if (
+      activeProvisioningSession?.session_id === sessionId &&
+      activeProvisioningSession.status === 'completed'
+    ) {
+      closeProvisioningModal({ cancel: false })
+    }
+  }, PROVISIONING_COMPLETION_CLOSE_DELAY_MS)
+}
+
+async function pollProvisioningSession(type, sessionId) {
+  if (provisioningPollInFlight || provisioningCompletedHandled) return
+  if (activeProvisioningSession?.session_id && activeProvisioningSession.session_id !== sessionId) return
+
+  provisioningPollInFlight = true
+  try {
+    const session = await pollProvisioningSessionState(type, sessionId)
+    if (!activeProvisioningSession || activeProvisioningSession.session_id !== sessionId) return
+    if (provisioningCompletedHandled && session.status !== 'completed') return
+
+    activeProvisioningSession = session
+    if (session.status === 'completed') {
+      await handleProvisioningCompleted(type, session)
+    } else if (['expired', 'failed', 'cancelled'].includes(session.status)) {
+      renderProvisioningModal(type, session)
+      stopProvisioningPolling()
+    } else {
+      renderProvisioningModal(type, session)
+    }
+  } catch (error) {
+    stopProvisioningPolling()
+    showToast(error.message, 'error')
+  } finally {
+    provisioningPollInFlight = false
+  }
+}
+
+async function handleProvisioningCompleted(type, session) {
+  if (provisioningCompletedHandled) return
+  provisioningCompletedHandled = true
+  stopProvisioningPolling()
+  activeProvisioningSession = session
+  await refreshChannelTypes()
+  await renderActiveConnections(type)
+  renderProvisioningModal(type, session)
+  showToast(t('channel.provisioningCompletedTitle'), 'success')
+  scheduleProvisioningAutoClose(session.session_id)
+}
+
+async function handleProvisioningSessionStarted(type, session) {
+  activeProvisioningSession = session
+  if (session.status === 'completed') {
+    await handleProvisioningCompleted(type, session)
+    return
+  }
+
+  renderProvisioningModal(type, session)
+  if (['expired', 'failed', 'cancelled'].includes(session.status)) {
+    stopProvisioningPolling()
+    return
+  }
+
+  startProvisioningPolling(type, session.session_id, session)
+}
+
+async function openProvisioningModal(type) {
+  clearProvisioningAutoCloseTimer()
+  provisioningCompletedHandled = false
+  activeProvisioningSession = null
+  renderProvisioningModal(type, null, { loading: true })
+
+  try {
+    const session = await createProvisioningSession(type)
+    await handleProvisioningSessionStarted(type, session)
+  } catch (error) {
+    closeProvisioningModal({ cancel: false })
+    showToast(error.message, 'error')
+  }
+}
+
+async function handleProvisioningRefresh() {
+  if (!activeProvisioningSession?.session_id || !currentChannelType) return
+
+  clearProvisioningAutoCloseTimer()
+  renderProvisioningModal(currentChannelType, activeProvisioningSession, { loading: true })
+  try {
+    const session = await refreshProvisioningSession(
+      currentChannelType,
+      activeProvisioningSession.session_id
+    )
+    provisioningCompletedHandled = false
+    await handleProvisioningSessionStarted(currentChannelType, session)
+  } catch (error) {
+    renderProvisioningModal(currentChannelType, activeProvisioningSession)
+    showToast(error.message, 'error')
+  }
+}
+
+async function closeProvisioningModal({ cancel = true } = {}) {
+  const session = activeProvisioningSession
+  const type = currentChannelType
+  clearProvisioningAutoCloseTimer()
+  stopProvisioningPolling()
+  activeProvisioningSession = null
+  provisioningCompletedHandled = false
+
+  if (cancel && session?.session_id && type && !['completed', 'cancelled', 'failed', 'expired'].includes(session.status)) {
+    try {
+      await cancelProvisioningSession(type, session.session_id)
+    } catch (error) {
+      console.warn('[ChannelsPage] Failed to cancel provisioning session:', error)
+    }
+  }
+
+  const host = $('#channelProvisioningModalHost')
+  if (host) {
+    host.innerHTML = ''
+  }
 }
 
 /**
@@ -2426,7 +2797,10 @@ function bindDeleteDialogEvents() {
  * Bind events for connections section
  */
 function bindConnectionsEvents() {
-  // Create new connection button
+  $('#btnScanProvisioning')?.addEventListener('click', () => {
+    openProvisioningModal(currentChannelType)
+  })
+
   $('#btnCreateConnection')?.addEventListener('click', () => {
     navigateToChannel(currentChannelType, 'new')
   })

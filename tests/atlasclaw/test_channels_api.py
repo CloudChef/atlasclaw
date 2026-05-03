@@ -7,13 +7,17 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.atlasclaw.api.channels import router, set_channel_manager
+from app.atlasclaw.api.channels import (
+    router,
+    set_channel_manager,
+)
 from app.atlasclaw.auth.guards import AuthorizationContext
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.channels import ChannelRegistry
@@ -24,6 +28,11 @@ from app.atlasclaw.channels.handlers import (
     WebSocketHandler,
 )
 from app.atlasclaw.channels.manager import ChannelManager
+from app.atlasclaw.channels.qr_provisioning import (
+    ChannelProvisioningConnection,
+    ChannelProvisioningRequest,
+    ChannelProvisioningStart,
+)
 from app.atlasclaw.db import init_database
 from app.atlasclaw.db.database import DatabaseConfig
 from app.atlasclaw.db.orm.role import build_default_permissions
@@ -137,6 +146,64 @@ def channel_manager(temp_workspace):
     return manager
 
 
+class ProvisioningWebSocketHandler(WebSocketHandler):
+    """Test channel handler that supports QR provisioning."""
+
+    channel_type = "provisioning_websocket"
+    channel_name = "Provisioning WebSocket"
+    supports_provisioning = True
+    provisioning_default_mode = "qr"
+    provisioning_manual_config_available = False
+    provisioning_instructions_i18n_key = "channel.provisioning.test"
+
+    async def create_provisioning_session(
+        self,
+        request: ChannelProvisioningRequest,
+    ) -> ChannelProvisioningStart:
+        return ChannelProvisioningStart(
+            qr_url=(
+                "https://platform.example/setup"
+                f"?state={request.state_token}"
+                f"&user_code={request.user_code}"
+            ),
+            qr_image_url="https://platform.example/setup/qr.png",
+            expires_at=request.expires_at,
+            refresh_after_seconds=30,
+            instructions_i18n_key=self.provisioning_instructions_i18n_key,
+        )
+
+
+class PollingProvisioningWebSocketHandler(ProvisioningWebSocketHandler):
+    """Test handler that completes provisioning via platform polling."""
+
+    channel_type = "polling_provisioning_websocket"
+    channel_name = "Polling Provisioning WebSocket"
+
+    async def create_provisioning_session(
+        self,
+        request: ChannelProvisioningRequest,
+    ) -> ChannelProvisioningStart:
+        start = await super().create_provisioning_session(request)
+        start.platform_state = {"ready": False}
+        return start
+
+    async def poll_provisioning_connection(
+        self,
+        session,
+    ) -> ChannelProvisioningConnection | None:
+        if not session.platform_state.get("ready"):
+            session.platform_state["ready"] = True
+            session.status = "authorizing"
+            return None
+        return ChannelProvisioningConnection(
+            name="Polled Bot",
+            config={
+                "path": "/poll",
+                "provisioned": True,
+            },
+        )
+
+
 @pytest.fixture
 def client(app, channel_manager, initialized_db):
     """Create test client with initialized database."""
@@ -178,6 +245,25 @@ class TestChannelTypesAPI:
         ws_channel = next((c for c in data if c["type"] == "websocket"), None)
         assert ws_channel is not None
         assert ws_channel["connection_count"] == 1
+
+    def test_list_channel_types_exposes_provisioning_metadata(self, client, channel_manager):
+        """Channel catalog exposes one-click provisioning capability metadata."""
+        ChannelRegistry.register("provisioning_websocket", ProvisioningWebSocketHandler)
+
+        response = client.get(
+            "/api/channels",
+            headers={"X-Test-Channel-Type": "provisioning_websocket"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        channel = next(item for item in data if item["type"] == "provisioning_websocket")
+        assert channel["provisioning"] == {
+            "supported": True,
+            "default_mode": "qr",
+            "manual_config_available": False,
+            "instructions_i18n_key": "channel.provisioning.test",
+        }
 
     def test_list_channel_types_allows_non_admin(self, client, channel_manager):
         """Test listing channel types is available to authenticated non-admin users."""
@@ -242,6 +328,7 @@ class TestChannelSchemaAPI:
         data = response.json()
         assert data["type"] == "object"
         assert "properties" in data
+        assert data["provisioning"]["supported"] is False
 
     @pytest.mark.parametrize(
         ("channel_type", "handler_class"),
@@ -275,12 +362,224 @@ class TestChannelSchemaAPI:
         assert "provider_binding" not in properties
         assert "provider_bindings" not in properties
         assert property_names[0] == "connection_mode"
+        assert data["provisioning"]["supported"] is True
+        assert data["provisioning"]["default_mode"] == "qr"
+        assert data["provisioning"]["manual_config_available"] is True
 
     def test_get_schema_not_found(self, client, channel_manager):
         """Test getting schema for non-existent channel type."""
         response = client.get("/api/channels/nonexistent/schema")
         
         assert response.status_code == 404
+
+
+class TestChannelProvisioningAPI:
+    """Test one-click channel provisioning routes."""
+
+    def test_create_provisioning_session(self, client, channel_manager):
+        """Creating a provisioning session returns QR state without exposing secrets."""
+        ChannelRegistry.register("provisioning_websocket", ProvisioningWebSocketHandler)
+
+        response = client.post(
+            "/api/channels/provisioning_websocket/provisioning-sessions",
+            headers={"X-Test-Channel-Type": "provisioning_websocket"},
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["channel_type"] == "provisioning_websocket"
+        assert data["status"] == "pending"
+        assert data["qr_url"].startswith("https://platform.example/setup")
+        assert data["qr_image_url"] == "https://platform.example/setup/qr.png"
+        assert data["refresh_after_seconds"] == 30
+        assert data["instructions_i18n_key"] == "channel.provisioning.test"
+        assert data["connection"] is None
+        query = parse_qs(urlparse(data["qr_url"]).query)
+        assert query["state"][0]
+        assert query["user_code"][0].count("-") == 2
+        assert "callback_url" not in query
+
+    def test_unsupported_channel_rejects_provisioning(self, client, channel_manager):
+        """Channels must opt into QR provisioning."""
+        response = client.post("/api/channels/websocket/provisioning-sessions")
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Channel type does not support provisioning: websocket"
+
+    def test_provisioning_session_complete_routes_are_not_available(self, client, channel_manager):
+        """QR provisioning does not expose unauthenticated completion callback routes."""
+        ChannelRegistry.register("provisioning_websocket", ProvisioningWebSocketHandler)
+        headers = {"X-Test-Channel-Type": "provisioning_websocket"}
+
+        create_response = client.post(
+            "/api/channels/provisioning_websocket/provisioning-sessions",
+            headers=headers,
+        )
+        created = create_response.json()
+
+        scoped_response = client.post(
+            f"/api/channels/provisioning_websocket/provisioning-sessions/{created['session_id']}/complete",
+            json={
+                "state_token": "state-token",
+                "config": {"path": "/qr"},
+            },
+        )
+        user_code_response = client.post(
+            "/api/channels/provisioning_websocket/provisioning-sessions/complete",
+            json={"user_code": "ABCD1234", "config": {"path": "/qr"}},
+        )
+
+        assert scoped_response.status_code in {404, 405}
+        assert user_code_response.status_code in {404, 405}
+
+    def test_provisioning_session_refresh_rotates_qr_state(self, client, channel_manager):
+        """Refreshing a pending provisioning session rotates the embedded state token."""
+        ChannelRegistry.register("provisioning_websocket", ProvisioningWebSocketHandler)
+        headers = {"X-Test-Channel-Type": "provisioning_websocket"}
+
+        create_response = client.post(
+            "/api/channels/provisioning_websocket/provisioning-sessions",
+            headers=headers,
+        )
+        created = create_response.json()
+        first_query = parse_qs(urlparse(created["qr_url"]).query)
+        first_state = first_query["state"][0]
+        first_user_code = first_query["user_code"][0]
+
+        refresh_response = client.post(
+            f"/api/channels/provisioning_websocket/provisioning-sessions/{created['session_id']}/refresh",
+            headers=headers,
+        )
+
+        assert refresh_response.status_code == 200
+        refreshed = refresh_response.json()
+        second_query = parse_qs(urlparse(refreshed["qr_url"]).query)
+        second_state = second_query["state"][0]
+        second_user_code = second_query["user_code"][0]
+        assert refreshed["session_id"] == created["session_id"]
+        assert refreshed["status"] == "pending"
+        assert second_state != first_state
+        assert second_user_code != first_user_code
+
+    def test_provisioning_session_poll_creates_enabled_connection(self, client, channel_manager):
+        """POST poll can advance a platform-owned registration flow and save credentials."""
+        ChannelRegistry.register(
+            "polling_provisioning_websocket",
+            PollingProvisioningWebSocketHandler,
+        )
+        headers = {"X-Test-Channel-Type": "polling_provisioning_websocket"}
+
+        create_response = client.post(
+            "/api/channels/polling_provisioning_websocket/provisioning-sessions",
+            headers=headers,
+        )
+        assert create_response.status_code == 200
+        created = create_response.json()
+
+        first_poll = client.post(
+            f"/api/channels/polling_provisioning_websocket/provisioning-sessions/{created['session_id']}/poll",
+            headers=headers,
+        )
+        assert first_poll.status_code == 200
+        assert first_poll.json()["status"] == "authorizing"
+
+        second_poll = client.post(
+            f"/api/channels/polling_provisioning_websocket/provisioning-sessions/{created['session_id']}/poll",
+            headers=headers,
+        )
+        assert second_poll.status_code == 200
+        completed = second_poll.json()
+        assert completed["status"] == "completed"
+        assert completed["connection"]["name"] == "Polled Bot"
+
+        connections_response = client.get(
+            "/api/channels/polling_provisioning_websocket/connections",
+            headers=headers,
+        )
+        assert connections_response.status_code == 200
+        connections = connections_response.json()["connections"]
+        assert len(connections) == 1
+        assert connections[0]["config"] == {"path": "/poll", "provisioned": True}
+
+    def test_get_provisioning_session_is_read_only(self, client, channel_manager):
+        """GET session reports state without polling or creating a connection."""
+        ChannelRegistry.register(
+            "polling_provisioning_websocket",
+            PollingProvisioningWebSocketHandler,
+        )
+        headers = {"X-Test-Channel-Type": "polling_provisioning_websocket"}
+
+        create_response = client.post(
+            "/api/channels/polling_provisioning_websocket/provisioning-sessions",
+            headers=headers,
+        )
+        created = create_response.json()
+
+        get_response = client.get(
+            f"/api/channels/polling_provisioning_websocket/provisioning-sessions/{created['session_id']}",
+            headers=headers,
+        )
+        assert get_response.status_code == 200
+        assert get_response.json()["status"] == "pending"
+
+        connections_response = client.get(
+            "/api/channels/polling_provisioning_websocket/connections",
+            headers=headers,
+        )
+        assert connections_response.json()["connections"] == []
+
+    def test_duplicate_provisioning_poll_returns_existing_connection(self, client, channel_manager):
+        """Repeated polls after completion do not create duplicate connections."""
+        ChannelRegistry.register(
+            "polling_provisioning_websocket",
+            PollingProvisioningWebSocketHandler,
+        )
+        headers = {"X-Test-Channel-Type": "polling_provisioning_websocket"}
+
+        create_response = client.post(
+            "/api/channels/polling_provisioning_websocket/provisioning-sessions",
+            headers=headers,
+        )
+        created = create_response.json()
+
+        first_response = client.post(
+            f"/api/channels/polling_provisioning_websocket/provisioning-sessions/{created['session_id']}/poll",
+            headers=headers,
+        )
+        second_response = client.post(
+            f"/api/channels/polling_provisioning_websocket/provisioning-sessions/{created['session_id']}/poll",
+            headers=headers,
+        )
+        third_response = client.post(
+            f"/api/channels/polling_provisioning_websocket/provisioning-sessions/{created['session_id']}/poll",
+            headers=headers,
+        )
+
+        assert first_response.status_code == 200
+        assert second_response.status_code == 200
+        assert third_response.status_code == 200
+        assert first_response.json()["connection"] is None
+        assert third_response.json()["connection"]["id"] == second_response.json()["connection"]["id"]
+
+        connections_response = client.get(
+            "/api/channels/polling_provisioning_websocket/connections",
+            headers=headers,
+        )
+        assert len(connections_response.json()["connections"]) == 1
+
+    def test_provisioning_routes_require_channel_type_permission(self, client, channel_manager):
+        """Owned provisioning routes enforce channel allowlist permissions."""
+        ChannelRegistry.register("provisioning_websocket", ProvisioningWebSocketHandler)
+
+        response = client.post(
+            "/api/channels/provisioning_websocket/provisioning-sessions",
+            headers={
+                "X-Test-Channel-Type": "provisioning_websocket",
+                "X-Test-Channel-Allowed": "false",
+            },
+        )
+
+        assert response.status_code == 403
 
 
 class TestConnectionsAPI:

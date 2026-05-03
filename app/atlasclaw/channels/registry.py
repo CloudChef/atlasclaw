@@ -61,6 +61,7 @@ class ChannelRegistry:
                 "name": handler_class.channel_name or channel_type,
                 "icon": handler_class.channel_icon,
                 "mode": handler_class.channel_mode.value,
+                "provisioning": handler_class.describe_provisioning(),
             })
         return result
     

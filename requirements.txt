@@ -29,6 +29,7 @@ aiohttp>=3.9.0
 lark-oapi>=1.5.0
 dingtalk-stream>=0.24.0
 wecom-aibot-sdk>=1.0.0
+qrcode[pil]>=7.4.2
 
 # Testing
 pytest>=8.0.0
