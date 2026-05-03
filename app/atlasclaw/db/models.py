@@ -237,6 +237,36 @@ class ChannelModel(Base):
         return f"<ChannelModel(id={self.id}, name={self.name}, type={self.type})>"
 
 
+class ChannelProvisioningSessionModel(Base):
+    """Short-lived channel provisioning session persisted for external callbacks."""
+
+    __tablename__ = "channel_provisioning_sessions"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    channel_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
+    state_token: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    user_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), default="pending", nullable=False, index=True)
+
+    qr_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    qr_image_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    instructions_i18n_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    connection_name: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
+    platform_state: Mapped[Optional[Dict[str, Any]]] = mapped_column(JSON, nullable=True)
+    refresh_after_seconds: Mapped[int] = mapped_column(Integer, default=60, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<ChannelProvisioningSessionModel(id={self.id}, channel_type={self.channel_type})>"
+
+
 class AuditLogModel(Base):
     """Audit log for tracking database changes.
 

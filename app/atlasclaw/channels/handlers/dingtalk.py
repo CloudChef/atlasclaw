@@ -9,9 +9,11 @@ import asyncio
 import json
 import logging
 import multiprocessing
+import os
 import queue
 import threading
 import time
+from datetime import timedelta
 from typing import Any, Callable, Dict, Optional
 from urllib.parse import urlparse
 
@@ -25,6 +27,16 @@ from app.atlasclaw.channels.models import (
     InboundMessage,
     OutboundMessage,
     SendResult,
+)
+from app.atlasclaw.channels.qr_provisioning import (
+    ChannelProvisioningConnection,
+    ChannelProvisioningRequest,
+    ChannelProvisioningSession,
+    ChannelProvisioningStart,
+    build_qr_image_data_url,
+    mark_provisioning_poll_attempt,
+    parse_positive_int,
+    utcnow,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,6 +112,7 @@ def _run_dingtalk_sdk_process(
                 self.logger = logger
         
         async def process(self, callback: dingtalk_stream.CallbackMessage):
+            """Convert a DingTalk SDK callback into AtlasClaw message data."""
             try:
                 incoming_message = dingtalk_stream.ChatbotMessage.from_dict(callback.data)
                 
@@ -173,10 +186,17 @@ class DingTalkHandler(ChannelHandler):
     channel_mode = ChannelMode.BIDIRECTIONAL
     supports_long_connection = True
     supports_webhook = True
+    supports_provisioning = True
+    provisioning_default_mode = "qr"
+    provisioning_manual_config_available = True
+    provisioning_instructions_i18n_key = "channel.provisioning.dingtalk.instructions"
     
     # DingTalk API endpoints
     DINGTALK_API_BASE = "https://api.dingtalk.com"
     OAPI_BASE = "https://oapi.dingtalk.com"
+    REGISTRATION_BASE_URL = "https://oapi.dingtalk.com"
+    REGISTRATION_SOURCE = "DING_DWS_CLAW"
+    REGISTRATION_TIMEOUT_SECONDS = 8
     
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(config)
@@ -188,6 +208,178 @@ class DingTalkHandler(ChannelHandler):
         self._on_message_callback: Optional[Callable] = None
         self._access_token: Optional[str] = None
         self._token_expires: int = 0
+
+    async def create_provisioning_session(
+        self,
+        request: ChannelProvisioningRequest,
+    ) -> ChannelProvisioningStart:
+        """Create DingTalk OpenClaw registration QR details."""
+        del request
+        base_url = self._registration_base_url()
+        nonce = await self._init_registration(base_url)
+        begin = await self._begin_registration(base_url, nonce=nonce)
+
+        device_code = str(begin.get("device_code") or "").strip()
+        user_code = str(begin.get("user_code") or "").strip()
+        verification_uri = str(begin.get("verification_uri_complete") or "").strip()
+        if not device_code:
+            raise ValueError("DingTalk registration response missing device_code")
+        if not user_code:
+            raise ValueError("DingTalk registration response missing user_code")
+        if not verification_uri:
+            raise ValueError("DingTalk registration response missing verification_uri_complete")
+
+        interval = parse_positive_int(begin.get("interval"), default=5)
+        expire_in = parse_positive_int(begin.get("expires_in"), default=7200)
+        return ChannelProvisioningStart(
+            qr_url=verification_uri,
+            qr_image_url=build_qr_image_data_url(verification_uri),
+            user_code=user_code,
+            platform_state={
+                "device_code": device_code,
+                "base_url": base_url,
+                "interval": interval,
+                "expire_in": expire_in,
+            },
+            expires_at=utcnow() + timedelta(seconds=expire_in),
+            refresh_after_seconds=interval,
+            instructions_i18n_key=self.provisioning_instructions_i18n_key,
+        )
+
+    @classmethod
+    def _registration_base_url(cls) -> str:
+        """Return the DingTalk registration API base URL."""
+        return (
+            os.getenv("ATLASCLAW_DINGTALK_REGISTRATION_BASE_URL")
+            or cls.REGISTRATION_BASE_URL
+        ).rstrip("/")
+
+    @classmethod
+    def _registration_source(cls) -> str:
+        """Return the DingTalk OpenClaw registration source identifier."""
+        return (
+            os.getenv("ATLASCLAW_DINGTALK_REGISTRATION_SOURCE")
+            or cls.REGISTRATION_SOURCE
+        ).strip()
+
+    async def _post_registration(
+        self,
+        base_url: str,
+        path: str,
+        body: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """POST a DingTalk registration request and return the JSON body."""
+        async with aiohttp.ClientSession(trust_env=True) as session:
+            async with session.post(
+                f"{base_url}{path}",
+                json=body,
+                timeout=aiohttp.ClientTimeout(total=self.REGISTRATION_TIMEOUT_SECONDS),
+            ) as response:
+                try:
+                    payload = await response.json(content_type=None)
+                except Exception as exc:
+                    text = await response.text()
+                    raise ValueError(f"Invalid DingTalk registration response: {text[:200]}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid DingTalk registration response")
+        errcode = payload.get("errcode")
+        if errcode not in {0, "0", None}:
+            errmsg = payload.get("errmsg") or "unknown error"
+            raise ValueError(f"DingTalk registration failed: {errmsg} (errcode={errcode})")
+        return payload
+
+    async def _init_registration(self, base_url: str) -> str:
+        """Initialize DingTalk registration and return its nonce."""
+        payload = await self._post_registration(
+            base_url,
+            "/app/registration/init",
+            {"source": self._registration_source()},
+        )
+        nonce = str(payload.get("nonce") or "").strip()
+        if not nonce:
+            raise ValueError("DingTalk registration response missing nonce")
+        return nonce
+
+    async def _begin_registration(
+        self,
+        base_url: str,
+        *,
+        nonce: str,
+    ) -> Dict[str, Any]:
+        """Begin DingTalk registration and return device-code details."""
+        return await self._post_registration(
+            base_url,
+            "/app/registration/begin",
+            {"nonce": nonce},
+        )
+
+    async def _poll_registration(self, base_url: str, *, device_code: str) -> Dict[str, Any]:
+        """Poll DingTalk registration once."""
+        return await self._post_registration(
+            base_url,
+            "/app/registration/poll",
+            {"device_code": device_code},
+        )
+
+    async def poll_provisioning_connection(
+        self,
+        session: ChannelProvisioningSession,
+    ) -> Optional[ChannelProvisioningConnection]:
+        """Poll DingTalk registration and return stream credentials when ready."""
+        state = dict(session.platform_state or {})
+        device_code = str(state.get("device_code") or "").strip()
+        if not device_code:
+            raise ValueError("DingTalk registration device_code is missing")
+
+        if mark_provisioning_poll_attempt(session, default_interval_seconds=5) is None:
+            return None
+        state = dict(session.platform_state or {})
+
+        try:
+            response = await self._poll_registration(
+                str(state.get("base_url") or self._registration_base_url()).rstrip("/"),
+                device_code=device_code,
+            )
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.warning("Transient DingTalk registration poll failure: %s", exc)
+            return None
+
+        status = str(response.get("status") or "").strip().upper()
+        if status == "SUCCESS":
+            client_id = response.get("client_id")
+            client_secret = response.get("client_secret")
+            if not client_id:
+                raise ValueError("client_id is required")
+            if not client_secret:
+                raise ValueError("client_secret is required")
+            return ChannelProvisioningConnection(
+                name="DingTalk Bot",
+                config={
+                    "connection_mode": "stream",
+                    "client_id": str(client_id),
+                    "client_secret": str(client_secret),
+                },
+            )
+        if status == "WAITING":
+            session.status = "authorizing"
+            session.error = None
+            session.updated_at = utcnow()
+            return None
+        if status == "EXPIRED":
+            session.expires_at = utcnow()
+            session.error = "DingTalk registration expired"
+            session.updated_at = utcnow()
+            return None
+        if status == "FAIL":
+            session.status = "failed"
+            session.error = str(response.get("fail_reason") or "DingTalk registration failed")
+            session.updated_at = utcnow()
+            return None
+        if status:
+            session.status = "failed"
+            session.error = f"DingTalk registration returned unknown status: {status}"
+            session.updated_at = utcnow()
+        return None
     
     async def setup(self, connection_config: Dict[str, Any]) -> bool:
         """Initialize DingTalk handler with configuration."""

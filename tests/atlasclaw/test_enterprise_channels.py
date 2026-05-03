@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import sys
 from types import ModuleType
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from unittest.mock import AsyncMock, patch
@@ -19,6 +21,10 @@ from app.atlasclaw.channels.models import (
 )
 from app.atlasclaw.channels.handlers.dingtalk import DingTalkHandler
 from app.atlasclaw.channels.handlers.wecom import WeComHandler
+from app.atlasclaw.channels.qr_provisioning import (
+    ChannelProvisioningRequest,
+    ChannelProvisioningSession,
+)
 
 
 class TestDingTalkHandler:
@@ -31,6 +37,7 @@ class TestDingTalkHandler:
         assert DingTalkHandler.channel_mode == ChannelMode.BIDIRECTIONAL
         assert DingTalkHandler.supports_long_connection is True
         assert DingTalkHandler.supports_webhook is True
+        assert DingTalkHandler.supports_provisioning is True
 
     @pytest.mark.asyncio
     async def test_setup_with_webhook(self):
@@ -170,6 +177,8 @@ class TestWeComHandler:
         assert WeComHandler.channel_mode == ChannelMode.BIDIRECTIONAL
         assert WeComHandler.supports_long_connection is True
         assert WeComHandler.supports_webhook is True
+        assert WeComHandler.supports_provisioning is True
+        assert WeComHandler.provisioning_manual_config_available is True
 
     @pytest.mark.asyncio
     async def test_setup_with_webhook(self):
@@ -181,6 +190,158 @@ class TestWeComHandler:
         
         assert result is True
         assert handler.config["webhook_url"] == "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+
+    @pytest.mark.asyncio
+    async def test_poll_provisioning_connection_maps_websocket_config(self):
+        """Test QR polling maps completed WeCom WebSocket bot credentials."""
+        handler = WeComHandler()
+        session = ChannelProvisioningSession(
+            session_id="session-1",
+            user_id="user-1",
+            channel_type="wecom",
+            state_token="state-token",
+            user_code="WECM-CODE",
+            platform_state={"scode": "scode", "interval": 1},
+        )
+
+        with patch.object(
+            handler,
+            "_query_openclaw_qr_result",
+            AsyncMock(return_value={
+                "data": {
+                    "status": "success",
+                    "bot_info": {"botid": "aib_test", "secret": "secret"},
+                },
+            }),
+        ):
+            result = await handler.poll_provisioning_connection(session)
+
+        assert result is not None
+        assert result.name == "WeCom Bot"
+        assert result.config == {
+            "connection_mode": "websocket",
+            "bot_id": "aib_test",
+            "bot_secret": "secret",
+        }
+
+    @pytest.mark.asyncio
+    async def test_poll_provisioning_connection_rejects_missing_bot_id(self):
+        """Test QR polling completion requires WeCom bot credentials."""
+        handler = WeComHandler()
+        session = ChannelProvisioningSession(
+            session_id="session-1",
+            user_id="user-1",
+            channel_type="wecom",
+            state_token="state-token",
+            user_code="WECM-CODE",
+            platform_state={"scode": "scode", "interval": 1},
+        )
+
+        with pytest.raises(ValueError, match="bot_id is required"):
+            with patch.object(
+                handler,
+                "_query_openclaw_qr_result",
+                AsyncMock(return_value={
+                    "data": {
+                        "status": "success",
+                        "bot_info": {"corpid": "corp_test", "secret": "secret"},
+                    },
+                }),
+            ):
+                await handler.poll_provisioning_connection(session)
+
+    @pytest.mark.asyncio
+    async def test_poll_provisioning_connection_rejects_noncanonical_bot_id_field(self):
+        """Test WeCom QR provisioning only accepts broker-issued botid."""
+        handler = WeComHandler()
+        session = ChannelProvisioningSession(
+            session_id="session-1",
+            user_id="user-1",
+            channel_type="wecom",
+            state_token="state-token",
+            user_code="WECM-CODE",
+            platform_state={"scode": "scode", "interval": 1},
+        )
+
+        with pytest.raises(ValueError, match="bot_id is required"):
+            with patch.object(
+                handler,
+                "_query_openclaw_qr_result",
+                AsyncMock(return_value={
+                    "data": {
+                        "status": "success",
+                        "bot_info": {"bot_id": "aib_test", "secret": "secret"},
+                    },
+                }),
+            ):
+                await handler.poll_provisioning_connection(session)
+
+    @pytest.mark.asyncio
+    async def test_provisioned_config_is_compatible_with_manual_websocket_path(self):
+        """Test poll-generated config is accepted by the manual WebSocket path."""
+        handler = WeComHandler()
+        session = ChannelProvisioningSession(
+            session_id="session-1",
+            user_id="user-1",
+            channel_type="wecom",
+            state_token="state-token",
+            user_code="WECM-CODE",
+            platform_state={"scode": "scode", "interval": 1},
+        )
+        with patch.object(
+            handler,
+            "_query_openclaw_qr_result",
+            AsyncMock(return_value={
+                "data": {
+                    "status": "success",
+                    "bot_info": {"botid": "aib_test", "secret": "secret"},
+                },
+            }),
+        ):
+            provisioned = await handler.poll_provisioning_connection(session)
+
+        assert provisioned is not None
+        assert await handler.setup(provisioned.config) is True
+        with patch.object(handler, "_verify_websocket_credentials", AsyncMock(return_value=True)):
+            result = await handler.validate_config(provisioned.config)
+
+        assert result.valid is True
+        assert result.errors == []
+
+    @pytest.mark.asyncio
+    async def test_create_provisioning_session_uses_openclaw_qr_url(self):
+        """Test WeCom QR uses the official OpenClaw CLI broker flow."""
+        pytest.importorskip("qrcode")
+        handler = WeComHandler()
+
+        with patch.object(
+            handler,
+            "_fetch_openclaw_qr",
+            AsyncMock(return_value={
+                "scode": "scode",
+                "auth_url": "https://work.weixin.qq.com/ai/qc/auth?scode=scode",
+            }),
+        ) as mock_fetch:
+            result = await handler.create_provisioning_session(ChannelProvisioningRequest(
+                user_id="user-1",
+                channel_type="wecom",
+                session_id="session-1",
+                state_token="state-token",
+                user_code="WECM-2026-TEST",
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            ))
+
+        parsed = urlparse(result.qr_url)
+        query = parse_qs(parsed.query)
+        assert parsed.scheme == "https"
+        assert parsed.netloc == "work.weixin.qq.com"
+        assert parsed.path == "/ai/qc/auth"
+        assert query == {"scode": ["scode"]}
+        assert result.platform_state["scode"] == "scode"
+        assert result.refresh_after_seconds == 3
+        assert result.qr_image_url is not None
+        assert result.qr_image_url.startswith("data:image/png;base64,")
+        mock_fetch.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_setup_with_bot_id(self):

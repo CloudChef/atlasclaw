@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.atlasclaw.auth.guards import (
@@ -22,9 +23,15 @@ from app.atlasclaw.auth.guards import (
     has_permission,
 )
 from app.atlasclaw.channels.manager import ChannelManager
+from app.atlasclaw.channels.qr_provisioning import (
+    ChannelProvisioningConnection,
+    ChannelProvisioningRequest,
+    ChannelProvisioningSession,
+)
 from app.atlasclaw.channels.registry import ChannelRegistry
 from app.atlasclaw.db import get_db_session_dependency as get_db_session
 from app.atlasclaw.db.orm.channel_config import ChannelConfigService, _decrypt_config
+from app.atlasclaw.db.orm.channel_provisioning import ChannelProvisioningSessionService
 from app.atlasclaw.db.schemas import ChannelCreate, ChannelUpdate
 
 logger = logging.getLogger(__name__)
@@ -34,6 +41,7 @@ router = APIRouter(prefix="/api/channels", tags=["channels"])
 # Global channel manager instance (will be set during app startup)
 _channel_manager: Optional[ChannelManager] = None
 VALIDATION_TIMEOUT_SECONDS = 3.2
+PROVISIONING_SESSION_TTL_SECONDS = 300
 
 
 def _normalize_channel_config(
@@ -118,7 +126,7 @@ def get_current_user_id(request: Request) -> str:
 class ConnectionCreateRequest(BaseModel):
     """Request model for creating a connection."""
     name: str
-    config: Dict[str, Any] = {}
+    config: Dict[str, Any] = Field(default_factory=dict)
     enabled: bool = True
     is_default: bool = False
 
@@ -149,17 +157,260 @@ class ChannelTypeResponse(BaseModel):
     icon: Optional[str] = None
     mode: str
     connection_count: int = 0
+    provisioning: Dict[str, Any] = Field(default_factory=dict)
 
 
 class ValidationResponse(BaseModel):
     """Response model for config validation."""
     valid: bool
-    errors: List[str] = []
+    errors: List[str] = Field(default_factory=list)
 
 
 class ConfigValidationRequest(BaseModel):
     """Request model for config validation without saving."""
     config: Dict[str, Any]
+
+
+class ProvisioningConnectionSummary(BaseModel):
+    """Connection summary returned by a completed provisioning session."""
+    id: str
+    name: str
+    channel_type: str
+    enabled: bool = True
+
+
+class ProvisioningSessionResponse(BaseModel):
+    """Response model for one-click channel provisioning sessions."""
+    session_id: str
+    channel_type: str
+    status: str
+    qr_url: str = ""
+    qr_image_url: Optional[str] = None
+    expires_at: datetime
+    refresh_after_seconds: int = 60
+    instructions_i18n_key: str = ""
+    error: Optional[str] = None
+    connection: Optional[ProvisioningConnectionSummary] = None
+
+
+def _get_channel_handler_or_404(channel_type: str):
+    """Return a registered channel handler class or raise 404."""
+    handler_class = ChannelRegistry.get(channel_type)
+    if not handler_class:
+        raise HTTPException(status_code=404, detail=f"Channel type not found: {channel_type}")
+    return handler_class
+
+
+def _ensure_provisioning_supported(handler_class: Any, channel_type: str) -> None:
+    """Raise 400 when a channel type does not expose one-click provisioning."""
+    if not getattr(handler_class, "supports_provisioning", False):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Channel type does not support provisioning: {channel_type}",
+        )
+
+
+def _get_accessible_provisioning_handler_or_404(
+    authz: AuthorizationContext,
+    channel_type: str,
+) -> Any:
+    """Return an accessible provisioning-capable handler class or raise an HTTP error."""
+    handler_class = _get_channel_handler_or_404(channel_type)
+    ensure_channel_type_access(authz, channel_type)
+    _ensure_provisioning_supported(handler_class, channel_type)
+    return handler_class
+
+
+async def _get_owned_provisioning_session_or_404(
+    db_session: AsyncSession,
+    *,
+    session_id: str,
+    user_id: str,
+    channel_type: str,
+) -> ChannelProvisioningSession:
+    """Return an owned provisioning session or raise a consistent 404."""
+    provision_session = await ChannelProvisioningSessionService.get_owned(
+        db_session,
+        session_id=session_id,
+        user_id=user_id,
+        channel_type=channel_type,
+    )
+    if not provision_session:
+        raise HTTPException(status_code=404, detail=f"Provisioning session not found: {session_id}")
+    return provision_session
+
+
+def _get_provisioning_user_code_groups(handler_class: Any) -> int:
+    """Return the handler's pairing code group count with conservative bounds."""
+    try:
+        groups = int(getattr(handler_class, "provisioning_user_code_groups", 3) or 3)
+    except (TypeError, ValueError):
+        groups = 3
+    return min(max(groups, 1), 6)
+
+
+def _provisioning_session_response(
+    session: ChannelProvisioningSession,
+) -> ProvisioningSessionResponse:
+    """Serialize a provisioning session without exposing channel secrets."""
+    connection = None
+    if session.connection_id and session.connection_name:
+        connection = ProvisioningConnectionSummary(
+            id=session.connection_id,
+            name=session.connection_name,
+            channel_type=session.channel_type,
+            enabled=True,
+        )
+    return ProvisioningSessionResponse(
+        session_id=session.session_id,
+        channel_type=session.channel_type,
+        status=session.public_status(),
+        qr_url=session.qr_url,
+        qr_image_url=session.qr_image_url,
+        expires_at=session.expires_at,
+        refresh_after_seconds=session.refresh_after_seconds,
+        instructions_i18n_key=session.instructions_i18n_key,
+        error=session.error,
+        connection=connection,
+    )
+
+
+async def _save_provisioned_connection(
+    *,
+    channel_type: str,
+    provision_session: ChannelProvisioningSession,
+    provisioned_connection: ChannelProvisioningConnection,
+    manager: ChannelManager,
+    db_session: AsyncSession,
+) -> ProvisioningSessionResponse:
+    """Persist a provisioned connection and mark the provisioning session complete."""
+    claimed_session = await ChannelProvisioningSessionService.claim_completion(
+        db_session,
+        provision_session,
+    )
+    if not claimed_session:
+        raise HTTPException(status_code=409, detail="Provisioning session is not active")
+    if claimed_session.status == "completed":
+        return _provisioning_session_response(claimed_session)
+    provision_session = claimed_session
+
+    normalized_config = _normalize_channel_config(
+        provision_session.user_id,
+        provisioned_connection.config,
+    )
+    channel = await ChannelConfigService.create(
+        db_session,
+        ChannelCreate(
+            user_id=provision_session.user_id,
+            name=provisioned_connection.name,
+            type=channel_type,
+            config=normalized_config,
+            is_active=True,
+            is_default=provisioned_connection.is_default,
+        ),
+    )
+    logger.info("Auto-starting provisioned connection: %s/%s/%s", provision_session.user_id, channel_type, channel.id)
+    asyncio.create_task(
+        manager._background_initialize(provision_session.user_id, channel_type, channel.id)
+    )
+    provision_session = await ChannelProvisioningSessionService.complete(
+        db_session,
+        provision_session,
+        connection_id=channel.id,
+        connection_name=channel.name,
+    )
+    return _provisioning_session_response(provision_session)
+
+
+async def _poll_and_complete_provisioning_session(
+    *,
+    channel_type: str,
+    handler_class: Any,
+    provision_session: ChannelProvisioningSession,
+    manager: ChannelManager,
+    db_session: AsyncSession,
+) -> ProvisioningSessionResponse:
+    """Poll a platform-owned provisioning flow and persist a connection when ready."""
+    if provision_session.public_status() == "expired":
+        return _provisioning_session_response(provision_session)
+    if provision_session.status == "completed":
+        return _provisioning_session_response(provision_session)
+    if provision_session.status not in {"pending", "scanned", "authorizing"}:
+        return _provisioning_session_response(provision_session)
+
+    try:
+        handler = handler_class({})
+        provisioned_connection = await handler.poll_provisioning_connection(provision_session)
+    except ValueError as exc:
+        await ChannelProvisioningSessionService.mark_status(
+            db_session,
+            provision_session,
+            "failed",
+            error=str(exc),
+        )
+        return _provisioning_session_response(provision_session)
+    except Exception as exc:
+        await ChannelProvisioningSessionService.mark_status(
+            db_session,
+            provision_session,
+            "failed",
+            error="Failed to poll platform provisioning",
+        )
+        logger.error("Failed to poll provisioning session for %s: %s", channel_type, exc)
+        return _provisioning_session_response(provision_session)
+
+    if not provisioned_connection:
+        provision_session = await ChannelProvisioningSessionService.save_mutable_state(
+            db_session,
+            provision_session,
+        )
+        return _provisioning_session_response(provision_session)
+
+    return await _save_provisioned_connection(
+        channel_type=channel_type,
+        provision_session=provision_session,
+        provisioned_connection=provisioned_connection,
+        manager=manager,
+        db_session=db_session,
+    )
+
+
+async def _start_platform_provisioning_session(
+    *,
+    request: Request,
+    db_session: AsyncSession,
+    handler_class: Any,
+    channel_type: str,
+    provision_session: ChannelProvisioningSession,
+) -> ChannelProvisioningSession:
+    """Ask a channel handler to attach platform QR details to a session."""
+    try:
+        handler = handler_class({})
+        start = await handler.create_provisioning_session(
+            ChannelProvisioningRequest(
+                user_id=provision_session.user_id,
+                channel_type=channel_type,
+                session_id=provision_session.session_id,
+                state_token=provision_session.state_token,
+                user_code=provision_session.user_code,
+                expires_at=provision_session.expires_at,
+                base_url=str(request.base_url).rstrip("/"),
+            )
+        )
+        return await ChannelProvisioningSessionService.attach_start(
+            db_session,
+            provision_session.session_id,
+            start,
+        )
+    except Exception as exc:
+        provision_session = await ChannelProvisioningSessionService.mark_status(
+            db_session,
+            provision_session,
+            "failed",
+            error=str(exc),
+        )
+        logger.error("Failed to start provisioning session for %s: %s", channel_type, exc)
+        return provision_session
 
 
 # Routes
@@ -202,7 +453,8 @@ async def list_channel_types(
             name=channel.get("name", channel["type"]),
             icon=channel.get("icon"),
             mode=channel.get("mode", "bidirectional"),
-            connection_count=len(connections)
+            connection_count=len(connections),
+            provisioning=channel.get("provisioning") or {},
         ))
     
     return result
@@ -229,7 +481,9 @@ async def get_channel_schema(
     # Create temporary instance to get schema
     try:
         handler = handler_class({})
-        return _normalize_channel_schema(handler.describe_schema())
+        schema = _normalize_channel_schema(handler.describe_schema())
+        schema["provisioning"] = handler_class.describe_provisioning()
+        return schema
     except Exception as e:
         logger.error(f"Failed to get schema for {channel_type}: {e}")
         return {
@@ -237,6 +491,134 @@ async def get_channel_schema(
             "properties": {},
             "required": []
         }
+
+
+@router.post("/{channel_type}/provisioning-sessions")
+async def create_provisioning_session(
+    channel_type: str,
+    request: Request,
+    db_session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
+) -> ProvisioningSessionResponse:
+    """Create a short-lived QR provisioning session for a channel type."""
+    handler_class = _get_accessible_provisioning_handler_or_404(authz, channel_type)
+
+    provision_session = await ChannelProvisioningSessionService.create(
+        db_session,
+        user_id=authz.user.user_id,
+        channel_type=channel_type,
+        ttl_seconds=PROVISIONING_SESSION_TTL_SECONDS,
+        user_code_groups=_get_provisioning_user_code_groups(handler_class),
+    )
+    provision_session = await _start_platform_provisioning_session(
+        channel_type=channel_type,
+        handler_class=handler_class,
+        request=request,
+        db_session=db_session,
+        provision_session=provision_session,
+    )
+    return _provisioning_session_response(provision_session)
+
+
+@router.get("/{channel_type}/provisioning-sessions/{session_id}")
+async def get_provisioning_session(
+    channel_type: str,
+    session_id: str,
+    db_session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
+) -> ProvisioningSessionResponse:
+    """Return the current state of an owned provisioning session."""
+    _get_accessible_provisioning_handler_or_404(authz, channel_type)
+    provision_session = await _get_owned_provisioning_session_or_404(
+        db_session,
+        session_id=session_id,
+        user_id=authz.user.user_id,
+        channel_type=channel_type,
+    )
+    return _provisioning_session_response(provision_session)
+
+
+@router.post("/{channel_type}/provisioning-sessions/{session_id}/poll")
+async def poll_provisioning_session(
+    channel_type: str,
+    session_id: str,
+    manager: ChannelManager = Depends(get_channel_manager),
+    db_session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
+) -> ProvisioningSessionResponse:
+    """Poll platform-owned provisioning state for an owned provisioning session."""
+    handler_class = _get_accessible_provisioning_handler_or_404(authz, channel_type)
+    provision_session = await _get_owned_provisioning_session_or_404(
+        db_session,
+        session_id=session_id,
+        user_id=authz.user.user_id,
+        channel_type=channel_type,
+    )
+    return await _poll_and_complete_provisioning_session(
+        channel_type=channel_type,
+        handler_class=handler_class,
+        provision_session=provision_session,
+        manager=manager,
+        db_session=db_session,
+    )
+
+
+@router.post("/{channel_type}/provisioning-sessions/{session_id}/refresh")
+async def refresh_provisioning_session(
+    channel_type: str,
+    session_id: str,
+    request: Request,
+    db_session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
+) -> ProvisioningSessionResponse:
+    """Refresh QR details for an owned non-terminal provisioning session."""
+    handler_class = _get_accessible_provisioning_handler_or_404(authz, channel_type)
+    provision_session = await _get_owned_provisioning_session_or_404(
+        db_session,
+        session_id=session_id,
+        user_id=authz.user.user_id,
+        channel_type=channel_type,
+    )
+    if provision_session.status in {"completed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Provisioning session cannot be refreshed")
+
+    provision_session = await ChannelProvisioningSessionService.refresh(
+        db_session,
+        provision_session,
+        ttl_seconds=PROVISIONING_SESSION_TTL_SECONDS,
+        user_code_groups=_get_provisioning_user_code_groups(handler_class),
+    )
+    provision_session = await _start_platform_provisioning_session(
+        channel_type=channel_type,
+        handler_class=handler_class,
+        request=request,
+        db_session=db_session,
+        provision_session=provision_session,
+    )
+    return _provisioning_session_response(provision_session)
+
+
+@router.delete("/{channel_type}/provisioning-sessions/{session_id}")
+async def cancel_provisioning_session(
+    channel_type: str,
+    session_id: str,
+    db_session: AsyncSession = Depends(get_db_session),
+    authz: AuthorizationContext = Depends(get_authorization_context),
+) -> ProvisioningSessionResponse:
+    """Cancel an owned provisioning session."""
+    _get_accessible_provisioning_handler_or_404(authz, channel_type)
+    provision_session = await _get_owned_provisioning_session_or_404(
+        db_session,
+        session_id=session_id,
+        user_id=authz.user.user_id,
+        channel_type=channel_type,
+    )
+    if provision_session.status != "completed":
+        provision_session = await ChannelProvisioningSessionService.cancel(
+            db_session,
+            provision_session,
+        )
+    return _provisioning_session_response(provision_session)
 
 
 @router.get("/{channel_type}/connections")

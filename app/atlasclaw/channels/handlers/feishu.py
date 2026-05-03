@@ -9,11 +9,13 @@ import asyncio
 import json
 import logging
 import multiprocessing
+import os
 import queue
 import threading
 import time
+from datetime import timedelta
 from typing import Any, Callable, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import aiohttp
 
@@ -25,6 +27,16 @@ from ..models import (
     InboundMessage,
     OutboundMessage,
     SendResult,
+)
+from ..qr_provisioning import (
+    ChannelProvisioningConnection,
+    ChannelProvisioningRequest,
+    ChannelProvisioningSession,
+    ChannelProvisioningStart,
+    build_qr_image_data_url,
+    mark_provisioning_poll_attempt,
+    parse_positive_int,
+    utcnow,
 )
 
 logger = logging.getLogger(__name__)
@@ -143,10 +155,22 @@ class FeishuHandler(ChannelHandler):
     channel_mode = ChannelMode.BIDIRECTIONAL
     supports_long_connection = True
     supports_webhook = False
+    supports_provisioning = True
+    provisioning_default_mode = "qr"
+    provisioning_manual_config_available = True
+    provisioning_instructions_i18n_key = "channel.provisioning.feishu.instructions"
+    provisioning_user_code_groups = 2
     
     # Feishu API endpoints
     FEISHU_API_BASE = "https://open.feishu.cn/open-apis"
     AUTH_URL = f"{FEISHU_API_BASE}/auth/v3/tenant_access_token/internal"
+    FEISHU_ACCOUNTS_URL = "https://accounts.feishu.cn"
+    LARK_ACCOUNTS_URL = "https://accounts.larksuite.com"
+    REGISTRATION_PATH = "/oauth/v1/app/registration"
+    REGISTRATION_TIMEOUT_SECONDS = 10
+    REGISTRATION_QR_FROM = "oc_onboard"
+    REGISTRATION_QR_TP = "ob_cli_app"
+    REGISTRATION_POLL_TP = "ob_app"
     
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(config)
@@ -158,7 +182,226 @@ class FeishuHandler(ChannelHandler):
         self._message_callback: Optional[Callable[[InboundMessage], None]] = None
         self._listener_thread: Optional[threading.Thread] = None
         self._running = False
-    
+
+    async def create_provisioning_session(
+        self,
+        request: ChannelProvisioningRequest,
+    ) -> ChannelProvisioningStart:
+        """Create a Feishu app-registration QR session."""
+        del request
+        domain = self._registration_domain()
+        await self._init_app_registration(domain)
+        begin = await self._begin_app_registration(domain)
+
+        device_code = str(begin.get("device_code") or "").strip()
+        user_code = str(begin.get("user_code") or "").strip()
+        verification_uri = str(begin.get("verification_uri_complete") or "").strip()
+        if not device_code:
+            raise ValueError("Feishu registration response missing device_code")
+        if not user_code:
+            raise ValueError("Feishu registration response missing user_code")
+        if not verification_uri:
+            raise ValueError("Feishu registration response missing verification_uri_complete")
+
+        interval = parse_positive_int(begin.get("interval"), default=5)
+        expire_in = parse_positive_int(begin.get("expire_in"), default=600)
+        qr_url = self._with_registration_qr_params(verification_uri)
+        return ChannelProvisioningStart(
+            qr_url=qr_url,
+            qr_image_url=build_qr_image_data_url(qr_url),
+            user_code=user_code,
+            platform_state={
+                "device_code": device_code,
+                "domain": domain,
+                "interval": interval,
+                "expire_in": expire_in,
+                "tp": self.REGISTRATION_POLL_TP,
+            },
+            expires_at=utcnow() + timedelta(seconds=expire_in),
+            refresh_after_seconds=interval,
+            instructions_i18n_key=self.provisioning_instructions_i18n_key,
+        )
+
+    @classmethod
+    def _registration_domain(cls) -> str:
+        """Return the Feishu accounts domain used for app registration."""
+        domain = os.getenv("ATLASCLAW_FEISHU_REGISTRATION_DOMAIN", "feishu").strip().lower()
+        return "lark" if domain == "lark" else "feishu"
+
+    @classmethod
+    def _registration_base_url(cls, domain: str) -> str:
+        """Return the registration API base URL for a Feishu/Lark domain."""
+        override = os.getenv("ATLASCLAW_FEISHU_REGISTRATION_BASE_URL")
+        if override:
+            return override.rstrip("/")
+        return cls.LARK_ACCOUNTS_URL if domain == "lark" else cls.FEISHU_ACCOUNTS_URL
+
+    @classmethod
+    def _registration_url(cls, domain: str) -> str:
+        """Return the app-registration endpoint URL."""
+        return f"{cls._registration_base_url(domain)}{cls.REGISTRATION_PATH}"
+
+    @classmethod
+    def _with_registration_qr_params(cls, url: str) -> str:
+        """Append OpenClaw-compatible registration source parameters to the QR URL."""
+        parsed = urlparse(url)
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query["from"] = os.getenv(
+            "ATLASCLAW_FEISHU_REGISTRATION_QR_FROM",
+            cls.REGISTRATION_QR_FROM,
+        )
+        query["tp"] = os.getenv(
+            "ATLASCLAW_FEISHU_REGISTRATION_QR_TP",
+            cls.REGISTRATION_QR_TP,
+        )
+        return urlunparse(parsed._replace(query=urlencode(query)))
+
+    async def _post_app_registration(
+        self,
+        domain: str,
+        body: Dict[str, str],
+    ) -> Dict[str, Any]:
+        """POST a form-encoded Feishu app-registration request."""
+        async with aiohttp.ClientSession(trust_env=True) as session:
+            async with session.post(
+                self._registration_url(domain),
+                data=urlencode(body),
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+                timeout=aiohttp.ClientTimeout(total=self.REGISTRATION_TIMEOUT_SECONDS),
+            ) as response:
+                try:
+                    payload = await response.json()
+                except Exception as exc:
+                    text = await response.text()
+                    raise ValueError(f"Invalid Feishu registration response: {text[:200]}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid Feishu registration response")
+        return payload
+
+    async def _init_app_registration(self, domain: str) -> None:
+        """Verify Feishu app registration supports client_secret auth."""
+        response = await self._post_app_registration(domain, {"action": "init"})
+        methods = response.get("supported_auth_methods") or []
+        if not isinstance(methods, list) or "client_secret" not in methods:
+            raise ValueError("Feishu app registration does not support client_secret auth")
+
+    async def _begin_app_registration(self, domain: str) -> Dict[str, Any]:
+        """Begin Feishu app registration and return device-code details."""
+        return await self._post_app_registration(
+            domain,
+            {
+                "action": "begin",
+                "archetype": "PersonalAgent",
+                "auth_method": "client_secret",
+                "request_user_info": "open_id",
+            },
+        )
+
+    async def _poll_app_registration(
+        self,
+        domain: str,
+        *,
+        device_code: str,
+        tp: str,
+    ) -> Dict[str, Any]:
+        """Poll Feishu app registration once."""
+        return await self._post_app_registration(
+            domain,
+            {
+                "action": "poll",
+                "device_code": device_code,
+                "tp": tp,
+            },
+        )
+
+    async def poll_provisioning_connection(
+        self,
+        session: ChannelProvisioningSession,
+    ) -> Optional[ChannelProvisioningConnection]:
+        """Poll Feishu registration and return app credentials when scan completes."""
+        state = dict(session.platform_state or {})
+        device_code = str(state.get("device_code") or "")
+        if not device_code:
+            raise ValueError("Feishu registration device_code is missing")
+
+        interval = mark_provisioning_poll_attempt(session, default_interval_seconds=5)
+        if interval is None:
+            return None
+        state = dict(session.platform_state or {})
+
+        domain = str(state.get("domain") or self._registration_domain())
+        if domain not in {"feishu", "lark"}:
+            domain = "feishu"
+        tp = str(state.get("tp") or self.REGISTRATION_POLL_TP)
+
+        try:
+            response = await self._poll_app_registration(
+                domain,
+                device_code=device_code,
+                tp=tp,
+            )
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.warning("Transient Feishu registration poll failure: %s", exc)
+            return None
+
+        tenant_brand = (response.get("user_info") or {}).get("tenant_brand")
+        if tenant_brand == "lark" and domain != "lark" and not state.get("domain_switched"):
+            domain = "lark"
+            state["domain"] = domain
+            state["domain_switched"] = True
+            session.platform_state = state
+            try:
+                response = await self._poll_app_registration(
+                    domain,
+                    device_code=device_code,
+                    tp=tp,
+                )
+            except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                logger.warning("Transient Lark registration poll failure: %s", exc)
+                return None
+
+        app_id = response.get("client_id")
+        app_secret = response.get("client_secret")
+        if app_id and app_secret:
+            return ChannelProvisioningConnection(
+                name="Feishu Bot",
+                config={
+                    "connection_mode": "longconnection",
+                    "app_id": str(app_id),
+                    "app_secret": str(app_secret),
+                },
+            )
+
+        error = response.get("error")
+        if error == "authorization_pending":
+            session.status = "authorizing"
+            session.error = None
+            session.updated_at = utcnow()
+            return None
+        if error == "slow_down":
+            state["interval"] = interval + 5
+            session.platform_state = state
+            session.status = "authorizing"
+            session.error = None
+            session.updated_at = utcnow()
+            return None
+        if error == "access_denied":
+            session.status = "failed"
+            session.error = "Feishu app registration was denied"
+            session.updated_at = utcnow()
+            return None
+        if error == "expired_token":
+            session.expires_at = utcnow()
+            session.error = "Feishu app registration expired"
+            session.updated_at = utcnow()
+            return None
+        if error:
+            description = response.get("error_description") or "unknown error"
+            session.status = "failed"
+            session.error = f"{error}: {description}"
+            session.updated_at = utcnow()
+        return None
+
     async def setup(self, connection_config: Dict[str, Any]) -> bool:
         """Initialize handler with configuration."""
         try:
