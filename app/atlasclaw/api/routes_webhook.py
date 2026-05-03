@@ -184,18 +184,20 @@ def register_webhook_routes(router: APIRouter) -> None:
             ) from exc
 
         agent_id = request.agent_id or system.default_agent_id
+        dispatch_id = str(uuid.uuid4())
         session_key = SessionKey(
             agent_id=agent_id,
             user_id=f"webhook-{system.system_id}",
             channel="webhook",
             chat_type=SessionChatType.DM,
             peer_id=system.system_id,
+            thread_id=dispatch_id,
         ).to_string(scope=SessionScope.PER_CHANNEL_PEER)
 
         background_tasks.add_task(
             execute_webhook_dispatch,
             ctx,
-            str(uuid.uuid4()),
+            dispatch_id,
             system,
             skill_entry,
             session_key,
