@@ -16,6 +16,12 @@ from .models import (
     OutboundMessage,
     SendResult,
 )
+from .qr_provisioning import (
+    ChannelProvisioningConnection,
+    ChannelProvisioningRequest,
+    ChannelProvisioningSession,
+    ChannelProvisioningStart,
+)
 
 
 class ChannelHandler(ABC):
@@ -37,6 +43,13 @@ class ChannelHandler(ABC):
     # Connection mode support
     supports_long_connection: bool = False  # Whether this handler supports long connection
     supports_webhook: bool = False  # Whether this handler supports webhook mode
+
+    # One-click provisioning support
+    supports_provisioning: bool = False
+    provisioning_default_mode: str = "manual"
+    provisioning_manual_config_available: bool = True
+    provisioning_instructions_i18n_key: str = ""
+    provisioning_user_code_groups: int = 3
     
     def __init__(self, config: Dict[str, Any] = None):
         """Initialize handler with configuration.
@@ -186,6 +199,46 @@ class ChannelHandler(ABC):
             JSON Schema describing required configuration fields
         """
         pass
+
+    @classmethod
+    def describe_provisioning(cls) -> Dict[str, Any]:
+        """Return one-click provisioning metadata for API and UI clients.
+
+        Subclasses set the class attributes; the base method keeps the API
+        response shape consistent across channels.
+        """
+        return {
+            "supported": cls.supports_provisioning,
+            "default_mode": cls.provisioning_default_mode,
+            "manual_config_available": cls.provisioning_manual_config_available,
+            "instructions_i18n_key": cls.provisioning_instructions_i18n_key,
+        }
+
+    async def create_provisioning_session(
+        self,
+        request: ChannelProvisioningRequest,
+    ) -> ChannelProvisioningStart:
+        """Create platform QR details for a new provisioning session.
+
+        Implementations should only start registration and return QR metadata;
+        connection creation belongs in `poll_provisioning_connection` after the
+        platform flow completes.
+        """
+        del request
+        raise NotImplementedError(f"{self.channel_type} does not support provisioning")
+
+    async def poll_provisioning_connection(
+        self,
+        session: ChannelProvisioningSession,
+    ) -> Optional[ChannelProvisioningConnection]:
+        """Poll platform-owned provisioning state and return a connection when ready.
+
+        Handlers may mutate transient session fields such as status,
+        `platform_state`, or `refresh_after_seconds`; the API layer persists
+        those changes after polling.
+        """
+        del session
+        return None
     
     # Status methods
     async def health_check(self) -> bool:

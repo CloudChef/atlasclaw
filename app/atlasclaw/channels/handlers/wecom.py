@@ -9,10 +9,12 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 
+from datetime import timedelta
 from typing import Any, Callable, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import aiohttp
 
@@ -24,6 +26,15 @@ from ..models import (
     InboundMessage,
     OutboundMessage,
     SendResult,
+)
+from ..qr_provisioning import (
+    ChannelProvisioningConnection,
+    ChannelProvisioningRequest,
+    ChannelProvisioningSession,
+    ChannelProvisioningStart,
+    build_qr_image_data_url,
+    mark_provisioning_poll_attempt,
+    utcnow,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,11 +71,19 @@ class WeComHandler(ChannelHandler):
     channel_mode = ChannelMode.BIDIRECTIONAL
     supports_long_connection = True
     supports_webhook = True
+    supports_provisioning = True
+    provisioning_default_mode = "qr"
+    provisioning_manual_config_available = True
+    provisioning_instructions_i18n_key = "channel.provisioning.wecom.instructions"
     
     # WeCom API endpoints
     API_BASE = "https://qyapi.weixin.qq.com/cgi-bin"
     TOKEN_URL = f"{API_BASE}/gettoken"
     SEND_MSG_URL = f"{API_BASE}/message/send"
+    OPENCLAW_QR_GENERATE_URL = "https://work.weixin.qq.com/ai/qc/generate"
+    OPENCLAW_QR_QUERY_URL = "https://work.weixin.qq.com/ai/qc/query_result"
+    OPENCLAW_QR_SOURCE = "wecom-cli"
+    OPENCLAW_QR_TIMEOUT_SECONDS = 8
     
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(config)
@@ -76,6 +95,138 @@ class WeComHandler(ChannelHandler):
         self._running = False
         # Store frame for reply lookup
         self._pending_frames: Dict[str, Any] = {}
+
+    async def create_provisioning_session(
+        self,
+        request: ChannelProvisioningRequest,
+    ) -> ChannelProvisioningStart:
+        """Create WeCom OpenClaw intelligent robot setup QR details."""
+        del request
+        qr = await self._fetch_openclaw_qr()
+        scode = str(qr.get("scode") or "").strip()
+        auth_url = str(qr.get("auth_url") or "").strip()
+        if not scode:
+            raise ValueError("WeCom QR response missing scode")
+        if not auth_url:
+            raise ValueError("WeCom QR response missing auth_url")
+
+        refresh_after_seconds = 3
+        return ChannelProvisioningStart(
+            qr_url=auth_url,
+            qr_image_url=build_qr_image_data_url(auth_url),
+            platform_state={
+                "scode": scode,
+                "interval": refresh_after_seconds,
+            },
+            expires_at=utcnow() + timedelta(minutes=5),
+            refresh_after_seconds=refresh_after_seconds,
+            instructions_i18n_key=self.provisioning_instructions_i18n_key,
+        )
+
+    @classmethod
+    def _qr_source(cls) -> str:
+        """Return the WeCom QR provisioning source identifier."""
+        return os.getenv("ATLASCLAW_WECOM_QR_SOURCE", cls.OPENCLAW_QR_SOURCE).strip()
+
+    @classmethod
+    def _qr_platform_code(cls) -> int:
+        """Return the WeCom QR platform code used by the official CLI."""
+        if sys.platform == "darwin":
+            return 1
+        if sys.platform == "win32":
+            return 2
+        if sys.platform.startswith("linux"):
+            return 3
+        return 0
+
+    @classmethod
+    def _qr_generate_url(cls) -> str:
+        """Return the WeCom QR generation endpoint URL."""
+        base_url = os.getenv("ATLASCLAW_WECOM_QR_GENERATE_URL", cls.OPENCLAW_QR_GENERATE_URL)
+        query = urlencode({
+            "source": cls._qr_source(),
+            "plat": cls._qr_platform_code(),
+        })
+        return f"{base_url}?{query}"
+
+    @classmethod
+    def _qr_query_url(cls, scode: str) -> str:
+        """Return the WeCom QR polling endpoint URL for a scode."""
+        base_url = os.getenv("ATLASCLAW_WECOM_QR_QUERY_URL", cls.OPENCLAW_QR_QUERY_URL)
+        return f"{base_url}?{urlencode({'scode': scode})}"
+
+    async def _get_json(self, url: str) -> Dict[str, Any]:
+        """GET JSON from a WeCom QR endpoint."""
+        async with aiohttp.ClientSession(trust_env=True) as session:
+            async with session.get(
+                url,
+                timeout=aiohttp.ClientTimeout(total=self.OPENCLAW_QR_TIMEOUT_SECONDS),
+            ) as response:
+                try:
+                    payload = await response.json(content_type=None)
+                except Exception as exc:
+                    text = await response.text()
+                    raise ValueError(f"Invalid WeCom QR response: {text[:200]}") from exc
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid WeCom QR response")
+        return payload
+
+    async def _fetch_openclaw_qr(self) -> Dict[str, Any]:
+        """Fetch a WeCom QR auth URL and polling scode."""
+        payload = await self._get_json(self._qr_generate_url())
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        return dict(data or {})
+
+    async def _query_openclaw_qr_result(self, scode: str) -> Dict[str, Any]:
+        """Poll a WeCom QR registration result once."""
+        return await self._get_json(self._qr_query_url(scode))
+
+    async def poll_provisioning_connection(
+        self,
+        session: ChannelProvisioningSession,
+    ) -> Optional[ChannelProvisioningConnection]:
+        """Poll WeCom QR registration and return robot credentials when ready."""
+        state = dict(session.platform_state or {})
+        scode = str(state.get("scode") or "").strip()
+        if not scode:
+            raise ValueError("WeCom QR scode is missing")
+
+        if mark_provisioning_poll_attempt(session, default_interval_seconds=3) is None:
+            return None
+
+        try:
+            response = await self._query_openclaw_qr_result(scode)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            logger.warning("Transient WeCom QR poll failure: %s", exc)
+            return None
+
+        data = response.get("data") if isinstance(response.get("data"), dict) else {}
+        status = str(data.get("status") or "").strip().lower()
+        if status == "success":
+            bot_info = data.get("bot_info") if isinstance(data.get("bot_info"), dict) else {}
+            bot_id = bot_info.get("botid")
+            bot_secret = bot_info.get("secret")
+            if not bot_id:
+                raise ValueError("bot_id is required")
+            if not bot_secret:
+                raise ValueError("bot_secret is required")
+            return ChannelProvisioningConnection(
+                name="WeCom Bot",
+                config={
+                    "connection_mode": "websocket",
+                    "bot_id": str(bot_id),
+                    "bot_secret": str(bot_secret),
+                },
+            )
+        if status in {"", "pending", "waiting", "scanned"}:
+            session.status = "authorizing" if status == "scanned" else "pending"
+            session.error = None
+            session.updated_at = utcnow()
+            return None
+        session.status = "failed"
+        session.error = str(data.get("message") or data.get("errmsg") or f"WeCom QR status: {status}")
+        session.updated_at = utcnow()
+        return None
     
     async def setup(self, connection_config: Dict[str, Any]) -> bool:
         """Initialize WeCom handler with configuration.

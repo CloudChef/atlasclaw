@@ -5,7 +5,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import json
+from urllib.parse import parse_qs, urlparse
+
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from typing import Dict, Any
@@ -18,6 +21,8 @@ from app.atlasclaw.channels.models import (
     OutboundMessage,
     SendResult,
 )
+from app.atlasclaw.channels.qr_provisioning import ChannelProvisioningRequest
+from app.atlasclaw.channels.qr_provisioning import ChannelProvisioningSession, utcnow
 
 
 class TestFeishuHandler:
@@ -30,6 +35,10 @@ class TestFeishuHandler:
         assert FeishuHandler.channel_mode == ChannelMode.BIDIRECTIONAL
         assert FeishuHandler.supports_long_connection is True
         assert FeishuHandler.supports_webhook is False
+        assert FeishuHandler.supports_provisioning is True
+        assert FeishuHandler.provisioning_default_mode == "qr"
+        assert FeishuHandler.provisioning_manual_config_available is True
+        assert FeishuHandler.provisioning_user_code_groups == 2
 
     def test_handler_init(self):
         """Test handler initialization."""
@@ -37,6 +46,179 @@ class TestFeishuHandler:
         assert handler.config == {}
         assert handler._status == ConnectionStatus.DISCONNECTED
         assert handler._access_token is None
+
+    @pytest.mark.asyncio
+    async def test_provisioned_config_is_compatible_with_manual_longconnection_path(self):
+        """Test poll-generated config is accepted by the manual long-connection path."""
+        handler = FeishuHandler()
+        session = ChannelProvisioningSession(
+            session_id="session-1",
+            user_id="user-1",
+            channel_type="feishu",
+            state_token="state-token",
+            user_code="QFXB-8X3X",
+            platform_state={
+                "device_code": "device-code",
+                "domain": "feishu",
+                "interval": 1,
+                "tp": "ob_app",
+            },
+        )
+        with patch.object(
+            handler,
+            "_poll_app_registration",
+            AsyncMock(return_value={"client_id": "cli_test", "client_secret": "secret"}),
+        ):
+            provisioned = await handler.poll_provisioning_connection(session)
+
+        assert provisioned is not None
+        assert await handler.setup(provisioned.config) is True
+        with patch.object(handler, "_verify_credentials", AsyncMock(return_value=True)):
+            result = await handler.validate_config(provisioned.config)
+
+        assert result.valid is True
+        assert result.errors == []
+
+    @pytest.mark.asyncio
+    async def test_create_provisioning_session_returns_qr_image(self):
+        """Test provisioning session returns a scannable QR image data URL."""
+        pytest.importorskip("qrcode")
+        handler = FeishuHandler()
+
+        with (
+            patch.object(handler, "_init_app_registration", AsyncMock()) as mock_init,
+            patch.object(
+                handler,
+                "_begin_app_registration",
+                AsyncMock(return_value={
+                    "device_code": "device-code",
+                    "user_code": "QFXB-8X3X",
+                    "verification_uri_complete": (
+                        "https://accounts.feishu.cn/oauth/v1/device/verify"
+                        "?user_code=QFXB-8X3X"
+                    ),
+                    "interval": 5,
+                    "expire_in": 600,
+                }),
+            ) as mock_begin,
+        ):
+            result = await handler.create_provisioning_session(ChannelProvisioningRequest(
+                user_id="user-1",
+                channel_type="feishu",
+                session_id="session-1",
+                state_token="state-token",
+                user_code="LOCAL-CODE",
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            ))
+
+        parsed = urlparse(result.qr_url)
+        query = parse_qs(parsed.query)
+        assert parsed.scheme == "https"
+        assert parsed.netloc == "accounts.feishu.cn"
+        assert parsed.path == "/oauth/v1/device/verify"
+        assert query == {
+            "user_code": ["QFXB-8X3X"],
+            "from": ["oc_onboard"],
+            "tp": ["ob_cli_app"],
+        }
+        assert result.user_code == "QFXB-8X3X"
+        assert result.platform_state["device_code"] == "device-code"
+        assert result.platform_state["interval"] == 5
+        assert result.platform_state["tp"] == "ob_app"
+        assert result.refresh_after_seconds == 5
+        assert result.qr_image_url is not None
+        assert result.qr_image_url.startswith("data:image/png;base64,")
+        mock_init.assert_awaited_once_with("feishu")
+        mock_begin.assert_awaited_once_with("feishu")
+
+    @pytest.mark.asyncio
+    async def test_create_provisioning_session_rejects_noncanonical_qr_url_field(self):
+        """Test QR provisioning does not fall back to legacy verification_uri."""
+        handler = FeishuHandler()
+
+        with (
+            patch.object(handler, "_init_app_registration", AsyncMock()),
+            patch.object(
+                handler,
+                "_begin_app_registration",
+                AsyncMock(return_value={
+                    "device_code": "device-code",
+                    "user_code": "QFXB-8X3X",
+                    "verification_uri": "https://accounts.feishu.cn/legacy",
+                }),
+            ),
+        ):
+            with pytest.raises(ValueError, match="verification_uri"):
+                await handler.create_provisioning_session(ChannelProvisioningRequest(
+                    user_id="user-1",
+                    channel_type="feishu",
+                    session_id="session-1",
+                    state_token="state-token",
+                    user_code="LOCAL-CODE",
+                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                ))
+
+    @pytest.mark.asyncio
+    async def test_poll_provisioning_connection_returns_credentials(self):
+        """Test Feishu registration polling maps completed credentials."""
+        handler = FeishuHandler()
+        session = ChannelProvisioningSession(
+            session_id="session-1",
+            user_id="user-1",
+            channel_type="feishu",
+            state_token="state-token",
+            user_code="QFXB-8X3X",
+            platform_state={
+                "device_code": "device-code",
+                "domain": "feishu",
+                "interval": 1,
+                "tp": "ob_app",
+            },
+        )
+
+        with patch.object(
+            handler,
+            "_poll_app_registration",
+            AsyncMock(return_value={"client_id": "cli_test", "client_secret": "secret"}),
+        ) as mock_poll:
+            result = await handler.poll_provisioning_connection(session)
+
+        assert result is not None
+        assert result.name == "Feishu Bot"
+        assert result.config == {
+            "connection_mode": "longconnection",
+            "app_id": "cli_test",
+            "app_secret": "secret",
+        }
+        mock_poll.assert_awaited_once_with(
+            "feishu",
+            device_code="device-code",
+            tp="ob_app",
+        )
+
+    @pytest.mark.asyncio
+    async def test_poll_provisioning_connection_respects_interval(self):
+        """Test Feishu registration polling does not exceed platform interval."""
+        handler = FeishuHandler()
+        session = ChannelProvisioningSession(
+            session_id="session-1",
+            user_id="user-1",
+            channel_type="feishu",
+            state_token="state-token",
+            user_code="QFXB-8X3X",
+            platform_state={
+                "device_code": "device-code",
+                "domain": "feishu",
+                "interval": 60,
+                "last_poll_at": utcnow().isoformat(),
+            },
+        )
+
+        with patch.object(handler, "_poll_app_registration", AsyncMock()) as mock_poll:
+            result = await handler.poll_provisioning_connection(session)
+
+        assert result is None
+        mock_poll.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_setup_with_valid_config(self):

@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from urllib.parse import parse_qs, urlparse
+
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from typing import Dict, Any
@@ -16,6 +19,10 @@ from app.atlasclaw.channels.models import (
     InboundMessage,
     OutboundMessage,
     SendResult,
+)
+from app.atlasclaw.channels.qr_provisioning import (
+    ChannelProvisioningRequest,
+    ChannelProvisioningSession,
 )
 
 
@@ -29,12 +36,223 @@ class TestDingTalkHandler:
         assert DingTalkHandler.channel_mode == ChannelMode.BIDIRECTIONAL
         assert DingTalkHandler.supports_long_connection is True
         assert DingTalkHandler.supports_webhook is True
+        assert DingTalkHandler.supports_provisioning is True
+        assert DingTalkHandler.provisioning_default_mode == "qr"
+        assert DingTalkHandler.provisioning_manual_config_available is True
 
     def test_handler_init(self):
         """Test handler initialization."""
         handler = DingTalkHandler()
         assert handler.config == {}
         assert handler._status == ConnectionStatus.DISCONNECTED
+
+    @pytest.mark.asyncio
+    async def test_poll_provisioning_connection_maps_stream_config(self):
+        """Test registration polling maps completed DingTalk stream credentials."""
+        handler = DingTalkHandler()
+        session = ChannelProvisioningSession(
+            session_id="session-1",
+            user_id="user-1",
+            channel_type="dingtalk",
+            state_token="state-token",
+            user_code="DING-CODE",
+            platform_state={
+                "device_code": "device-code",
+                "base_url": "https://oapi.dingtalk.com",
+                "interval": 1,
+            },
+        )
+
+        with patch.object(
+            handler,
+            "_poll_registration",
+            AsyncMock(return_value={
+                "status": "SUCCESS",
+                "client_id": "ding_test",
+                "client_secret": "secret",
+            }),
+        ):
+            result = await handler.poll_provisioning_connection(session)
+
+        assert result is not None
+        assert result.name == "DingTalk Bot"
+        assert result.config == {
+            "connection_mode": "stream",
+            "client_id": "ding_test",
+            "client_secret": "secret",
+        }
+
+    @pytest.mark.asyncio
+    async def test_poll_provisioning_connection_rejects_missing_credentials(self):
+        """Test polling completion requires DingTalk's canonical client credentials."""
+        handler = DingTalkHandler()
+        session = ChannelProvisioningSession(
+            session_id="session-1",
+            user_id="user-1",
+            channel_type="dingtalk",
+            state_token="state-token",
+            user_code="DING-CODE",
+            platform_state={
+                "device_code": "device-code",
+                "base_url": "https://oapi.dingtalk.com",
+                "interval": 1,
+            },
+        )
+
+        with pytest.raises(ValueError, match="client_id is required"):
+            with patch.object(
+                handler,
+                "_poll_registration",
+                AsyncMock(return_value={"status": "SUCCESS", "app_key": "ding_test"}),
+            ):
+                await handler.poll_provisioning_connection(session)
+
+    @pytest.mark.asyncio
+    async def test_provisioned_config_is_compatible_with_manual_stream_path(self):
+        """Test poll-generated config is accepted by the manual stream path."""
+        handler = DingTalkHandler()
+        session = ChannelProvisioningSession(
+            session_id="session-1",
+            user_id="user-1",
+            channel_type="dingtalk",
+            state_token="state-token",
+            user_code="DING-CODE",
+            platform_state={
+                "device_code": "device-code",
+                "base_url": "https://oapi.dingtalk.com",
+                "interval": 1,
+            },
+        )
+        with patch.object(
+            handler,
+            "_poll_registration",
+            AsyncMock(return_value={
+                "status": "SUCCESS",
+                "client_id": "ding_test",
+                "client_secret": "secret",
+            }),
+        ):
+            provisioned = await handler.poll_provisioning_connection(session)
+
+        assert provisioned is not None
+        assert await handler.setup(provisioned.config) is True
+        with patch.object(handler, "_verify_credentials", AsyncMock(return_value=True)):
+            result = await handler.validate_config(provisioned.config)
+
+        assert result.valid is True
+        assert result.errors == []
+
+    @pytest.mark.asyncio
+    async def test_create_provisioning_session_uses_openclaw_registration_url(self):
+        """Test DingTalk QR points to OpenClaw registration from device-code flow."""
+        pytest.importorskip("qrcode")
+        handler = DingTalkHandler()
+
+        with (
+            patch.object(handler, "_init_registration", AsyncMock(return_value="nonce")) as mock_init,
+            patch.object(
+                handler,
+                "_begin_registration",
+                AsyncMock(return_value={
+                    "device_code": "device-code",
+                    "user_code": "VPRV-82TT",
+                    "verification_uri_complete": (
+                        "https://open-dev.dingtalk.com/openapp/registration/openClaw"
+                        "?user_code=VPRV-82TT"
+                    ),
+                    "expires_in": 7200,
+                    "interval": 5,
+                }),
+            ) as mock_begin,
+        ):
+            result = await handler.create_provisioning_session(ChannelProvisioningRequest(
+                user_id="user-1",
+                channel_type="dingtalk",
+                session_id="session-1",
+                state_token="state-token",
+                user_code="LOCAL-CODE",
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            ))
+
+        parsed = urlparse(result.qr_url)
+        query = parse_qs(parsed.query)
+        assert parsed.scheme == "https"
+        assert parsed.netloc == "open-dev.dingtalk.com"
+        assert parsed.path == "/openapp/registration/openClaw"
+        assert query == {"user_code": ["VPRV-82TT"]}
+        assert result.user_code == "VPRV-82TT"
+        assert result.platform_state["device_code"] == "device-code"
+        assert result.platform_state["base_url"] == "https://oapi.dingtalk.com"
+        assert result.refresh_after_seconds == 5
+        assert result.qr_image_url is not None
+        assert result.qr_image_url.startswith("data:image/png;base64,")
+        mock_init.assert_awaited_once_with("https://oapi.dingtalk.com")
+        mock_begin.assert_awaited_once_with("https://oapi.dingtalk.com", nonce="nonce")
+
+    @pytest.mark.asyncio
+    async def test_create_provisioning_session_requires_broker_user_code(self):
+        """Test DingTalk QR provisioning requires broker-issued user_code."""
+        handler = DingTalkHandler()
+
+        with (
+            patch.object(handler, "_init_registration", AsyncMock(return_value="nonce")),
+            patch.object(
+                handler,
+                "_begin_registration",
+                AsyncMock(return_value={
+                    "device_code": "device-code",
+                    "verification_uri_complete": (
+                        "https://open-dev.dingtalk.com/openapp/registration/openClaw"
+                    ),
+                }),
+            ),
+        ):
+            with pytest.raises(ValueError, match="user_code"):
+                await handler.create_provisioning_session(ChannelProvisioningRequest(
+                    user_id="user-1",
+                    channel_type="dingtalk",
+                    session_id="session-1",
+                    state_token="state-token",
+                    user_code="LOCAL-CODE",
+                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                ))
+
+    @pytest.mark.asyncio
+    async def test_create_provisioning_session_rejects_noncanonical_qr_url_field(self):
+        """Test DingTalk QR provisioning does not fall back to verification_uri."""
+        handler = DingTalkHandler()
+
+        with (
+            patch.object(handler, "_init_registration", AsyncMock(return_value="nonce")),
+            patch.object(
+                handler,
+                "_begin_registration",
+                AsyncMock(return_value={
+                    "device_code": "device-code",
+                    "user_code": "VPRV-82TT",
+                    "verification_uri": "https://open-dev.dingtalk.com/legacy",
+                }),
+            ),
+        ):
+            with pytest.raises(ValueError, match="verification_uri_complete"):
+                await handler.create_provisioning_session(ChannelProvisioningRequest(
+                    user_id="user-1",
+                    channel_type="dingtalk",
+                    session_id="session-1",
+                    state_token="state-token",
+                    user_code="LOCAL-CODE",
+                    expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+                ))
+
+    def test_registration_env_ignores_legacy_variable_names(self, monkeypatch):
+        """Test QR provisioning env overrides use only AtlasClaw names."""
+        monkeypatch.setenv("DINGTALK_REGISTRATION_BASE_URL", "https://legacy.example.com")
+        monkeypatch.setenv("DINGTALK_REGISTRATION_SOURCE", "legacy-source")
+        monkeypatch.delenv("ATLASCLAW_DINGTALK_REGISTRATION_BASE_URL", raising=False)
+        monkeypatch.delenv("ATLASCLAW_DINGTALK_REGISTRATION_SOURCE", raising=False)
+
+        assert DingTalkHandler._registration_base_url() == DingTalkHandler.REGISTRATION_BASE_URL
+        assert DingTalkHandler._registration_source() == DingTalkHandler.REGISTRATION_SOURCE
 
     @pytest.mark.asyncio
     async def test_setup_with_client_id(self):

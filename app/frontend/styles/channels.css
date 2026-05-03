@@ -452,6 +452,14 @@
     margin: 0;
 }
 
+.ch-connection-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
 .ch-btn-create {
     display: inline-flex;
     align-items: center;
@@ -469,6 +477,16 @@
 
 .ch-btn-create:hover {
     background: var(--color-primary-hover);
+}
+
+.ch-btn-create-secondary {
+    background: #fff;
+    color: var(--color-text);
+    border: 1px solid var(--color-border);
+}
+
+.ch-btn-create-secondary:hover {
+    background: #f8fafc;
 }
 
 .ch-btn-create:disabled {
@@ -1565,6 +1583,245 @@
     width: 10px;
     height: 10px;
     color: white;
+}
+
+/* ===========================================
+   QR PROVISIONING DIALOG
+   =========================================== */
+.ch-provisioning-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1040;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(15, 23, 42, 0.42);
+    backdrop-filter: blur(5px);
+}
+
+.ch-provisioning-dialog {
+    position: relative;
+    width: min(420px, 100%);
+    background: #fff;
+    border: 1px solid rgba(226, 232, 240, 0.95);
+    border-radius: 16px;
+    box-shadow: 0 28px 70px rgba(15, 23, 42, 0.22);
+    padding: 28px 24px 18px;
+    text-align: center;
+}
+
+.ch-provisioning-close {
+    position: absolute;
+    top: 14px;
+    right: 14px;
+    width: 32px;
+    height: 32px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: var(--color-text-secondary);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.ch-provisioning-close:hover {
+    background: rgba(15, 23, 42, 0.06);
+    color: var(--color-text);
+}
+
+.ch-provisioning-icon {
+    width: 50px;
+    height: 50px;
+    margin: -52px auto 14px;
+    border-radius: 999px;
+    background: #fff;
+    border: 1px solid rgba(226, 232, 240, 0.95);
+    box-shadow: 0 14px 32px rgba(15, 23, 42, 0.16);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.ch-provisioning-icon img,
+.ch-provisioning-icon svg {
+    width: 28px;
+    height: 28px;
+}
+
+.ch-provisioning-dialog h2 {
+    margin: 0;
+    font-size: 20px;
+    line-height: 1.25;
+    color: var(--color-text);
+}
+
+.ch-provisioning-subtitle {
+    margin: 8px 0 18px;
+    color: var(--color-text-secondary);
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+.ch-provisioning-manual {
+    align-self: center;
+    background: transparent;
+    border: none;
+    color: var(--color-text);
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 700;
+    margin: -8px 0 16px;
+    padding: 0;
+}
+
+.ch-provisioning-manual:hover {
+    color: var(--color-primary);
+}
+
+.ch-provisioning-qr {
+    width: 164px;
+    height: 164px;
+    margin: 0 auto;
+    border: 1px solid rgba(203, 213, 225, 0.9);
+    border-radius: 8px;
+    background: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+}
+
+.ch-provisioning-qr img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.ch-provisioning-qr-fallback {
+    width: 100%;
+    height: 100%;
+    padding: 18px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    color: var(--color-text-secondary);
+    background:
+        linear-gradient(90deg, rgba(15, 23, 42, 0.08) 1px, transparent 1px),
+        linear-gradient(rgba(15, 23, 42, 0.08) 1px, transparent 1px);
+    background-size: 12px 12px;
+}
+
+.ch-provisioning-qr-fallback svg {
+    width: 22px;
+    height: 22px;
+}
+
+.ch-provisioning-qr-fallback strong {
+    font-size: 12px;
+    line-height: 1.35;
+    color: var(--color-text);
+}
+
+.ch-provisioning-link {
+    display: inline-flex;
+    margin-top: 12px;
+    color: var(--color-primary);
+    font-size: 13px;
+    text-decoration: none;
+}
+
+.ch-provisioning-link:hover {
+    text-decoration: underline;
+}
+
+.ch-provisioning-status {
+    margin-top: 18px;
+    padding: 12px;
+    border-radius: 10px;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    text-align: left;
+    background: rgba(248, 250, 252, 0.95);
+    border: 1px solid rgba(226, 232, 240, 0.92);
+}
+
+.ch-provisioning-status-dot {
+    width: 9px;
+    height: 9px;
+    border-radius: 999px;
+    margin-top: 5px;
+    background: #94a3b8;
+    flex-shrink: 0;
+}
+
+.ch-provisioning-status strong {
+    display: block;
+    font-size: 13px;
+    color: var(--color-text);
+}
+
+.ch-provisioning-status p {
+    margin: 3px 0 0;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--color-text-secondary);
+}
+
+.ch-provisioning-status.active .ch-provisioning-status-dot,
+.ch-provisioning-status.pending .ch-provisioning-status-dot {
+    background: var(--color-primary);
+}
+
+.ch-provisioning-status.success .ch-provisioning-status-dot {
+    background: #22c55e;
+}
+
+.ch-provisioning-status.expired .ch-provisioning-status-dot,
+.ch-provisioning-status.cancelled .ch-provisioning-status-dot {
+    background: #f59e0b;
+}
+
+.ch-provisioning-status.failed .ch-provisioning-status-dot {
+    background: #ef4444;
+}
+
+.ch-provisioning-error {
+    color: #b91c1c !important;
+}
+
+.ch-provisioning-actions {
+    margin-top: 16px;
+}
+
+.ch-provisioning-refresh {
+    width: 100%;
+    min-height: 42px;
+    border: 0;
+    border-radius: 999px;
+    background: rgba(15, 23, 42, 0.06);
+    color: var(--color-text);
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    cursor: pointer;
+}
+
+.ch-provisioning-refresh:hover:not(:disabled) {
+    background: rgba(15, 23, 42, 0.1);
+}
+
+.ch-provisioning-refresh:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
 }
 
 /* ===========================================
