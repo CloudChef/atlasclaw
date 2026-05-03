@@ -89,27 +89,6 @@ async def execute_webhook_dispatch(
         extra=extra,
     )
 
-    # ── Webhook session isolation ──────────────────────────────────────────
-    # Each webhook call is an independent, stateless transaction.  Stale
-    # history from previous calls can exhaust the LLM context window and
-    # cause tool-list hallucinations.  Reset the session before every
-    # dispatch so the agent always starts with a clean slate.
-    try:
-        session_mgr = deps.session_manager
-        if session_mgr is not None:
-            await session_mgr.reset_session(session_key, archive=True)
-            logger.debug(
-                "Webhook session reset: dispatch_id=%s session_key=%s",
-                dispatch_id,
-                session_key,
-            )
-    except Exception:
-        logger.warning(
-            "Failed to reset webhook session before dispatch: dispatch_id=%s",
-            dispatch_id,
-            exc_info=True,
-        )
-
     logger.info(
         "Accepted webhook dispatch: dispatch_id=%s system_id=%s agent_id=%s skill=%s",
         dispatch_id,
@@ -205,18 +184,20 @@ def register_webhook_routes(router: APIRouter) -> None:
             ) from exc
 
         agent_id = request.agent_id or system.default_agent_id
+        dispatch_id = str(uuid.uuid4())
         session_key = SessionKey(
             agent_id=agent_id,
             user_id=f"webhook-{system.system_id}",
             channel="webhook",
             chat_type=SessionChatType.DM,
             peer_id=system.system_id,
+            thread_id=dispatch_id,
         ).to_string(scope=SessionScope.PER_CHANNEL_PEER)
 
         background_tasks.add_task(
             execute_webhook_dispatch,
             ctx,
-            str(uuid.uuid4()),
+            dispatch_id,
             system,
             skill_entry,
             session_key,
