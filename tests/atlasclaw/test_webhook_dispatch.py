@@ -39,6 +39,7 @@ from app.atlasclaw.core.config_schema import (
     WebhookSystemConfig,
 )
 from app.atlasclaw.core.provider_registry import ServiceProviderRegistry
+from app.atlasclaw.session.context import SessionKey
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
@@ -235,6 +236,50 @@ class TestWebhookDispatchAPI:
         assert "smartcmp:preapproval-agent" in runner.calls[0]["user_message"]
         assert "approval_id" in runner.calls[0]["user_message"]
         assert runner.calls[0]["deps"].extra["webhook_skill"] == "smartcmp:preapproval-agent"
+
+    def test_dispatch_uses_dispatch_scoped_session_keys_without_reset(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        reset_calls: list[tuple[str, bool]] = []
+
+        async def record_reset(
+            _manager: SessionManager,
+            session_key: str,
+            archive: bool = True,
+        ) -> None:
+            reset_calls.append((session_key, archive))
+
+        monkeypatch.setattr(SessionManager, "reset_session", record_reset)
+        client, runner = _build_client(
+            tmp_path,
+            monkeypatch,
+            allowed_skills=["smartcmp:preapproval-agent"],
+        )
+
+        for approval_id in ["A-10001", "A-10002"]:
+            resp = client.post(
+                "/api/webhook/dispatch",
+                headers={"X-AtlasClaw-SK": "secret-1"},
+                json={
+                    "skill": "smartcmp:preapproval-agent",
+                    "args": {"approval_id": approval_id},
+                },
+            )
+            assert resp.status_code == 202
+
+        assert len(runner.calls) == 2
+        session_keys = [call["session_key"] for call in runner.calls]
+        expected_prefix = (
+            "agent:main:user:webhook-smartcmp-preapproval:"
+            "webhook:dm:smartcmp-preapproval:topic:"
+        )
+        assert session_keys[0] != session_keys[1]
+        assert all(key.startswith(expected_prefix) for key in session_keys)
+        assert [call["deps"].session_key for call in runner.calls] == session_keys
+        assert [SessionKey.from_string(key).thread_id for key in session_keys]
+        assert reset_calls == []
 
     def test_dispatch_robot_profile_uses_runtime_only_provider_config(self, tmp_path, monkeypatch):
         client, runner = _build_client(
