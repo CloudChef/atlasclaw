@@ -89,6 +89,27 @@ async def execute_webhook_dispatch(
         extra=extra,
     )
 
+    # ── Webhook session isolation ──────────────────────────────────────────
+    # Each webhook call is an independent, stateless transaction.  Stale
+    # history from previous calls can exhaust the LLM context window and
+    # cause tool-list hallucinations.  Reset the session before every
+    # dispatch so the agent always starts with a clean slate.
+    try:
+        session_mgr = deps.session_manager
+        if session_mgr is not None:
+            await session_mgr.reset_session(session_key, archive=True)
+            logger.debug(
+                "Webhook session reset: dispatch_id=%s session_key=%s",
+                dispatch_id,
+                session_key,
+            )
+    except Exception:
+        logger.warning(
+            "Failed to reset webhook session before dispatch: dispatch_id=%s",
+            dispatch_id,
+            exc_info=True,
+        )
+
     logger.info(
         "Accepted webhook dispatch: dispatch_id=%s system_id=%s agent_id=%s skill=%s",
         dispatch_id,
