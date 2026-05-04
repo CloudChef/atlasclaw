@@ -12,7 +12,7 @@ import { canAccessUserManagement, hasPermission } from '../permissions.js'
 let container = null
 let currentPage = 1
 let currentSearch = ''
-let currentPageSize = 5
+let currentPageSize = 20
 let totalUsers = 0
 let currentRoleFilter = 'all'
 let currentStatusFilter = 'all'
@@ -92,8 +92,27 @@ const PAGE_HTML = `
     </section>
 
     <section class="user-management-list-shell">
-      <div id="usersTableBody" class="user-management-list">
-        <div class="user-list-loading" data-i18n="admin.loading">Loading...</div>
+      <div class="user-management-table-wrap">
+        <table class="user-management-table" aria-label="Users">
+          <thead>
+            <tr>
+              <th scope="col" data-i18n="admin.user">User</th>
+              <th scope="col" data-i18n="admin.userIdLabel">User ID</th>
+              <th scope="col" data-i18n="admin.email">Email</th>
+              <th scope="col" data-i18n="admin.loginType">Login Type</th>
+              <th scope="col" data-i18n="admin.roles">Roles</th>
+              <th scope="col" data-i18n="admin.status">Status</th>
+              <th scope="col" data-i18n="admin.actions">Actions</th>
+            </tr>
+          </thead>
+          <tbody id="usersTableBody">
+            <tr>
+              <td colspan="7">
+                <div class="user-list-loading" data-i18n="admin.loading">Loading...</div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
       <div class="pagination">
@@ -652,7 +671,13 @@ async function loadUsers(page = 1, search = '') {
     console.error('[AdminUsers] Failed to load users:', error)
     showToast(error.message || translateOrFallback('admin.failedToLoad', 'Failed to load users'), 'error')
     if (usersTableBody) {
-      usersTableBody.innerHTML = `<div class="user-list-empty error">${translateOrFallback('admin.failedToLoad', 'Failed to load users')}</div>`
+      usersTableBody.innerHTML = `
+        <tr class="user-empty-row">
+          <td colspan="7">
+            <div class="user-list-empty error">${translateOrFallback('admin.failedToLoad', 'Failed to load users')}</div>
+          </td>
+        </tr>
+      `
     }
   }
 }
@@ -893,61 +918,65 @@ function renderUserList(users) {
 
   if (!users || users.length === 0) {
     usersTableBody.innerHTML = `
-      <div class="user-list-empty">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
-          <circle cx="9" cy="7" r="4"></circle>
-          <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
-          <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
-        </svg>
-        <p>${translateOrFallback('admin.noUsersFound', 'No users found')}</p>
-      </div>
+      <tr class="user-empty-row">
+        <td colspan="7">
+          <div class="user-list-empty">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+              <circle cx="9" cy="7" r="4"></circle>
+              <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+              <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+            </svg>
+            <p>${translateOrFallback('admin.noUsersFound', 'No users found')}</p>
+          </div>
+        </td>
+      </tr>
     `
     paginationInfo.textContent = translateOrFallback('admin.listSummaryEmpty', 'No users matched the current filters')
     return
   }
 
   usersTableBody.innerHTML = users.map(user => `
-    <article class="user-row-card" data-user-id="${escapeHtml(user.id)}">
-      <div class="user-row-identity">
-        <div class="user-row-avatar">
-          ${renderUserAvatar(user)}
-          <span class="user-row-presence ${user.is_active ? 'active' : 'inactive'}"></span>
+    <tr class="user-table-row" data-user-id="${escapeHtml(user.id)}">
+      <td>
+        <div class="user-row-identity">
+          <div class="user-row-avatar">
+            ${renderUserAvatar(user)}
+            <span class="user-row-presence ${user.is_active ? 'active' : 'inactive'}"></span>
+          </div>
+          <div class="user-row-name-block">
+            <strong>${escapeHtml(user.display_name || user.username || 'User')}</strong>
+          </div>
         </div>
-        <div class="user-row-id-block">
-          <span class="user-row-label">${translateOrFallback('admin.userIdLabel', 'User ID')}</span>
-          <strong>${escapeHtml(getUserCardId(user))}</strong>
+      </td>
+      <td class="user-id-cell"><strong>${escapeHtml(getUserCardId(user))}</strong></td>
+      <td class="user-email-cell"><span>${escapeHtml(user.email || 'No email')}</span></td>
+      <td class="user-auth-type-cell"><span class="user-auth-type-badge">${escapeHtml(formatUserAuthType(user.auth_type))}</span></td>
+      <td>${renderRoleBadge(user)}</td>
+      <td>${renderStatusBadge(user.is_active)}</td>
+      <td>
+        <div class="user-row-actions">
+          <button class="user-icon-btn btn-toggle-status" title="${user.is_active ? translateOrFallback('admin.disable', 'Disable') : translateOrFallback('admin.enable', 'Enable')}" data-user='${JSON.stringify(user).replace(/'/g, '&#39;')}' ${canToggleUserStates() ? '' : 'disabled'}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2v10"></path>
+              <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+            </svg>
+          </button>
+          <button class="user-icon-btn btn-edit" title="${translateOrFallback('admin.edit', 'Edit')}" data-user='${JSON.stringify(user).replace(/'/g, '&#39;')}' ${canEditUsers() ? '' : 'disabled'}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+            </svg>
+          </button>
+          <button class="user-icon-btn btn-delete" title="${translateOrFallback('admin.delete', 'Delete')}" data-user-id="${escapeHtml(user.id)}" data-username="${escapeHtml(user.display_name || user.username)}" ${canDeleteUsers() ? '' : 'disabled'}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+          </button>
         </div>
-        <div class="user-row-name-block">
-          ${renderUserNameWithAuthType(user)}
-          <span class="user-row-email">${escapeHtml(user.email || 'No email')}</span>
-        </div>
-      </div>
-
-      <div class="user-row-role-block">${renderRoleBadge(user)}</div>
-      <div class="user-row-status-block">${renderStatusBadge(user.is_active)}</div>
-
-      <div class="user-row-actions">
-        <button class="user-icon-btn btn-toggle-status" title="${user.is_active ? translateOrFallback('admin.disable', 'Disable') : translateOrFallback('admin.enable', 'Enable')}" data-user='${JSON.stringify(user).replace(/'/g, '&#39;')}' ${canToggleUserStates() ? '' : 'disabled'}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M12 2v10"></path>
-            <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
-          </svg>
-        </button>
-        <button class="user-icon-btn btn-edit" title="${translateOrFallback('admin.edit', 'Edit')}" data-user='${JSON.stringify(user).replace(/'/g, '&#39;')}' ${canEditUsers() ? '' : 'disabled'}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
-            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
-          </svg>
-        </button>
-        <button class="user-icon-btn btn-delete" title="${translateOrFallback('admin.delete', 'Delete')}" data-user-id="${escapeHtml(user.id)}" data-username="${escapeHtml(user.display_name || user.username)}" ${canDeleteUsers() ? '' : 'disabled'}>
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <polyline points="3 6 5 6 21 6"></polyline>
-            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-          </svg>
-        </button>
-      </div>
-    </article>
+      </td>
+    </tr>
   `).join('')
 
   usersTableBody.querySelectorAll('.btn-edit').forEach(button => {

@@ -351,8 +351,9 @@
 
 .role-summary-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 18px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.9fr) minmax(0, 1fr);
+  gap: 14px 16px;
+  align-items: start;
 }
 
 .form-field {
@@ -387,7 +388,7 @@
 
 .role-summary-grid textarea {
   resize: vertical;
-  min-height: 110px;
+  min-height: 76px;
 }
 
 .role-summary-meta-row {
@@ -397,6 +398,13 @@
   border-radius: 16px;
   border: 1px solid rgba(203, 213, 225, 0.96);
   background: #f8fafc;
+}
+
+.role-summary-meta-row > span:not(.role-chip) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .role-summary-status-row {

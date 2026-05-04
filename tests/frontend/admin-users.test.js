@@ -95,12 +95,12 @@ describe('Admin Users API', () => {
       // Simulate the API call that loadUsers would make
       const params = new URLSearchParams({
         page: '1',
-        page_size: '5'
+        page_size: '20'
       })
 
       await fetch(`/api/users?${params}`)
 
-      expect(global.fetch).toHaveBeenCalledWith('/api/users?page=1&page_size=5')
+      expect(global.fetch).toHaveBeenCalledWith('/api/users?page=1&page_size=20')
     })
 
     test('constructs correct URL with search parameter', async () => {
@@ -111,13 +111,13 @@ describe('Admin Users API', () => {
 
       const params = new URLSearchParams({
         page: '1',
-        page_size: '5'
+        page_size: '20'
       })
       params.append('search', 'testuser')
 
       await fetch(`/api/users?${params}`)
 
-      expect(global.fetch).toHaveBeenCalledWith('/api/users?page=1&page_size=5&search=testuser')
+      expect(global.fetch).toHaveBeenCalledWith('/api/users?page=1&page_size=20&search=testuser')
     })
 
     test('constructs correct URL with custom page', async () => {
@@ -128,12 +128,12 @@ describe('Admin Users API', () => {
 
       const params = new URLSearchParams({
         page: '3',
-        page_size: '5'
+        page_size: '20'
       })
 
       await fetch(`/api/users?${params}`)
 
-      expect(global.fetch).toHaveBeenCalledWith('/api/users?page=3&page_size=5')
+      expect(global.fetch).toHaveBeenCalledWith('/api/users?page=3&page_size=20')
     })
   })
 

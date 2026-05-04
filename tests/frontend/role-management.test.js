@@ -313,7 +313,13 @@ describe('role management page', () => {
     await page.mount(container)
 
     expect(container.querySelector('#roleList .role-list-card')).not.toBeNull()
+    expect(container.querySelector('#roleList .role-list-card p')).toBeNull()
     expect(container.querySelector('#roleEditor .role-summary-card')).not.toBeNull()
+    const summaryFields = [...container.querySelectorAll('#roleEditor .role-summary-grid > *')]
+    expect(summaryFields[0].querySelector('[data-role-field="name"]')).not.toBeNull()
+    expect(summaryFields[1].textContent).toContain('Identifier:')
+    expect(summaryFields[2].querySelector('[data-role-field="is_active"]')).not.toBeNull()
+    expect(summaryFields[3].querySelector('[data-role-field="description"]').getAttribute('rows')).toBe('2')
     expect(container.querySelector('#roleEditor [data-module-id="rbac"]')).toBeNull()
     expect(container.querySelector('#roleEditor [data-module-id="skills"]')).not.toBeNull()
     expect(container.querySelector('#roleEditor [data-module-id="providers"]')).not.toBeNull()
@@ -806,6 +812,31 @@ describe('role management page', () => {
     expect(skillsSummary.textContent.trim()).toBe('1 enabled')
   })
 
+  test('allowlist module summaries include manage-permissions governance toggles', async () => {
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+    container.querySelector('[data-role-select="role-ops"]').click()
+
+    const providersSummary = () => container.querySelector('[data-module-id="providers"] .role-module-copy span:last-child')
+    const channelsSummary = () => container.querySelector('[data-module-id="channels"] .role-module-copy span:last-child')
+
+    expect(providersSummary().textContent.trim()).toBe('1 enabled')
+    container.querySelector('[data-module-id="providers"]').click()
+    const providerManageToggle = container.querySelector('[data-module-toggle="providers"][data-permission-toggle="manage_permissions"]')
+    providerManageToggle.checked = true
+    providerManageToggle.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(providersSummary().textContent.trim()).toBe('2 enabled')
+
+    expect(channelsSummary().textContent.trim()).toBe('2 enabled')
+    container.querySelector('[data-module-id="channels"]').click()
+    const channelManageToggle = container.querySelector('[data-module-toggle="channels"][data-permission-toggle="manage_permissions"]')
+    channelManageToggle.checked = true
+    channelManageToggle.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(channelsSummary().textContent.trim()).toBe('3 enabled')
+  })
+
   test('create role submits current permission-governance payload to roles API', async () => {
     const page = await import('../../app/frontend/scripts/pages/role-management.js')
     const container = document.getElementById('page-root')
@@ -813,6 +844,11 @@ describe('role management page', () => {
     await page.mount(container)
 
     document.getElementById('createRoleBtn').click()
+    const summaryFields = [...container.querySelectorAll('#roleEditor .role-summary-grid > *')]
+    expect(summaryFields[0].querySelector('[data-role-field="name"]')).not.toBeNull()
+    expect(summaryFields[1].querySelector('[data-role-field="identifier"]')).not.toBeNull()
+    expect(summaryFields[2].querySelector('[data-role-field="is_active"]')).not.toBeNull()
+    expect(summaryFields[3].querySelector('[data-role-field="description"]').getAttribute('rows')).toBe('2')
 
     container.querySelector('[data-module-id="channels"]').click()
     expect([...container.querySelectorAll('[data-channel-toggle="allowed"]')].every(toggle => !toggle.checked)).toBe(true)

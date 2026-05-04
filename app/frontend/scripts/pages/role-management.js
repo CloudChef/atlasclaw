@@ -682,16 +682,20 @@ function countModuleSummaryEnabledPermissions(role, moduleId) {
     return governanceFlags + skillFlags
   }
   if (moduleId === 'providers') {
+    const governanceFlags = permissions.module_permissions?.manage_permissions ? 1 : 0
     if (permissions.allow_all === true) {
-      return 1
+      return governanceFlags + 1
     }
-    return (permissions.provider_permissions || []).filter(provider => provider.allowed === true).length
+    const providerFlags = (permissions.provider_permissions || []).filter(provider => provider.allowed === true).length
+    return governanceFlags + providerFlags
   }
   if (moduleId === 'channels') {
+    const governanceFlags = permissions.module_permissions?.manage_permissions ? 1 : 0
     if (permissions.allow_all === true) {
-      return 1
+      return governanceFlags + 1
     }
-    return (permissions.channel_permissions || []).filter(channel => channel.allowed === true).length
+    const channelFlags = (permissions.channel_permissions || []).filter(channel => channel.allowed === true).length
+    return governanceFlags + channelFlags
   }
   return countEnabledPermissions(role, moduleId)
 }
@@ -728,7 +732,6 @@ function renderRoleList() {
     const isSelected = role.id === selectedRoleId || (role.isNew && selectedRoleId === 'new-role')
     const enabledCount = MODULES.reduce((sum, module) => sum + countEnabledPermissions(role, module.id), 0)
     const roleDisplayName = getRoleDisplayName(role)
-    const roleDisplayDescription = getRoleDisplayDescription(role)
     return `
       <button type="button" class="role-list-card ${isSelected ? 'selected' : ''}" data-role-select="${escapeHtml(role.id || 'new-role')}">
         <div class="role-list-card-top">
@@ -739,7 +742,6 @@ function renderRoleList() {
           ${role.is_builtin ? '<span class="role-chip builtin" data-i18n="roles.builtinBadge">Built-in</span>' : ''}
           ${role.isNew ? '<span class="role-chip draft" data-i18n="roles.draftBadge">Draft</span>' : ''}
         </div>
-        <p>${escapeHtml(roleDisplayDescription || translateOrFallback('roles.defaultRoleDescription', 'Permission bundle for workspace access control.'))}</p>
         <div class="role-list-card-meta">
           <span>${enabledCount} ${escapeHtml(translateOrFallback('roles.enabledShort', 'enabled'))}</span>
           <span class="role-status ${role.is_active ? 'active' : 'inactive'}">${escapeHtml(role.is_active ? translateOrFallback('roles.statusActive', 'Active') : translateOrFallback('roles.statusInactive', 'Inactive'))}</span>
@@ -1102,6 +1104,13 @@ function renderEditor() {
             <span data-i18n="roles.roleName">Role Name</span>
             <input type="text" data-role-field="name" value="${escapeHtml(roleNameValue)}" placeholder="${escapeHtml(translateOrFallback('roles.roleNamePlaceholder', 'Role name'))}" ${builtinReadonlyAttr}>
           </label>
+          <div class="role-summary-meta form-field">
+            <span data-i18n="roles.roleIdentifier">Role Identifier</span>
+            ${draftRoleState.is_builtin
+              ? `<div class="role-summary-meta-row"><span class="role-chip builtin" data-i18n="roles.builtinBadge">Built-in</span><span>${escapeHtml(translateOrFallback('roles.identifierPrefix', 'Identifier:'))} ${escapeHtml(draftRoleState.identifier)}</span></div>`
+              : `<input type="text" data-role-field="identifier" value="${escapeHtml(draftRoleState.identifier)}" placeholder="${escapeHtml(translateOrFallback('roles.identifierPlaceholder', 'role-identifier'))}" ${identifierReadonlyAttr}>`
+            }
+          </div>
           <div class="form-field">
             <span data-i18n="roles.roleStatus">Status</span>
             <div class="role-summary-meta-row role-summary-status-row">
@@ -1114,15 +1123,8 @@ function renderEditor() {
           </div>
           <label class="form-field form-field-full">
             <span data-i18n="roles.roleDescription">Description</span>
-            <textarea data-role-field="description" rows="3" placeholder="${escapeHtml(translateOrFallback('roles.roleDescriptionPlaceholder', 'Describe when this role should be assigned.'))}" ${builtinReadonlyAttr}>${escapeHtml(roleDescriptionValue)}</textarea>
+            <textarea data-role-field="description" rows="2" placeholder="${escapeHtml(translateOrFallback('roles.roleDescriptionPlaceholder', 'Describe when this role should be assigned.'))}" ${builtinReadonlyAttr}>${escapeHtml(roleDescriptionValue)}</textarea>
           </label>
-          <div class="role-summary-meta form-field form-field-full">
-            <span data-i18n="roles.roleIdentifier">Role Identifier</span>
-            ${draftRoleState.is_builtin
-              ? `<div class="role-summary-meta-row"><span class="role-chip builtin" data-i18n="roles.builtinBadge">Built-in</span><span>${escapeHtml(translateOrFallback('roles.identifierPrefix', 'Identifier:'))} ${escapeHtml(draftRoleState.identifier)}</span></div>`
-              : `<input type="text" data-role-field="identifier" value="${escapeHtml(draftRoleState.identifier)}" placeholder="${escapeHtml(translateOrFallback('roles.identifierPlaceholder', 'role-identifier'))}" ${identifierReadonlyAttr}>`
-            }
-          </div>
         </div>
       </section>
       <div class="role-designer-layout">
