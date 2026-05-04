@@ -37,7 +37,6 @@ from app.atlasclaw.api.api_routes import router as db_api_router
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.session.router import SessionManagerRouter
-from app.atlasclaw.skills.permission_service import skill_permission_service
 from app.atlasclaw.skills.registry import SkillRegistry
 from app.atlasclaw.tools.registration import register_builtin_tools
 from app.atlasclaw.tools.catalog import ToolProfile
@@ -187,109 +186,6 @@ async def _collect_runtime_user_ids(
         for user_id in user_ids
         if user_id and user_id not in {"default", "anonymous"}
     )
-
-# Roles in this set receive the core skill catalog during initialization.
-_FULL_CATALOG_ROLE_IDENTIFIERS = frozenset({"admin", "user"})
-
-
-async def _ensure_builtin_role_skill_permissions(skill_registry) -> None:
-    """Seed skill_permissions for system-managed built-in roles from the skill catalog.
-
-    - **admin** and **user** receive the core catalog (built-in tools and
-      standalone markdown skills) as initial runtime access data.
-
-    Existing skill_permissions are left unchanged.
-    """
-    try:
-        from app.atlasclaw.db.database import get_db_manager
-        from sqlalchemy import select
-        from app.atlasclaw.db.orm.role import (
-            RoleModel,
-            RoleService,
-            SYSTEM_MANAGED_BUILTIN_ROLE_IDENTIFIERS,
-        )
-
-        async with get_db_manager().get_session() as session:
-            await RoleService.ensure_builtin_roles(session)
-            result = await session.execute(
-                select(RoleModel).where(
-                    RoleModel.identifier.in_(SYSTEM_MANAGED_BUILTIN_ROLE_IDENTIFIERS),
-                    RoleModel.is_builtin == True,
-                )
-            )
-            managed_roles = result.scalars().all()
-            if not managed_roles:
-                return
-
-            def _make_entry(row: dict) -> dict:
-                skill_id = str(row.get("qualified_name") or row.get("name") or "").strip()
-                skill_name = str(row.get("name") or skill_id).strip()
-                return {
-                    "skill_id": skill_id,
-                    "skill_name": skill_name,
-                    "description": row.get("description", ""),
-                    "runtime_enabled": True,
-                    "authorized": True,
-                    "enabled": True,
-                }
-
-            # Core catalog for admin: role-facing built-in tool groups plus
-            # standalone markdown skills. Provider-bound and internal tools are
-            # excluded by the permission service.
-            role_catalog = skill_permission_service.build_role_skill_catalog(
-                tools_snapshot=skill_registry.tools_snapshot(),
-                md_skills=skill_registry.md_snapshot(),
-                include_metadata=True,
-            )
-            full_catalog = [_make_entry(row) for row in role_catalog]
-            core_tool_group_count = sum(1 for row in role_catalog if row.get("type") == "tool_group")
-            core_md_count = sum(1 for row in role_catalog if row.get("type") == "markdown")
-
-            if not full_catalog:
-                return
-
-            # ---- Per-role initialization ----
-            changed = False
-            for role in managed_roles:
-                # Admin/user get the core catalog only when no skill permissions
-                # have been initialized yet.
-                catalog_entries = (
-                    full_catalog
-                    if role.identifier in _FULL_CATALOG_ROLE_IDENTIFIERS
-                    else []
-                )
-                if not catalog_entries:
-                    continue
-
-                perms = role.permissions or {}
-                existing_perms: list[dict] = (
-                    (perms.get("skills") or {}).get("skill_permissions", [])
-                )
-                if not isinstance(existing_perms, list):
-                    existing_perms = []
-
-                if existing_perms:
-                    continue
-
-                new_perms = dict(perms)
-                new_perms["skills"] = {
-                    **(perms.get("skills") or {}),
-                    "skill_permissions": list(catalog_entries),
-                }
-                role.permissions = new_perms
-                changed = True
-
-                print(
-                    f"[AtlasClaw] Bootstrapped {role.identifier} default skill permissions "
-                    f"({len(catalog_entries)} entries: "
-                    f"{core_tool_group_count} tool groups + {core_md_count} markdown)"
-                )
-
-            if changed:
-                await session.commit()
-    except Exception as e:
-        print(f"[AtlasClaw] Warning: Failed to bootstrap builtin role skill permissions: {e}")
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -505,11 +401,6 @@ async def lifespan(app: FastAPI):
     print(
         f"[AtlasClaw] Loaded {loaded_standalone_skill_count} standalone markdown skills"
     )
-
-    # Bootstrap built-in role skill permissions if not yet stored.
-    # The backend has access to the loaded skill catalog at startup.
-    if db_initialized:
-        await _ensure_builtin_role_skill_permissions(_skill_registry)
 
     from pydantic_ai import Agent
     from app.atlasclaw.core.deps import SkillDeps

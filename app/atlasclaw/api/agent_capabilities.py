@@ -150,21 +150,23 @@ def _get_visible_skill_snapshots(
     md_skills_snapshot = _get_registry_md_snapshot(ctx)
 
     if authz is not None:
-        skill_permissions = authz.permissions.get("skills", {}).get("skill_permissions", [])
-        if isinstance(skill_permissions, list):
-            md_tool_skill_refs = _build_md_tool_skill_refs(
-                ctx.skill_registry,
-                md_skills_snapshot,
-            )
-            tools_snapshot, md_skills_snapshot = _filter_snapshot_by_permissions(
-                tools_snapshot,
-                md_skills_snapshot,
-                skill_permissions,
-                md_tool_skill_refs,
-            )
-        else:
-            tools_snapshot = []
-            md_skills_snapshot = []
+        skills_section = authz.permissions.get("skills", {})
+        if skills_section.get("allow_all") is not True:
+            skill_permissions = skills_section.get("skill_permissions", [])
+            if isinstance(skill_permissions, list):
+                md_tool_skill_refs = _build_md_tool_skill_refs(
+                    ctx.skill_registry,
+                    md_skills_snapshot,
+                )
+                tools_snapshot, md_skills_snapshot = _filter_snapshot_by_permissions(
+                    tools_snapshot,
+                    md_skills_snapshot,
+                    skill_permissions,
+                    md_tool_skill_refs,
+                )
+            else:
+                tools_snapshot = []
+                md_skills_snapshot = []
 
     tools_snapshot, md_skills_snapshot = skill_permission_service.filter_provider_bound_snapshots(
         tools_snapshot,

@@ -366,13 +366,25 @@
       }
     },
     "skillsListTitle": "Skill Access",
-    "enableAllToggle": "Enable all",
+    "visibleRowsToggle": "Select All",
+    "accessAll": {
+      "skills": {
+        "label": "Access All",
+        "description": "Includes every usable skill available now and every future skill added later. Individual skill selections below are ignored while this is enabled."
+      },
+      "providers": {
+        "label": "Access All",
+        "description": "Includes every provider instance available now and every future provider instance added later. Individual provider selections below are ignored while this is enabled."
+      },
+      "channels": {
+        "label": "Access All",
+        "description": "Includes every channel type available now and every future channel type added later. Individual channel selections below are ignored while this is enabled."
+      }
+    },
     "defaultSkillDescription": "Workspace skill available to AtlasClaw agents.",
     "providersListTitle": "Provider Access",
-    "allowAllProvidersToggle": "Allow all",
     "defaultProviderDescription": "Registered service provider instance.",
     "channelsListTitle": "Channel Access",
-    "allowAllChannelsToggle": "Allow all",
     "defaultChannelDescription": "Registered channel type available to workspace users.",
     "defaultChannelDescriptionWithMode": "Channel type using {{mode}} mode.",
     "noRolesTitle": "No roles found",
@@ -385,7 +397,6 @@
     "noChannelsDescription": "Adjust the search term or register channel handlers first.",
     "emptyTitle": "Select a role to begin",
     "emptyDescription": "Choose a built-in role or create a new one to edit the right-side permission designer.",
-    "selectAll": "Select All",
     "restoreDefaults": "Restore Defaults",
     "validationRequired": "Role name and identifier are required.",
     "loadFailed": "Failed to load role management data",

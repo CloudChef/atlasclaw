@@ -1580,3 +1580,102 @@ class TestRoleCRUDAPI:
         assert regular_resp.status_code == 403
 
         _cleanup_manager(manager)
+
+    def test_non_admin_role_assigner_can_assign_access_all_runtime_role(self, tmp_path):
+        manager = _init_database_sync(tmp_path)
+        client = _build_client(tmp_path, _get_auth_config())
+        admin_token = _login_as(client, 'admin', 'adminpass123')
+        admin_headers = {'AtlasClaw-Authenticate': admin_token}
+
+        assigner_user_resp = client.post(
+            '/api/users',
+            json={
+                'username': 'roleassigner',
+                'password': 'roleassignerpass123',
+                'display_name': 'Role Assigner',
+                'email': 'roleassigner@test.com',
+                'roles': {},
+                'is_active': True,
+            },
+            headers=admin_headers,
+        )
+        assert assigner_user_resp.status_code == 201
+        assigner_user_id = assigner_user_resp.json()['id']
+
+        target_user_resp = client.post(
+            '/api/users',
+            json={
+                'username': 'runtimeuser',
+                'password': 'runtimeuserpass123',
+                'display_name': 'Runtime User',
+                'email': 'runtimeuser@test.com',
+                'roles': {},
+                'is_active': True,
+            },
+            headers=admin_headers,
+        )
+        assert target_user_resp.status_code == 201
+        target_user_id = target_user_resp.json()['id']
+
+        assigner_role_resp = client.post(
+            '/api/roles',
+            json={
+                'name': 'Role Assigner',
+                'identifier': 'role_assigner',
+                'description': 'Can assign ordinary runtime roles.',
+                'permissions': {
+                    'users': {
+                        'assign_roles': True,
+                    },
+                },
+                'is_active': True,
+            },
+            headers=admin_headers,
+        )
+        assert assigner_role_resp.status_code == 201
+
+        runtime_role_resp = client.post(
+            '/api/roles',
+            json={
+                'name': 'Runtime Access All',
+                'identifier': 'runtime_access_all',
+                'description': 'Can use all current and future runtime surfaces.',
+                'permissions': {
+                    'skills': {
+                        'allow_all': True,
+                        'skill_permissions': [],
+                    },
+                    'providers': {
+                        'allow_all': True,
+                        'provider_permissions': [],
+                    },
+                    'channels': {
+                        'allow_all': True,
+                        'channel_permissions': [],
+                    },
+                },
+                'is_active': True,
+            },
+            headers=admin_headers,
+        )
+        assert runtime_role_resp.status_code == 201
+
+        assign_assigner_resp = client.put(
+            f'/api/users/{assigner_user_id}',
+            json={'roles': {'role_assigner': True}},
+            headers=admin_headers,
+        )
+        assert assign_assigner_resp.status_code == 200
+
+        assigner_token = _login_as(client, 'roleassigner', 'roleassignerpass123')
+        assigner_headers = {'AtlasClaw-Authenticate': assigner_token}
+
+        assign_runtime_role_resp = client.put(
+            f'/api/users/{target_user_id}',
+            json={'roles': {'runtime_access_all': True}},
+            headers=assigner_headers,
+        )
+        assert assign_runtime_role_resp.status_code == 200
+        assert assign_runtime_role_resp.json()['roles'] == {'runtime_access_all': True}
+
+        _cleanup_manager(manager)

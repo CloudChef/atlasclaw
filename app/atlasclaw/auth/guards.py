@@ -305,6 +305,9 @@ def has_permission(authz: AuthorizationContext, permission_path: str) -> bool:
 
 def has_skill_access(authz: AuthorizationContext, skill_name: str) -> bool:
     """Check whether the current user may execute a specific skill."""
+    if has_permission(authz, "skills.allow_all"):
+        return True
+
     skill_permissions = authz.permissions.get("skills", {}).get("skill_permissions", [])
     if not isinstance(skill_permissions, list) or not skill_permissions:
         return False
@@ -322,6 +325,9 @@ def has_provider_instance_access(
     normalized_instance_name = str(instance_name or "").strip()
     if not normalized_provider_type or not normalized_instance_name:
         return False
+
+    if has_permission(authz, "providers.allow_all"):
+        return True
 
     provider_permissions = (
         authz.permissions.get("providers", {}).get("provider_permissions", [])
@@ -347,6 +353,9 @@ def has_channel_type_access(authz: AuthorizationContext, channel_type: str) -> b
     normalized_channel_type = str(channel_type or "").strip()
     if not normalized_channel_type:
         return False
+
+    if has_permission(authz, "channels.allow_all"):
+        return True
 
     channel_permissions = (
         authz.permissions.get("channels", {}).get("channel_permissions", [])

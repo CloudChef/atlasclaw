@@ -366,13 +366,25 @@
       }
     },
     "skillsListTitle": "技能访问",
-    "enableAllToggle": "全部启用",
+    "visibleRowsToggle": "选择全部",
+    "accessAll": {
+      "skills": {
+        "label": "访问全部",
+        "description": "包含当前所有可用技能，以及后续新增的可用技能。开启后，下方单个技能选择不参与运行时判断。"
+      },
+      "providers": {
+        "label": "访问全部",
+        "description": "包含当前所有 Provider 实例，以及后续新增的 Provider 实例。开启后，下方单个 Provider 选择不参与运行时判断。"
+      },
+      "channels": {
+        "label": "访问全部",
+        "description": "包含当前所有渠道类型，以及后续新增的渠道类型。开启后，下方单个渠道选择不参与运行时判断。"
+      }
+    },
     "defaultSkillDescription": "AtlasClaw Agent 可用的工作区技能。",
     "providersListTitle": "Provider 访问",
-    "allowAllProvidersToggle": "全部允许",
     "defaultProviderDescription": "已注册的服务 Provider 实例。",
     "channelsListTitle": "渠道访问",
-    "allowAllChannelsToggle": "全部允许",
     "defaultChannelDescription": "工作区用户可访问的已注册渠道类型。",
     "defaultChannelDescriptionWithMode": "使用 {{mode}} 模式的渠道类型。",
     "noRolesTitle": "没有找到角色",
@@ -385,7 +397,6 @@
     "noChannelsDescription": "调整搜索词，或先注册渠道处理器。",
     "emptyTitle": "先选择一个角色",
     "emptyDescription": "请选择内置角色或新建角色，然后在右侧编辑器中配置权限。",
-    "selectAll": "全部选中",
     "restoreDefaults": "恢复默认",
     "validationRequired": "角色名称和角色标识不能为空。",
     "loadFailed": "加载角色管理数据失败",

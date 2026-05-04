@@ -36,8 +36,11 @@ let documentKeydownHandler = null
 const ROLE_FILTER_FETCH_PAGE_SIZE = 100
 const NON_ADMIN_ASSIGNABLE_PERMISSION_PATHS = new Set([
   'skills.module_permissions.view',
+  'skills.allow_all',
   'skills.skill_permissions',
+  'providers.allow_all',
   'providers.provider_permissions',
+  'channels.allow_all',
   'channels.channel_permissions',
   'tokens.view',
   'agent_configs.view',

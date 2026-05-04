@@ -166,17 +166,20 @@ def _normalize_channel_permissions(entries: Any) -> List[Dict[str, Any]]:
 def _normalize_channel_permission_block(value: Any) -> Dict[str, Any]:
     """Normalize channel permissions to the channel-type allowlist shape."""
     manage_permissions = False
+    allow_all = False
     channel_permissions: Any = []
     if isinstance(value, dict):
         module_permissions = value.get("module_permissions")
         if isinstance(module_permissions, dict):
             manage_permissions = bool(module_permissions.get("manage_permissions", False))
+        allow_all = value.get("allow_all") is True
         channel_permissions = value.get("channel_permissions", [])
 
     return {
         "module_permissions": {
             "manage_permissions": manage_permissions,
         },
+        "allow_all": allow_all,
         "channel_permissions": _normalize_channel_permissions(channel_permissions),
     }
 
@@ -215,18 +218,21 @@ def build_default_permissions() -> Dict[str, Any]:
                 "enable_disable": False,
                 "manage_permissions": False,
             },
+            "allow_all": False,
             "skill_permissions": [],
         },
         "providers": {
             "module_permissions": {
                 "manage_permissions": False,
             },
+            "allow_all": False,
             "provider_permissions": [],
         },
         "channels": {
             "module_permissions": {
                 "manage_permissions": False,
             },
+            "allow_all": False,
             "channel_permissions": [],
         },
         "tokens": {
@@ -283,13 +289,15 @@ def _build_all_enabled_permissions() -> Dict[str, Any]:
             config["module_permissions"]["view"] = True
             config["module_permissions"]["enable_disable"] = True
             config["module_permissions"]["manage_permissions"] = True
+            config["allow_all"] = True
             continue
         if module_id == "providers":
             config["module_permissions"]["manage_permissions"] = True
+            config["allow_all"] = True
             continue
         if module_id == "channels":
             config["module_permissions"]["manage_permissions"] = True
-            config["channel_permissions"] = get_registered_channel_permission_entries()
+            config["allow_all"] = True
             continue
 
         for permission_name in list(config.keys()):
@@ -337,11 +345,18 @@ BUILTIN_ROLE_DEFINITIONS: tuple[Dict[str, Any], ...] = (
                 },
                 "skill_permissions": [],
             },
+            "providers": {
+                "module_permissions": {
+                    "manage_permissions": False,
+                },
+                "provider_permissions": [],
+            },
             "channels": {
                 "module_permissions": {
                     "manage_permissions": False,
                 },
-                "channel_permissions": get_registered_channel_permission_entries(),
+                "allow_all": True,
+                "channel_permissions": [],
             },
         },
     },

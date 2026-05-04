@@ -33,13 +33,6 @@ export const MODEL_MANAGEMENT_ACCESS_PERMISSIONS = [
   'model_configs.delete'
 ]
 
-export const PROVIDER_MANAGEMENT_ACCESS_PERMISSIONS = [
-  'provider_configs.view',
-  'provider_configs.create',
-  'provider_configs.edit',
-  'provider_configs.delete'
-]
-
 function normalizePermissionPath(permissionPath) {
   const parts = String(permissionPath || '')
     .split('.')
@@ -99,18 +92,13 @@ export function canAccessChannelManagement(authInfo) {
   if (hasAnyPermission(authInfo, CHANNEL_MANAGEMENT_ACCESS_PERMISSIONS)) {
     return true
   }
+  if (hasPermission(authInfo, 'channels.allow_all')) {
+    return true
+  }
   const channelPermissions = authInfo?.permissions?.channels?.channel_permissions
   return Array.isArray(channelPermissions) && channelPermissions.some(channel => channel?.allowed === true)
 }
 
 export function canAccessModelManagement(authInfo) {
   return hasAnyPermission(authInfo, MODEL_MANAGEMENT_ACCESS_PERMISSIONS)
-}
-
-export function canAccessProviderManagement(authInfo) {
-  if (hasAnyPermission(authInfo, PROVIDER_MANAGEMENT_ACCESS_PERMISSIONS)) {
-    return true
-  }
-  const providerPermissions = authInfo?.permissions?.providers?.provider_permissions
-  return Array.isArray(providerPermissions) && providerPermissions.some(provider => provider?.allowed === true)
 }

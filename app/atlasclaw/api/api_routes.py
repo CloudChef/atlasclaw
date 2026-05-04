@@ -110,8 +110,11 @@ USER_MANAGEMENT_ACCESS_PERMISSIONS = (
 SENSITIVE_ROLE_IDENTIFIERS = frozenset({"admin"})
 NON_ADMIN_ASSIGNABLE_PERMISSION_PATHS = frozenset({
     "skills.module_permissions.view",
+    "skills.allow_all",
     "skills.skill_permissions",
+    "providers.allow_all",
     "providers.provider_permissions",
+    "channels.allow_all",
     "channels.channel_permissions",
     "tokens.view",
     "agent_configs.view",

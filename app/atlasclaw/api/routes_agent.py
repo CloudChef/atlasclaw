@@ -102,18 +102,16 @@ def register_agent_routes(router: APIRouter) -> None:
                     from ..auth.guards import resolve_authorization_context
                     authz = await resolve_authorization_context(db_session, user_info)
                     resolved_authz = authz
-                    user_skill_permissions = (
-                        authz.permissions.get("skills", {}).get("skill_permissions", [])
-                    )
-                    user_provider_permissions = (
-                        authz.permissions.get("providers", {}).get("provider_permissions", [])
-                    )
+                    skills_section = authz.permissions.get("skills", {})
+                    user_skill_permissions = None if skills_section.get("allow_all") is True else skills_section.get("skill_permissions", [])
+                    providers_section = authz.permissions.get("providers", {})
+                    user_provider_permissions = None if providers_section.get("allow_all") is True else providers_section.get("provider_permissions", [])
                     disabled_skills = [
                         s.get("skill_id") for s in user_skill_permissions
                         if not s.get("enabled")
-                    ]
+                    ] if isinstance(user_skill_permissions, list) else []
                     print(
-                        f"[SkillFilter] user={user_info.user_id} total_perms={len(user_skill_permissions)} disabled={disabled_skills}"
+                        f"[SkillFilter] user={user_info.user_id} total_perms={len(user_skill_permissions) if isinstance(user_skill_permissions, list) else 'all'} disabled={disabled_skills}"
                     )
                     await db_session.commit()
                 except Exception as exc:
