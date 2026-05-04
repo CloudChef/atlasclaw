@@ -530,7 +530,7 @@
 }
 
 .role-permission-table th:first-child {
-  width: 26%;
+  width: 19%;
 }
 
 .role-permission-table th:last-child {
@@ -649,6 +649,16 @@
   flex-direction: column;
   gap: 16px;
   margin-top: 18px;
+}
+
+.role-readonly-preview .role-skill-card,
+.role-readonly-preview .role-provider-card {
+  background: #fafafa;
+}
+
+.role-readonly-preview .role-inline-toggle {
+  color: #64748b;
+  background: #f1f5f9;
 }
 
 .role-skill-master-toggle {

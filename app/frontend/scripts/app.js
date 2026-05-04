@@ -57,12 +57,6 @@ const routes = [
     title: 'account.title'
   },
   {
-    path: '/providers',
-    loader: () => import('./pages/providers.js'),
-    auth: true,
-    title: 'provider.title'
-  },
-  {
     path: '/models',
     loader: () => import(`./pages/models.js?v=${SCRIPT_VERSION}`),
     auth: true,
@@ -94,8 +88,7 @@ let currentAgentInfo = null
 const ROUTE_STYLES = [
   { match: /^\/admin\/users\/?$/, id: 'admin-users-page-css', href: '/styles/admin-users.css' },
   { match: /^\/account\/?$/, id: 'account-settings-page-css', href: '/styles/account-settings.css' },
-  { match: /^\/models\/?$/, id: 'models-page-css', href: '/styles/models.css' },
-  { match: /^\/providers\/?$/, id: 'providers-page-css', href: '/styles/providers.css' }
+  { match: /^\/models\/?$/, id: 'models-page-css', href: '/styles/models.css' }
 ]
 
 /**
