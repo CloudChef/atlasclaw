@@ -145,15 +145,15 @@ body {
 
 .session-list-row {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) 68px;
     align-items: center;
-    gap: 6px;
-    border-radius: 14px;
+    gap: 4px;
+    border-radius: 8px;
     padding: 2px;
 }
 
 .session-list-row.active {
-    background: linear-gradient(135deg, var(--color-primary) 0%, #8b91ff 100%);
+    background: rgba(255, 255, 255, 0.08);
 }
 
 .session-list-item {
@@ -161,8 +161,8 @@ body {
     border: none;
     background: transparent;
     color: #dbe0eb;
-    padding: 12px 12px;
-    border-radius: 12px;
+    padding: 9px 10px;
+    border-radius: 7px;
     cursor: pointer;
     text-align: left;
     font-size: 14px;
@@ -180,20 +180,89 @@ body {
 }
 
 .session-delete-btn {
-    width: 30px;
+    position: relative;
+    display: grid;
+    place-items: center;
+    width: 68px;
     height: 30px;
     border: none;
     background: transparent;
     color: #8f96aa;
-    border-radius: 999px;
+    border-radius: 7px;
     cursor: pointer;
-    font-size: 18px;
+    font-size: 12px;
+    font-weight: 500;
     line-height: 1;
+    overflow: hidden;
+    transition: background 0.16s ease, color 0.16s ease;
 }
 
 .session-delete-btn:hover {
-    background: rgba(255, 255, 255, 0.08);
     color: #ffffff;
+}
+
+.session-delete-btn:focus-visible {
+    color: #ffffff;
+    outline: none;
+}
+
+.session-age,
+.session-delete-icon,
+.session-confirm-label {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 0 6px;
+    transition: opacity 0.14s ease, transform 0.14s ease;
+}
+
+.session-delete-icon,
+.session-confirm-label {
+    opacity: 0;
+    transform: translateY(2px);
+}
+
+.session-age {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.session-list-row:not(.delete-pending):hover .session-delete-btn .session-age,
+.session-list-row:not(.delete-pending):focus-within .session-delete-btn .session-age {
+    opacity: 0;
+    transform: translateY(-2px);
+}
+
+.session-list-row:not(.delete-pending):hover .session-delete-btn .session-delete-icon,
+.session-list-row:not(.delete-pending):focus-within .session-delete-btn .session-delete-icon {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.session-delete-icon svg {
+    display: block;
+}
+
+.session-list-row.delete-pending .session-delete-btn {
+    color: #ff4d4f;
+}
+
+.session-list-row.delete-pending .session-delete-btn:hover,
+.session-list-row.delete-pending .session-delete-btn:focus-visible {
+    color: #ff696b;
+}
+
+.session-list-row.delete-pending .session-age,
+.session-list-row.delete-pending .session-delete-icon {
+    opacity: 0;
+    transform: translateY(-2px);
+}
+
+.session-list-row.delete-pending .session-confirm-label {
+    opacity: 1;
+    transform: translateY(0);
 }
 
 /* Main Content */

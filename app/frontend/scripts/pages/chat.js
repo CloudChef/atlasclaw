@@ -20,6 +20,7 @@ let sessionsCache = []
 let searchQuery = ''
 let pageContainer = null
 let currentAgentName = 'AtlasClaw'
+let pendingDeleteSessionKey = null
 
 function getTranslatedText(key, fallback) {
   return translateIfExists(key) || fallback
@@ -35,6 +36,14 @@ function getSessionSearchPlaceholder() {
 
 function getDeleteSessionLabel() {
   return getTranslatedText('chat.session.deleteLabel', 'Delete')
+}
+
+function getConfirmDeleteLabel() {
+  return getTranslatedText('dialog.confirm', 'Confirm')
+}
+
+function getConfirmDeleteActionLabel() {
+  return `${getConfirmDeleteLabel()} ${getDeleteSessionLabel()}`
 }
 
 function buildSessionDraftTitle(messageText) {
@@ -67,16 +76,6 @@ export async function mount(container) {
           </deep-chat>
         </div>
       </div>
-      <div id="confirmDialog" class="confirm-dialog hidden">
-        <div class="confirm-content">
-          <h3>${escapeHtml(getTranslatedText('dialog.confirmTitle', 'Confirm Action'))}</h3>
-          <p id="confirmMessage"></p>
-          <div class="confirm-buttons">
-            <button class="btn-cancel" type="button">${escapeHtml(getTranslatedText('dialog.cancel', 'Cancel'))}</button>
-            <button class="btn-confirm" type="button">${escapeHtml(getTranslatedText('dialog.confirm', 'Confirm'))}</button>
-          </div>
-        </div>
-      </div>
     </div>
   `
 
@@ -98,7 +97,6 @@ export async function mount(container) {
 
   currentAgentName = getCurrentAgentInfo()?.name || currentAgentName
   await loadSessions()
-  bindDialogEvents(container)
   mounted = true
   focusChatInput()
 }
@@ -113,6 +111,7 @@ export async function unmount() {
   currentSessionKey = null
   sessionsCache = []
   searchQuery = ''
+  pendingDeleteSessionKey = null
   mounted = false
 }
 
@@ -134,6 +133,7 @@ async function loadSessions() {
     sessionsCache = []
   }
 
+  pendingDeleteSessionKey = null
   ensureActiveSessionEntry()
   renderSidebarContent(sidebarContent)
   syncHeaderTitle()
@@ -152,14 +152,33 @@ function ensureActiveSessionEntry() {
 }
 
 function renderSidebarContent(container) {
+  if (!container) return
   const filtered = getFilteredSessions()
+  if (pendingDeleteSessionKey && !filtered.some((session) => session.session_key === pendingDeleteSessionKey)) {
+    pendingDeleteSessionKey = null
+  }
   const itemsHtml = filtered.map((session) => {
     const isActive = session.session_key === currentSessionKey
+    const isPendingDelete = session.session_key === pendingDeleteSessionKey
     const title = getSessionTitle(session)
+    const activityLabel = getSessionActivityLabel(session)
+    const actionLabel = isPendingDelete ? getConfirmDeleteActionLabel() : getDeleteSessionLabel()
     return `
-      <div class="session-list-row${isActive ? ' active' : ''}">
+      <div class="session-list-row${isActive ? ' active' : ''}${isPendingDelete ? ' delete-pending' : ''}">
         <button class="session-list-item" type="button" data-session-key="${escapeHtml(session.session_key)}">${escapeHtml(title)}</button>
-        <button class="session-delete-btn" type="button" data-delete-session="${escapeHtml(session.session_key)}" aria-label="${escapeHtml(getDeleteSessionLabel())}">&times;</button>
+        <button class="session-delete-btn" type="button" data-delete-session="${escapeHtml(session.session_key)}" aria-label="${escapeHtml(actionLabel)}">
+          <span class="session-age" aria-hidden="true">${escapeHtml(activityLabel)}</span>
+          <span class="session-delete-icon" aria-hidden="true">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.15" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 6h18"></path>
+              <path d="M8 6V4h8v2"></path>
+              <path d="M19 6l-1 14H6L5 6"></path>
+              <path d="M10 11v5"></path>
+              <path d="M14 11v5"></path>
+            </svg>
+          </span>
+          <span class="session-confirm-label">${escapeHtml(getConfirmDeleteLabel())}</span>
+        </button>
       </div>
     `
   }).join('')
@@ -179,6 +198,7 @@ function renderSidebarContent(container) {
       const selectionStart = event.target.selectionStart
       const selectionEnd = event.target.selectionEnd
       searchQuery = event.target.value || ''
+      pendingDeleteSessionKey = null
       renderSidebarContent(container)
       restoreInputFocus(container, '#session-search-input', selectionStart, selectionEnd)
     })
@@ -202,16 +222,43 @@ function getSessionTitle(session) {
   return (session?.title || '').trim() || getNewChatLabel()
 }
 
+function getSessionActivityLabel(session) {
+  const timestamp = session?.last_activity || session?.created_at
+  if (!timestamp) return ''
+
+  const activityDate = new Date(timestamp)
+  const activityTime = activityDate.getTime()
+  if (!Number.isFinite(activityTime)) return ''
+
+  const diffMs = Math.max(0, Date.now() - activityTime)
+  const hours = Math.floor(diffMs / (60 * 60 * 1000))
+  if (hours < 24) return `${hours}h`
+
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days}d`
+
+  return `${Math.max(1, Math.floor(days / 7))}w`
+}
+
 async function handleSessionClick(event) {
   const nextKey = event.currentTarget.getAttribute('data-session-key')
-  if (!nextKey || nextKey === currentSessionKey) return
+  if (!nextKey) return
+  if (nextKey === currentSessionKey) {
+    if (pendingDeleteSessionKey) {
+      pendingDeleteSessionKey = null
+      renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
+    }
+    return
+  }
 
+  pendingDeleteSessionKey = null
   await switchActiveSession(nextKey)
   syncHeaderTitle()
 }
 
 async function switchActiveSession(nextKey) {
   abortCurrentStream()
+  pendingDeleteSessionKey = null
   setSessionKey(nextKey)
   currentSessionKey = nextKey
   await activateSession(nextKey)
@@ -221,6 +268,7 @@ async function switchActiveSession(nextKey) {
 
 function handleUserTurnStarted({ sessionKey, messageText }) {
   currentSessionKey = sessionKey
+  pendingDeleteSessionKey = null
   const draftTitle = buildSessionDraftTitle(messageText)
   upsertSession({ session_key: sessionKey, title: draftTitle, title_status: 'draft' })
   const emptyState = pageContainer?.querySelector('#chat-empty-state')
@@ -276,42 +324,19 @@ function buildDraftTitle(messageText) {
   return cleaned.length > 24 ? `${cleaned.slice(0, 23).trim()}…` : cleaned
 }
 
-function bindDialogEvents(container) {
-  const dialog = container.querySelector('#confirmDialog')
-  if (!dialog) return
-
-  const cancelBtn = dialog.querySelector('.btn-cancel')
-  if (cancelBtn) {
-    cancelBtn.addEventListener('click', hideConfirmDialog)
-  }
-}
-
-function handleDeleteSessionClick(event) {
+async function handleDeleteSessionClick(event) {
   event.stopPropagation()
   const sessionKey = event.currentTarget.getAttribute('data-delete-session')
   if (!sessionKey) return
-  showConfirmDialog(sessionKey)
-}
 
-function showConfirmDialog(sessionKey) {
-  const dialog = pageContainer?.querySelector('#confirmDialog')
-  if (!dialog) return
-  const message = dialog.querySelector('#confirmMessage')
-  const confirmBtn = dialog.querySelector('.btn-confirm')
-  if (message) {
-    message.textContent = getTranslatedText('dialog.confirmMessage', 'Delete this conversation?')
+  if (pendingDeleteSessionKey === sessionKey) {
+    await deleteCurrentSession(sessionKey)
+    return
   }
-  if (confirmBtn) {
-    confirmBtn.onclick = async () => {
-      await deleteCurrentSession(sessionKey)
-    }
-  }
-  dialog.classList.remove('hidden')
-}
 
-function hideConfirmDialog() {
-  const dialog = pageContainer?.querySelector('#confirmDialog')
-  if (dialog) dialog.classList.add('hidden')
+  pendingDeleteSessionKey = sessionKey
+  renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
+  document.querySelector(`[data-delete-session="${cssEscape(sessionKey)}"]`)?.focus()
 }
 
 async function deleteCurrentSession(sessionKey) {
@@ -324,13 +349,18 @@ async function deleteCurrentSession(sessionKey) {
       setSessionKey(currentSessionKey)
       await activateSession(currentSessionKey)
     }
-    renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
     syncHeaderTitle()
   } catch (error) {
     console.error('[ChatPage] Failed to delete session:', error)
   } finally {
-    hideConfirmDialog()
+    pendingDeleteSessionKey = null
+    renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
   }
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return window.CSS.escape(value)
+  return String(value || '').replace(/["\\]/g, '\\$&')
 }
 
 function escapeHtml(text) {
