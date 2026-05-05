@@ -8,36 +8,32 @@ import re
 from typing import Any
 
 
+_DSML_TAG_DELIMITER = r"[｜|]{1,2}"
 _DSML_INVOKE_PATTERN = re.compile(
-    r"<[｜|]DSML[｜|]invoke\s+name=\"(?P<name>[^\"]+)\"\s*>(?P<body>.*?)</[｜|]DSML[｜|]invoke>",
+    rf"<{_DSML_TAG_DELIMITER}DSML{_DSML_TAG_DELIMITER}invoke\s+name=\"(?P<name>[^\"]+)\"\s*>"
+    rf"(?P<body>.*?)</{_DSML_TAG_DELIMITER}DSML{_DSML_TAG_DELIMITER}invoke>",
     flags=re.IGNORECASE | re.DOTALL,
 )
 _DSML_PARAMETER_PATTERN = re.compile(
-    r"<[｜|]DSML[｜|]parameter\s+name=\"(?P<name>[^\"]+)\"(?:\s+string=\"(?P<string>[^\"]+)\")?\s*>"
-    r"(?P<value>.*?)</[｜|]DSML[｜|]parameter>",
+    rf"<{_DSML_TAG_DELIMITER}DSML{_DSML_TAG_DELIMITER}parameter\s+name=\"(?P<name>[^\"]+)\""
+    rf"(?:\s+string=\"(?P<string>[^\"]+)\")?\s*>(?P<value>.*?)"
+    rf"</{_DSML_TAG_DELIMITER}DSML{_DSML_TAG_DELIMITER}parameter>",
     flags=re.IGNORECASE | re.DOTALL,
 )
-_PLAINTEXT_TOOL_CALL_MARKERS = (
-    "<tool_call",
-    "</tool_call",
-    "<web_search",
-    "<web_fetch",
-    "<browser",
-    "<function_call",
-    "<｜dsml｜function_calls>",
-    "<｜dsml｜invoke",
-    "<|dsml|function_calls>",
-    "<|dsml|invoke",
-    "</think>",
+_PLAINTEXT_TOOL_CALL_PATTERN = re.compile(
+    rf"</?tool_call\b|<web_search\b|<web_fetch\b|<browser\b|<function_call\b|"
+    rf"<{_DSML_TAG_DELIMITER}DSML{_DSML_TAG_DELIMITER}"
+    rf"(?:tool_calls|function_calls|invoke)\b|</think\s*>",
+    flags=re.IGNORECASE,
 )
 
 
 def looks_like_plaintext_tool_call_attempt(text: str) -> bool:
     """Return true when text resembles a leaked tool-call payload."""
-    normalized = str(text or "").strip().lower()
+    normalized = str(text or "").strip()
     if not normalized:
         return False
-    return any(marker in normalized for marker in _PLAINTEXT_TOOL_CALL_MARKERS)
+    return bool(_PLAINTEXT_TOOL_CALL_PATTERN.search(normalized))
 
 
 def parse_plaintext_tool_calls(text: str) -> list[dict[str, Any]]:

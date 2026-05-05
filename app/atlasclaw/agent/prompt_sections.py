@@ -87,6 +87,16 @@ def build_target_md_skill(target_md_skill: dict[str, Any]) -> str:
         "missing or empty instead of borrowing it from another candidate or prior alternative."
     )
     lines.append(
+        "If the user replies with a short value such as a number, interpret it against the "
+        "immediately preceding assistant question and the Current Follow-up Context. Repeated "
+        "numbers may answer different questions in the same workflow."
+    )
+    lines.append(
+        "When asking the user to choose from options, display explicit numbers for every option. "
+        "If a previous option list was shown without numbers and the user replies with a number, "
+        "map it by visible order when the ordering is unambiguous."
+    )
+    lines.append(
         "Do not synthesize or merge missing workflow facts from static examples, prior drafts, or "
         "other candidate items."
     )
@@ -153,6 +163,34 @@ def build_skill_continuation_hint(hint_skill: str) -> str:
         f"Recent transcript analysis suggests this turn may be continuing the **{hint_skill}** workflow.",
         "If the current user input is part of that workflow, continue within that skill's instructions.",
         "This is a non-binding hint — evaluate the user's actual intent before deciding.",
+    ]
+    return "\n".join(lines)
+
+
+def build_current_follow_up_context(context: str) -> str:
+    """Build a focused section for interpreting low-information current replies."""
+    text = str(context or "").strip()
+    if not text:
+        return ""
+    if len(text) > 4000:
+        text = f"{text[:2000].rstrip()}\n...\n{text[-2000:].lstrip()}"
+    lines = [
+        "## Current Follow-up Context",
+        "",
+        "The current user message is a low-information reply, such as a number or short confirmation.",
+        "Before choosing a tool or replying, interpret the current user message using this section.",
+        "Do not evaluate the raw current message as a standalone request until you have first tried to interpret it as the reply to the latest assistant prompt.",
+        "Treat a numeric reply as an answer to the latest assistant follow-up prompt below, while preserving the recent selection context.",
+        "Repeated numbers can answer different consecutive questions; do not collapse them into one standalone request.",
+        "If the latest prompt contains a displayed option list, map the number to that option.",
+        "If the options were shown without explicit numbers, map a numeric reply by visible order when that order is unambiguous.",
+        "If the mapping is ambiguous, ask a focused clarification question.",
+        "Do not say the raw number is unsupported when it can be mapped to an option in the latest assistant prompt.",
+        "Do not reinterpret a bare numeric follow-up as an external object ID unless the latest assistant prompt explicitly asked for such an ID.",
+        "Do not treat a numeric reply as submission confirmation unless the latest prompt explicitly asked to confirm a JSON preview.",
+        "If required fields are still missing after interpreting the reply, ask for the next missing field instead of calling a terminal or mutating tool.",
+        "",
+        text,
     ]
     return "\n".join(lines)
 

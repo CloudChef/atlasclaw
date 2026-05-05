@@ -133,6 +133,7 @@ class PromptBuilder:
         context_window_tokens: Optional[int] = None,
         mode_override: Optional[PromptMode] = None,
         transcript_skill_hint: Optional[str] = None,
+        current_follow_up_context: Optional[str] = None,
     ) -> str:
         """
         Build the full system prompt for the current run.
@@ -184,6 +185,9 @@ class PromptBuilder:
 
         if transcript_skill_hint:
             parts.append(self._build_skill_continuation_hint(transcript_skill_hint))
+
+        if current_follow_up_context:
+            parts.append(self._build_current_follow_up_context(current_follow_up_context))
 
         if effective_mode == PromptMode.FULL:
             # 4. Markdown skill index (HIGHEST PRIORITY - check these first!)
@@ -251,6 +255,9 @@ class PromptBuilder:
 
     def _build_skill_continuation_hint(self, hint_skill: str) -> str:
         return prompt_sections.build_skill_continuation_hint(hint_skill)
+
+    def _build_current_follow_up_context(self, context: str) -> str:
+        return prompt_sections.build_current_follow_up_context(context)
     
     def _build_user_context(self, user_info: "UserInfo") -> str:
         return prompt_sections.build_user_context(user_info)

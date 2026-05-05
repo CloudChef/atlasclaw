@@ -41,6 +41,7 @@ def build_system_prompt(
         "context_window_tokens": context_window_tokens,
         "mode_override": prompt_mode,
         "transcript_skill_hint": collect_transcript_skill_hint(deps),
+        "current_follow_up_context": collect_current_follow_up_context(deps),
     }
     build_fn = prompt_builder.build
     try:
@@ -275,6 +276,15 @@ def collect_transcript_skill_hint(deps) -> Optional[str]:
     hint = extra.get("transcript_skill_continuation_hint")
     if isinstance(hint, str) and hint.strip():
         return hint.strip()
+    return None
+
+
+def collect_current_follow_up_context(deps) -> Optional[str]:
+    """Read contextualized current follow-up text for low-information replies."""
+    extra = deps.extra if isinstance(deps.extra, dict) else {}
+    value = extra.get("current_follow_up_context")
+    if isinstance(value, str) and value.strip():
+        return value.strip()
     return None
 
 

@@ -12,7 +12,8 @@ import pytest
 from app.atlasclaw.agent.runner_tool.runner_tool_gate_model import RunnerToolGateModelMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import RunnerExecutionPreparePhaseMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
-    _infer_active_skill_from_workflow_context,
+    _infer_active_skill_from_transcript,
+    build_transcript_skill_prompt_intent_plan,
     prune_auto_selected_provider_instance_tools,
     toolset_has_only_coordination_support_tools,
 )
@@ -221,6 +222,51 @@ def test_capability_selector_can_select_provider_and_standard_skill_targets() ->
     assert plan.action is ToolIntentAction.USE_TOOLS
     assert plan.target_provider_types == ["smartcmp"]
     assert plan.target_skill_names == ["xlsx"]
+
+
+def test_capability_selector_preserves_no_target_direct_answer() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "action": "direct_answer",
+            "targets": [],
+            "reason": "Selector chose not to target a capability.",
+        }
+    )
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="我要申请 Linux VM",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "skill:smartcmp:request",
+                    "kind": "md_skill",
+                    "name": "smartcmp:request",
+                    "description": (
+                        "Self-service request skill. Request cloud resources, "
+                        "create VM, apply resources, 申请资源, 创建虚拟机."
+                    ),
+                    "declared_tool_names": ["smartcmp_list_services"],
+                    "declares_executable_tools": True,
+                },
+                {
+                    "capability_id": "skill:smartcmp:datasource",
+                    "kind": "md_skill",
+                    "name": "smartcmp:datasource",
+                    "description": "Browse service catalogs and reference data.",
+                    "declared_tool_names": ["smartcmp_list_components"],
+                    "declares_executable_tools": True,
+                },
+            ],
+        )
+    )
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.DIRECT_ANSWER
+    assert plan.target_skill_names == []
 
 
 def test_capability_selector_requires_explicit_provider_capability_id() -> None:
@@ -814,8 +860,177 @@ def test_resolve_contextual_tool_request_recognizes_bracketed_selection_prompt()
         ],
     )
 
-    assert resolved == "申请2c4g云资源 2"
+    assert "Original user request:\n申请2c4g云资源" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "[2] 我的业务组" in resolved
+    assert "User reply to that prompt:\n2" in resolved
+    assert "Resolved latest visible selection:" not in resolved
     assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_preserves_latest_prompt_for_repeated_numeric_choices() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="1",
+        recent_history=[
+            {"role": "user", "content": "我要申请 Linux VM"},
+            {
+                "role": "assistant",
+                "content": (
+                    "请选择您要申请的业务组：\n"
+                    "开发部\n"
+                    "测试部\n"
+                    "请问您想申请哪个业务组的 Linux VM？"
+                ),
+            },
+            {"role": "user", "content": "1"},
+            {
+                "role": "assistant",
+                "content": (
+                    "已选择开发部。\n\n"
+                    "请选择您需要的规格配置：\n"
+                    "Tiny — 1C1G\n"
+                    "Small — 1C2G\n"
+                    "Medium — 2C4G\n"
+                    "Large — 4C8G\n"
+                    "请问您需要哪种规格？"
+                ),
+            },
+        ],
+    )
+
+    assert "Original user request:\n我要申请 Linux VM" in resolved
+    assert "Recent follow-up context:" in resolved
+    assert "User: 1" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "Tiny — 1C1G" in resolved
+    assert "User reply to that prompt:\n1" in resolved
+    assert "Resolved latest visible selection:" not in resolved
+    assert resolved != "我要申请 Linux VM 1"
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_preserves_selection_chain_for_third_numeric_choice() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="1",
+        recent_history=[
+            {"role": "user", "content": "我要申请 Linux VM"},
+            {
+                "role": "assistant",
+                "content": (
+                    "请选择您要申请的业务组：\n"
+                    "开发部\n"
+                    "测试部\n"
+                    "请问您想申请哪个业务组的 Linux VM？"
+                ),
+            },
+            {"role": "user", "content": "1"},
+            {
+                "role": "assistant",
+                "content": (
+                    "已选择开发部。\n\n"
+                    "请选择您需要的规格配置：\n"
+                    "Tiny — 1C1G\n"
+                    "Small — 1C2G\n"
+                    "请问您需要哪种规格？"
+                ),
+            },
+            {"role": "user", "content": "1"},
+            {
+                "role": "assistant",
+                "content": (
+                    "已选择 Tiny。\n\n"
+                    "请选择资源环境：\n"
+                    "开发\n"
+                    "生产\n"
+                    "请问您需要哪个资源环境？"
+                ),
+            },
+        ],
+    )
+
+    assert "Original user request:\n我要申请 Linux VM" in resolved
+    assert "Recent follow-up context:" in resolved
+    assert "请选择您要申请的业务组" in resolved
+    assert "请选择您需要的规格配置" in resolved
+    assert resolved.count("User: 1") == 2
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "请选择资源环境" in resolved
+    assert "开发" in resolved
+    assert "User reply to that prompt:\n1" in resolved
+    assert "Resolved latest visible selection:" not in resolved
+    assert used_follow_up_context is True
+
+
+def test_transcript_skill_prompt_plan_targets_only_skill_instructions() -> None:
+    plan = build_transcript_skill_prompt_intent_plan(active_skill="smartcmp:request")
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.DIRECT_ANSWER
+    assert plan.target_skill_names == ["smartcmp:request"]
+    assert plan.target_provider_types == []
+    assert plan.target_group_ids == []
+    assert plan.target_tool_names == []
+    assert plan.reason == "transcript_skill_continuation_prompt_only"
+
+
+def test_transcript_skill_prompt_plan_ignores_missing_hint() -> None:
+    assert build_transcript_skill_prompt_intent_plan(active_skill="") is None
+
+
+def test_transcript_active_skill_infers_from_assistant_tool_calls() -> None:
+    active_skill = _infer_active_skill_from_transcript(
+        message_history=[
+            {"role": "user", "content": "我要申请 Linux VM"},
+            {
+                "role": "assistant",
+                "content": "我先查询可用业务组。",
+                "tool_calls": [{"name": "smartcmp_list_business_groups"}],
+            },
+        ],
+        md_skills_snapshot=[
+            {
+                "qualified_name": "smartcmp:request",
+                "declared_tool_names": [
+                    "smartcmp_list_business_groups",
+                    "smartcmp_submit_request",
+                ],
+            }
+        ],
+    )
+
+    assert active_skill == "smartcmp:request"
+
+
+def test_transcript_active_skill_infers_from_embedded_tool_results() -> None:
+    active_skill = _infer_active_skill_from_transcript(
+        message_history=[
+            {
+                "role": "assistant",
+                "content": "请选择业务组。",
+                "tool_results": [
+                    {
+                        "tool_name": "smartcmp_list_business_groups",
+                        "content": {"ok": True},
+                    }
+                ],
+            },
+        ],
+        md_skills_snapshot=[
+            {
+                "qualified_name": "smartcmp:request",
+                "declared_tool_names": [
+                    "smartcmp_list_business_groups",
+                    "smartcmp_submit_request",
+                ],
+            }
+        ],
+    )
+
+    assert active_skill == "smartcmp:request"
 
 
 def xtest_build_recent_follow_up_tool_intent_plan_reuses_single_recent_tool() -> None:
@@ -894,49 +1109,6 @@ def xtest_build_recent_follow_up_tool_intent_plan_recovers_recent_md_skill_scope
         "smartcmp_list_business_groups",
         "smartcmp_list_services",
     ]
-
-
-def test_infer_active_skill_from_workflow_context_prefers_explicit_request_parent_role() -> None:
-    workflow_context = {
-        "recent_tool_metadata": [
-            {
-                "tool_name": "smartcmp_list_services",
-                "metadata": {
-                    "internal_request_trace_id": "trace-1",
-                    "catalogs": [{"id": "catalog-1", "name": "Linux OS"}],
-                },
-            },
-            {
-                "tool_name": "smartcmp_list_all_business_groups",
-                "metadata": [{"id": "bg-1", "name": "测试"}],
-            },
-        ],
-        "internal_request_trace_id": "trace-1",
-    }
-    md_skills_snapshot = [
-        {
-            "qualified_name": "smartcmp:datasource",
-            "metadata": {
-                "tool_list_all_business_groups_name": "smartcmp_list_all_business_groups",
-            },
-        },
-        {
-            "qualified_name": "smartcmp:submit-flow",
-            "metadata": {
-                "workflow_role": "request_parent",
-                "tool_list_services_name": "smartcmp_list_services",
-                "tool_submit_name": "smartcmp_submit_request",
-            },
-        },
-    ]
-
-    assert (
-        _infer_active_skill_from_workflow_context(
-            workflow_context=workflow_context,
-            md_skills_snapshot=md_skills_snapshot,
-        )
-        == "smartcmp:submit-flow"
-    )
 
 
 def test_runtime_history_for_tool_turns_keeps_recent_context_even_without_follow_up_flag() -> None:

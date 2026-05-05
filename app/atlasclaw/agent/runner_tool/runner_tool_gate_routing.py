@@ -37,6 +37,69 @@ class RunnerToolGateRoutingMixin:
         separator = " " if inline_selection_pattern.fullmatch(normalized_current) else "\n"
         return f"{previous}{separator}{current}".strip()
 
+    @staticmethod
+    def _build_contextual_follow_up_request(
+        *,
+        previous_user_message: str,
+        recent_context: str = "",
+        assistant_prompt: str,
+        current_user_message: str,
+    ) -> str:
+        previous = " ".join((previous_user_message or "").split()).strip()
+        context = str(recent_context or "").strip()
+        prompt = str(assistant_prompt or "").strip()
+        current = " ".join((current_user_message or "").split()).strip()
+        if not prompt:
+            return RunnerToolGateRoutingMixin._combine_follow_up_request(previous, current)
+        if len(prompt) > 2400:
+            prompt = f"{prompt[:1200].rstrip()}\n...\n{prompt[-1200:].lstrip()}"
+
+        parts = []
+        parts.append(
+            "Continue the active multi-turn workflow. Interpret the latest user reply below "
+            "as an answer to the latest assistant follow-up prompt before treating it as a "
+            "standalone request."
+        )
+        parts.append(
+            "If the latest assistant prompt displays options, map the reply to that option "
+            "and continue the workflow. Do not say the raw reply is unsupported when such a "
+            "mapping is possible."
+        )
+        parts.append(
+            "If the latest options were shown without explicit numbers, map a numeric reply by "
+            "the visible option order when that order is unambiguous."
+        )
+        if previous:
+            parts.append(f"Original user request:\n{previous}")
+        if context:
+            parts.append(f"Recent follow-up context:\n{context}")
+        parts.append(f"Latest assistant follow-up prompt:\n{prompt}")
+        parts.append(f"User reply to that prompt:\n{current}")
+        return "\n\n".join(parts).strip()
+
+    @staticmethod
+    def _format_recent_follow_up_context(
+        *,
+        recent_history: list[dict[str, Any]],
+        start_index: int,
+        end_index: int,
+    ) -> str:
+        rows: list[str] = []
+        for item in recent_history[start_index:end_index]:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role", "") or "").strip()
+            if role not in {"user", "assistant"}:
+                continue
+            content = str(item.get("content", "") or "").strip()
+            if not content:
+                continue
+            if len(content) > 800:
+                content = f"{content[:400].rstrip()}\n...\n{content[-400:].lstrip()}"
+            label = "Assistant" if role == "assistant" else "User"
+            rows.append(f"{label}: {content}")
+        return "\n\n".join(rows).strip()
+
     def _align_external_system_intent(
         self,
         *,
@@ -237,7 +300,9 @@ class RunnerToolGateRoutingMixin:
         low_information_follow_up = compact_current_len <= 8
 
         previous_user_message = ""
+        previous_user_index: Optional[int] = None
         fallback_previous_user_message = ""
+        fallback_previous_user_index: Optional[int] = None
         for index in range(last_assistant_index - 1, -1, -1):
             item = recent_history[index]
             if str(item.get("role", "")).strip() != "user":
@@ -247,22 +312,38 @@ class RunnerToolGateRoutingMixin:
                 continue
             if not fallback_previous_user_message:
                 fallback_previous_user_message = content
+                fallback_previous_user_index = index
             if self._is_low_information_follow_up_text(content):
                 continue
             previous_user_message = content
+            previous_user_index = index
             break
 
         if not previous_user_message:
             previous_user_message = fallback_previous_user_message
+            previous_user_index = fallback_previous_user_index
 
         if not previous_user_message:
             return normalized_user_message, False
 
         if low_information_follow_up:
-            combined = self._combine_follow_up_request(
-                previous_user_message,
-                normalized_user_message,
-            )
+            if assistant_requests_follow_up:
+                recent_context = self._format_recent_follow_up_context(
+                    recent_history=recent_history,
+                    start_index=(previous_user_index + 1) if previous_user_index is not None else 0,
+                    end_index=last_assistant_index,
+                )
+                combined = self._build_contextual_follow_up_request(
+                    previous_user_message=previous_user_message,
+                    recent_context=recent_context,
+                    assistant_prompt=last_assistant_raw_message,
+                    current_user_message=normalized_user_message,
+                )
+            else:
+                combined = self._combine_follow_up_request(
+                    previous_user_message,
+                    normalized_user_message,
+                )
             return combined, combined != normalized_user_message
 
         if long_structured_follow_up and not assistant_requests_follow_up:

@@ -21,6 +21,7 @@ class RunnerExecutionFlowPhaseMixin(
         """Main model/tool streaming loop phase."""
         deps = state.get("deps")
         user_message = state.get("user_message")
+        model_user_message = state.get("model_user_message") or user_message
         raw_runtime_message_history = state.get("runtime_message_history")
         if raw_runtime_message_history is None:
             raw_runtime_message_history = state.get("message_history") or []
@@ -28,6 +29,8 @@ class RunnerExecutionFlowPhaseMixin(
         agent_run = None
 
         deps.user_message = user_message
+        if model_user_message != user_message:
+            _log_step("model_user_message_contextualized")
         state["run_output_start_index"] = len(runtime_message_history)
 
         try:
@@ -59,7 +62,7 @@ class RunnerExecutionFlowPhaseMixin(
             )
             async with self._run_iter_with_optional_override(
                 agent=state.get("runtime_agent"),
-                user_message=user_message,
+                user_message=model_user_message,
                 deps=deps,
                 message_history=model_message_history,
                 system_prompt=state.get("system_prompt"),

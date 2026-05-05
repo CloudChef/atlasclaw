@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
 
+from app.atlasclaw.agent.plaintext_tool_calls import looks_like_plaintext_tool_call_attempt
 from app.atlasclaw.agent.runtime_events import RuntimeEventDispatcher
 from app.atlasclaw.agent.runner_tool.runner_execution_flow_stream import RunnerExecutionFlowStreamMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_payload import RunnerExecutionPayloadMixin
@@ -130,6 +131,24 @@ def test_collect_plaintext_tool_calls_parses_dsml_markup_from_model_response_tex
             "name": "openmeteo_weather",
             "args": {"location": "上海", "days": 2, "target_date": "2026-04-15"},
         }
+    ]
+
+
+def test_plaintext_tool_call_detection_handles_double_bar_dsml_markup() -> None:
+    dispatcher = RuntimeEventDispatcher()
+    content = (
+        "<｜｜DSML｜｜tool_calls>\n"
+        "<｜｜DSML｜｜invoke name=\"openmeteo_weather\">\n"
+        "<｜｜DSML｜｜parameter name=\"location\" string=\"true\">上海</｜｜DSML｜｜parameter>\n"
+        "<｜｜DSML｜｜parameter name=\"days\" string=\"false\">2</｜｜DSML｜｜parameter>\n"
+        "</｜｜DSML｜｜invoke>\n"
+        "</｜｜DSML｜｜tool_calls>"
+    )
+    node = SimpleNamespace(model_response=ModelResponse(parts=[TextPart(content=content)]))
+
+    assert looks_like_plaintext_tool_call_attempt(content)
+    assert dispatcher.collect_plaintext_tool_calls(node) == [
+        {"name": "openmeteo_weather", "args": {"location": "上海", "days": 2}}
     ]
 
 

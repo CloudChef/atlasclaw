@@ -183,6 +183,26 @@ def select_explicit_tool_execution_target(
     return dict(target_tool)
 
 
+def build_transcript_skill_prompt_intent_plan(
+    *,
+    active_skill: Optional[str],
+) -> ToolIntentPlan | None:
+    """Build a non-forcing skill continuation plan from transcript tool evidence.
+
+    The plan carries the active Markdown skill into low-information follow-up
+    turns without requiring a tool call. The main model still decides whether
+    the next step is a tool call, a preview, or another clarification.
+    """
+    normalized = _normalize_text(active_skill)
+    if not normalized:
+        return None
+    return ToolIntentPlan(
+        action=ToolIntentAction.DIRECT_ANSWER,
+        target_skill_names=[normalized],
+        reason="transcript_skill_continuation_prompt_only",
+    )
+
+
 def toolset_has_only_coordination_support_tools(tools: list[dict[str, Any]]) -> bool:
     """Return whether the projected set contains only non-executing support tools."""
     normalized_tools = [
@@ -316,13 +336,6 @@ def _build_md_skill_tool_index(
     return skill_tool_index
 
 
-def _resolve_md_skill_workflow_role(skill: dict[str, Any]) -> str:
-    metadata = skill.get("metadata", {})
-    if not isinstance(metadata, dict):
-        return ""
-    return str(metadata.get("workflow_role", "") or "").strip().lower()
-
-
 def _infer_active_skill_from_transcript(
     *,
     message_history: list[dict[str, Any]],
@@ -339,17 +352,34 @@ def _infer_active_skill_from_transcript(
     if not message_history or not md_skills_snapshot:
         return None
 
-    # Collect recent tool names from transcript (newest first)
+    def _append_tool_name(raw_name: Any) -> None:
+        tool_name = str(raw_name or "").strip().lower()
+        if tool_name and tool_name not in recent_tool_names:
+            recent_tool_names.append(tool_name)
+
+    # Collect recent tool names from transcript (newest first). Different
+    # persistence and model adapters store tool evidence in different shapes,
+    # so treat assistant tool calls, standalone tool messages, and embedded
+    # tool_results/tool_call_summaries as equivalent transcript evidence.
     recent_tool_names: list[str] = []
     for msg in reversed(message_history[-max_scan:]):
         if not isinstance(msg, dict):
             continue
         role = str(msg.get("role", "") or "").strip().lower()
-        if role != "tool":
-            continue
-        tool_name = str(msg.get("tool_name", "") or msg.get("name", "")).strip().lower()
-        if tool_name and tool_name not in recent_tool_names:
-            recent_tool_names.append(tool_name)
+        if role in {"tool", "toolresult", "tool_result"}:
+            _append_tool_name(msg.get("tool_name", "") or msg.get("name", ""))
+        for tool_result in reversed(msg.get("tool_results", []) or []):
+            if not isinstance(tool_result, dict):
+                continue
+            _append_tool_name(tool_result.get("tool_name", "") or tool_result.get("name", ""))
+        for tool_call in reversed(msg.get("tool_calls", []) or []):
+            if not isinstance(tool_call, dict):
+                continue
+            _append_tool_name(tool_call.get("name", "") or tool_call.get("tool_name", ""))
+        for summary in reversed(msg.get("tool_call_summaries", []) or []):
+            if not isinstance(summary, dict):
+                continue
+            _append_tool_name(summary.get("name", "") or summary.get("tool_name", ""))
 
     if not recent_tool_names:
         return None
@@ -367,59 +397,18 @@ def _infer_active_skill_from_transcript(
     return None
 
 
-def _infer_active_skill_from_workflow_context(
-    *,
-    workflow_context: Optional[dict[str, Any]],
-    md_skills_snapshot: list[dict[str, Any]],
-) -> Optional[str]:
-    """Infer the parent workflow skill from scoped request metadata.
-
-    Request workflows often call datasource helpers like business-group lookup.
-    When the routed skill doc must be recovered during a follow-up turn, prefer
-    the parent request skill if the scoped workflow metadata still contains one
-    of its request-owned catalog lookup tools.
-    """
-    if not isinstance(workflow_context, dict) or not md_skills_snapshot:
-        return None
-    recent_tool_metadata = workflow_context.get("recent_tool_metadata")
-    if not isinstance(recent_tool_metadata, list) or not recent_tool_metadata:
-        return None
-
-    skill_tool_index = _build_md_skill_tool_index(md_skills_snapshot=md_skills_snapshot)
-    if not skill_tool_index:
-        return None
-    skill_entries_by_qname = {
-        str(skill.get("qualified_name") or skill.get("name") or "").strip().lower(): skill
-        for skill in md_skills_snapshot
-        if isinstance(skill, dict)
-        and str(skill.get("qualified_name") or skill.get("name") or "").strip()
-    }
-
-    matched_skills: list[str] = []
-    for item in recent_tool_metadata:
-        if not isinstance(item, dict):
-            continue
-        tool_name = str(item.get("tool_name", "") or "").strip().lower()
-        if not tool_name:
-            continue
-        for qname, declared_tools in skill_tool_index.items():
-            if tool_name not in declared_tools:
-                continue
-            if qname not in matched_skills:
-                matched_skills.append(qname)
-
-    if not matched_skills:
-        return None
-
-    request_parent_skills = [
-        qname
-        for qname in matched_skills
-        if _resolve_md_skill_workflow_role(skill_entries_by_qname.get(qname, {}))
-        == "request_parent"
-    ]
-    if request_parent_skills:
-        return request_parent_skills[0]
-    return matched_skills[0]
+def _intent_plan_has_explicit_targets(intent_plan: ToolIntentPlan | None) -> bool:
+    if intent_plan is None:
+        return False
+    return any(
+        [
+            list(intent_plan.target_provider_types or []),
+            list(intent_plan.target_skill_names or []),
+            list(intent_plan.target_group_ids or []),
+            list(intent_plan.target_capability_classes or []),
+            list(intent_plan.target_tool_names or []),
+        ]
+    )
 
 
 def _artifact_classes_for_entry(entry: dict[str, Any]) -> set[str]:
@@ -1491,12 +1480,46 @@ class RunnerExecutionPreparePhaseMixin:
                 user_message=user_message,
                 recent_history=message_history,
             )
+            if isinstance(deps.extra, dict):
+                if used_follow_up_context and tool_request_message != user_message:
+                    deps.extra["current_follow_up_context"] = tool_request_message
+                else:
+                    deps.extra.pop("current_follow_up_context", None)
+            model_user_message = (
+                tool_request_message
+                if used_follow_up_context and tool_request_message != user_message
+                else user_message
+            )
             _log_step(
                 "tool_request_resolved",
                 used_follow_up_context=used_follow_up_context,
                 raw_user_message=user_message,
                 resolved_tool_request=tool_request_message,
             )
+            target_md_skill_workflow_context = build_target_md_skill_workflow_context(
+                recent_history=message_history,
+            )
+            transcript_active_skill = None
+            md_skills_snapshot = (
+                list(deps.extra.get("md_skills_snapshot") or [])
+                if isinstance(deps.extra, dict)
+                else []
+            )
+            if used_follow_up_context:
+                transcript_active_skill = _infer_active_skill_from_transcript(
+                    message_history=message_history,
+                    md_skills_snapshot=md_skills_snapshot,
+                )
+                if transcript_active_skill:
+                    if isinstance(deps.extra, dict):
+                        deps.extra["transcript_skill_continuation_hint"] = (
+                            transcript_active_skill
+                        )
+                    _log_step(
+                        "transcript_skill_continuation_hint_computed",
+                        reason="transcript_tool_calls_suggest_active_skill",
+                        hint_skill=transcript_active_skill,
+                    )
             selected_tool_intent_plan = build_user_selected_tool_intent_plan(deps)
             capability_selector_intent_plan: ToolIntentPlan | None = None
             if selected_tool_intent_plan is not None:
@@ -1622,6 +1645,22 @@ class RunnerExecutionPreparePhaseMixin:
                 metadata_tool_intent_plan = selected_tool_intent_plan
             else:
                 metadata_tool_intent_plan = capability_selector_intent_plan
+            transcript_skill_intent_plan = None
+            if (
+                selected_tool_intent_plan is None
+                and used_follow_up_context
+                and not _intent_plan_has_explicit_targets(metadata_tool_intent_plan)
+            ):
+                transcript_skill_intent_plan = build_transcript_skill_prompt_intent_plan(
+                    active_skill=transcript_active_skill,
+                )
+                if transcript_skill_intent_plan is not None:
+                    metadata_tool_intent_plan = transcript_skill_intent_plan
+                    _log_step(
+                        "transcript_skill_continuation_plan_applied",
+                        reason=transcript_skill_intent_plan.reason,
+                        target_skill_names=list(transcript_skill_intent_plan.target_skill_names),
+                    )
             if metadata_tool_intent_plan is not None:
                 _log_step(
                     "capability_selector_plan_resolved",
@@ -1693,10 +1732,10 @@ class RunnerExecutionPreparePhaseMixin:
                 else [],
             )
             if not explicit_capability_match:
-                available_tools = []
                 _log_step(
-                    "direct_answer_tools_hidden",
-                    reason="capability_selector_returned_no_executable_targets",
+                    "unmatched_intent_tools_preserved",
+                    reason="capability_selector_returned_no_target_preserve_authorized_tools",
+                    available_tool_count=len(available_tools),
                 )
 
             if tool_intent_plan is not None:
@@ -1772,58 +1811,49 @@ class RunnerExecutionPreparePhaseMixin:
                 reason=str(tool_projection_trace.get("reason", "") or ""),
                 coordination_tools=list(tool_projection_trace.get("coordination_tools", []) or []),
             )
-            target_md_skill_workflow_context = build_target_md_skill_workflow_context(
-                recent_history=message_history,
-            )
             target_md_skill = None
             # ── SKILL.md resolution ──────────────────────────────────────
             # SKILL.md loading follows the routing plan as-is.  Runtime does
-            # NOT override skill selection based on transcript — that would
-            # violate the LLM-first principle.
-            #
-            # Transcript analysis produces a *soft hint* that is injected
-            # into the prompt as non-binding context.  The LLM decides
-            # whether the current turn continues the hinted workflow.
+            # not force tool execution from transcript alone. When recent tool
+            # evidence identifies the active skill for a low-information
+            # follow-up, it is carried as a non-forcing skill target so the
+            # main model can continue the same workflow instead of losing the
+            # selected skill.
             #
             # Webhook-selected skills are an authenticated routing decision, so
             # they take precedence over classifier/transcript skill hints.
             preselected_md_skill_plan = build_preselected_md_skill_intent_plan(deps)
-            skill_resolution_plan = preselected_md_skill_plan or tool_intent_plan
             if preselected_md_skill_plan is not None:
                 _log_step(
                     "target_md_skill_preselected",
                     reason=preselected_md_skill_plan.reason,
                     target_skill_names=list(preselected_md_skill_plan.target_skill_names),
                 )
-            if used_follow_up_context:
-                workflow_active_skill = _infer_active_skill_from_workflow_context(
-                    workflow_context=target_md_skill_workflow_context,
-                    md_skills_snapshot=list(deps.extra.get("md_skills_snapshot") or []),
+            routed_skill_resolution_plan = (
+                tool_intent_plan if should_resolve_target_md_skill(tool_intent_plan) else None
+            )
+            transcript_skill_resolution_plan = None
+            if (
+                used_follow_up_context
+                and preselected_md_skill_plan is None
+                and routed_skill_resolution_plan is None
+            ):
+                transcript_skill_resolution_plan = build_transcript_skill_prompt_intent_plan(
+                    active_skill=transcript_active_skill,
                 )
-                if workflow_active_skill:
-                    if isinstance(deps.extra, dict):
-                        deps.extra["workflow_skill_continuation_hint"] = workflow_active_skill
+                if transcript_skill_resolution_plan is not None:
                     _log_step(
-                        "workflow_skill_continuation_hint_computed",
-                        reason="scoped_workflow_metadata_suggests_parent_skill",
-                        hint_skill=workflow_active_skill,
+                        "target_md_skill_from_transcript",
+                        reason=transcript_skill_resolution_plan.reason,
+                        target_skill_names=list(
+                            transcript_skill_resolution_plan.target_skill_names
+                        ),
                     )
-                # Compute transcript hint — soft prompt injection only,
-                # never used to override skill_resolution_plan.
-                transcript_active_skill = workflow_active_skill or _infer_active_skill_from_transcript(
-                    message_history=message_history,
-                    md_skills_snapshot=list(deps.extra.get("md_skills_snapshot") or []),
-                )
-                if transcript_active_skill:
-                    if isinstance(deps.extra, dict):
-                        deps.extra["transcript_skill_continuation_hint"] = (
-                            transcript_active_skill
-                        )
-                    _log_step(
-                        "transcript_skill_continuation_hint_computed",
-                        reason="transcript_tool_calls_suggest_active_skill",
-                        hint_skill=transcript_active_skill,
-                    )
+            skill_resolution_plan = (
+                preselected_md_skill_plan
+                or routed_skill_resolution_plan
+                or transcript_skill_resolution_plan
+            )
             if should_resolve_target_md_skill(skill_resolution_plan):
                 target_md_skill = resolve_selected_md_skill_target(
                     agent=runtime_agent or self.agent,
@@ -2183,6 +2213,7 @@ class RunnerExecutionPreparePhaseMixin:
                 "buffered_assistant_events": buffered_assistant_events,
                 "assistant_output_streamed": assistant_output_streamed,
                 "tool_request_message": tool_request_message,
+                "model_user_message": model_user_message,
                 "tool_intent_plan": tool_intent_plan,
                 "tool_gate_decision": tool_gate_decision,
                 "tool_match_result": tool_match_result,
