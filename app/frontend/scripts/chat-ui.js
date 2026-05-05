@@ -27,6 +27,7 @@ let isComposing = false // Track IME composition state for macOS/Asian input
 let blockNextEnterAfterComposition = false
 let blockNextEnterStartedAt = 0
 let focusRetryGeneration = 0
+let sessionActivationGeneration = 0
 
 const IME_ENTER_GUARD_MS = 150
 const SCROLL_THRESHOLD = 50
@@ -575,13 +576,29 @@ export async function initChat(element, callbacks = {}) {
   console.log('[ChatUI] Initialized')
 }
 
+/**
+ * Restore one chat session into the DeepChat view.
+ *
+ * Only the most recent activation may mutate the rendered history. Older
+ * history requests can finish after a faster follow-up click, so they must be
+ * ignored to keep the visible conversation aligned with the active sidebar row.
+ */
 export async function activateSession(sessionKey) {
   if (!chatElement) return false
-  currentSessionKey = sessionKey || getSessionKey()
+  const requestedSessionKey = sessionKey || getSessionKey()
+  const activationGeneration = ++sessionActivationGeneration
+  currentSessionKey = requestedSessionKey || null
   if (currentSessionKey) {
     setSessionKey(currentSessionKey)
   }
-  const hasHistory = await restoreSessionHistory(chatElement, currentSessionKey)
+  const hasHistory = await restoreSessionHistory(
+    chatElement,
+    currentSessionKey,
+    activationGeneration
+  )
+  if (hasHistory === null) {
+    return false
+  }
   setSessionHasMessages(hasHistory)
   notifyConversationState(hasHistory)
   return hasHistory
@@ -606,8 +623,15 @@ async function loadAgentInfo() {
   }
 }
 
-async function restoreSessionHistory(element, sessionKey) {
+function isCurrentSessionActivation(sessionKey, activationGeneration) {
+  return activationGeneration === sessionActivationGeneration && currentSessionKey === sessionKey
+}
+
+async function restoreSessionHistory(element, sessionKey, activationGeneration) {
   if (!sessionKey) {
+    if (!isCurrentSessionActivation(sessionKey, activationGeneration)) {
+      return null
+    }
     applyHistoryToElement(element, [])
     return false
   }
@@ -618,9 +642,15 @@ async function restoreSessionHistory(element, sessionKey) {
       .map((message) => mapTranscriptMessageToHistory(message))
       .filter(Boolean)
 
+    if (!isCurrentSessionActivation(sessionKey, activationGeneration)) {
+      return null
+    }
     applyHistoryToElement(element, history)
     return history.length > 0
   } catch (error) {
+    if (!isCurrentSessionActivation(sessionKey, activationGeneration)) {
+      return null
+    }
     console.warn('[ChatUI] Failed to restore session history:', error)
     applyHistoryToElement(element, [])
     return false

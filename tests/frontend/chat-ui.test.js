@@ -200,6 +200,14 @@ function waitForMutationObserver() {
     return new Promise(resolve => setTimeout(resolve, 0));
 }
 
+function createDeferred() {
+    let resolve;
+    const promise = new Promise((promiseResolve) => {
+        resolve = promiseResolve;
+    });
+    return { promise, resolve };
+}
+
 describe('chat-ui.js handler mode', () => {
     test('enter is blocked while IME composition is still active', async () => {
         sessionStorage.setItem('atlasclaw_session_key', 'session-123');
@@ -644,6 +652,86 @@ describe('chat-ui.js handler mode', () => {
 
         expect(messages.innerHTML).toBe('');
         expect(element.history).toEqual([]);
+    });
+
+    test('activateSession ignores stale history responses from earlier session switches', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-initial');
+
+        const slowHistory = createDeferred();
+        const fastMessages = [
+            { role: 'user', content: 'fast user prompt', timestamp: '2026-05-05T09:00:00' },
+            { role: 'assistant', content: 'fast assistant answer', timestamp: '2026-05-05T09:00:01' }
+        ];
+        const slowMessages = [
+            { role: 'user', content: 'slow stale prompt', timestamp: '2026-05-05T08:00:00' }
+        ];
+
+        global.fetch = jest.fn((url) => {
+            const target = String(url);
+            if (target.includes('/api/agent/info')) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ welcome_message: 'Hello!' })
+                });
+            }
+            if (target.includes('/api/sessions/session-initial/history')) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ messages: [] })
+                });
+            }
+            if (target.includes('/api/sessions/session-slow/history')) {
+                return slowHistory.promise;
+            }
+            if (target.includes('/api/sessions/session-fast/history')) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ messages: fastMessages })
+                });
+            }
+            return Promise.resolve({
+                ok: true,
+                json: () => Promise.resolve({})
+            });
+        });
+
+        const { initChat, activateSession, cancelChatInputFocusRetry } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        element.loadHistory = jest.fn((history) => {
+            messages.innerHTML = '';
+            history.forEach((message) => {
+                appendRenderedMessage(messages, message.role === 'user' ? 'user' : 'ai', message.text);
+            });
+        });
+
+        try {
+            await initChat(element);
+
+            const slowActivation = activateSession('session-slow');
+            const fastActivation = activateSession('session-fast');
+
+            await fastActivation;
+            expect(Array.from(messages.querySelectorAll('.message-bubble')).map((bubble) => bubble.textContent)).toEqual([
+                'fast user prompt',
+                'fast assistant answer'
+            ]);
+
+            slowHistory.resolve({
+                ok: true,
+                json: () => Promise.resolve({ messages: slowMessages })
+            });
+            await slowActivation;
+
+            expect(Array.from(messages.querySelectorAll('.message-bubble')).map((bubble) => bubble.textContent)).toEqual([
+                'fast user prompt',
+                'fast assistant answer'
+            ]);
+            expect(element.loadHistory).not.toHaveBeenLastCalledWith([
+                { role: 'user', text: 'slow stale prompt' }
+            ]);
+        } finally {
+            cancelChatInputFocusRetry();
+        }
     });
 
     test('handler calls API with correct body and starts SSE stream', async () => {
