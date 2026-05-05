@@ -931,20 +931,24 @@ function formatRuntimeHeaderElapsed(elapsedMs) {
   return `${(elapsedMs / 1000).toFixed(1)}s`
 }
 
-function buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs = null, isThinking = false, panelOpen = null, isComplete = false) {
+function getRuntimeDisplayEntries(runtimeEntries) {
   const entries = Array.isArray(runtimeEntries) ? runtimeEntries : []
-  const hasThinkingText = !!(thinkingContent && thinkingContent.trim())
-  const visibleEntries = entries
-  if (!visibleEntries.length && !hasThinkingText) {
-    return ''
-  }
-  const hasAnswered = !!isComplete
-  const hasFailed = visibleEntries.some((entry) => entry.state === 'failed')
-  const displayEntries = visibleEntries.filter((entry) => (
+  return entries.filter((entry) => (
     entry.state !== 'answered' &&
     entry.state !== 'answering' &&
     String(entry.message || '').trim() !== 'Reasoning phase completed.'
   ))
+}
+
+function buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs = null, isThinking = false, panelOpen = null, isComplete = false) {
+  const entries = Array.isArray(runtimeEntries) ? runtimeEntries : []
+  const hasThinkingText = !!(thinkingContent && thinkingContent.trim())
+  if (!entries.length && !hasThinkingText) {
+    return ''
+  }
+  const hasAnswered = !!isComplete
+  const displayEntries = getRuntimeDisplayEntries(entries)
+  const hasFailed = displayEntries.some((entry) => entry.state === 'failed')
   const chipEntries = displayEntries.filter((entry, index) => {
     if (index === 0) return true
     return entry.state !== displayEntries[index - 1].state
@@ -1519,6 +1523,8 @@ async function handleStreamWithSignals(runId, signals, context) {
   let serverRuntimeSeen = false
   let localRuntimeSeedTimers = []
   let renderRevision = 0
+  let lastRenderedMessageSnapshot = null
+  let lastRenderedMessageSignature = null
   let workspaceDownloadReferences = []
   let workspaceDownloadReferenceKeys = new Set()
 
@@ -1638,6 +1644,28 @@ async function handleStreamWithSignals(runId, signals, context) {
     return false
   }
 
+  function buildVisibleMessageSnapshot(panelShouldOpen) {
+    return {
+      runtimeEntries: runtimeEntries.map((entry) => ({
+        state: entry.state || '',
+        message: entry.message || ''
+      })),
+      thinkingContent,
+      aiMessageContent,
+      thinkingFinalized,
+      finalAnswerReady,
+      panelOpen: !!panelShouldOpen,
+      workspaceDownloads: workspaceDownloadReferences.map((reference) => ({
+        path: reference.path || '',
+        label: reference.label || ''
+      }))
+    }
+  }
+
+  function serializeVisibleMessageSnapshot(snapshot) {
+    return JSON.stringify(snapshot || {})
+  }
+
   function currentPanelShouldOpen() {
     if (runtimePanelUserOverride && typeof runtimePanelOpen === 'boolean') {
       return runtimePanelOpen
@@ -1679,6 +1707,44 @@ async function handleStreamWithSignals(runId, signals, context) {
     runtimePanelUserOverride = true
     runtimePanelOpen = !!nextOpen
     details.open = !!nextOpen
+    if (lastRenderedMessageSnapshot) {
+      lastRenderedMessageSnapshot = {
+        ...lastRenderedMessageSnapshot,
+        panelOpen: runtimePanelOpen
+      }
+      lastRenderedMessageSignature = serializeVisibleMessageSnapshot(lastRenderedMessageSnapshot)
+    }
+  }
+
+  function refreshRenderedElapsed(elapsedMs) {
+    const container = getMessageContainer()
+    if (!container) return
+    const panel = getLatestRuntimePanel(container)
+    if (!panel) return
+
+    const titleElapsed = panel.querySelector('.runtime-title-elapsed')
+    const nextTitleElapsed = formatRuntimeHeaderElapsed(elapsedMs)
+    if (titleElapsed && nextTitleElapsed && titleElapsed.textContent !== nextTitleElapsed) {
+      titleElapsed.textContent = nextTitleElapsed
+    }
+
+    const displayEntries = getRuntimeDisplayEntries(runtimeEntries)
+    const hasFailed = displayEntries.some((entry) => entry.state === 'failed')
+    const timeNodes = panel.querySelectorAll('.runtime-log-time')
+    displayEntries.forEach((entry, index) => {
+      const timeNode = timeNodes[index]
+      if (!timeNode) return
+      const isActiveEntry = !finalAnswerReady && !hasFailed && index === displayEntries.length - 1
+      const effectiveElapsedMs = (
+        isActiveEntry && typeof elapsedMs === 'number' && !Number.isNaN(elapsedMs)
+      )
+        ? Math.max(entry.elapsedMs || 0, elapsedMs)
+        : entry.elapsedMs
+      const nextTime = formatElapsed(effectiveElapsedMs)
+      if (nextTime && timeNode.textContent !== nextTime) {
+        timeNode.textContent = nextTime
+      }
+    })
   }
 
   function bindRuntimePanelToggle() {
@@ -1721,13 +1787,20 @@ async function handleStreamWithSignals(runId, signals, context) {
   function updateUI() {
     try {
       captureRenderedRuntimePanelState()
-      renderRevision += 1
       const panelShouldOpen = currentPanelShouldOpen()
+      const elapsedMs = currentElapsedMs()
+      const nextMessageSnapshot = buildVisibleMessageSnapshot(panelShouldOpen)
+      const nextMessageSignature = serializeVisibleMessageSnapshot(nextMessageSnapshot)
+      if (nextMessageSignature === lastRenderedMessageSignature) {
+        refreshRenderedElapsed(elapsedMs)
+        return
+      }
+      renderRevision += 1
       const content = buildMessageContent(
         runtimeEntries,
         thinkingContent,
         aiMessageContent,
-        currentElapsedMs(),
+        elapsedMs,
         !thinkingFinalized,
         panelShouldOpen,
         finalAnswerReady,
@@ -1735,6 +1808,8 @@ async function handleStreamWithSignals(runId, signals, context) {
         workspaceDownloadReferences
       )
       if (content.html) {
+        lastRenderedMessageSnapshot = nextMessageSnapshot
+        lastRenderedMessageSignature = nextMessageSignature
         signals.onResponse({ html: content.html, overwrite: true })
         scheduleRuntimePanelStateSync(panelShouldOpen)
         bindRuntimePanelToggle()

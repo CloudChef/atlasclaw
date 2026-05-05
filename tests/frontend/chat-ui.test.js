@@ -200,6 +200,13 @@ function waitForMutationObserver() {
     return new Promise(resolve => setTimeout(resolve, 0));
 }
 
+function parseRenderedElapsedSeconds(value) {
+    const text = String(value || '').trim();
+    if (text.endsWith('ms')) return Number.parseFloat(text.slice(0, -2)) / 1000;
+    if (text.endsWith('s')) return Number.parseFloat(text.slice(0, -1));
+    return Number.parseFloat(text);
+}
+
 function createDeferred() {
     let resolve;
     const promise = new Promise((promiseResolve) => {
@@ -1989,6 +1996,141 @@ describe('chat-ui.js handler mode', () => {
         }
     });
 
+    test('handler avoids overwriting an open runtime panel for elapsed-only timer ticks', async () => {
+        jest.useFakeTimers();
+        try {
+            const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+            const { element, messages } = createDomChatElementWithMessages();
+            const signals = createDomSignals(messages);
+
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ session_key: 'session-123' })
+            }).mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            });
+
+            await initChat(element);
+            global.fetch.mockClear();
+
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ run_id: 'run-thinking-panel-elapsed-only' })
+            });
+
+            const handlerPromise = element.handler(
+                { messages: [{ text: 'open without flicker', role: 'user' }] },
+                signals
+            );
+
+            await jest.advanceTimersByTimeAsync(100);
+
+            const stream = MockEventSource.instances[0];
+            stream.simulateEvent('thinking', { phase: 'start' });
+            stream.simulateEvent('thinking', { phase: 'delta', content: 'First thought.' });
+            stream.simulateEvent('runtime', {
+                state: 'reasoning',
+                message: 'Waiting for model tool decision.',
+                elapsed: 0.1,
+                phase: 'agent_first_node_wait'
+            });
+
+            await jest.advanceTimersByTimeAsync(160);
+
+            const panel = messages.querySelector('details.runtime-panel');
+            expect(panel).not.toBeNull();
+            expect(panel.open).toBe(false);
+
+            const summary = panel.querySelector('summary');
+            expect(summary).not.toBeNull();
+            summary.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+
+            const responseCallsAfterOpen = signals.onResponse.mock.calls.length;
+            const titleElapsedBefore = panel.querySelector('.runtime-title-elapsed')?.textContent || '';
+            const activeLogElapsedBefore = panel.querySelector('.runtime-log-item.active .runtime-log-time')?.textContent || '';
+            await jest.advanceTimersByTimeAsync(350);
+
+            const stablePanel = messages.querySelector('details.runtime-panel');
+            const titleElapsedAfter = stablePanel.querySelector('.runtime-title-elapsed')?.textContent || '';
+            const activeLogElapsedAfter = stablePanel.querySelector('.runtime-log-item.active .runtime-log-time')?.textContent || '';
+            expect(signals.onResponse).toHaveBeenCalledTimes(responseCallsAfterOpen);
+            expect(stablePanel).not.toBeNull();
+            expect(stablePanel.open).toBe(true);
+            expect(parseRenderedElapsedSeconds(titleElapsedAfter)).toBeGreaterThan(parseRenderedElapsedSeconds(titleElapsedBefore));
+            expect(parseRenderedElapsedSeconds(activeLogElapsedAfter)).toBeGreaterThan(parseRenderedElapsedSeconds(activeLogElapsedBefore));
+
+            stream.simulateEvent('lifecycle', { phase: 'end' });
+            await jest.advanceTimersByTimeAsync(300);
+            await handlerPromise;
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
+    test('handler renders pending thinking delta after runtime panel opens before debounce', async () => {
+        jest.useFakeTimers();
+        try {
+            const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+            const { element, messages } = createDomChatElementWithMessages();
+            const signals = createDomSignals(messages);
+
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ session_key: 'session-123' })
+            }).mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            });
+
+            await initChat(element);
+            global.fetch.mockClear();
+
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ run_id: 'run-thinking-panel-pending-delta' })
+            });
+
+            const handlerPromise = element.handler(
+                { messages: [{ text: 'open during pending delta', role: 'user' }] },
+                signals
+            );
+
+            await jest.advanceTimersByTimeAsync(100);
+
+            const stream = MockEventSource.instances[0];
+            stream.simulateEvent('runtime', {
+                state: 'reasoning',
+                message: 'Waiting for model tool decision.',
+                elapsed: 0.1,
+                phase: 'agent_first_node_wait'
+            });
+            stream.simulateEvent('thinking', { phase: 'start' });
+            stream.simulateEvent('thinking', { phase: 'delta', content: 'First thought.' });
+
+            const panel = messages.querySelector('details.runtime-panel');
+            expect(panel).not.toBeNull();
+            expect(messages.innerHTML).not.toContain('First thought.');
+
+            const summary = panel.querySelector('summary');
+            expect(summary).not.toBeNull();
+            summary.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 0 }));
+
+            await jest.advanceTimersByTimeAsync(90);
+
+            const stablePanel = messages.querySelector('details.runtime-panel');
+            expect(messages.innerHTML).toContain('First thought.');
+            expect(stablePanel).not.toBeNull();
+            expect(stablePanel.open).toBe(true);
+
+            stream.simulateEvent('lifecycle', { phase: 'end' });
+            await jest.advanceTimersByTimeAsync(300);
+            await handlerPromise;
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
     test('handler does not reload session history immediately after stream end', async () => {
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const element = createChatElement();
@@ -2267,7 +2409,7 @@ describe('chat-ui.js handler mode', () => {
         await handlerPromise;
     });
 
-    test('handler refreshes runtime panel on heartbeat while waiting for tool decision', async () => {
+    test('handler keeps runtime panel stable on heartbeat when only elapsed time changes', async () => {
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const element = createChatElement();
         const signals = createMockSignals();
@@ -2311,7 +2453,7 @@ describe('chat-ui.js handler mode', () => {
         const afterHeartbeatCalls = signals.onResponse.mock.calls.length;
         const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
 
-        expect(afterHeartbeatCalls).toBeGreaterThan(beforeHeartbeatCalls);
+        expect(afterHeartbeatCalls).toBe(beforeHeartbeatCalls);
         expect(htmlPayload).toContain('Waiting for model tool decision.');
         expect(htmlPayload).not.toContain('Model accepted the request and started reasoning.');
 
