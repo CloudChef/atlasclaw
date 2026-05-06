@@ -175,7 +175,7 @@
       {
         "system_id": "smartcmp-preapproval",
         "enabled": true,
-        "sk_env": "ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL",
+        "sk_env": "${ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL}",
         "default_agent_id": "main",
         "allowed_skills": [
           "smartcmp:preapproval-agent",

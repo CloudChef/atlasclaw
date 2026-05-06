@@ -126,9 +126,9 @@ class WebhookDispatchManager:
         for system in self._config.systems:
             if not system.enabled:
                 continue
-            if not os.environ.get(system.sk_env, "").strip():
+            if not _resolve_webhook_system_secret(system):
                 raise RuntimeError(
-                    f"Missing webhook secret in environment variable {system.sk_env!r}"
+                    f"Missing webhook secret for system {system.system_id!r} from sk_env"
                 )
             for skill_id in system.allowed_skills:
                 self._validate_skill_identifier(skill_id)
@@ -151,7 +151,7 @@ class WebhookDispatchManager:
         for system in self._config.systems:
             if not system.enabled:
                 continue
-            expected = os.environ.get(system.sk_env, "").strip()
+            expected = _resolve_webhook_system_secret(system)
             if expected and hmac.compare_digest(expected, candidate):
                 return WebhookSystemIdentity(
                     system_id=system.system_id,
@@ -181,7 +181,19 @@ class WebhookDispatchManager:
         if not _QUALIFIED_SKILL_RE.match(skill_id):
             raise RuntimeError(
                 f"Invalid webhook skill identifier {skill_id!r}; expected provider:skill"
-            )
+        )
+
+
+def _resolve_webhook_system_secret(system: WebhookSystemConfig) -> str:
+    """Resolve sk_env as an env var name first, then as a direct secret."""
+    configured = (system.sk_env or "").strip()
+    if not configured:
+        return ""
+
+    env_value = os.environ.get(configured)
+    if env_value is not None:
+        return env_value.strip()
+    return configured
 
 
 def redact_webhook_payload(payload: dict[str, Any], *, provider_type: str = "") -> dict[str, Any]:

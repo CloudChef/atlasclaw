@@ -18,7 +18,7 @@ Webhook systems are configured in `atlasclaw.json`:
       {
         "system_id": "external-review",
         "enabled": true,
-        "sk_env": "ATLASCLAW_WEBHOOK_SK_EXTERNAL_REVIEW",
+        "sk_env": "${ATLASCLAW_WEBHOOK_SK_EXTERNAL_REVIEW}",
         "default_agent_id": "main",
         "allowed_skills": ["example_provider:backend-agent"]
       }
@@ -27,8 +27,25 @@ Webhook systems are configured in `atlasclaw.json`:
 }
 ```
 
-The webhook secret is read from the environment variable named by `sk_env`.
-Do not store webhook secrets directly in `atlasclaw.json`.
+`sk_env` supports three deployment shapes:
+
+- `${ATLASCLAW_WEBHOOK_SK_EXTERNAL_REVIEW}`: expanded by `ConfigManager` before webhook startup.
+- `ATLASCLAW_WEBHOOK_SK_EXTERNAL_REVIEW`: legacy environment variable name; webhook startup reads that env var.
+- `SK_AtlasClawExample`: direct shared secret value for deployments that cannot provide environment variables.
+
+```json
+{
+  "webhook": {
+    "systems": [
+      {
+        "system_id": "external-review",
+        "sk_env": "SK_AtlasClawExample",
+        "allowed_skills": ["example_provider:backend-agent"]
+      }
+    ]
+  }
+}
+```
 
 ## Dispatch Request
 
@@ -147,7 +164,8 @@ password, and cookie-like fields.
 
 ## Security Notes
 
-- Keep webhook secrets and robot credentials in environment variables.
+- Prefer environment variables for webhook secrets and robot credentials when
+  the deployment environment supports them.
 - Allow only provider-qualified backend skills in webhook `allowed_skills`.
 - Keep each robot profile allowlist as small as possible.
 - Use a provider-native robot credential whose upstream audit identity is
