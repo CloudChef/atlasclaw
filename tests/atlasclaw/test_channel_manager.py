@@ -188,6 +188,23 @@ class TestChannelManager:
         assert result is True
         handler.reconnect.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_background_initialize_retries_transient_failure(self):
+        """Background startup should retry transient connection failures."""
+        with patch.object(
+            self.manager,
+            "initialize_connection",
+            AsyncMock(side_effect=[False, True]),
+        ) as mock_initialize, patch(
+            "app.atlasclaw.channels.manager.asyncio.sleep",
+            AsyncMock(),
+        ) as mock_sleep:
+            await self.manager._background_initialize("user-123", "websocket", "conn-123")
+
+        assert mock_initialize.await_count == 2
+        mock_sleep.assert_awaited_once_with(2.0)
+        assert self.manager.get_connection_runtime_status("conn-123") == "connecting"
+
     def test_list_active_connection_descriptors(self):
         handler = WebSocketHandler({})
         self.manager._active_connections["user-123:websocket:conn-1"] = handler

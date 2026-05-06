@@ -450,6 +450,23 @@ class DingTalkHandler(ChannelHandler):
             return "webhook_url must not include credentials"
         return None
 
+    async def _verify_credentials_for_connect(self) -> bool:
+        """Verify credentials with short retry before opening the stream connection."""
+        verify_attempts = 3
+        retry_delay_seconds = 0.8
+        for attempt in range(1, verify_attempts + 1):
+            if await self._verify_credentials():
+                return True
+            if attempt < verify_attempts:
+                logger.warning(
+                    "[DingTalk] Credential verification failed during connect "
+                    "(attempt %s/%s), retrying",
+                    attempt,
+                    verify_attempts,
+                )
+                await asyncio.sleep(retry_delay_seconds * attempt)
+        return False
+
     async def _cleanup_connect_failure(self) -> None:
         """Cleanup resources after connect failure."""
         self._running = False
@@ -476,7 +493,7 @@ class DingTalkHandler(ChannelHandler):
             # Use Stream mode with multiprocessing
             if client_id and client_secret:
                 # Pre-verify credentials before starting SDK subprocess
-                if not await self._verify_credentials():
+                if not await self._verify_credentials_for_connect():
                     self._status = ConnectionStatus.ERROR
                     return False
                 logger.info(f"[DingTalk] Connecting with client_id: {client_id}")

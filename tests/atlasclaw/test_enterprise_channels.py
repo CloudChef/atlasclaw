@@ -225,6 +225,30 @@ class TestWeComHandler:
         }
 
     @pytest.mark.asyncio
+    async def test_poll_provisioning_connection_keeps_init_status_pending(self):
+        """Unscanned WeCom QR sessions should remain pending instead of failing."""
+        handler = WeComHandler()
+        session = ChannelProvisioningSession(
+            session_id="session-1",
+            user_id="user-1",
+            channel_type="wecom",
+            state_token="state-token",
+            user_code="WECM-CODE",
+            platform_state={"scode": "scode", "interval": 1},
+        )
+
+        with patch.object(
+            handler,
+            "_query_openclaw_qr_result",
+            AsyncMock(return_value={"data": {"status": "init"}}),
+        ):
+            result = await handler.poll_provisioning_connection(session)
+
+        assert result is None
+        assert session.status == "pending"
+        assert session.error is None
+
+    @pytest.mark.asyncio
     async def test_poll_provisioning_connection_rejects_missing_bot_id(self):
         """Test QR polling completion requires WeCom bot credentials."""
         handler = WeComHandler()
@@ -411,6 +435,25 @@ class TestWeComHandler:
         assert isinstance(result, ChannelValidationResult)
         assert result.valid is True
         mock_verify.assert_awaited_once_with(config)
+
+    @pytest.mark.asyncio
+    async def test_connect_access_token_retries_transient_failure(self):
+        """Connect-time app token fetch should tolerate short platform delays."""
+        handler = WeComHandler({"corpid": "corp_test", "corpsecret": "secret"})
+
+        with patch.object(
+            handler,
+            "_get_access_token",
+            AsyncMock(side_effect=[False, False, True]),
+        ) as mock_token, patch(
+            "app.atlasclaw.channels.handlers.wecom.asyncio.sleep",
+            AsyncMock(),
+        ) as mock_sleep:
+            result = await handler._get_access_token_for_connect()
+
+        assert result is True
+        assert mock_token.await_count == 3
+        assert mock_sleep.await_count == 2
 
     @pytest.mark.asyncio
     async def test_validate_config_empty(self):

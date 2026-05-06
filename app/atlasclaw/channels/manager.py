@@ -572,17 +572,46 @@ class ChannelManager:
             channel_type: Channel type
             connection_id: Connection identifier
         """
-        try:
-            result = await self.initialize_connection(user_id, channel_type, connection_id)
-            if not result:
-                logger.warning(
-                    f"Background connection initialization failed: "
-                    f"{channel_type}/{connection_id}"
+        retry_delays_seconds = (0.0, 2.0, 5.0)
+        total_attempts = len(retry_delays_seconds)
+        for attempt, delay_seconds in enumerate(
+            retry_delays_seconds,
+            start=1,
+        ):
+            if delay_seconds > 0:
+                await asyncio.sleep(delay_seconds)
+
+            try:
+                result = await self.initialize_connection(user_id, channel_type, connection_id)
+            except Exception as e:
+                logger.error(
+                    f"Background connection initialization error: "
+                    f"{channel_type}/{connection_id}: {e}"
                 )
-        except Exception as e:
-            logger.error(
-                f"Background connection initialization error: "
-                f"{channel_type}/{connection_id}: {e}"
+                result = False
+
+            if result:
+                return
+
+            if attempt < total_attempts:
+                next_delay = retry_delays_seconds[attempt]
+                self._set_connection_runtime_status(connection_id, ConnectionStatus.CONNECTING)
+                logger.warning(
+                    "Background connection initialization failed for %s/%s "
+                    "(attempt %s/%s), retrying in %.1fs",
+                    channel_type,
+                    connection_id,
+                    attempt,
+                    total_attempts,
+                    next_delay,
+                )
+                continue
+
+            logger.warning(
+                "Background connection initialization failed for %s/%s after %s attempts",
+                channel_type,
+                connection_id,
+                total_attempts,
             )
 
     async def disable_connection(

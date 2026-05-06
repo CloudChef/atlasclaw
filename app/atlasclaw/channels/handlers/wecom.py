@@ -39,7 +39,6 @@ from ..qr_provisioning import (
 
 logger = logging.getLogger(__name__)
 VERIFY_TIMEOUT_SECONDS = 2.6
-WEBSOCKET_VERIFY_WAIT_SECONDS = 2.0
 
 
 class WeComHandler(ChannelHandler):
@@ -218,7 +217,7 @@ class WeComHandler(ChannelHandler):
                     "bot_secret": str(bot_secret),
                 },
             )
-        if status in {"", "pending", "waiting", "scanned"}:
+        if status in {"", "init", "pending", "waiting", "scanned"}:
             session.status = "authorizing" if status == "scanned" else "pending"
             session.error = None
             session.updated_at = utcnow()
@@ -283,7 +282,7 @@ class WeComHandler(ChannelHandler):
                 corpsecret = self.config.get("corpsecret")
                 
                 if corpid and corpsecret:
-                    if not await self._get_access_token():
+                    if not await self._get_access_token_for_connect():
                         logger.error("Failed to get WeCom access token")
                         return False
                 
@@ -295,6 +294,23 @@ class WeComHandler(ChannelHandler):
             logger.error(f"WeCom connect failed: {e}")
             self._status = ConnectionStatus.ERROR
             return False
+
+    async def _get_access_token_for_connect(self) -> bool:
+        """Get an application access token with short retry during startup."""
+        access_token_attempts = 3
+        retry_delay_seconds = 0.8
+        for attempt in range(1, access_token_attempts + 1):
+            if await self._get_access_token():
+                return True
+            if attempt < access_token_attempts:
+                logger.warning(
+                    "[WeCom] Access token fetch failed during connect "
+                    "(attempt %s/%s), retrying",
+                    attempt,
+                    access_token_attempts,
+                )
+                await asyncio.sleep(retry_delay_seconds * attempt)
+        return False
 
     @staticmethod
     def _looks_like_http_url(url: str) -> bool:
@@ -377,7 +393,8 @@ class WeComHandler(ChannelHandler):
             self._running = True
             await self._ws_client.connect()
             
-            deadline = time.monotonic() + WEBSOCKET_VERIFY_WAIT_SECONDS
+            websocket_verify_wait_seconds = 5.0
+            deadline = time.monotonic() + websocket_verify_wait_seconds
             while time.monotonic() < deadline:
                 if self._ws_client.is_connected or self._status == ConnectionStatus.CONNECTED:
                     break

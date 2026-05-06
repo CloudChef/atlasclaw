@@ -294,6 +294,25 @@ class TestDingTalkHandler:
         mock_verify.assert_awaited_once_with(config)
 
     @pytest.mark.asyncio
+    async def test_connect_credential_verification_retries_transient_failure(self):
+        """Connect-time credential verification should tolerate short platform delays."""
+        handler = DingTalkHandler({"client_id": "ding_test", "client_secret": "secret"})
+
+        with patch.object(
+            handler,
+            "_verify_credentials",
+            AsyncMock(side_effect=[False, False, True]),
+        ) as mock_verify, patch(
+            "app.atlasclaw.channels.handlers.dingtalk.asyncio.sleep",
+            AsyncMock(),
+        ) as mock_sleep:
+            result = await handler._verify_credentials_for_connect()
+
+        assert result is True
+        assert mock_verify.await_count == 3
+        assert mock_sleep.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_validate_config_valid_webhook(self):
         """Test config validation with valid webhook_url."""
         handler = DingTalkHandler()

@@ -269,6 +269,25 @@ class TestFeishuHandler:
         mock_verify.assert_awaited_once_with(config)
 
     @pytest.mark.asyncio
+    async def test_connect_credential_verification_retries_transient_failure(self):
+        """Connect-time credential verification should tolerate short platform delays."""
+        handler = FeishuHandler({"app_id": "test_app_id", "app_secret": "test_app_secret"})
+
+        with patch.object(
+            handler,
+            "_verify_credentials",
+            AsyncMock(side_effect=[False, False, True]),
+        ) as mock_verify, patch(
+            "app.atlasclaw.channels.handlers.feishu.asyncio.sleep",
+            AsyncMock(),
+        ) as mock_sleep:
+            result = await handler._verify_credentials_for_connect()
+
+        assert result is True
+        assert mock_verify.await_count == 3
+        assert mock_sleep.await_count == 2
+
+    @pytest.mark.asyncio
     async def test_validate_config_missing_app_id(self):
         """Test config validation fails when app_id missing."""
         handler = FeishuHandler()
