@@ -18,6 +18,8 @@ from app.atlasclaw.channels.models import (
     ChannelMode,
     ChannelValidationResult,
     ConnectionStatus,
+    InboundMessage,
+    OutboundMessage,
 )
 from app.atlasclaw.channels.handlers.dingtalk import DingTalkHandler
 from app.atlasclaw.channels.handlers.wecom import WeComHandler
@@ -190,6 +192,65 @@ class TestWeComHandler:
         
         assert result is True
         assert handler.config["webhook_url"] == "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=xxx"
+
+    @pytest.mark.asyncio
+    async def test_acknowledge_message_opens_stream_and_final_reply_reuses_it(self, monkeypatch):
+        """WeCom native acknowledgement should preserve and finish the same stream."""
+        utils_module = ModuleType("wecom_aibot_sdk.utils")
+        utils_module.generate_random_string = lambda length: "stream-123"
+        sdk_module = ModuleType("wecom_aibot_sdk")
+        sdk_module.utils = utils_module
+        monkeypatch.setitem(sys.modules, "wecom_aibot_sdk", sdk_module)
+        monkeypatch.setitem(sys.modules, "wecom_aibot_sdk.utils", utils_module)
+
+        handler = WeComHandler()
+        frame = {
+            "headers": {"req_id": "req-1"},
+            "body": {"chatid": "chat-1"},
+        }
+        handler._pending_frames["req-1"] = frame
+        ws_client = AsyncMock()
+        ws_client.is_connected = True
+        handler._ws_client = ws_client
+        inbound = InboundMessage(
+            message_id="req-1",
+            sender_id="user-1",
+            sender_name="User",
+            chat_id="chat-1",
+            channel_type="wecom",
+            content="hello",
+            metadata={"req_id": "req-1", "frame": frame},
+        )
+
+        ack_result = await handler.acknowledge_message(inbound)
+
+        assert ack_result.supported is True
+        assert ack_result.success is True
+        assert handler._pending_frames["req-1"] is frame
+        assert handler._reply_stream_ids["req-1"] == "stream-123"
+        ws_client.reply_stream.assert_awaited_once_with(
+            frame,
+            "stream-123",
+            handler.ACK_PLACEHOLDER,
+            finish=False,
+        )
+
+        outbound = OutboundMessage(
+            chat_id="chat-1",
+            content="final answer",
+            metadata={"req_id": "req-1"},
+        )
+        send_result = await handler.send_message(outbound)
+
+        assert send_result.success is True
+        assert "req-1" not in handler._pending_frames
+        assert "req-1" not in handler._reply_stream_ids
+        assert ws_client.reply_stream.await_args_list[-1].args == (
+            frame,
+            "stream-123",
+            "final answer",
+        )
+        assert ws_client.reply_stream.await_args_list[-1].kwargs == {"finish": True}
 
     @pytest.mark.asyncio
     async def test_poll_provisioning_connection_maps_websocket_config(self):

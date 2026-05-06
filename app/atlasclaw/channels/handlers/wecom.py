@@ -24,6 +24,7 @@ from ..models import (
     ChannelValidationResult,
     ConnectionStatus,
     InboundMessage,
+    MessageAcknowledgementResult,
     OutboundMessage,
     SendResult,
 )
@@ -83,6 +84,7 @@ class WeComHandler(ChannelHandler):
     OPENCLAW_QR_QUERY_URL = "https://work.weixin.qq.com/ai/qc/query_result"
     OPENCLAW_QR_SOURCE = "wecom-cli"
     OPENCLAW_QR_TIMEOUT_SECONDS = 8
+    ACK_PLACEHOLDER = "已收到，正在处理..."
     
     def __init__(self, config: Dict[str, Any] = None):
         super().__init__(config)
@@ -94,6 +96,9 @@ class WeComHandler(ChannelHandler):
         self._running = False
         # Store frame for reply lookup
         self._pending_frames: Dict[str, Any] = {}
+        # Store stream IDs opened by native acknowledgement so final replies can
+        # finish the same platform-visible stream instead of creating a new one.
+        self._reply_stream_ids: Dict[str, str] = {}
 
     async def create_provisioning_session(
         self,
@@ -574,6 +579,68 @@ class WeComHandler(ChannelHandler):
         except Exception as e:
             logger.error(f"Failed to handle WeCom message: {e}")
             return None
+
+    async def acknowledge_message(
+        self,
+        inbound: InboundMessage,
+    ) -> MessageAcknowledgementResult:
+        """Show WeCom's native streaming placeholder for a received message.
+
+        WebSocket intelligent-robot replies are tied to the original frame and
+        request ID. The acknowledgement opens the stream with `finish=False`;
+        the final Agent reply later closes the same stream with `finish=True`.
+        """
+        req_id = inbound.metadata.get("req_id") if inbound.metadata else None
+        if not req_id:
+            return MessageAcknowledgementResult(
+                supported=False,
+                success=False,
+                error="WeCom native acknowledgement requires a request ID",
+            )
+        frame = self._pending_frames.get(req_id)
+        if not frame:
+            return MessageAcknowledgementResult(
+                supported=False,
+                success=False,
+                error="WeCom native acknowledgement requires a pending frame",
+            )
+        if not self._ws_client or not getattr(self._ws_client, "is_connected", False):
+            return MessageAcknowledgementResult(
+                supported=True,
+                success=False,
+                error="WeCom WebSocket is not connected",
+            )
+        stream_id = self._reply_stream_ids.get(req_id)
+        if stream_id:
+            return MessageAcknowledgementResult(
+                supported=True,
+                success=True,
+                metadata={"req_id": req_id, "stream_id": stream_id},
+            )
+
+        try:
+            from wecom_aibot_sdk.utils import generate_random_string
+
+            stream_id = generate_random_string(16)
+            await self._ws_client.reply_stream(
+                frame,
+                stream_id,
+                self.ACK_PLACEHOLDER,
+                finish=False,
+            )
+            self._reply_stream_ids[req_id] = stream_id
+            return MessageAcknowledgementResult(
+                supported=True,
+                success=True,
+                metadata={"req_id": req_id, "stream_id": stream_id},
+            )
+        except Exception as e:
+            logger.error(f"[WeCom] Native acknowledgement failed: {e}")
+            return MessageAcknowledgementResult(
+                supported=True,
+                success=False,
+                error=str(e),
+            )
     
     async def send_message(self, outbound: OutboundMessage) -> SendResult:
         """Send message to WeCom.
@@ -612,8 +679,11 @@ class WeComHandler(ChannelHandler):
             
             if frame:
                 # Reply to the original message with stream
-                from wecom_aibot_sdk.utils import generate_random_string
-                stream_id = generate_random_string(16)
+                stream_id = self._reply_stream_ids.pop(req_id, None)
+                if not stream_id:
+                    from wecom_aibot_sdk.utils import generate_random_string
+
+                    stream_id = generate_random_string(16)
                 
                 await self._ws_client.reply_stream(
                     frame,

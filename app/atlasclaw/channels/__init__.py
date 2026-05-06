@@ -13,6 +13,7 @@ from .models import (
     ChannelValidationResult,
     ConnectionStatus,
     InboundMessage,
+    MessageAcknowledgementResult,
     OutboundMessage,
     SendResult,
 )
@@ -27,6 +28,7 @@ __all__ = [
     "ChannelValidationResult",
     "ConnectionStatus",
     "InboundMessage",
+    "MessageAcknowledgementResult",
     "OutboundMessage",
     "SendResult",
 ]

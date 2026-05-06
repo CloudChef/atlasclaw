@@ -18,6 +18,7 @@ from app.atlasclaw.channels import (
     ChannelValidationResult,
     ConnectionStatus,
     InboundMessage,
+    MessageAcknowledgementResult,
     OutboundMessage,
     SendResult,
 )
@@ -69,6 +70,18 @@ class TestChannelModels:
         result = SendResult(success=True, message_id="msg-123")
         assert result.success is True
         assert result.message_id == "msg-123"
+
+    def test_message_acknowledgement_result(self):
+        """Test MessageAcknowledgementResult dataclass."""
+        result = MessageAcknowledgementResult(
+            supported=True,
+            success=True,
+            metadata={"stream_id": "stream-123"},
+        )
+
+        assert result.supported is True
+        assert result.success is True
+        assert result.metadata["stream_id"] == "stream-123"
 
     def test_channel_connection(self):
         """Test ChannelConnection dataclass."""
@@ -271,6 +284,24 @@ class TestWebSocketHandler:
         # disconnect() should return True (base implementation)
         result = await handler.disconnect()
         assert result is True
+
+    @pytest.mark.asyncio
+    async def test_acknowledge_message_defaults_to_unsupported(self):
+        """Default handlers should not send ordinary fallback acknowledgement text."""
+        handler = WebSocketHandler()
+        inbound = InboundMessage(
+            message_id="msg-123",
+            sender_id="user-456",
+            sender_name="Test",
+            chat_id="chat-789",
+            channel_type="websocket",
+            content="Hello",
+        )
+
+        result = await handler.acknowledge_message(inbound)
+
+        assert result.supported is False
+        assert result.success is False
 
     @pytest.mark.asyncio
     async def test_reconnect(self):

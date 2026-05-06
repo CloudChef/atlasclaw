@@ -995,6 +995,7 @@ Channel handler abstraction, registry, manager, and built-in handler implementat
 | `InboundMessage` | `message_id`, `sender_id`, `sender_name`, `chat_id`, `channel_type`, `content`, `content_type="text"`, `thread_id`, `reply_to`, `metadata`, `timestamp` |
 | `OutboundMessage` | `chat_id`, `content`, `content_type="text"`, `thread_id`, `reply_to`, `metadata` |
 | `SendResult` | `success: bool`, `message_id: Optional[str]`, `error: Optional[str]` |
+| `MessageAcknowledgementResult` | `supported: bool`, `success: bool`, `error: Optional[str]`, `metadata` |
 | `ChannelValidationResult` | `valid: bool`, `errors: list[str]` |
 | `ChannelConnection` | `id`, `name`, `channel_type`, `config`, `enabled=True`, `is_default=False`, `runtime_state`, `created_at`, `updated_at` |
 
@@ -1011,6 +1012,11 @@ Class attributes: `channel_type: str`, `channel_name: str`, `channel_icon: str`,
 | `stop` | `() -> bool` | Stop the handler |
 
 **Long Connection Methods**: `connect() -> bool`, `disconnect() -> bool`, `set_message_callback(callback)`
+
+**Native Acknowledgement Method**: `acknowledge_message(inbound) -> MessageAcknowledgementResult`
+is best-effort and must not send ordinary fallback text when a platform has no
+native received/processing surface. Current platform implementations include
+Feishu message reactions and WeCom streaming placeholders.
 
 **Webhook Methods**: `validate_webhook(signature) -> bool`, `handle_webhook(payload) -> bool`
 
@@ -1050,7 +1056,7 @@ injects `provider_type`, `provider_instance_name`, `provider_instance`, `provide
 | `WebSocketHandler` | `websocket.py` | BIDIRECTIONAL | Long connection | Full duplex streaming |
 | `RESTHandler` | `rest.py` | INBOUND | Webhook | Request/response |
 | `SSEHandler` | `sse.py` | BIDIRECTIONAL | Long connection | Server-sent events |
-| `FeishuHandler` | `feishu.py` | BIDIRECTIONAL | Long connection | Multiprocessing for SDK isolation |
+| `FeishuHandler` | `feishu.py` | BIDIRECTIONAL | Long connection | Multiprocessing for SDK isolation; reaction acknowledgement |
 | `DingTalkHandler` | `dingtalk.py` | BIDIRECTIONAL | Long connection | Stream mode integration |
 | `WeComHandler` | `wecom.py` | BIDIRECTIONAL | Long connection | WeCom (WeChat Work) |
 

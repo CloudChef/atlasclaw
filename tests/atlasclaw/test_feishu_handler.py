@@ -7,13 +7,15 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 import json
+import sys
+from types import ModuleType, SimpleNamespace
 from urllib.parse import parse_qs, urlparse
 
 import pytest
 from unittest.mock import MagicMock, AsyncMock, patch
 from typing import Dict, Any
 
-from app.atlasclaw.channels.handlers.feishu import FeishuHandler
+from app.atlasclaw.channels.handlers.feishu import FeishuHandler, _run_feishu_sdk_process
 from app.atlasclaw.channels.models import (
     ChannelMode,
     ConnectionStatus,
@@ -23,6 +25,31 @@ from app.atlasclaw.channels.models import (
 )
 from app.atlasclaw.channels.qr_provisioning import ChannelProvisioningRequest
 from app.atlasclaw.channels.qr_provisioning import ChannelProvisioningSession, utcnow
+
+
+def _configure_aiohttp_post(
+    mock_aiohttp: MagicMock,
+    payload: Dict[str, Any],
+    status: int = 200,
+) -> tuple[MagicMock, MagicMock]:
+    """Configure the patched aiohttp module to return one JSON POST response."""
+    mock_response = MagicMock()
+    mock_response.status = status
+    mock_response.json = AsyncMock(return_value=payload)
+
+    mock_post_cm = AsyncMock()
+    mock_post_cm.__aenter__.return_value = mock_response
+    mock_post_cm.__aexit__.return_value = None
+
+    mock_session = MagicMock()
+    mock_session.post.return_value = mock_post_cm
+
+    mock_session_cm = AsyncMock()
+    mock_session_cm.__aenter__.return_value = mock_session
+    mock_session_cm.__aexit__.return_value = None
+
+    mock_aiohttp.ClientSession.return_value = mock_session_cm
+    return mock_session, mock_response
 
 
 class TestFeishuHandler:
@@ -46,6 +73,79 @@ class TestFeishuHandler:
         assert handler.config == {}
         assert handler._status == ConnectionStatus.DISCONNECTED
         assert handler._access_token is None
+
+    def test_sdk_process_registers_reaction_created_event_handler(self, monkeypatch):
+        """Test SDK process consumes reaction-created events from acknowledgement."""
+        registered = {}
+
+        class FakeEventHandlerBuilder:
+            """Minimal SDK event-handler builder used by the subprocess wrapper."""
+
+            def register_p2_im_message_receive_v1(self, callback):
+                registered["message"] = callback
+                return self
+
+            def register_p2_im_message_reaction_created_v1(self, callback):
+                registered["reaction_created"] = callback
+                return self
+
+            def build(self):
+                return "event-handler"
+
+        class FakeEventDispatcherHandler:
+            """Minimal SDK dispatcher factory used by the subprocess wrapper."""
+
+            @staticmethod
+            def builder(encrypt_key, verification_token):
+                assert encrypt_key == ""
+                assert verification_token == ""
+                return FakeEventHandlerBuilder()
+
+        class FakeClient:
+            """Minimal WebSocket client that records the supplied event handler."""
+
+            def __init__(self, app_id, app_secret, *, event_handler, log_level):
+                assert app_id == "cli_test"
+                assert app_secret == "secret"
+                assert event_handler == "event-handler"
+                assert log_level == "INFO"
+
+            def start(self):
+                return None
+
+        class FakeTimer:
+            """Timer stub that prevents background callbacks during the unit test."""
+
+            daemon = False
+
+            def __init__(self, interval, callback):
+                self.interval = interval
+                self.callback = callback
+
+            def start(self):
+                return None
+
+        lark_module = ModuleType("lark_oapi")
+        lark_module.EventDispatcherHandler = FakeEventDispatcherHandler
+        lark_module.ws = SimpleNamespace(Client=FakeClient)
+        lark_module.LogLevel = SimpleNamespace(INFO="INFO")
+
+        im_v1_module = ModuleType("lark_oapi.api.im.v1")
+        im_v1_module.P2ImMessageReceiveV1 = object
+
+        monkeypatch.setitem(sys.modules, "lark_oapi", lark_module)
+        monkeypatch.setitem(sys.modules, "lark_oapi.api", ModuleType("lark_oapi.api"))
+        monkeypatch.setitem(sys.modules, "lark_oapi.api.im", ModuleType("lark_oapi.api.im"))
+        monkeypatch.setitem(sys.modules, "lark_oapi.api.im.v1", im_v1_module)
+        monkeypatch.setattr(
+            "app.atlasclaw.channels.handlers.feishu.threading.Timer",
+            FakeTimer,
+        )
+
+        _run_feishu_sdk_process("cli_test", "secret", MagicMock(), MagicMock())
+
+        assert "message" in registered
+        assert "reaction_created" in registered
 
     @pytest.mark.asyncio
     async def test_provisioned_config_is_compatible_with_manual_longconnection_path(self):
@@ -439,25 +539,13 @@ class TestFeishuHandler:
         )
         
         with patch("app.atlasclaw.channels.handlers.feishu.aiohttp") as mock_aiohttp:
-            mock_response = MagicMock()
-            mock_response.status = 200
-            mock_response.json = AsyncMock(return_value={
-                "code": 0,
-                "data": {"message_id": "sent_msg_id"}
-            })
-            
-            mock_post_cm = AsyncMock()
-            mock_post_cm.__aenter__.return_value = mock_response
-            mock_post_cm.__aexit__.return_value = None
-            
-            mock_session = MagicMock()
-            mock_session.post.return_value = mock_post_cm
-            
-            mock_session_cm = AsyncMock()
-            mock_session_cm.__aenter__.return_value = mock_session
-            mock_session_cm.__aexit__.return_value = None
-            
-            mock_aiohttp.ClientSession.return_value = mock_session_cm
+            _configure_aiohttp_post(
+                mock_aiohttp,
+                {
+                    "code": 0,
+                    "data": {"message_id": "sent_msg_id"},
+                },
+            )
             
             result = await handler.send_message(outbound)
             
@@ -478,25 +566,13 @@ class TestFeishuHandler:
         )
         
         with patch("app.atlasclaw.channels.handlers.feishu.aiohttp") as mock_aiohttp:
-            mock_response = MagicMock()
-            mock_response.status = 200
-            mock_response.json = AsyncMock(return_value={
-                "code": 99999,
-                "msg": "API Error"
-            })
-            
-            mock_post_cm = AsyncMock()
-            mock_post_cm.__aenter__.return_value = mock_response
-            mock_post_cm.__aexit__.return_value = None
-            
-            mock_session = MagicMock()
-            mock_session.post.return_value = mock_post_cm
-            
-            mock_session_cm = AsyncMock()
-            mock_session_cm.__aenter__.return_value = mock_session
-            mock_session_cm.__aexit__.return_value = None
-            
-            mock_aiohttp.ClientSession.return_value = mock_session_cm
+            _configure_aiohttp_post(
+                mock_aiohttp,
+                {
+                    "code": 99999,
+                    "msg": "API Error",
+                },
+            )
             
             result = await handler.send_message(outbound)
             
@@ -618,27 +694,113 @@ class TestFeishuConnectionMode:
         )
         
         with patch("app.atlasclaw.channels.handlers.feishu.aiohttp") as mock_aiohttp:
-            mock_response = MagicMock()
-            mock_response.status = 200
-            mock_response.json = AsyncMock(return_value={"code": 0})
-            
-            mock_post_cm = AsyncMock()
-            mock_post_cm.__aenter__.return_value = mock_response
-            mock_post_cm.__aexit__.return_value = None
-            
-            mock_session = MagicMock()
-            mock_session.post.return_value = mock_post_cm
-            
-            mock_session_cm = AsyncMock()
-            mock_session_cm.__aenter__.return_value = mock_session
-            mock_session_cm.__aexit__.return_value = None
-            
-            mock_aiohttp.ClientSession.return_value = mock_session_cm
+            mock_session, _mock_response = _configure_aiohttp_post(
+                mock_aiohttp,
+                {"code": 0},
+            )
             
             result = await handler.send_message(outbound)
             
             assert result.success is True
             # Verify webhook URL was called
             mock_session.post.assert_called_once()
-            call_args = mock_session.post.call_args
             assert "webhook_url" in handler.config
+
+    @pytest.mark.asyncio
+    async def test_acknowledge_message_adds_reaction(self):
+        """Feishu acknowledgement uses a native reaction on the inbound message."""
+        handler = FeishuHandler({"app_id": "test_id", "app_secret": "test_secret"})
+        handler._access_token = "test_token"
+        handler._token_expires_at = 9999999999
+        handler.send_message = AsyncMock()
+        inbound = InboundMessage(
+            message_id="om_msg_123",
+            sender_id="user-123",
+            sender_name="User",
+            chat_id="chat-123",
+            channel_type="feishu",
+            content="hello",
+            metadata={"chat_type": "p2p"},
+        )
+
+        with patch("app.atlasclaw.channels.handlers.feishu.aiohttp") as mock_aiohttp:
+            mock_session, _mock_response = _configure_aiohttp_post(
+                mock_aiohttp,
+                {
+                    "code": 0,
+                    "data": {"reaction_id": "reaction-123"},
+                },
+            )
+
+            result = await handler.acknowledge_message(inbound)
+
+        assert result.supported is True
+        assert result.success is True
+        assert result.metadata == {
+            "message_id": "om_msg_123",
+            "reaction_id": "reaction-123",
+            "emoji_type": "OK",
+        }
+        mock_session.post.assert_called_once_with(
+            "https://open.feishu.cn/open-apis/im/v1/messages/om_msg_123/reactions",
+            json={"reaction_type": {"emoji_type": "OK"}},
+            headers={
+                "Authorization": "Bearer test_token",
+                "Content-Type": "application/json",
+            },
+        )
+        handler.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_acknowledge_message_reports_reaction_api_error(self):
+        """Feishu acknowledgement reports reaction API errors without text fallback."""
+        handler = FeishuHandler({"app_id": "test_id", "app_secret": "test_secret"})
+        handler._access_token = "test_token"
+        handler._token_expires_at = 9999999999
+        handler.send_message = AsyncMock()
+        inbound = InboundMessage(
+            message_id="om_msg_123",
+            sender_id="user-123",
+            sender_name="User",
+            chat_id="chat-123",
+            channel_type="feishu",
+            content="hello",
+            metadata={"chat_type": "p2p"},
+        )
+
+        with patch("app.atlasclaw.channels.handlers.feishu.aiohttp") as mock_aiohttp:
+            _configure_aiohttp_post(
+                mock_aiohttp,
+                {
+                    "code": 231001,
+                    "msg": "reaction type is invalid",
+                },
+            )
+
+            result = await handler.acknowledge_message(inbound)
+
+        assert result.supported is True
+        assert result.success is False
+        assert "reaction type is invalid" in result.error
+        handler.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_acknowledge_message_without_credentials_does_not_send_text_fallback(self):
+        """Feishu acknowledgement is unsupported without app credentials."""
+        handler = FeishuHandler()
+        handler.send_message = AsyncMock()
+        inbound = InboundMessage(
+            message_id="msg-123",
+            sender_id="user-123",
+            sender_name="User",
+            chat_id="chat-123",
+            channel_type="feishu",
+            content="hello",
+            metadata={"chat_type": "p2p"},
+        )
+
+        result = await handler.acknowledge_message(inbound)
+
+        assert result.supported is False
+        assert result.success is False
+        handler.send_message.assert_not_awaited()

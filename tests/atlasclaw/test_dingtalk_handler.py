@@ -484,6 +484,27 @@ class TestDingTalkHandler:
         assert result.success is False
         assert "No valid send method" in result.error
 
+    @pytest.mark.asyncio
+    async def test_acknowledge_message_does_not_send_text_fallback(self):
+        """DingTalk protocol ACK should not become an ordinary bot message."""
+        handler = DingTalkHandler({"webhook_url": "https://test.webhook.url"})
+        handler.send_message = AsyncMock()
+        inbound = InboundMessage(
+            message_id="msg-123",
+            sender_id="user-123",
+            sender_name="User",
+            chat_id="chat-123",
+            channel_type="dingtalk",
+            content="hello",
+            metadata={"session_webhook": "https://session.webhook"},
+        )
+
+        result = await handler.acknowledge_message(inbound)
+
+        assert result.supported is False
+        assert result.success is False
+        handler.send_message.assert_not_awaited()
+
 
 class TestDingTalkHandlerMessageCallback:
     """Tests for DingTalk handler message callback functionality."""

@@ -34,6 +34,7 @@ AtlasClaw supports multiple connection modes for IM platform integration:
 | Webhook | Planned | Yes | Yes |
 | Application API | No | No | Yes |
 | Streaming Reply | No | No | Yes |
+| Native received/processing acknowledgement | Yes (reaction) | Protocol ACK only | Yes (stream placeholder) |
 | Markdown Support | Limited | No | Yes |
 | File Messages (Inbound) | No | No | Yes (metadata) |
 | Image Messages (Inbound) | No | No | Yes (metadata) |
@@ -45,6 +46,9 @@ AtlasClaw supports multiple connection modes for IM platform integration:
 - WeCom runs in the same process using async WebSocket
 - Markdown support in Feishu is limited to text-only replies
 - WeCom sends replies in Markdown format when using WebSocket mode
+- Native acknowledgement is best-effort. It never sends ordinary fallback text
+  when a platform has no native received/processing status surface. Feishu uses
+  a message reaction on the original inbound message.
 
 ---
 
@@ -230,6 +234,7 @@ Navigate to **"Permissions & Scopes"** and add these permissions:
 | Send messages | `im:message:send_as_bot` | Send messages as bot |
 | Receive group messages | `im:message.group_msg` | Receive messages in groups |
 | Receive private messages | `im:message.p2p_msg` | Receive direct messages |
+| Add message reactions | `im:message.reactions:write_only` | Add native receipt reactions |
 | Event subscription | `event:message` | Subscribe to message events |
 
 #### Step 4: Publish Application

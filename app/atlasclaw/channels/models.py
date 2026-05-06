@@ -62,6 +62,20 @@ class SendResult:
 
 
 @dataclass
+class MessageAcknowledgementResult:
+    """Result of a native inbound-message acknowledgement attempt.
+
+    This result models platform-visible receipt or processing state, not a
+    normal outbound text reply. Unsupported channels return `supported=False`
+    so the manager can continue Agent processing without sending fallback text.
+    """
+    supported: bool
+    success: bool
+    error: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class ChannelValidationResult:
     """Result of validating channel configuration."""
     valid: bool

@@ -25,6 +25,7 @@ from ..models import (
     ChannelValidationResult,
     ConnectionStatus,
     InboundMessage,
+    MessageAcknowledgementResult,
     OutboundMessage,
     SendResult,
 )
@@ -97,6 +98,11 @@ def _run_feishu_sdk_process(
             
         except Exception as e:
             print(f"[Feishu SDK Process] Error handling message: {e}")
+
+    def ignore_message_reaction_created(data: Any) -> None:
+        """Ignore reaction-created events produced by native acknowledgement."""
+        event_id = getattr(getattr(data, "header", None), "event_id", "")
+        print(f"[Feishu SDK Process] Ignored reaction-created event: {event_id}", flush=True)
     
     def send_connected_signal():
         """Send connected signal after delay if process is still running."""
@@ -113,11 +119,12 @@ def _run_feishu_sdk_process(
         print(f"[Feishu SDK Process] Starting with app_id: {app_id}", flush=True)
         
         # Create event handler
-        event_handler = lark.EventDispatcherHandler.builder(
-            "", ""
-        ).register_p2_im_message_receive_v1(
-            handle_message
-        ).build()
+        event_handler = (
+            lark.EventDispatcherHandler.builder("", "")
+            .register_p2_im_message_receive_v1(handle_message)
+            .register_p2_im_message_reaction_created_v1(ignore_message_reaction_created)
+            .build()
+        )
         
         # Create WebSocket client
         client = lark.ws.Client(
@@ -658,6 +665,73 @@ class FeishuHandler(ChannelHandler):
         """Stop handler."""
         await self.disconnect()
         return True
+
+    async def acknowledge_message(
+        self,
+        inbound: InboundMessage,
+    ) -> MessageAcknowledgementResult:
+        """Acknowledge a Feishu message by reacting to the original message.
+
+        Feishu does not expose a generic bot typing indicator in this handler.
+        The native visible receipt path is a message reaction, which requires a
+        real Feishu message ID, enterprise-app credentials, and reaction
+        permissions on the Feishu app. Failures are reported as result objects
+        so Agent processing can continue.
+        """
+        message_id = inbound.message_id.strip()
+        if not message_id:
+            return MessageAcknowledgementResult(
+                supported=False,
+                success=False,
+                error="Feishu reaction acknowledgement requires a message ID",
+            )
+        if not self.config.get("app_id") or not self.config.get("app_secret"):
+            return MessageAcknowledgementResult(
+                supported=False,
+                success=False,
+                error="Feishu reaction acknowledgement requires app credentials",
+            )
+        if not await self._refresh_access_token():
+            return MessageAcknowledgementResult(
+                supported=True,
+                success=False,
+                error="Failed to get Feishu access token",
+            )
+
+        url = f"{self.FEISHU_API_BASE}/im/v1/messages/{message_id}/reactions"
+        payload = {"reaction_type": {"emoji_type": "OK"}}
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            async with aiohttp.ClientSession(trust_env=True) as session:
+                async with session.post(url, json=payload, headers=headers) as response:
+                    data = await response.json()
+            if data.get("code") == 0:
+                reaction = data.get("data", {})
+                return MessageAcknowledgementResult(
+                    supported=True,
+                    success=True,
+                    metadata={
+                        "message_id": message_id,
+                        "reaction_id": reaction.get("reaction_id"),
+                        "emoji_type": "OK",
+                    },
+                )
+            return MessageAcknowledgementResult(
+                supported=True,
+                success=False,
+                error=f"Feishu reaction API error: {data.get('msg', data.get('code'))}",
+            )
+        except Exception as e:
+            logger.error(f"Failed to acknowledge Feishu message with reaction: {e}")
+            return MessageAcknowledgementResult(
+                supported=True,
+                success=False,
+                error=str(e),
+            )
     
     async def send_message(self, outbound: OutboundMessage) -> SendResult:
         """Send message to Feishu."""

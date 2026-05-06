@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import tempfile
 from pathlib import Path
@@ -20,7 +21,12 @@ from app.atlasclaw.api.service_provider_schemas import (
 )
 from app.atlasclaw.channels import ChannelConnection, ChannelRegistry
 from app.atlasclaw.channels.handlers import WebSocketHandler
-from app.atlasclaw.channels.models import ConnectionStatus, InboundMessage, SendResult
+from app.atlasclaw.channels.models import (
+    ConnectionStatus,
+    InboundMessage,
+    MessageAcknowledgementResult,
+    SendResult,
+)
 from app.atlasclaw.channels.manager import ChannelManager
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
@@ -492,3 +498,137 @@ class TestChannelManager:
         assert "provider_instance" not in deps.extra
         assert deps.extra["available_providers"] == {}
         assert deps.extra["provider_instances"] == {}
+
+    @pytest.mark.asyncio
+    async def test_process_message_async_acknowledges_before_agent_run(self):
+        """Channel messages should be acknowledged before the Agent starts work."""
+        ctx = APIContext(
+            session_manager=SessionManager(str(Path(self.temp_dir))),
+            session_queue=SessionQueue(),
+            skill_registry=SkillRegistry(),
+            provider_instances={},
+        )
+        manager = ChannelManager(self.temp_dir)
+        manager.set_session_manager_router(ctx.session_manager_router)
+        handler = WebSocketHandler({})
+        order = []
+
+        async def _acknowledge(_message):
+            order.append("ack")
+            return MessageAcknowledgementResult(supported=False, success=False)
+
+        handler.acknowledge_message = AsyncMock(side_effect=_acknowledge)
+        handler.send_message = AsyncMock(return_value=SendResult(success=True))
+        manager._active_connections["user-123:websocket:conn-123"] = handler
+
+        class DummyAgentRunner:
+            async def run(self, **kwargs):
+                del kwargs
+                order.append("run")
+                yield SimpleNamespace(type="assistant", content="ok")
+
+        manager._agent_runner = DummyAgentRunner()
+        message = InboundMessage(
+            message_id="msg-123",
+            sender_id="ext-user-1",
+            sender_name="External User",
+            chat_id="dm-chat-1",
+            channel_type="websocket",
+            content="hello",
+            metadata={"chat_type": "p2p"},
+        )
+
+        with patch("app.atlasclaw.api.deps_context.get_api_context", return_value=ctx):
+            await manager._process_message_async("user-123", "websocket", "conn-123", message)
+
+        assert order[:2] == ["ack", "run"]
+        handler.acknowledge_message.assert_awaited_once_with(message)
+        handler.send_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_process_message_async_continues_when_acknowledgement_fails(self):
+        """Acknowledgement errors should not prevent the final Agent response."""
+        ctx = APIContext(
+            session_manager=SessionManager(str(Path(self.temp_dir))),
+            session_queue=SessionQueue(),
+            skill_registry=SkillRegistry(),
+            provider_instances={},
+        )
+        manager = ChannelManager(self.temp_dir)
+        manager.set_session_manager_router(ctx.session_manager_router)
+        handler = WebSocketHandler({})
+        handler.acknowledge_message = AsyncMock(side_effect=RuntimeError("ack failed"))
+        handler.send_message = AsyncMock(return_value=SendResult(success=True))
+        manager._active_connections["user-123:websocket:conn-123"] = handler
+
+        class DummyAgentRunner:
+            async def run(self, **kwargs):
+                del kwargs
+                yield SimpleNamespace(type="assistant", content="ok")
+
+        manager._agent_runner = DummyAgentRunner()
+        message = InboundMessage(
+            message_id="msg-123",
+            sender_id="ext-user-1",
+            sender_name="External User",
+            chat_id="dm-chat-1",
+            channel_type="websocket",
+            content="hello",
+            metadata={"chat_type": "p2p"},
+        )
+
+        with patch("app.atlasclaw.api.deps_context.get_api_context", return_value=ctx):
+            await manager._process_message_async("user-123", "websocket", "conn-123", message)
+
+        handler.acknowledge_message.assert_awaited_once_with(message)
+        handler.send_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_process_message_async_continues_when_acknowledgement_times_out(self):
+        """Slow native acknowledgement should not delay Agent processing indefinitely."""
+        ctx = APIContext(
+            session_manager=SessionManager(str(Path(self.temp_dir))),
+            session_queue=SessionQueue(),
+            skill_registry=SkillRegistry(),
+            provider_instances={},
+        )
+        manager = ChannelManager(self.temp_dir)
+        manager.set_session_manager_router(ctx.session_manager_router)
+        handler = WebSocketHandler({})
+
+        async def _raise_timeout(awaitable, *, timeout):
+            del timeout
+            if hasattr(awaitable, "close"):
+                awaitable.close()
+            raise asyncio.TimeoutError
+
+        handler.acknowledge_message = AsyncMock(
+            return_value=MessageAcknowledgementResult(supported=True, success=True)
+        )
+        handler.send_message = AsyncMock(return_value=SendResult(success=True))
+        manager._active_connections["user-123:websocket:conn-123"] = handler
+
+        class DummyAgentRunner:
+            async def run(self, **kwargs):
+                del kwargs
+                yield SimpleNamespace(type="assistant", content="ok")
+
+        manager._agent_runner = DummyAgentRunner()
+        message = InboundMessage(
+            message_id="msg-123",
+            sender_id="ext-user-1",
+            sender_name="External User",
+            chat_id="dm-chat-1",
+            channel_type="websocket",
+            content="hello",
+            metadata={"chat_type": "p2p"},
+        )
+
+        with patch("app.atlasclaw.api.deps_context.get_api_context", return_value=ctx), patch(
+            "app.atlasclaw.channels.manager.asyncio.wait_for",
+            new=_raise_timeout,
+        ):
+            await manager._process_message_async("user-123", "websocket", "conn-123", message)
+
+        handler.acknowledge_message.assert_called_once_with(message)
+        handler.send_message.assert_awaited_once()

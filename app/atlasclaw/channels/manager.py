@@ -238,6 +238,13 @@ class ChannelManager:
             if not handler:
                 logger.error(f"[ChannelManager] No handler found for {instance_key}")
                 return
+
+            await self._acknowledge_message_received(
+                handler,
+                channel_type=channel_type,
+                connection_id=connection_id,
+                message=message,
+            )
             
             from app.atlasclaw.api.deps_context import build_scoped_deps, get_api_context
 
@@ -305,6 +312,60 @@ class ChannelManager:
         except Exception as e:
             logger.error(f"[ChannelManager] Error processing message: {e}", exc_info=True)
 
+    async def _acknowledge_message_received(
+        self,
+        handler: ChannelHandler,
+        *,
+        channel_type: str,
+        connection_id: str,
+        message: InboundMessage,
+    ) -> None:
+        """Best-effort native acknowledgement before Agent processing starts."""
+        try:
+            result = await asyncio.wait_for(
+                handler.acknowledge_message(message),
+                timeout=1.5,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[ChannelManager] Message acknowledgement timed out for %s/%s: %s",
+                channel_type,
+                connection_id,
+                message.message_id,
+            )
+            return
+        except Exception as e:
+            logger.warning(
+                "[ChannelManager] Message acknowledgement failed for %s/%s: %s",
+                channel_type,
+                connection_id,
+                e,
+                exc_info=True,
+            )
+            return
+
+        if not result.supported:
+            logger.debug(
+                "[ChannelManager] Native acknowledgement unsupported for %s/%s: %s",
+                channel_type,
+                connection_id,
+                message.message_id,
+            )
+            return
+        if result.success:
+            logger.debug(
+                "[ChannelManager] Native acknowledgement sent for %s/%s: %s",
+                channel_type,
+                connection_id,
+                message.message_id,
+            )
+            return
+        logger.warning(
+            "[ChannelManager] Native acknowledgement returned failure for %s/%s: %s",
+            channel_type,
+            connection_id,
+            result.error or "unknown error",
+        )
 
     def _resolve_chat_type(self, message: InboundMessage) -> ChatType:
         """Map provider-specific metadata to canonical chat types."""

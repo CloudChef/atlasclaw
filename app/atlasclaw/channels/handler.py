@@ -13,6 +13,7 @@ from .models import (
     ChannelValidationResult,
     ConnectionStatus,
     InboundMessage,
+    MessageAcknowledgementResult,
     OutboundMessage,
     SendResult,
 )
@@ -165,6 +166,30 @@ class ChannelHandler(ABC):
             Standardized InboundMessage or None if invalid
         """
         pass
+
+    async def acknowledge_message(
+        self,
+        inbound: InboundMessage,
+    ) -> MessageAcknowledgementResult:
+        """Acknowledge that a platform message has reached the Agent runtime.
+
+        This method is for native IM receipt, typing, or streaming-placeholder
+        surfaces. It must not send ordinary fallback text when a channel lacks
+        a platform-native acknowledgement capability.
+
+        Args:
+            inbound: Standardized inbound message being handed to the Agent.
+
+        Returns:
+            A result describing whether the channel supports and completed a
+            native acknowledgement for this message.
+        """
+        del inbound
+        return MessageAcknowledgementResult(
+            supported=False,
+            success=False,
+            error="Native acknowledgement is not supported by this channel",
+        )
     
     @abstractmethod
     async def send_message(self, outbound: OutboundMessage) -> SendResult:
