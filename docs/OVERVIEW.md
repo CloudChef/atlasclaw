@@ -229,7 +229,7 @@ secret, then dispatches only skills listed in that system's `allowed_skills`:
       {
         "system_id": "external-review",
         "enabled": true,
-        "sk_env": "ATLASCLAW_WEBHOOK_SK_EXTERNAL_REVIEW",
+        "sk_env": "${ATLASCLAW_WEBHOOK_SK_EXTERNAL_REVIEW}",
         "default_agent_id": "main",
         "allowed_skills": ["external-review:review"]
       }
@@ -237,6 +237,10 @@ secret, then dispatches only skills listed in that system's `allowed_skills`:
   }
 }
 ```
+
+`sk_env` may be a `${VAR}` placeholder, a legacy environment variable name, or
+the shared secret value itself for container deployments that cannot provide
+environment variables.
 
 Webhook payloads can select a provider instance with `args.provider_instance`.
 When a backend skill must run with an administrator-owned robot credential,

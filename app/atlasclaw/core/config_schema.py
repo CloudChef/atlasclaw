@@ -293,7 +293,12 @@ class WebhookSystemConfig(BaseModel):
     """Per-system webhook access configuration."""
     system_id: str = Field(description="Stable identifier for the external system")
     enabled: bool = True
-    sk_env: str = Field(description="Environment variable that stores the shared secret")
+    sk_env: str = Field(
+        description=(
+            "Webhook shared secret, or an environment variable name / ${VAR} placeholder "
+            "that resolves to the shared secret"
+        )
+    )
     default_agent_id: str = "main"
     allowed_skills: list[str] = Field(default_factory=list)
 

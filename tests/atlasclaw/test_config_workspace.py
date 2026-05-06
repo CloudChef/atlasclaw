@@ -161,6 +161,79 @@ class TestConfigWorkspaceLoading:
         assert isinstance(config, AtlasClawConfig)
         assert not hasattr(config, "channels_root")
 
+    def test_webhook_sk_env_placeholder_expands_secret(self, tmp_path, monkeypatch):
+        """Webhook sk_env supports ${VAR} placeholders in atlasclaw.json."""
+        config_path = tmp_path / "config.json"
+        monkeypatch.setenv("ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL", "secret-1")
+        with open(config_path, "w") as f:
+            json.dump(
+                {
+                    "webhook": {
+                        "enabled": True,
+                        "systems": [
+                            {
+                                "system_id": "smartcmp-preapproval",
+                                "sk_env": "${ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL}",
+                                "allowed_skills": ["smartcmp:preapproval-agent"],
+                            }
+                        ],
+                    }
+                },
+                f,
+            )
+
+        config = ConfigManager(config_path=str(config_path)).load()
+
+        assert config.webhook.systems[0].sk_env == "secret-1"
+
+    def test_webhook_sk_env_stays_env_var_name(self, tmp_path):
+        """Webhook sk_env remains an environment variable name, not a secret value."""
+        config_path = tmp_path / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(
+                {
+                    "webhook": {
+                        "enabled": True,
+                        "systems": [
+                            {
+                                "system_id": "smartcmp-preapproval",
+                                "sk_env": "ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL",
+                                "allowed_skills": ["smartcmp:preapproval-agent"],
+                            }
+                        ],
+                    }
+                },
+                f,
+            )
+
+        config = ConfigManager(config_path=str(config_path)).load()
+
+        assert config.webhook.systems[0].sk_env == "ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL"
+
+    def test_webhook_sk_env_direct_secret_stays_literal(self, tmp_path):
+        """Webhook sk_env can store a direct shared secret in atlasclaw.json."""
+        config_path = tmp_path / "config.json"
+        with open(config_path, "w") as f:
+            json.dump(
+                {
+                    "webhook": {
+                        "enabled": True,
+                        "systems": [
+                            {
+                                "system_id": "smartcmp-preapproval",
+                                "sk_env": "SK_AtlasClawDirect",
+                                "allowed_skills": ["smartcmp:preapproval-agent"],
+                            }
+                        ],
+                    }
+                },
+                f,
+            )
+
+        config = ConfigManager(config_path=str(config_path)).load()
+
+        assert config.webhook.systems[0].sk_env == "SK_AtlasClawDirect"
+
 
 class TestWorkspaceConfigSchema:
     """Test WorkspaceConfig schema."""

@@ -148,7 +148,7 @@ def _build_client(
 
 
 class TestWebhookDispatchManager:
-    def test_validate_startup_requires_env_secret(self, tmp_path, monkeypatch):
+    def test_validate_startup_accepts_direct_config_secret(self, tmp_path, monkeypatch):
         registry = SkillRegistry()
         _write_skill_md(
             tmp_path / "skills" / "preapproval-agent" / "SKILL.md",
@@ -160,7 +160,7 @@ class TestWebhookDispatchManager:
             location="external",
             provider="smartcmp",
         )
-        monkeypatch.delenv("ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL", raising=False)
+        monkeypatch.delenv("sk-direct-secret", raising=False)
 
         manager = WebhookDispatchManager(
             WebhookConfig(
@@ -168,7 +168,107 @@ class TestWebhookDispatchManager:
                 systems=[
                     WebhookSystemConfig(
                         system_id="smartcmp-preapproval",
-                        sk_env="ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL",
+                        sk_env="sk-direct-secret",
+                        allowed_skills=["smartcmp:preapproval-agent"],
+                    )
+                ],
+            ),
+            registry,
+        )
+
+        manager.validate_startup()
+        identity = manager.authenticate("sk-direct-secret")
+
+        assert identity is not None
+        assert identity.system_id == "smartcmp-preapproval"
+
+    def test_validate_startup_accepts_direct_sk_env_secret(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        registry = SkillRegistry()
+        _write_skill_md(
+            tmp_path / "skills" / "preapproval-agent" / "SKILL.md",
+            name="preapproval-agent",
+            description="smartcmp preapproval",
+        )
+        registry.load_from_directory(
+            str(tmp_path / "skills"),
+            location="external",
+            provider="smartcmp",
+        )
+        monkeypatch.delenv("SK_AtlasClawDirect", raising=False)
+
+        manager = WebhookDispatchManager(
+            WebhookConfig(
+                enabled=True,
+                systems=[
+                    WebhookSystemConfig(
+                        system_id="smartcmp-preapproval",
+                        sk_env="SK_AtlasClawDirect",
+                        allowed_skills=["smartcmp:preapproval-agent"],
+                    )
+                ],
+            ),
+            registry,
+        )
+
+        manager.validate_startup()
+        assert manager.authenticate("SK_AtlasClawDirect") is not None
+
+    def test_validate_startup_prefers_env_value_when_sk_env_name_exists(self, tmp_path, monkeypatch):
+        registry = SkillRegistry()
+        _write_skill_md(
+            tmp_path / "skills" / "preapproval-agent" / "SKILL.md",
+            name="preapproval-agent",
+            description="smartcmp preapproval",
+        )
+        registry.load_from_directory(
+            str(tmp_path / "skills"),
+            location="external",
+            provider="smartcmp",
+        )
+        monkeypatch.setenv("SECRET", "env-secret-value")
+
+        manager = WebhookDispatchManager(
+            WebhookConfig(
+                enabled=True,
+                systems=[
+                    WebhookSystemConfig(
+                        system_id="smartcmp-preapproval",
+                        sk_env="SECRET",
+                        allowed_skills=["smartcmp:preapproval-agent"],
+                    )
+                ],
+            ),
+            registry,
+        )
+
+        manager.validate_startup()
+        assert manager.authenticate("env-secret-value") is not None
+        assert manager.authenticate("SECRET") is None
+
+    def test_validate_startup_requires_non_blank_sk_env(self, tmp_path):
+        registry = SkillRegistry()
+        _write_skill_md(
+            tmp_path / "skills" / "preapproval-agent" / "SKILL.md",
+            name="preapproval-agent",
+            description="smartcmp preapproval",
+        )
+        registry.load_from_directory(
+            str(tmp_path / "skills"),
+            location="external",
+            provider="smartcmp",
+        )
+
+        manager = WebhookDispatchManager(
+            WebhookConfig(
+                enabled=True,
+                systems=[
+                    WebhookSystemConfig(
+                        system_id="smartcmp-preapproval",
+                        sk_env="",
                         allowed_skills=["smartcmp:preapproval-agent"],
                     )
                 ],
@@ -179,9 +279,47 @@ class TestWebhookDispatchManager:
         try:
             manager.validate_startup()
         except RuntimeError as exc:
-            assert "ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL" in str(exc)
+            assert "Missing webhook secret" in str(exc)
         else:
-            raise AssertionError("validate_startup should fail when the webhook secret is missing")
+            raise AssertionError("validate_startup should fail when sk_env is blank")
+
+    def test_validate_startup_uses_sk_env_as_literal_when_env_missing(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        registry = SkillRegistry()
+        _write_skill_md(
+            tmp_path / "skills" / "preapproval-agent" / "SKILL.md",
+            name="preapproval-agent",
+            description="smartcmp preapproval",
+        )
+        registry.load_from_directory(
+            str(tmp_path / "skills"),
+            location="external",
+            provider="smartcmp",
+        )
+        monkeypatch.delenv("SECRET", raising=False)
+
+        manager = WebhookDispatchManager(
+            WebhookConfig(
+                enabled=True,
+                systems=[
+                    WebhookSystemConfig(
+                        system_id="smartcmp-preapproval",
+                        sk_env="SECRET",
+                        allowed_skills=["smartcmp:preapproval-agent"],
+                    )
+                ],
+            ),
+            registry,
+        )
+
+        try:
+            manager.validate_startup()
+        except RuntimeError as exc:
+            raise AssertionError("validate_startup should accept literal sk_env secret") from exc
+        assert manager.authenticate("SECRET") is not None
 
 
 class TestWebhookDispatchAPI:

@@ -126,7 +126,7 @@ Pydantic models defining all configuration sections.
 | `SecurityPolicyConfig` | `allowed_tools=[]`, `denied_tools=[]`, `workspace_access="rw"` |
 | `SkillsConfig` | `enabled_skills=[]`, `md_skills_max_count=20`, `md_skills_desc_max_chars=200`, `md_skills_index_max_chars=3000`, `md_skills_max_file_bytes=262144`, `tools_exclusive=[]`, `allow_script_execution=True` |
 | `WebhookConfig` | `enabled=False`, `header_name="X-AtlasClaw-SK"`, `systems=[]` |
-| `WebhookSystemConfig` | `system_id`, `enabled=True`, `sk_env`, `default_agent_id="main"`, `allowed_skills=[]` |
+| `WebhookSystemConfig` | `system_id`, `enabled=True`, `sk_env` as `${VAR}`, env var name, or direct secret, `default_agent_id="main"`, `allowed_skills=[]` |
 | `ModelConfig` | `primary="doubao-pro-32k"`, `fallbacks=[]`, `temperature=0.7`, `max_tokens=None`, `providers={}` |
 | `RetryConfig` | `attempts=3`, `min_delay_ms=1000`, `max_delay_ms=30000`, `jitter=0.1` |
 | `AgentDefaultsConfig` | `timeout_seconds=600`, `max_concurrent=4`, `max_tool_calls=50`, `prompt_mode=FULL`, `bootstrap_max_chars=20000`, `block_streaming_default=False` |
