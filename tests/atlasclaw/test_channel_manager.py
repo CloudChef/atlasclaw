@@ -5,16 +5,27 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.atlasclaw.api.deps_context import APIContext
+from app.atlasclaw.api.service_provider_schemas import (
+    clear_provider_schema_definitions,
+    register_provider_schema_definition,
+)
 from app.atlasclaw.channels import ChannelConnection, ChannelRegistry
 from app.atlasclaw.channels.handlers import WebSocketHandler
 from app.atlasclaw.channels.models import ConnectionStatus, InboundMessage, SendResult
 from app.atlasclaw.channels.manager import ChannelManager
+from app.atlasclaw.session.manager import SessionManager
+from app.atlasclaw.session.queue import SessionQueue
+from app.atlasclaw.skills.registry import SkillRegistry
+from tests.atlasclaw.provider_schema_fixtures import managed_provider_definition
 
 
 class TestChannelManager:
@@ -347,9 +358,108 @@ class TestChannelManager:
         assert first_key == "agent:main:user:owner-1:dingtalk:conn-1:group:group-42"
 
     @pytest.mark.asyncio
+    async def test_process_message_async_resolves_provider_tokens_for_connection_owner(self):
+        """Channel turns should resolve provider tokens from the connection owner settings."""
+        clear_provider_schema_definitions()
+        register_provider_schema_definition(
+            managed_provider_definition(
+                provider_type="smartcmp",
+                display_name="SmartCMP",
+                default_base_url="https://cmp.example.test",
+            )
+        )
+        try:
+            workspace_path = Path(self.temp_dir)
+            user_settings_dir = workspace_path / "users" / "user-123"
+            user_settings_dir.mkdir(parents=True, exist_ok=True)
+            (user_settings_dir / "user_setting.json").write_text(
+                json.dumps(
+                    {
+                        "providers": {
+                            "smartcmp": {
+                                "cmp": {
+                                    "configured": True,
+                                    "config": {"user_token": "owner-user-token"},
+                                }
+                            }
+                        }
+                    },
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+
+            ctx = APIContext(
+                session_manager=SessionManager(str(workspace_path)),
+                session_queue=SessionQueue(),
+                skill_registry=SkillRegistry(),
+                provider_instances={
+                    "smartcmp": {
+                        "cmp": {
+                            "base_url": "https://cmp.example.test",
+                            "auth_type": "user_token",
+                        }
+                    }
+                },
+            )
+            manager = ChannelManager(self.temp_dir)
+            manager.set_session_manager_router(ctx.session_manager_router)
+            handler = WebSocketHandler({})
+            handler.send_message = AsyncMock(return_value=SendResult(success=True))
+            manager._active_connections["user-123:websocket:conn-123"] = handler
+
+            captured = {}
+
+            class DummyAgentRunner:
+                async def run(self, **kwargs):
+                    captured.update(kwargs)
+                    yield SimpleNamespace(type="assistant", content="ok")
+
+            manager._agent_runner = DummyAgentRunner()
+
+            message = InboundMessage(
+                message_id="msg-123",
+                sender_id="ext-user-1",
+                sender_name="External User",
+                chat_id="dm-chat-1",
+                channel_type="websocket",
+                content="hello",
+                metadata={"chat_type": "p2p"},
+            )
+
+            with patch("app.atlasclaw.api.deps_context.get_api_context", return_value=ctx):
+                await manager._process_message_async(
+                    "user-123",
+                    "websocket",
+                    "conn-123",
+                    message,
+                )
+
+            deps = captured["deps"]
+            provider_config = deps.extra["provider_config"]["smartcmp"]["cmp"]
+            assert provider_config["user_token"] == "owner-user-token"
+            assert deps.extra["provider_instances"]["smartcmp"]["cmp"] == provider_config
+            assert deps.extra["channel_connection_id"] == "conn-123"
+            assert deps.extra["external_sender_id"] == "ext-user-1"
+            assert deps.extra["external_chat_id"] == "dm-chat-1"
+            assert deps.extra["external_chat_type"] == "dm"
+            assert deps.peer_id == "ext-user-1"
+            assert deps.channel == "websocket"
+        finally:
+            clear_provider_schema_definitions()
+
+    @pytest.mark.asyncio
     async def test_process_message_async_ignores_legacy_provider_binding(self):
-        """Channel turns should not receive provider binding runtime data."""
+        """Channel turns should not receive legacy provider binding runtime data."""
+        workspace_path = Path(self.temp_dir)
+        ctx = APIContext(
+            session_manager=SessionManager(str(workspace_path)),
+            session_queue=SessionQueue(),
+            skill_registry=SkillRegistry(),
+            provider_instances={},
+        )
         manager = ChannelManager(self.temp_dir)
+        manager.set_session_manager_router(ctx.session_manager_router)
         handler = WebSocketHandler({"provider_binding": "smartcmp/default"})
         handler.send_message = AsyncMock(return_value=SendResult(success=True))
         manager._active_connections["user-123:websocket:conn-123"] = handler
@@ -373,11 +483,12 @@ class TestChannelManager:
             metadata={"chat_type": "p2p"},
         )
 
-        await manager._process_message_async("user-123", "websocket", "conn-123", message)
+        with patch("app.atlasclaw.api.deps_context.get_api_context", return_value=ctx):
+            await manager._process_message_async("user-123", "websocket", "conn-123", message)
 
         deps = captured["deps"]
         assert "provider_type" not in deps.extra
         assert "provider_instance_name" not in deps.extra
         assert "provider_instance" not in deps.extra
-        assert "available_providers" not in deps.extra
-        assert "provider_instances" not in deps.extra
+        assert deps.extra["available_providers"] == {}
+        assert deps.extra["provider_instances"] == {}

@@ -239,8 +239,7 @@ class ChannelManager:
                 logger.error(f"[ChannelManager] No handler found for {instance_key}")
                 return
             
-            from app.atlasclaw.core.deps import SkillDeps
-            from app.atlasclaw.core.trace import enrich_trace_metadata
+            from app.atlasclaw.api.deps_context import build_scoped_deps, get_api_context
 
             user_info = UserInfo(user_id=user_id, display_name=user_id.capitalize())
             session_key = self._build_channel_session_key(
@@ -249,27 +248,19 @@ class ChannelManager:
                 connection_id=connection_id,
                 message=message,
             )
-            scoped_session_manager = (
-                self._session_manager_router.for_user(user_id)
-                if self._session_manager_router is not None
-                else None
+            deps = build_scoped_deps(
+                get_api_context(),
+                user_info,
+                session_key,
+                extra={
+                    "channel_connection_id": connection_id,
+                    "external_sender_id": message.sender_id,
+                    "external_chat_id": message.chat_id,
+                    "external_chat_type": self._resolve_chat_type(message).value,
+                },
             )
-            deps = SkillDeps(
-                user_info=user_info,
-                peer_id=self._resolve_peer_id(message),
-                session_key=session_key,
-                channel=channel_type,
-                session_manager=scoped_session_manager,
-                extra=enrich_trace_metadata(
-                    session_key,
-                    extra={
-                        "channel_connection_id": connection_id,
-                        "external_sender_id": message.sender_id,
-                        "external_chat_id": message.chat_id,
-                        "external_chat_type": self._resolve_chat_type(message).value,
-                    },
-                ),
-            )
+            deps.peer_id = self._resolve_peer_id(message)
+            deps.channel = channel_type
             # Collect response from agent
             response_text = ""
             event_count = 0
