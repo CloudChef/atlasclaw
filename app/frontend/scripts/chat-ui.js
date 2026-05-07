@@ -1537,6 +1537,10 @@ async function handleStreamWithSignals(runId, signals, context) {
   let finalAnswerReady = false
   let serverRuntimeSeen = false
   let localRuntimeSeedTimers = []
+  let assistantUpdateTimer = null
+  let thinkingScrollTimer = null
+  let streamSettled = false
+  let streamHandler = null
   let renderRevision = 0
   let lastRenderedMessageSnapshot = null
   let lastRenderedMessageSignature = null
@@ -1590,10 +1594,37 @@ async function handleStreamWithSignals(runId, signals, context) {
     localRuntimeSeedTimers = []
   }
 
+  function clearPendingRenderTimers() {
+    if (assistantUpdateTimer) {
+      clearTimeout(assistantUpdateTimer)
+      assistantUpdateTimer = null
+    }
+    if (thinkingScrollTimer) {
+      clearTimeout(thinkingScrollTimer)
+      thinkingScrollTimer = null
+    }
+    assistantUpdatePending = false
+    thinkingScrollPending = false
+  }
+
+  function clearActiveStreamHandler() {
+    if (currentStreamHandler === streamHandler) {
+      currentStreamHandler = null
+    }
+  }
+
+  function cleanupStreamTimers() {
+    clearLocalRuntimeSeedTimers()
+    cancelRuntimePanelStateSync()
+    clearPendingRenderTimers()
+    stopThinkingTimer({ render: false })
+    stopRunTimer()
+  }
+
   function scheduleLocalEarlyRuntimePhases() {
     clearLocalRuntimeSeedTimers()
     localRuntimeSeedTimers = EARLY_RUNTIME_PHASES.map((phase) => setTimeout(() => {
-      if (serverRuntimeSeen || finalAnswerReady) return
+      if (streamSettled || serverRuntimeSeen || finalAnswerReady) return
       pushRuntimeEntry(
         phase.state,
         phase.message,
@@ -1847,7 +1878,7 @@ async function handleStreamWithSignals(runId, signals, context) {
     }, 100)
   }
 
-  function stopThinkingTimer() {
+  function stopThinkingTimer({ render = true } = {}) {
     if (thinkingTimerInterval) {
       clearInterval(thinkingTimerInterval)
       thinkingTimerInterval = null
@@ -1857,13 +1888,19 @@ async function handleStreamWithSignals(runId, signals, context) {
       if (thinkingElapsedSeconds <= 0.1) {
         thinkingElapsedSeconds = clientElapsed
       }
-      updateUI()
+      if (render) {
+        updateUI()
+      }
     }
   }
 
   function startRunTimer() {
     if (runTimerInterval) return
     runTimerInterval = setInterval(() => {
+      if (streamSettled) {
+        stopRunTimer()
+        return
+      }
       const hasTerminalState = finalAnswerReady || runtimeEntries.some((entry) => entry.state === 'failed')
       if (hasTerminalState && thinkingFinalized) {
         stopRunTimer()
@@ -1885,11 +1922,23 @@ async function handleStreamWithSignals(runId, signals, context) {
     scheduleLocalEarlyRuntimePhases()
     startRunTimer()
     bindRuntimePanelToggle()
-    currentStreamHandler = createStreamHandler(runId, {
+    const settleAbortedStream = () => {
+      if (streamSettled) return
+      streamSettled = true
+      thinkingFinalized = true
+      cleanupStreamTimers()
+      clearActiveStreamHandler()
+      signals.onClose()
+      resolve()
+    }
+
+    streamHandler = createStreamHandler(runId, {
       onStart: () => {
+        if (streamSettled) return
         updateUI()
       },
       onDelta: (data) => {
+        if (streamSettled) return
         if (!data.content) return
         if (!thinkingFinalized) {
           thinkingFinalized = true
@@ -1899,22 +1948,27 @@ async function handleStreamWithSignals(runId, signals, context) {
         hasRenderedDelta = true
         if (!assistantUpdatePending) {
           assistantUpdatePending = true
-          setTimeout(() => {
+          assistantUpdateTimer = setTimeout(() => {
+            assistantUpdateTimer = null
             assistantUpdatePending = false
+            if (streamSettled) return
             updateUI()
           }, 100)
         }
       },
       onToolStart: (data) => {
+        if (streamSettled) return
         pushRuntimeEntry('tool_running', `Running tool: ${data?.tool_name || 'tool'}`, { phase: 'running_tool' })
         updateUI()
       },
       onToolEnd: (data) => {
+        if (streamSettled) return
         recordWorkspaceDownloadArtifacts(data?.result)
         pushRuntimeEntry('waiting_for_tool', `Tool completed: ${data?.tool_name || 'tool'}`, { phase: 'tool_completed' })
         updateUI()
       },
       onThinkingStart: () => {
+        if (streamSettled) return
         hasThinkingContent = true
         thinkingFinalized = false
         startThinkingTimer()
@@ -1923,6 +1977,7 @@ async function handleStreamWithSignals(runId, signals, context) {
         updateUI()
       },
       onThinkingDelta: (data) => {
+        if (streamSettled) return
         const content = data?.content || ''
         if (!content) return
         if (!thinkingStartTime) {
@@ -1933,13 +1988,16 @@ async function handleStreamWithSignals(runId, signals, context) {
         thinkingContent += content
         if (!thinkingScrollPending) {
           thinkingScrollPending = true
-          setTimeout(() => {
+          thinkingScrollTimer = setTimeout(() => {
+            thinkingScrollTimer = null
             thinkingScrollPending = false
+            if (streamSettled) return
             updateUI()
           }, 80)
         }
       },
       onThinkingEnd: (data) => {
+        if (streamSettled) return
         thinkingFinalized = true
         if (data?.elapsed && data.elapsed > 0) {
           thinkingElapsedSeconds = data.elapsed
@@ -1949,6 +2007,7 @@ async function handleStreamWithSignals(runId, signals, context) {
         updateUI()
       },
       onRuntime: (data) => {
+        if (streamSettled) return
         serverRuntimeSeen = true
         clearLocalRuntimeSeedTimers()
         const hasWorkspaceDownloads = recordWorkspaceDownloadArtifacts(data?.metadata || data)
@@ -1964,16 +2023,16 @@ async function handleStreamWithSignals(runId, signals, context) {
         updateUI()
       },
       onHeartbeat: () => {
+        if (streamSettled) return
         refreshActiveRuntimeEntry()
         updateUI()
       },
       onEnd: () => {
         const doFinalRender = async () => {
-          clearLocalRuntimeSeedTimers()
-          cancelRuntimePanelStateSync()
-          assistantUpdatePending = false
+          if (streamSettled) return
+          streamSettled = true
           thinkingFinalized = true
-          stopThinkingTimer()
+          cleanupStreamTimers()
           if (!runtimeEntries.some((entry) => entry.state === 'failed')) {
             if (aiMessageContent.trim() || workspaceDownloadReferences.length) {
               finalAnswerReady = true
@@ -1982,39 +2041,45 @@ async function handleStreamWithSignals(runId, signals, context) {
             }
           }
           updateUI()
-          stopRunTimer()
           await notifyRunCompleted(context.sessionKey)
           signals.onClose()
-          currentStreamHandler = null
+          clearActiveStreamHandler()
           resolve()
         }
         setTimeout(() => {
           void doFinalRender()
         }, 200)
       },
+      onAbort: () => {
+        settleAbortedStream()
+      },
       onError: async (error) => {
-        clearLocalRuntimeSeedTimers()
-        cancelRuntimePanelStateSync()
+        if (streamSettled) return
+        streamSettled = true
         thinkingFinalized = true
-        stopThinkingTimer()
+        cleanupStreamTimers()
         pushRuntimeEntry('failed', error?.message || 'Unknown error', { phase: 'error' })
         updateUI()
-        stopRunTimer()
         await notifyRunCompleted(context.sessionKey)
         signals.onClose()
-        currentStreamHandler = null
+        clearActiveStreamHandler()
         resolve()
       }
     })
 
-    currentStreamHandler.start()
+    currentStreamHandler = streamHandler
+    streamHandler.start()
   })
 }
 
+/**
+ * Abort the active SSE stream and let the owning handler release timers before a session switch.
+ */
 export function abortCurrentStream() {
   if (currentStreamHandler) {
-    currentStreamHandler.abort()
+    const streamHandlerToAbort = currentStreamHandler
     currentStreamHandler = null
+    streamHandlerToAbort.abort()
   }
 }
 

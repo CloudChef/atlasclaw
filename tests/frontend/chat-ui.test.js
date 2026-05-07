@@ -2176,6 +2176,69 @@ describe('chat-ui.js handler mode', () => {
         }
     });
 
+    test('handler clears runtime timers when stream is aborted during session switch', async () => {
+        jest.useFakeTimers();
+        try {
+            const { initChat, abortCurrentStream } = await import('../../app/frontend/scripts/chat-ui.js');
+            const { element, messages } = createDomChatElementWithMessages();
+            const signals = createDomSignals(messages);
+
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ session_key: 'session-123' })
+            }).mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            });
+
+            await initChat(element);
+            global.fetch.mockClear();
+
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ run_id: 'run-aborted-timer-cleanup' })
+            });
+
+            const handlerPromise = element.handler(
+                { messages: [{ text: 'old stream still thinking', role: 'user' }] },
+                signals
+            );
+
+            await jest.advanceTimersByTimeAsync(100);
+
+            const stream = MockEventSource.instances[0];
+            stream.simulateEvent('thinking', { phase: 'start' });
+            stream.simulateEvent('thinking', { phase: 'delta', content: 'Old thought.' });
+
+            await jest.advanceTimersByTimeAsync(160);
+            expect(messages.innerHTML).toContain('Old thought.');
+
+            abortCurrentStream();
+            await handlerPromise;
+
+            signals.onResponse.mockClear();
+            messages.innerHTML = `
+                <details class="runtime-panel">
+                    <summary>
+                        <div class="runtime-summary-left">
+                            <span class="runtime-title">Thinking</span>
+                            <span class="runtime-state-icon done">✓</span>
+                            <span class="runtime-title-elapsed">0.0s</span>
+                        </div>
+                    </summary>
+                    <div class="runtime-body"></div>
+                </details>
+            `;
+
+            await jest.advanceTimersByTimeAsync(1200);
+
+            expect(signals.onResponse).not.toHaveBeenCalled();
+            expect(messages.querySelector('.runtime-title-elapsed')?.textContent).toBe('0.0s');
+        } finally {
+            jest.useRealTimers();
+        }
+    });
+
     test('handler does not reload session history immediately after stream end', async () => {
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const element = createChatElement();

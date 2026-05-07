@@ -32,7 +32,8 @@ export const EventTypes = {
 /**
  * Create stream response handler
  * @param {string} runId - Agent run ID
- * @param {object} callbacks - Event callback functions
+ * @param {object} callbacks - Event callback functions. onAbort is called for caller-initiated
+ * stream cancellation so UI owners can release local timers without treating it as a failure.
  * @returns {object} Controller { start, abort }
  */
 export function createStreamHandler(runId, callbacks = {}) {
@@ -50,6 +51,7 @@ export function createStreamHandler(runId, callbacks = {}) {
         onRuntime = () => {},
         onHeartbeat = () => {},
         onEnd = () => {},
+        onAbort = () => {},
         onError = () => {}
     } = callbacks;
 
@@ -64,6 +66,7 @@ export function createStreamHandler(runId, callbacks = {}) {
         };
 
         eventSource.onerror = (error) => {
+            if (aborted) return;
             console.error('[Stream] Connection error:', error);
             if (eventSource && eventSource.readyState === EventSource.CLOSED) {
                 onError({ message: 'Connection closed unexpectedly' });
@@ -162,8 +165,10 @@ export function createStreamHandler(runId, callbacks = {}) {
     }
 
     function abort() {
+        if (aborted) return;
         aborted = true;
         close();
+        onAbort();
         console.log('[Stream] Aborted:', runId);
     }
 

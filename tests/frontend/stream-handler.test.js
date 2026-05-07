@@ -230,6 +230,19 @@ describe('stream-handler.js', () => {
             expect(es.readyState).toBe(EventSource.CLOSED);
         });
 
+        test('should notify caller on abort', async () => {
+            const { createStreamHandler } = await import('../../app/frontend/scripts/stream-handler.js');
+
+            const onAbort = jest.fn();
+            const handler = createStreamHandler('run-123', { onAbort });
+            handler.start();
+
+            handler.abort();
+            handler.abort();
+
+            expect(onAbort).toHaveBeenCalledTimes(1);
+        });
+
         test('should not start if already aborted', async () => {
             const { createStreamHandler } = await import('../../app/frontend/scripts/stream-handler.js');
             
