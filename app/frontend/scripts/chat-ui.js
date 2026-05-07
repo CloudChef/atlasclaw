@@ -690,7 +690,19 @@ function mapTranscriptMessageToHistory(message) {
     return { role: 'user', text: message.content }
   }
   if (message.role === 'assistant') {
-    return { role: 'ai', text: message.content }
+    const workspaceDownloads = normalizeWorkspaceDownloadArtifacts(message.workspace_downloads)
+    const rendered = buildMessageContent(
+      [],
+      '',
+      message.content,
+      null,
+      false,
+      false,
+      true,
+      0,
+      workspaceDownloads
+    )
+    return { role: 'ai', html: rendered.html }
   }
   return null
 }
@@ -1147,10 +1159,7 @@ function normalizeWorkspaceDownloadArtifact(item) {
   }
 }
 
-function extractWorkspaceDownloadArtifacts(rawPayload) {
-  const payload = parseWorkspaceDownloadPayload(rawPayload)
-  if (!payload || typeof payload !== 'object') return []
-  const downloads = payload.workspace_downloads || payload.workspaceDownloads
+function normalizeWorkspaceDownloadArtifacts(downloads) {
   if (!Array.isArray(downloads)) return []
   const references = []
   const seen = new Set()
@@ -1163,6 +1172,12 @@ function extractWorkspaceDownloadArtifacts(rawPayload) {
     references.push(reference)
   }
   return references
+}
+
+function extractWorkspaceDownloadArtifacts(rawPayload) {
+  const payload = parseWorkspaceDownloadPayload(rawPayload)
+  if (!payload || typeof payload !== 'object') return []
+  return normalizeWorkspaceDownloadArtifacts(payload.workspace_downloads || payload.workspaceDownloads)
 }
 
 function responseContentHasWorkspaceDownloadReference(responseContent, reference) {

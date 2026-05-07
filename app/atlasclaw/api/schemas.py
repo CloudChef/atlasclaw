@@ -43,13 +43,27 @@ class SessionResponse(BaseModel):
     title_status: str = "empty"
 
 
+class SessionHistoryWorkspaceDownload(BaseModel):
+    """Download reference for a generated file restored with chat history."""
+
+    path: str
+    label: str = ""
+
+
 class SessionHistoryMessage(BaseModel):
+    """User-visible transcript entry returned to the chat UI."""
+
     role: str
     content: str
     timestamp: datetime
+    workspace_downloads: list[SessionHistoryWorkspaceDownload] = Field(
+        default_factory=list,
+    )
 
 
 class SessionHistoryResponse(BaseModel):
+    """Persisted chat messages that can be rendered after a page refresh."""
+
     messages: list[SessionHistoryMessage] = Field(default_factory=list)
 
 

@@ -196,6 +196,14 @@ function appendRenderedMessage(messages, role, text) {
     return outer.querySelector('.message-bubble');
 }
 
+function appendHistoryMessage(messages, message) {
+    appendRenderedMessage(
+        messages,
+        message.role === 'user' ? 'user' : 'ai',
+        message.role === 'user' ? message.text : message.html
+    );
+}
+
 function waitForMutationObserver() {
     return new Promise(resolve => setTimeout(resolve, 0));
 }
@@ -393,7 +401,7 @@ describe('chat-ui.js handler mode', () => {
         element.loadHistory = jest.fn((history) => {
             messages.innerHTML = '';
             history.forEach((message) => {
-                appendRenderedMessage(messages, message.role === 'user' ? 'user' : 'ai', message.text);
+                appendHistoryMessage(messages, message);
             });
         });
 
@@ -623,11 +631,48 @@ describe('chat-ui.js handler mode', () => {
 
         await initChat(element);
 
-        expect(element.history).toEqual([
-            { role: 'user', text: 'hello atlas' },
-            { role: 'ai', text: 'hi there' }
-        ]);
+        expect(element.history).toHaveLength(2);
+        expect(element.history[0]).toEqual({ role: 'user', text: 'hello atlas' });
+        expect(element.history[1].role).toBe('ai');
+        expect(element.history[1].html).toContain('<div class="response-content">');
+        expect(element.history[1].html).toContain('hi there');
         expect(element.introMessage).toBeNull();
+    });
+
+    test('initChat restores assistant download controls from persisted history metadata', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ welcome_message: 'Hello!' })
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({
+                    messages: [
+                        { role: 'user', content: 'make report', timestamp: '2026-03-27T10:00:00' },
+                        {
+                            role: 'assistant',
+                            content: '## Report ready\nThe report is ready: report.xlsx',
+                            timestamp: '2026-03-27T10:00:01',
+                            workspace_downloads: [{ path: 'report.xlsx' }]
+                        }
+                    ]
+                })
+            });
+
+        await initChat(element);
+
+        const restoredAssistant = element.history[1];
+        expect(restoredAssistant.role).toBe('ai');
+        expect(restoredAssistant.html).toContain('<h2>Report ready</h2>');
+        expect(restoredAssistant.html).toContain('class="workspace-download-link"');
+        expect(restoredAssistant.html).toContain('/api/workspace/files/download?path=report.xlsx');
+        expect(restoredAssistant.html).toContain('<span class="workspace-download-text">report.xlsx</span>');
     });
 
     test('activateSession clears rendered messages when switching to an empty session', async () => {
@@ -707,7 +752,7 @@ describe('chat-ui.js handler mode', () => {
         element.loadHistory = jest.fn((history) => {
             messages.innerHTML = '';
             history.forEach((message) => {
-                appendRenderedMessage(messages, message.role === 'user' ? 'user' : 'ai', message.text);
+                appendHistoryMessage(messages, message);
             });
         });
 

@@ -3,9 +3,10 @@
 
 from __future__ import annotations
 
-import pytest
+import json
 from urllib.parse import quote
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -233,12 +234,63 @@ class TestThreadSessionsAndOwnership:
                 "role": "user",
                 "content": "hello atlas",
                 "timestamp": response.json()["messages"][0]["timestamp"],
+                "workspace_downloads": [],
             },
             {
                 "role": "assistant",
                 "content": "hi there",
                 "timestamp": response.json()["messages"][1]["timestamp"],
+                "workspace_downloads": [],
             },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_session_history_returns_generated_workspace_downloads(self, tmp_path):
+        work_dir = tmp_path / "users" / "alice" / "work_dir"
+        work_dir.mkdir(parents=True)
+        (work_dir / "report.xlsx").write_bytes(b"report")
+
+        alice_manager = SessionManager(workspace_path=str(tmp_path), user_id="alice")
+        session_key = "agent:main:user:alice:web:dm:alice:topic:web-thread-1"
+        await alice_manager.get_or_create(session_key)
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="user", content="generate report"),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(
+                role="assistant",
+                content="",
+                tool_calls=[{"id": "call-1", "name": "skill_exec", "args": {}}],
+            ),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(
+                role="tool",
+                tool_name="skill_exec",
+                content=json.dumps(
+                    {
+                        "is_error": False,
+                        "details": {"download_path": ["report.xlsx"]},
+                    }
+                ),
+            ),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="assistant", content="The report is ready: report.xlsx"),
+        )
+
+        client = _build_client(tmp_path, user_id="alice")
+        encoded_session_key = quote(session_key, safe="")
+
+        response = client.get(f"/api/sessions/{encoded_session_key}/history")
+
+        assert response.status_code == 200
+        assert response.json()["messages"][1]["workspace_downloads"] == [
+            {"path": "report.xlsx", "label": ""}
         ]
 
     @pytest.mark.parametrize(

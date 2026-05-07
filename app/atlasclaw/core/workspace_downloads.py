@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import stat
 from typing import Any
 from urllib.parse import unquote
+
+WORKSPACE_DOWNLOAD_PATH_KEYS: frozenset[str] = frozenset({"artifact_path", "download_path"})
 
 
 class WorkspaceDownloadError(Exception):
@@ -46,6 +49,76 @@ def is_safe_workspace_relative_path(path: str) -> bool:
     if ":" in normalized.split("/", 1)[0]:
         return False
     return all(part and part not in {".", ".."} for part in normalized.split("/"))
+
+
+def coerce_workspace_download_payload(payload: Any) -> Any:
+    """Parse JSON-looking tool payload strings before scanning for generated file paths."""
+    if not isinstance(payload, str):
+        return payload
+    normalized = payload.strip()
+    if not normalized or normalized[:1] not in {"{", "["}:
+        return payload
+    try:
+        return json.loads(normalized)
+    except json.JSONDecodeError:
+        return payload
+
+
+def workspace_download_payload_is_error(
+    payload: dict[str, Any],
+    *,
+    success_false_is_error: bool = False,
+) -> bool:
+    """Return whether a tool payload should be ignored for workspace downloads."""
+    if payload.get("is_error") is True:
+        return True
+    if success_false_is_error and payload.get("success") is False:
+        return True
+    details = payload.get("details")
+    return isinstance(details, dict) and details.get("is_error") is True
+
+
+def collect_workspace_download_path_candidates(
+    payload: Any,
+    *,
+    success_false_is_error: bool = False,
+) -> list[Any]:
+    """Collect explicit generated file path values from a nested tool payload."""
+    normalized = coerce_workspace_download_payload(payload)
+    if isinstance(normalized, dict):
+        if workspace_download_payload_is_error(
+            normalized,
+            success_false_is_error=success_false_is_error,
+        ):
+            return []
+        candidates: list[Any] = []
+        for key, value in normalized.items():
+            normalized_key = str(key or "").strip().lower()
+            if normalized_key in WORKSPACE_DOWNLOAD_PATH_KEYS:
+                if isinstance(value, list):
+                    candidates.extend(value)
+                else:
+                    candidates.append(value)
+                continue
+            if isinstance(value, (dict, list)):
+                candidates.extend(
+                    collect_workspace_download_path_candidates(
+                        value,
+                        success_false_is_error=success_false_is_error,
+                    )
+                )
+        return candidates
+    if isinstance(normalized, list):
+        candidates: list[Any] = []
+        for item in normalized:
+            candidates.extend(
+                collect_workspace_download_path_candidates(
+                    item,
+                    success_false_is_error=success_false_is_error,
+                )
+            )
+        return candidates
+    return []
 
 
 def workspace_download_root(workspace_path: str | Path, user_id: str) -> Path:
@@ -267,3 +340,34 @@ def workspace_download_reference_for_path(
         return None
     except ValueError:
         return None
+
+
+def collect_workspace_download_references_from_payloads(
+    payloads: list[Any],
+    *,
+    workspace_path: str | Path,
+    user_id: str,
+    seen_paths: set[str] | None = None,
+    success_false_is_error: bool = False,
+) -> list[dict[str, str]]:
+    """Resolve explicit generated file paths from tool payloads into download references."""
+    references: list[dict[str, str]] = []
+    seen = seen_paths if seen_paths is not None else set()
+    for payload in payloads:
+        for candidate in collect_workspace_download_path_candidates(
+            payload,
+            success_false_is_error=success_false_is_error,
+        ):
+            reference = workspace_download_reference_for_path(
+                candidate,
+                workspace_path=workspace_path,
+                user_id=user_id,
+            )
+            if not reference:
+                continue
+            path = reference.get("path", "")
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            references.append(reference)
+    return references

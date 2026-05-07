@@ -22,60 +22,10 @@ from app.atlasclaw.agent.runner_tool.runner_tool_messages import (
 )
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import turn_action_requires_tool_execution
 from app.atlasclaw.agent.stream import StreamEvent
+from app.atlasclaw.core.workspace_downloads import (
+    collect_workspace_download_references_from_payloads,
+)
 from app.atlasclaw.tools.catalog import STANDARD_SKILL_RUNTIME_TOOL_NAMES
-from app.atlasclaw.core.workspace_downloads import workspace_download_reference_for_path
-
-
-WORKSPACE_ARTIFACT_EXPLICIT_PATH_KEYS = {
-    "artifact_path",
-    "download_path",
-}
-
-
-def _coerce_tool_result_payload(payload: Any) -> Any:
-    if isinstance(payload, str):
-        normalized = payload.strip()
-        if not normalized:
-            return ""
-        if normalized.startswith("{") or normalized.startswith("["):
-            try:
-                return json.loads(normalized)
-            except Exception:
-                return normalized
-        return normalized
-    return payload
-
-
-def _tool_result_payload_is_error(payload: dict[str, Any]) -> bool:
-    if payload.get("is_error") is True:
-        return True
-    details = payload.get("details")
-    return isinstance(details, dict) and details.get("is_error") is True
-
-
-def _iter_workspace_file_path_candidates(payload: Any) -> list[Any]:
-    normalized = _coerce_tool_result_payload(payload)
-    if isinstance(normalized, dict):
-        if _tool_result_payload_is_error(normalized):
-            return []
-        candidates: list[Any] = []
-        for key, value in normalized.items():
-            normalized_key = str(key or "").strip()
-            if normalized_key in WORKSPACE_ARTIFACT_EXPLICIT_PATH_KEYS:
-                if isinstance(value, list):
-                    candidates.extend(value)
-                else:
-                    candidates.append(value)
-                continue
-            if isinstance(value, (dict, list)):
-                candidates.extend(_iter_workspace_file_path_candidates(value))
-        return candidates
-    if isinstance(normalized, list):
-        candidates: list[Any] = []
-        for item in normalized:
-            candidates.extend(_iter_workspace_file_path_candidates(item))
-        return candidates
-    return []
 
 
 def _iter_tool_result_payloads(
@@ -119,27 +69,19 @@ def collect_workspace_download_references_from_tool_results(
     workspace_path: str | Path,
     user_id: str,
 ) -> list[dict[str, str]]:
-    references: list[dict[str, str]] = []
-    seen: set[str] = set()
-    for _tool_name, payload in _iter_tool_result_payloads(
-        messages=messages,
-        start_index=start_index,
-        target_tool_names=target_tool_names,
-    ):
-        for candidate in _iter_workspace_file_path_candidates(payload):
-            reference = workspace_download_reference_for_path(
-                candidate,
-                workspace_path=workspace_path,
-                user_id=user_id,
-            )
-            if not reference:
-                continue
-            key = reference["path"]
-            if key in seen:
-                continue
-            seen.add(key)
-            references.append(reference)
-    return references
+    payloads = [
+        payload
+        for _tool_name, payload in _iter_tool_result_payloads(
+            messages=messages,
+            start_index=start_index,
+            target_tool_names=target_tool_names,
+        )
+    ]
+    return collect_workspace_download_references_from_payloads(
+        payloads,
+        workspace_path=workspace_path,
+        user_id=user_id,
+    )
 
 
 class RunnerExecutionFlowStreamMixin:

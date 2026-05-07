@@ -9,6 +9,7 @@ from urllib.parse import unquote
 
 from app.atlasclaw.agent.tool_gate_models import ToolIntentAction, ToolIntentPlan
 from app.atlasclaw.core.workspace_downloads import (
+    collect_workspace_download_path_candidates,
     is_safe_workspace_relative_path,
     workspace_download_reference_for_path,
 )
@@ -68,25 +69,13 @@ def resolve_artifact_goal_from_intent_plan(
 
 def _collect_artifact_path_candidates(payload: Any) -> list[str]:
     candidates: list[str] = []
-    if payload is None:
-        return candidates
-    if isinstance(payload, dict):
-        if payload.get("is_error") is True or payload.get("success") is False:
-            return candidates
-        for key, value in payload.items():
-            normalized_key = _normalize_text(key).lower()
-            if normalized_key in {"artifact_path", "download_path"}:
-                values = value if isinstance(value, list) else [value]
-                for item in values:
-                    normalized_value = _normalize_text(item)
-                    if normalized_value:
-                        candidates.append(normalized_value)
-            candidates.extend(_collect_artifact_path_candidates(value))
-        return candidates
-    if isinstance(payload, list):
-        for item in payload:
-            candidates.extend(_collect_artifact_path_candidates(item))
-        return candidates
+    for item in collect_workspace_download_path_candidates(
+        payload,
+        success_false_is_error=True,
+    ):
+        normalized_value = _normalize_text(item)
+        if normalized_value:
+            candidates.append(normalized_value)
     return candidates
 
 

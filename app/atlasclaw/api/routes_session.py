@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..auth.models import ANONYMOUS_USER, UserInfo
+from ..core.workspace_downloads import collect_workspace_download_references_from_payloads
 from ..session.context import ChatType as SessionChatType
 from ..session.context import SessionKey, SessionScope
 from ..session.queue import QueueMode
@@ -96,16 +97,76 @@ def _ensure_session_owner(auth_user: UserInfo, session_key: str) -> SessionKey:
     return parsed
 
 
-def _build_session_history_response(transcript: list[Any]) -> SessionHistoryResponse:
-    messages = [
-        SessionHistoryMessage(
-            role=entry.role,
-            content=entry.content,
-            timestamp=entry.timestamp,
+def _collect_workspace_download_references(
+    *,
+    entry: Any,
+    workspace_path: Any,
+    user_id: str,
+    seen_paths: set[str],
+) -> list[dict[str, str]]:
+    payloads: list[Any] = []
+    content = getattr(entry, "content", None)
+    if content:
+        payloads.append(content)
+    tool_results = getattr(entry, "tool_results", [])
+    if isinstance(tool_results, list):
+        for result in tool_results:
+            if isinstance(result, dict):
+                payloads.append(
+                    result if result.get("is_error") is True else result.get("content", result)
+                )
+    return collect_workspace_download_references_from_payloads(
+        payloads,
+        workspace_path=workspace_path,
+        user_id=user_id,
+        seen_paths=seen_paths,
+    )
+
+
+def _build_session_history_response(
+    transcript: list[Any],
+    *,
+    workspace_path: Any,
+    user_id: str,
+) -> SessionHistoryResponse:
+    messages: list[SessionHistoryMessage] = []
+    pending_workspace_downloads: list[dict[str, str]] = []
+    pending_download_paths: set[str] = set()
+    for entry in transcript:
+        role = str(getattr(entry, "role", "") or "").strip().lower()
+        content = getattr(entry, "content", "")
+        if role == "user":
+            pending_workspace_downloads = []
+            pending_download_paths = set()
+        if role == "tool" or getattr(entry, "tool_results", []):
+            pending_workspace_downloads.extend(
+                _collect_workspace_download_references(
+                    entry=entry,
+                    workspace_path=workspace_path,
+                    user_id=user_id,
+                    seen_paths=pending_download_paths,
+                )
+            )
+        if role == "tool":
+            continue
+
+        if role not in {"user", "assistant"} or not content:
+            continue
+
+        workspace_downloads = []
+        if role == "assistant" and not getattr(entry, "tool_calls", []):
+            workspace_downloads = list(pending_workspace_downloads)
+            pending_workspace_downloads = []
+            pending_download_paths = set()
+
+        messages.append(
+            SessionHistoryMessage(
+                role=role,
+                content=content,
+                timestamp=entry.timestamp,
+                workspace_downloads=workspace_downloads,
+            )
         )
-        for entry in transcript
-        if entry.role in {"user", "assistant"} and entry.content
-    ]
     return SessionHistoryResponse(messages=messages)
 
 
@@ -186,7 +247,11 @@ def register_session_routes(router: APIRouter) -> None:
                 detail=f"Session not found: {session_key}",
             )
         transcript = await manager.load_transcript(session_key)
-        return _build_session_history_response(transcript)
+        return _build_session_history_response(
+            transcript,
+            workspace_path=manager.workspace_path,
+            user_id=manager.user_id,
+        )
 
     @router.post("/sessions/{session_key}/reset")
     async def reset_session(
