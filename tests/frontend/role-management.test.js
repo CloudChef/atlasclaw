@@ -744,24 +744,34 @@ describe('role management page', () => {
     skillAccessAll.checked = true
     skillAccessAll.dispatchEvent(new Event('change', { bubbles: true }))
     expect(container.querySelector('[data-access-all-toggle="skills"]').checked).toBe(true)
+    expect(container.querySelector('[data-skill-master-toggle="enabled"]').checked).toBe(true)
     expect(container.querySelector('[data-skill-master-toggle="enabled"]').disabled).toBe(true)
     expect(container.querySelector('[data-skill-id="jira-manager"]').disabled).toBe(true)
+    expect(container.querySelector('[data-skill-id="confluence"]').checked).toBe(true)
+    expect(container.querySelector('[data-skill-id="confluence"]').disabled).toBe(true)
+    expect(container.querySelector('[data-skill-id="pdf"]').checked).toBe(false)
 
     container.querySelector('[data-module-id="providers"]').click()
     const providerAccessAll = container.querySelector('[data-access-all-toggle="providers"]')
     expect(providerAccessAll.checked).toBe(false)
     providerAccessAll.checked = true
     providerAccessAll.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(container.querySelector('[data-provider-master-toggle="allowed"]').checked).toBe(true)
     expect(container.querySelector('[data-provider-master-toggle="allowed"]').disabled).toBe(true)
     expect(container.querySelector('[data-provider-key="smartcmp::default"]').disabled).toBe(true)
+    expect(container.querySelector('[data-provider-key="jira::prod"]').checked).toBe(true)
+    expect(container.querySelector('[data-provider-key="jira::prod"]').disabled).toBe(true)
 
     container.querySelector('[data-module-id="channels"]').click()
     const channelAccessAll = container.querySelector('[data-access-all-toggle="channels"]')
     expect(channelAccessAll.checked).toBe(false)
     channelAccessAll.checked = true
     channelAccessAll.dispatchEvent(new Event('change', { bubbles: true }))
+    expect(container.querySelector('[data-channel-master-toggle="allowed"]').checked).toBe(true)
     expect(container.querySelector('[data-channel-master-toggle="allowed"]').disabled).toBe(true)
     expect(container.querySelector('[data-channel-key="websocket"]').disabled).toBe(true)
+    expect(container.querySelector('[data-channel-key="feishu"]').checked).toBe(true)
+    expect(container.querySelector('[data-channel-key="feishu"]').disabled).toBe(true)
 
     container.querySelector('#saveRoleChanges').click()
     await new Promise(resolve => setTimeout(resolve, 0))

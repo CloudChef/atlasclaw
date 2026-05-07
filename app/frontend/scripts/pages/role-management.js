@@ -879,8 +879,10 @@ function renderSkillsModule() {
   const permissions = draftRoleState.permissions.skills || { module_permissions: {}, skill_permissions: [] }
   const skillRows = getFilteredSkillRows(permissions.skill_permissions || [])
   const runtimeSkillRows = skillRows.filter(skill => skill.runtime_enabled !== false && !skill.is_provider_skill)
-  const allVisibleSkillsEnabled = runtimeSkillRows.length > 0 && runtimeSkillRows.every(skill => skill.enabled)
   const allowAllSkills = permissions.allow_all === true
+  const allVisibleSkillsEnabled = allowAllSkills
+    ? runtimeSkillRows.length > 0
+    : runtimeSkillRows.length > 0 && runtimeSkillRows.every(skill => skill.enabled)
   // Allow admin to manage skill toggles (skills are now UI-controlled)
   const canManageSkills = canManageModule('skills')
 
@@ -909,6 +911,7 @@ function renderSkillsModule() {
         ${skillRows.length ? skillRows.map(skill => {
           const skillDisplayName = getSkillDisplayName(skill)
           const skillDisplayDescription = getSkillDisplayDescription(skill)
+          const isEffectivelyEnabled = allowAllSkills && skill.runtime_enabled !== false
           return `
           <div class="role-skill-card">
             <div class="role-skill-copy">
@@ -921,7 +924,7 @@ function renderSkillsModule() {
               <label class="role-inline-toggle">
                 <span data-i18n="roles.enableToggle">Enable</span>
                 <span class="toggle-switch compact">
-                  <input type="checkbox" data-skill-id="${escapeHtml(skill.skill_id)}" data-skill-toggle="enabled" ${skill.enabled ? 'checked' : ''} ${canManageSkills && !allowAllSkills && skill.runtime_enabled !== false ? '' : 'disabled'}>
+                  <input type="checkbox" data-skill-id="${escapeHtml(skill.skill_id)}" data-skill-toggle="enabled" ${isEffectivelyEnabled || skill.enabled ? 'checked' : ''} ${canManageSkills && !allowAllSkills && skill.runtime_enabled !== false ? '' : 'disabled'}>
                   <span></span>
                 </span>
               </label>
@@ -941,8 +944,10 @@ function renderSkillsModule() {
 function renderProvidersModule() {
   const permissions = draftRoleState.permissions.providers || { module_permissions: {}, provider_permissions: [] }
   const providerRows = getFilteredProviderRows(permissions.provider_permissions || [])
-  const allVisibleProvidersAllowed = providerRows.length > 0 && providerRows.every(provider => provider.allowed === true)
   const allowAllProviders = permissions.allow_all === true
+  const allVisibleProvidersAllowed = allowAllProviders
+    ? providerRows.length > 0
+    : providerRows.length > 0 && providerRows.every(provider => provider.allowed === true)
   const canManageProviders = canManageModule('providers')
 
   return `
@@ -981,7 +986,7 @@ function renderProvidersModule() {
               <label class="role-inline-toggle">
                 <span data-i18n="roles.allowToggle">Allow</span>
                 <span class="toggle-switch compact">
-                  <input type="checkbox" data-provider-key="${escapeHtml(providerKey)}" data-provider-toggle="allowed" ${provider.allowed === true ? 'checked' : ''} ${canManageProviders && !allowAllProviders ? '' : 'disabled'}>
+                  <input type="checkbox" data-provider-key="${escapeHtml(providerKey)}" data-provider-toggle="allowed" ${allowAllProviders || provider.allowed === true ? 'checked' : ''} ${canManageProviders && !allowAllProviders ? '' : 'disabled'}>
                   <span></span>
                 </span>
               </label>
@@ -1001,8 +1006,10 @@ function renderProvidersModule() {
 function renderChannelsModule() {
   const permissions = draftRoleState.permissions.channels || { module_permissions: {}, channel_permissions: [] }
   const channelRows = getFilteredChannelRows(permissions.channel_permissions || [])
-  const allVisibleChannelsAllowed = channelRows.length > 0 && channelRows.every(channel => channel.allowed === true)
   const allowAllChannels = permissions.allow_all === true
+  const allVisibleChannelsAllowed = allowAllChannels
+    ? channelRows.length > 0
+    : channelRows.length > 0 && channelRows.every(channel => channel.allowed === true)
   const canManageChannels = canManageModule('channels')
 
   return `
@@ -1041,7 +1048,7 @@ function renderChannelsModule() {
               <label class="role-inline-toggle">
                 <span data-i18n="roles.allowToggle">Allow</span>
                 <span class="toggle-switch compact">
-                  <input type="checkbox" data-channel-key="${escapeHtml(channelKey)}" data-channel-toggle="allowed" ${channel.allowed === true ? 'checked' : ''} ${canManageChannels && !allowAllChannels ? '' : 'disabled'}>
+                  <input type="checkbox" data-channel-key="${escapeHtml(channelKey)}" data-channel-toggle="allowed" ${allowAllChannels || channel.allowed === true ? 'checked' : ''} ${canManageChannels && !allowAllChannels ? '' : 'disabled'}>
                   <span></span>
                 </span>
               </label>
