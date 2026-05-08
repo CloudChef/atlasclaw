@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from urllib.parse import quote
 import aiofiles
 import aiofiles.os
 
@@ -285,12 +286,18 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
         """Return a per-save temporary path to avoid concurrent replace collisions."""
         unique_suffix = uuid.uuid4().hex
         return metadata_path.with_name(f"{metadata_path.name}.{unique_suffix}.tmp")
+
+    @staticmethod
+    def _safe_transcript_topic_segment(thread_id: str) -> str:
+        """Return a thread identifier safe to embed in one filename segment."""
+        return quote(str(thread_id or ""), safe="-._~") or "topic"
     
     def _get_transcript_path(self, session: SessionMetadata) -> Path:
         """Return the transcript file path for a session."""
         session_key = SessionKey.from_string(session.session_key)
         if session_key.thread_id:
-            filename = f"{session.session_id}-topic-{session_key.thread_id}.jsonl"
+            thread_id = self._safe_transcript_topic_segment(session_key.thread_id)
+            filename = f"{session.session_id}-topic-{thread_id}.jsonl"
         else:
             filename = f"{session.session_id}.jsonl"
         return self.sessions_dir / filename

@@ -103,3 +103,42 @@ class TestSessionKeyUserDimension:
         key2 = SessionKey.from_string(s)
         assert key2.thread_id == "thread-42"
         assert key2.user_id == "u-t1"
+
+    def test_roundtrip_escapes_colon_delimiters_in_segments(self):
+        """External IDs containing ':' should not be split as session-key delimiters."""
+        key = SessionKey(
+            agent_id="agent:main",
+            user_id="oidc:alice",
+            channel="web:socket",
+            account_id="acct:primary",
+            chat_type=ChatType.GROUP,
+            peer_id="group:42",
+            thread_id="topic:2026:05",
+        )
+
+        serialized = key.to_string(scope=SessionScope.PER_ACCOUNT_CHANNEL_PEER)
+        restored = SessionKey.from_string(serialized)
+
+        assert restored.agent_id == "agent:main"
+        assert restored.user_id == "oidc:alice"
+        assert restored.channel == "web:socket"
+        assert restored.account_id == "acct:primary"
+        assert restored.chat_type == ChatType.GROUP
+        assert restored.peer_id == "group:42"
+        assert restored.thread_id == "topic:2026:05"
+
+    def test_roundtrip_preserves_percent_literals_in_segments(self):
+        """Percent literals should not be confused with future delimiter escaping."""
+        key = SessionKey(
+            agent_id="main",
+            user_id="alice%prod",
+            channel="web",
+            chat_type=ChatType.DM,
+            peer_id="peer%3Araw",
+        )
+
+        serialized = key.to_string(scope=SessionScope.PER_CHANNEL_PEER)
+        restored = SessionKey.from_string(serialized)
+
+        assert restored.user_id == "alice%prod"
+        assert restored.peer_id == "peer%3Araw"

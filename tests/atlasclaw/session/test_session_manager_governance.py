@@ -12,7 +12,13 @@ import aiofiles
 import pytest
 
 from app.atlasclaw.core.config_schema import ResetMode
-from app.atlasclaw.session.context import TranscriptEntry
+from app.atlasclaw.session.context import (
+    ChatType,
+    SessionKey,
+    SessionMetadata,
+    SessionScope,
+    TranscriptEntry,
+)
 from app.atlasclaw.session.manager import SessionManager
 
 
@@ -119,3 +125,28 @@ async def test_archive_budget_cleanup_removes_old_files(tmp_path: Path):
 
     assert remaining_size <= manager._archive_budget_bytes
     assert "newest.jsonl" in remaining
+
+
+def test_thread_transcript_filename_escapes_external_thread_id():
+    """External thread IDs with path separators should not create nested transcript paths."""
+    manager = SessionManager(
+        workspace_path="workspace",
+        user_id="u1",
+        reset_mode=ResetMode.MANUAL,
+    )
+    session_key = SessionKey(
+        agent_id="main",
+        user_id="u1",
+        channel="web",
+        chat_type=ChatType.DM,
+        peer_id="peer-1",
+        thread_id="room/topic\\child",
+    ).to_string(scope=SessionScope.PER_CHANNEL_PEER)
+    session = SessionMetadata(
+        session_id="session-1",
+        session_key=session_key,
+    )
+    transcript_path = manager._get_transcript_path(session)
+
+    assert transcript_path.parent == manager.sessions_dir
+    assert transcript_path.name.endswith("-topic-room%2Ftopic%5Cchild.jsonl")

@@ -49,6 +49,21 @@ class ChatType(Enum):
     THREAD = "thread"   # Topic or threaded conversation
 
 
+def _encode_key_segment(value: str) -> str:
+    """Escape delimiters inside one session-key segment."""
+    return str(value or "").replace("%", "%25").replace(":", "%3A")
+
+
+def _decode_key_segment(value: str) -> str:
+    """Decode a session-key segment escaped by `_encode_key_segment`."""
+    return (
+        str(value or "")
+        .replace("%3A", ":")
+        .replace("%3a", ":")
+        .replace("%25", "%")
+    )
+
+
 @dataclass
 class SessionKey:
     """
@@ -73,18 +88,24 @@ class SessionKey:
     
     def to_string(self, scope: SessionScope = SessionScope.PER_CHANNEL_PEER) -> str:
         """Render the session key using the requested isolation strategy."""
-        base = f"agent:{self.agent_id}:user:{self.user_id}"
+        agent_id = _encode_key_segment(self.agent_id)
+        user_id = _encode_key_segment(self.user_id)
+        channel = _encode_key_segment(self.channel)
+        account_id = _encode_key_segment(self.account_id)
+        peer_id = _encode_key_segment(self.peer_id)
+        thread_id = _encode_key_segment(self.thread_id) if self.thread_id else None
+        base = f"agent:{agent_id}:user:{user_id}"
         match scope:
             case SessionScope.MAIN:
                 return f"{base}:main"
             case SessionScope.PER_PEER:
-                return f"{base}:{self.chat_type.value}:{self.peer_id}"
+                return f"{base}:{self.chat_type.value}:{peer_id}"
             case SessionScope.PER_CHANNEL_PEER:
-                rest = f"{self.channel}:{self.chat_type.value}:{self.peer_id}"
-                return f"{base}:{rest}:topic:{self.thread_id}" if self.thread_id else f"{base}:{rest}"
+                rest = f"{channel}:{self.chat_type.value}:{peer_id}"
+                return f"{base}:{rest}:topic:{thread_id}" if thread_id else f"{base}:{rest}"
             case SessionScope.PER_ACCOUNT_CHANNEL_PEER:
-                rest = f"{self.channel}:{self.account_id}:{self.chat_type.value}:{self.peer_id}"
-                return f"{base}:{rest}:topic:{self.thread_id}" if self.thread_id else f"{base}:{rest}"
+                rest = f"{channel}:{account_id}:{self.chat_type.value}:{peer_id}"
+                return f"{base}:{rest}:topic:{thread_id}" if thread_id else f"{base}:{rest}"
             case _:
                 return f"{base}:main"
     
@@ -101,13 +122,13 @@ class SessionKey:
         if len(parts) < 3 or parts[0] != "agent":
             return cls()
         
-        agent_id = parts[1]
+        agent_id = _decode_key_segment(parts[1])
         
         # Detect new format: `agent:<id>:user:<userId>:<rest>`
         user_id = "default"
         rest_start = 2
         if len(parts) > 3 and parts[2] == "user":
-            user_id = parts[3]
+            user_id = _decode_key_segment(parts[3])
             rest_start = 4
         
         rest = parts[rest_start:]
@@ -122,21 +143,25 @@ class SessionKey:
         # `...:dm:user_42` -> PER_PEER
         if len(rest) == 2:
             chat_type_str = rest[0]
-            peer_id = rest[1]
+            peer_id = _decode_key_segment(rest[1])
             chat_type = ChatType(chat_type_str) if chat_type_str in [e.value for e in ChatType] else ChatType.DM
             return cls(agent_id=agent_id, user_id=user_id, chat_type=chat_type, peer_id=peer_id)
         
         # `...:telegram:dm:user_42` or `...:telegram:acc1:dm:user_42`
         if len(rest) >= 3:
-            channel = rest[0]
+            channel = _decode_key_segment(rest[0])
             
             # Detect PER_ACCOUNT_CHANNEL_PEER: channel, account_id, chat_type, peer_id
             if len(rest) >= 4 and rest[2] in [e.value for e in ChatType]:
-                account_id = rest[1]
+                account_id = _decode_key_segment(rest[1])
                 chat_type_str = rest[2]
-                peer_id = rest[3]
+                peer_id = _decode_key_segment(rest[3])
                 chat_type = ChatType(chat_type_str)
-                thread_id = rest[5] if len(rest) >= 6 and rest[4] == "topic" else None
+                thread_id = (
+                    _decode_key_segment(rest[5])
+                    if len(rest) >= 6 and rest[4] == "topic"
+                    else None
+                )
                 return cls(
                     agent_id=agent_id,
                     user_id=user_id,
@@ -149,9 +174,13 @@ class SessionKey:
             
             # PER_CHANNEL_PEER: channel, chat_type, peer_id
             chat_type_str = rest[1]
-            peer_id = rest[2]
+            peer_id = _decode_key_segment(rest[2])
             chat_type = ChatType(chat_type_str) if chat_type_str in [e.value for e in ChatType] else ChatType.DM
-            thread_id = rest[4] if len(rest) >= 5 and rest[3] == "topic" else None
+            thread_id = (
+                _decode_key_segment(rest[4])
+                if len(rest) >= 5 and rest[3] == "topic"
+                else None
+            )
             return cls(
                 agent_id=agent_id,
                 user_id=user_id,
