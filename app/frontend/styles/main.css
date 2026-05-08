@@ -272,6 +272,7 @@ body {
     flex-direction: column;
     background: linear-gradient(180deg, #f8f9fc 0%, #ffffff 100%);
     min-height: 0;
+    min-width: 0;
     overflow: hidden;
 }
 
@@ -490,6 +491,7 @@ body.atlas-config-embedded-mode .chat-header {
 deep-chat {
     width: 100%;
     height: 100%;
+    min-width: 0;
     border: none;
     background: transparent !important;
 }
@@ -1698,4 +1700,44 @@ details.thinking-block .thinking-body {
 }
 .dropdown-item-danger svg {
   color: var(--color-error);
+}
+
+@media (max-width: 720px) {
+  .main-content,
+  #page-content {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .chat-header {
+    grid-template-columns: 44px minmax(0, 1fr) 44px;
+    padding: 10px 14px;
+  }
+
+  .chat-header-title,
+  .chat-header h1 {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 16px;
+  }
+
+  .header-actions {
+    min-width: 0;
+  }
+
+  .user-menu-container {
+    position: static;
+  }
+
+  .user-dropdown {
+    position: fixed;
+    top: 58px;
+    right: 12px;
+    width: min(260px, calc(100vw - 24px));
+    min-width: 0;
+    max-width: calc(100vw - 24px);
+    z-index: 3000;
+  }
 }

@@ -7,21 +7,32 @@
  * Tests for DeepChat handler mode implementation
  */
 
+const defaultMockTranslations = {
+    'chat.placeholder': 'Enter your question...',
+    'chat.copyMessage': 'Copy message',
+    'chat.runtimeThinking': 'Thinking',
+    'chat.runtimeRetrying': 'Retrying',
+    'chat.runtimeWaitingForTool': 'Waiting for tool',
+    'chat.runtimeToolRunning': 'Running tool',
+    'chat.runtimeControlledPath': 'Controlled path',
+    'chat.runtimeFailed': 'Failed',
+    'chat.modelThinking': 'Model thinking'
+};
+globalThis.__atlasclawTestTranslations = { ...defaultMockTranslations };
+
 jest.mock('../../app/frontend/scripts/config.js', () => ({
     buildApiUrl: (path) => `http://127.0.0.1:8000${path}`
 }));
 
 jest.mock('../../app/frontend/scripts/i18n.js', () => ({
     t: jest.fn((key) => key),
-    translateIfExists: jest.fn((key) => ({
-        'chat.placeholder': 'Enter your question...',
-        'chat.copyMessage': 'Copy message'
-    })[key] || null),
+    translateIfExists: jest.fn((key) => globalThis.__atlasclawTestTranslations?.[key] || null),
     getCurrentLocale: jest.fn(() => 'en-US'),
     isLocaleLoaded: jest.fn(() => false)
 }));
 
 beforeEach(() => {
+    globalThis.__atlasclawTestTranslations = { ...defaultMockTranslations };
     jest.resetModules();
     global.fetch = jest.fn(() => Promise.resolve({
         ok: true,
@@ -1816,6 +1827,76 @@ describe('chat-ui.js handler mode', () => {
         expect(htmlPayload).not.toContain('Answered');
         expect(htmlPayload).not.toContain('details class="runtime-panel" open');
         expect(htmlPayload).toMatch(/runtime-log-time">([0-9]+ms|[0-9.]+s)</);
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler localizes runtime panel labels through i18n', async () => {
+        globalThis.__atlasclawTestTranslations = {
+            'chat.placeholder': '请输入您的问题...',
+            'chat.copyMessage': '复制消息',
+            'chat.runtimeThinking': '思考中',
+            'chat.runtimeRetrying': '重试中',
+            'chat.modelThinking': '模型思考'
+        };
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({
+                chat: {
+                    placeholder: '请输入您的问题...',
+                    copyMessage: '复制消息',
+                    runtimeThinking: '思考中',
+                    runtimeRetrying: '重试中',
+                    modelThinking: '模型思考'
+                }
+            })
+        });
+        const i18n = await import('../../app/frontend/scripts/i18n.js');
+        if (typeof i18n.loadLocale === 'function') {
+            await i18n.loadLocale('zh-CN');
+        }
+
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-zh-runtime' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: '我有多少审批', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances[0];
+        stream.simulateEvent('thinking', { phase: 'start' });
+        stream.simulateEvent('thinking', { phase: 'delta', content: 'Checking approvals.' });
+        stream.simulateEvent('runtime', { state: 'retrying', message: 'Retrying with stricter policy.' });
+
+        await new Promise(r => setTimeout(r, 160));
+
+        const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
+        expect(htmlPayload).toContain('<span class="runtime-title">思考中</span>');
+        expect(htmlPayload).toContain('思考中');
+        expect(htmlPayload).toContain('重试中');
+        expect(htmlPayload).toContain('模型思考');
+        expect(htmlPayload).not.toContain('<span class="runtime-title">Thinking</span>');
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;

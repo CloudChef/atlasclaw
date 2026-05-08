@@ -904,12 +904,19 @@ async function notifyRunCompleted(sessionKey) {
 }
 
 const RUNTIME_STATE_LABELS = {
-  reasoning: 'Thinking',
-  retrying: 'Retrying',
-  waiting_for_tool: 'Waiting for tool',
-  tool_running: 'Running tool',
-  controlled_path: 'Controlled path',
-  failed: 'Failed'
+  reasoning: ['chat.runtimeThinking', 'Thinking'],
+  retrying: ['chat.runtimeRetrying', 'Retrying'],
+  waiting_for_tool: ['chat.runtimeWaitingForTool', 'Waiting for tool'],
+  tool_running: ['chat.runtimeToolRunning', 'Running tool'],
+  controlled_path: ['chat.runtimeControlledPath', 'Controlled path'],
+  failed: ['chat.runtimeFailed', 'Failed']
+}
+
+function getRuntimeStateLabel(state) {
+  const config = RUNTIME_STATE_LABELS[state]
+  if (!config) return state || 'Runtime'
+  const [key, fallback] = config
+  return translateIfExists(key) || fallback
 }
 
 const EARLY_RUNTIME_PHASES = [
@@ -935,7 +942,8 @@ const EARLY_RUNTIME_PHASES = [
 
 function buildThinkingHtml(thinkingContent, elapsedSeconds = null, isThinking = false) {
   if (!thinkingContent) return ''
-  return `<div class="thinking-body"><div class="thinking-caption">Model thinking</div><div class="thinking-content-text">${escapeHtmlWithBreaks(thinkingContent)}</div></div>`
+  const caption = translateIfExists('chat.modelThinking') || 'Model thinking'
+  return `<div class="thinking-body"><div class="thinking-caption">${escapeHtml(caption)}</div><div class="thinking-content-text">${escapeHtmlWithBreaks(thinkingContent)}</div></div>`
 }
 
 function formatRuntimeHeaderElapsed(elapsedMs) {
@@ -966,12 +974,12 @@ function buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs = null, is
     return entry.state !== displayEntries[index - 1].state
   })
   const chips = chipEntries.map((entry, index) => {
-    const label = RUNTIME_STATE_LABELS[entry.state] || entry.state
+    const label = getRuntimeStateLabel(entry.state)
     const activeClass = index === chipEntries.length - 1 ? ' active' : ''
     return `<span class="runtime-chip ${entry.state || ''}${activeClass}">${escapeHtml(label)}</span>`
   }).join('')
   const logs = displayEntries.map((entry, index) => {
-    const label = RUNTIME_STATE_LABELS[entry.state] || entry.state || 'Runtime'
+    const label = getRuntimeStateLabel(entry.state)
     const message = entry.message ? escapeHtml(entry.message) : ''
     const isActiveEntry = !hasAnswered && !hasFailed && index === displayEntries.length - 1
     const effectiveElapsedMs = (
@@ -996,7 +1004,8 @@ function buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs = null, is
     : ''
   const shouldOpen = typeof panelOpen === 'boolean' ? panelOpen : false
   const detailsAttrs = shouldOpen ? ' open' : ''
-  return `<details class="runtime-panel"${detailsAttrs}><summary><div class="runtime-summary-left"><span class="runtime-title">Thinking</span>${titleIcon}${titleElapsedHtml}</div><div class="runtime-summary-right"><span class="runtime-toggle">></span></div></summary><div class="runtime-body">${chips ? `<div class="runtime-statuses">${chips}</div>` : ''}${logs ? `<div class="runtime-log">${logs}</div>` : ''}${thinkingHtml}</div></details>`
+  const title = translateIfExists('chat.runtimeThinking') || 'Thinking'
+  return `<details class="runtime-panel"${detailsAttrs}><summary><div class="runtime-summary-left"><span class="runtime-title">${escapeHtml(title)}</span>${titleIcon}${titleElapsedHtml}</div><div class="runtime-summary-right"><span class="runtime-toggle">></span></div></summary><div class="runtime-body">${chips ? `<div class="runtime-statuses">${chips}</div>` : ''}${logs ? `<div class="runtime-log">${logs}</div>` : ''}${thinkingHtml}</div></details>`
 }
 
 function formatElapsed(elapsedMs) {
