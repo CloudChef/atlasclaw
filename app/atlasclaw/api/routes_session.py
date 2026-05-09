@@ -97,6 +97,26 @@ def _ensure_session_owner(auth_user: UserInfo, session_key: str) -> SessionKey:
     return parsed
 
 
+def _infer_session_key_scope(session_key: str) -> SessionScope:
+    """Infer the serialized session-key scope from its structural segments."""
+    parts = str(session_key or "").split(":")
+    rest_start = 4 if len(parts) > 3 and parts[0] == "agent" and parts[2] == "user" else 2
+    rest = parts[rest_start:]
+    if len(rest) == 1 and rest[0] == "main":
+        return SessionScope.MAIN
+    if len(rest) == 2:
+        return SessionScope.PER_PEER
+    if len(rest) >= 4 and rest[2] in {item.value for item in SessionChatType}:
+        return SessionScope.PER_ACCOUNT_CHANNEL_PEER
+    return SessionScope.PER_CHANNEL_PEER
+
+
+def _canonical_session_key(session_key: str) -> str:
+    """Normalize a route-captured session key back to the canonical encoded form."""
+    parsed = SessionKey.from_string(session_key)
+    return parsed.to_string(scope=_infer_session_key_scope(session_key))
+
+
 def _collect_workspace_download_references(
     *,
     entry: Any,
@@ -214,24 +234,7 @@ def register_session_routes(router: APIRouter) -> None:
         session = await manager.get_or_create(session_key_str)
         return _build_session_response(session_key_str, session)
 
-    @router.get("/sessions/{session_key}", response_model=SessionResponse)
-    async def get_session(
-        request_obj: Request,
-        session_key: str,
-        ctx: APIContext = Depends(get_api_context),
-    ) -> SessionResponse:
-        auth_user = _current_user(request_obj)
-        _ensure_session_owner(auth_user, session_key)
-        manager = ctx.session_manager_router.for_session_key(session_key)
-        session = await manager.get_session(session_key)
-        if not session:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Session not found: {session_key}",
-            )
-        return _build_session_response(session_key, session)
-
-    @router.get("/sessions/{session_key}/history", response_model=SessionHistoryResponse)
+    @router.get("/sessions/{session_key:path}/history", response_model=SessionHistoryResponse)
     async def get_session_history(
         request_obj: Request,
         session_key: str,
@@ -239,6 +242,7 @@ def register_session_routes(router: APIRouter) -> None:
     ) -> SessionHistoryResponse:
         auth_user = _current_user(request_obj)
         _ensure_session_owner(auth_user, session_key)
+        session_key = _canonical_session_key(session_key)
         manager = ctx.session_manager_router.for_session_key(session_key)
         session = await manager.get_session(session_key)
         if not session:
@@ -253,7 +257,7 @@ def register_session_routes(router: APIRouter) -> None:
             user_id=manager.user_id,
         )
 
-    @router.post("/sessions/{session_key}/reset")
+    @router.post("/sessions/{session_key:path}/reset")
     async def reset_session(
         request_obj: Request,
         session_key: str,
@@ -262,11 +266,12 @@ def register_session_routes(router: APIRouter) -> None:
     ) -> dict[str, Any]:
         auth_user = _current_user(request_obj)
         _ensure_session_owner(auth_user, session_key)
+        session_key = _canonical_session_key(session_key)
         manager = ctx.session_manager_router.for_session_key(session_key)
         await manager.reset_session(session_key, archive=request.archive)
         return {"status": "reset", "session_key": session_key}
 
-    @router.delete("/sessions/{session_key}")
+    @router.delete("/sessions/{session_key:path}")
     async def delete_session(
         request_obj: Request,
         session_key: str,
@@ -274,6 +279,7 @@ def register_session_routes(router: APIRouter) -> None:
     ) -> dict[str, Any]:
         auth_user = _current_user(request_obj)
         _ensure_session_owner(auth_user, session_key)
+        session_key = _canonical_session_key(session_key)
         manager = ctx.session_manager_router.for_session_key(session_key)
         success = await manager.delete_session(session_key)
         if not success:
@@ -283,7 +289,7 @@ def register_session_routes(router: APIRouter) -> None:
             )
         return {"status": "deleted", "session_key": session_key}
 
-    @router.get("/sessions/{session_key}/status", response_model=StatusResponse)
+    @router.get("/sessions/{session_key:path}/status", response_model=StatusResponse)
     async def get_status(
         request_obj: Request,
         session_key: str,
@@ -291,6 +297,7 @@ def register_session_routes(router: APIRouter) -> None:
     ) -> StatusResponse:
         auth_user = _current_user(request_obj)
         _ensure_session_owner(auth_user, session_key)
+        session_key = _canonical_session_key(session_key)
         manager = ctx.session_manager_router.for_session_key(session_key)
         session = await manager.get_session(session_key)
         if not session:
@@ -310,7 +317,7 @@ def register_session_routes(router: APIRouter) -> None:
             queue_size=queue_size,
         )
 
-    @router.post("/sessions/{session_key}/queue")
+    @router.post("/sessions/{session_key:path}/queue")
     async def set_queue_mode(
         request_obj: Request,
         session_key: str,
@@ -319,6 +326,7 @@ def register_session_routes(router: APIRouter) -> None:
     ) -> dict[str, Any]:
         auth_user = _current_user(request_obj)
         _ensure_session_owner(auth_user, session_key)
+        session_key = _canonical_session_key(session_key)
         try:
             mode = QueueMode(request.mode)
         except ValueError:
@@ -330,7 +338,7 @@ def register_session_routes(router: APIRouter) -> None:
         ctx.session_queue.set_session_mode(session_key, mode)
         return {"session_key": session_key, "queue_mode": request.mode}
 
-    @router.post("/sessions/{session_key}/compact")
+    @router.post("/sessions/{session_key:path}/compact")
     async def trigger_compact(
         request_obj: Request,
         session_key: str,
@@ -339,6 +347,7 @@ def register_session_routes(router: APIRouter) -> None:
     ) -> dict[str, Any]:
         auth_user = _current_user(request_obj)
         _ensure_session_owner(auth_user, session_key)
+        session_key = _canonical_session_key(session_key)
         manager = ctx.session_manager_router.for_session_key(session_key)
         session = await manager.get_session(session_key)
         if not session:
@@ -352,3 +361,21 @@ def register_session_routes(router: APIRouter) -> None:
             "status": "compaction_triggered",
             "instruction": request.instruction,
         }
+
+    @router.get("/sessions/{session_key:path}", response_model=SessionResponse)
+    async def get_session(
+        request_obj: Request,
+        session_key: str,
+        ctx: APIContext = Depends(get_api_context),
+    ) -> SessionResponse:
+        auth_user = _current_user(request_obj)
+        _ensure_session_owner(auth_user, session_key)
+        session_key = _canonical_session_key(session_key)
+        manager = ctx.session_manager_router.for_session_key(session_key)
+        session = await manager.get_session(session_key)
+        if not session:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Session not found: {session_key}",
+            )
+        return _build_session_response(session_key, session)

@@ -23,6 +23,7 @@ from pydantic_ai.messages import (
 from app.atlasclaw.agent.compaction import CompactionPipeline
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import has_hidden_lookup_result_content
 from app.atlasclaw.core.deps import SkillDeps
+from app.atlasclaw.core.user_paths import user_runtime_dir
 
 
 class HistoryMemoryCoordinator:
@@ -627,7 +628,7 @@ class HistoryMemoryCoordinator:
 
         user_id = getattr(getattr(deps, "user_info", None), "user_id", "") or "default"
         workspace_root = Path(str(getattr(self.sessions, "workspace_path", "."))).resolve()
-        user_memory_dir = workspace_root / "users" / user_id / "memory"
+        user_memory_dir = user_runtime_dir(workspace_root, user_id) / "memory"
         file_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         file_path = user_memory_dir / f"memory_{file_timestamp}.md"
 
@@ -661,7 +662,7 @@ class HistoryMemoryCoordinator:
         """Load recent memory_*.md files and inject one recall system message."""
         user_id = getattr(getattr(deps, "user_info", None), "user_id", "") or "default"
         workspace_root = Path(str(getattr(self.sessions, "workspace_path", "."))).resolve()
-        user_memory_dir = workspace_root / "users" / user_id / "memory"
+        user_memory_dir = user_runtime_dir(workspace_root, user_id) / "memory"
 
         def _read_recent() -> list[tuple[str, str]]:
             if not user_memory_dir.exists():

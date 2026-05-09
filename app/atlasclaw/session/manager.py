@@ -34,6 +34,7 @@ import aiofiles
 import aiofiles.os
 
 from app.atlasclaw.core.security_guard import encode_if_untrusted
+from app.atlasclaw.core.user_paths import normalize_runtime_user_id, user_runtime_dir
 from app.atlasclaw.session.context import (
     SessionKey,
     SessionMetadata,
@@ -96,19 +97,22 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
         """
         self.workspace_path = Path(workspace_path).resolve()
         self.user_id = user_id
+        self.storage_user_id = normalize_runtime_user_id(user_id)
         self.reset_mode = reset_mode
         self.daily_reset_hour = daily_reset_hour
         self.idle_reset_minutes = idle_reset_minutes
         
         # Session storage root: users/<user_id>/sessions/
-        self.sessions_dir = self.workspace_path / "users" / user_id / "sessions"
+        self.sessions_dir = user_runtime_dir(self.workspace_path, user_id) / "sessions"
 
         # Legacy support
         self._legacy_mode = agents_dir is not None
         if self._legacy_mode:
             self.agents_dir = Path(agents_dir).expanduser()
             self.agent_id = agent_id or "main"
-            self.sessions_dir = self.agents_dir / self.agent_id / "sessions" / user_id
+            self.sessions_dir = (
+                self.agents_dir / self.agent_id / "sessions" / self.storage_user_id
+            )
 
         # In-memory metadata cache and per-session locks.
         self._metadata_cache: dict[str, SessionMetadata] = {}

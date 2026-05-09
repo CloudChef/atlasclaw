@@ -162,6 +162,47 @@ class TestSessionCreateWithChatType:
         assert response2.status_code == 200
         assert ":channel:" in response2.json()["session_key"]
 
+    @pytest.mark.parametrize(
+        ("method", "path_template", "payload"),
+        [
+            ("get", "/api/sessions/{key}", None),
+            ("get", "/api/sessions/{key}/history", None),
+            ("post", "/api/sessions/{key}/reset", {"archive": True}),
+            ("get", "/api/sessions/{key}/status", None),
+            ("post", "/api/sessions/{key}/queue", {"mode": "steer"}),
+            ("post", "/api/sessions/{key}/compact", {}),
+            ("delete", "/api/sessions/{key}", None),
+        ],
+    )
+    def test_direct_session_routes_accept_keys_with_path_separators(
+        self,
+        tmp_path,
+        method,
+        path_template,
+        payload,
+    ):
+        """Direct session routes should accept session keys derived from peer IDs with '/'."""
+        client = _build_client(tmp_path, user_id="alice")
+        create_response = client.post(
+            "/api/sessions",
+            json={"scope": "per-peer", "peer_id": "team/42"},
+        )
+        assert create_response.status_code == 200
+        session_key = create_response.json()["session_key"]
+        encoded_session_key = quote(session_key, safe="")
+
+        kwargs = {"json": payload} if payload is not None else {}
+        response = getattr(client, method)(
+            path_template.format(key=encoded_session_key),
+            **kwargs,
+        )
+
+        assert response.status_code == 200
+        if path_template.endswith("/history"):
+            assert "messages" in response.json()
+        elif method != "delete":
+            assert response.json()["session_key"] == session_key
+
 
 class TestThreadSessionsAndOwnership:
 

@@ -9,11 +9,11 @@ for those files.
 
 Storage layout::
 
-    memory/<user_id>/YYYY-MM-DD.md   # daily memories
-    memory/<user_id>/MEMORY.md       # long-term memory
+    users/<user_id>/memory/YYYY-MM-DD.md   # daily memories
+    users/<user_id>/memory/MEMORY.md       # long-term memory
 
-Legacy flat layout (memory/YYYY-MM-DD.md) is migrated to memory/default/ on
-first access.
+Legacy layouts under memory/ are migrated to users/<user_id>/memory/ on first
+access.
 """
 
 import asyncio
@@ -29,6 +29,7 @@ from typing import Any, Optional
 import aiofiles
 
 from app.atlasclaw.core.security_guard import encode_if_untrusted
+from app.atlasclaw.core.user_paths import normalize_runtime_user_id, user_runtime_dir
 
 class MemoryType(Enum):
     """Memory storage category."""
@@ -74,8 +75,8 @@ class MemoryManager:
 
     The manager maintains:
 
-    - `memory/<user_id>/YYYY-MM-DD.md` for daily memories
-    - `memory/<user_id>/MEMORY.md` for long-term memory
+    - `users/<user_id>/memory/YYYY-MM-DD.md` for daily memories
+    - `users/<user_id>/memory/MEMORY.md` for long-term memory
 
     It supports writing, parsing, loading, and searching memory entries.
     """
@@ -103,8 +104,9 @@ class MemoryManager:
         """
         self._workspace = Path(workspace)
         self._user_id = user_id
-        self._memory_dir = self._workspace / memory_dir / user_id
-        self._long_term_path = self._workspace / memory_dir / user_id / long_term_file
+        self._storage_user_id = normalize_runtime_user_id(user_id)
+        self._memory_dir = user_runtime_dir(self._workspace, user_id) / "memory"
+        self._long_term_path = self._memory_dir / long_term_file
         self._daily_prefix = daily_prefix
         self._encoding = encoding
         self._base_memory_dir = self._workspace / memory_dir
@@ -140,22 +142,33 @@ class MemoryManager:
         self._memory_dir.mkdir(parents=True, exist_ok=True)
     
     async def _migrate_legacy_memory(self) -> None:
-        """Migrate legacy flat memory layout to memory/default/ sub-directory."""
+        """Migrate legacy memory layouts into the documented per-user directory."""
         # Legacy: workspace/memory/YYYY-MM-DD.md (daily files directly in memory/)
-        # New:    workspace/memory/default/YYYY-MM-DD.md
+        # Legacy: workspace/memory/<user_id>/*.md
+        # New:    workspace/users/<user_id>/memory/*.md
         legacy_dir = self._base_memory_dir
-        default_dir = legacy_dir / "default"
         
         if not legacy_dir.exists():
             return
         
         # Detect legacy layout: any .md files directly in memory/
         legacy_md_files = list(legacy_dir.glob("*.md"))
-        if legacy_md_files and not default_dir.exists():
-            default_dir.mkdir(parents=True, exist_ok=True)
+        if legacy_md_files and self._storage_user_id == "default":
+            self._memory_dir.mkdir(parents=True, exist_ok=True)
             for md_file in legacy_md_files:
                 import shutil
-                shutil.move(str(md_file), str(default_dir / md_file.name))
+                target = self._memory_dir / md_file.name
+                if not target.exists():
+                    shutil.move(str(md_file), str(target))
+
+        legacy_user_dir = legacy_dir / self._storage_user_id
+        if legacy_user_dir.exists() and legacy_user_dir.resolve() != self._memory_dir.resolve():
+            self._memory_dir.mkdir(parents=True, exist_ok=True)
+            for md_file in legacy_user_dir.glob("*.md"):
+                import shutil
+                target = self._memory_dir / md_file.name
+                if not target.exists():
+                    shutil.move(str(md_file), str(target))
         
     async def write_daily(
         self,

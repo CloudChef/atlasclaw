@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from app.atlasclaw.core.user_paths import user_runtime_dir
+
 _COMMAND_PATTERN = re.compile(
     r"^\s*(?:sudo\s+)?(?:"
     r"rm|mv|cp|cat|ls|cd|chmod|chown|curl|wget|bash|sh|python|node|npm|pnpm|yarn|"
@@ -42,7 +44,7 @@ def encode_if_untrusted(text: str) -> tuple[str, bool]:
 
 
 def ensure_user_work_dir(workspace_path: str | Path, user_id: str) -> Path:
-    root = Path(workspace_path).resolve() / "users" / (user_id or "default") / "work_dir"
+    root = user_runtime_dir(workspace_path, user_id) / "work_dir"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
