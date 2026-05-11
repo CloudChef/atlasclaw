@@ -22,12 +22,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Optional
 
-from app.atlasclaw.agent.routing import AgentConfig, AgentRouter, RoutingContext
+from app.atlasclaw.agent.routing import AgentConfig, AgentRouter, DmScope, RoutingContext
 from app.atlasclaw.agent.runner import AgentRunner
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.auth.models import ANONYMOUS_USER, UserInfo
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.core.trace import enrich_trace_metadata
+from app.atlasclaw.session.context import ChatType, SessionKey, SessionScope
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
 
@@ -205,6 +206,24 @@ Return JSON format:
             )
 
 
+def _resolve_chat_type(chat_type: str) -> ChatType:
+    value = str(chat_type or "").strip().lower()
+    try:
+        return ChatType(value)
+    except ValueError:
+        return ChatType.DM
+
+
+def _resolve_session_scope(dm_scope: DmScope) -> SessionScope:
+    if dm_scope == DmScope.PER_PEER:
+        return SessionScope.PER_PEER
+    if dm_scope == DmScope.PER_CHANNEL_PEER:
+        return SessionScope.PER_CHANNEL_PEER
+    if dm_scope == DmScope.PER_ACCOUNT_CHANNEL_PEER:
+        return SessionScope.PER_ACCOUNT_CHANNEL_PEER
+    return SessionScope.MAIN
+
+
 class RequestOrchestrator:
     """Coordinate intent recognition, routing, and agent execution."""
 
@@ -265,17 +284,17 @@ class RequestOrchestrator:
 
             agent_instance = self.agent_factory.create(agent_config)
 
-            session_scope = self.agent_router.get_session_scope(
-                agent_config,
-                RoutingContext(
-                    peer_id=peer_id,
-                    channel=channel,
-                    account_id=account_id,
-                    guild_id=guild_id,
-                    chat_type=chat_type,
-                ),
+            session_scope = _resolve_session_scope(agent_config.dm_scope)
+            session_key = SessionKey(
+                agent_id=agent_config.id or "main",
+                user_id=resolved_user_info.user_id or "default",
+                channel=channel or "main",
+                account_id=account_id or "default",
+                chat_type=_resolve_chat_type(chat_type),
+                peer_id=peer_id or "default",
+            ).to_string(
+                scope=session_scope,
             )
-            session_key = f"agent:{agent_config.id}:{channel}:{session_scope}:{peer_id}"
 
             deps_extra = extra or {}
             if self.service_provider_registry is not None:
