@@ -14,7 +14,10 @@ def normalize_runtime_user_id(user_id: str) -> str:
     value = str(user_id or "").strip()
     if not value or value == "anonymous" or "\x00" in value:
         return "default"
-    return quote(value, safe="-._~") or "default"
+    normalized = quote(value, safe="-._~")
+    if normalized in {".", ".."} or normalized.strip(".") == "":
+        return "default"
+    return normalized or "default"
 
 
 def user_runtime_dir(workspace_path: str | Path, user_id: str) -> Path:
