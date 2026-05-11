@@ -1,11 +1,7 @@
 # -*- coding: utf-8 -*-
 # Copyright 2026  Qianyun, Inc., www.cloudchef.io, All rights reserved.
 
-"""
-Gateway 网关模块单元测试
-
-测试 Gateway、IdempotencyCache、Frame 协议、GatewayMessageParser 等组件。
-"""
+"""Unit tests for Gateway, frame models, idempotency, and message parsing."""
 
 import json
 
@@ -26,11 +22,11 @@ from app.atlasclaw.api.gateway import (
 
 
 class TestIdempotencyCache:
-    """IdempotencyCache 测试类"""
+    """IdempotencyCache tests."""
 
     @pytest.mark.asyncio
     async def test_set_and_get(self):
-        """测试设置和获取"""
+        """Test setting and retrieving a cached value."""
         cache = IdempotencyCache(ttl_seconds=60)
         await cache.set("key-1", {"result": "ok"})
         result = await cache.get("key-1")
@@ -38,23 +34,23 @@ class TestIdempotencyCache:
 
     @pytest.mark.asyncio
     async def test_get_nonexistent(self):
-        """测试获取不存在的键"""
+        """Test retrieving a missing key."""
         cache = IdempotencyCache()
         result = await cache.get("missing")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_expired_entry(self):
-        """测试过期条目"""
+        """Test expired cache entries."""
         cache = IdempotencyCache(ttl_seconds=0)
         await cache.set("key-1", "value")
-        # TTL 为 0，立即过期
+        # A zero TTL expires immediately.
         result = await cache.get("key-1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_cleanup(self):
-        """测试清理过期条目"""
+        """Test cleanup of expired cache entries."""
         cache = IdempotencyCache(ttl_seconds=0)
         await cache.set("expired-1", "v1")
         await cache.set("expired-2", "v2")
@@ -63,10 +59,10 @@ class TestIdempotencyCache:
 
 
 class TestFrameModels:
-    """帧模型测试类"""
+    """Frame model tests."""
 
     def test_connect_frame(self):
-        """测试连接帧"""
+        """Test connect frames."""
         frame = ConnectFrame(
             device_id="device-123",
             auth_token="tok-xxx",
@@ -77,7 +73,7 @@ class TestFrameModels:
         assert frame.auth_token == "tok-xxx"
 
     def test_hello_ok_frame(self):
-        """测试连接成功帧"""
+        """Test hello-ok frames."""
         frame = HelloOkFrame(
             connection_id="conn-1",
             server_time="2025-01-01T00:00:00Z",
@@ -86,7 +82,7 @@ class TestFrameModels:
         assert frame.connection_id == "conn-1"
 
     def test_request_frame(self):
-        """测试请求帧"""
+        """Test request frames."""
         frame = RequestFrame(
             id="req-1",
             method="agent.run",
@@ -98,13 +94,13 @@ class TestFrameModels:
         assert frame.idempotency_key == "idem-1"
 
     def test_response_frame_ok(self):
-        """测试成功响应帧"""
+        """Test successful response frames."""
         frame = ResponseFrame(id="req-1", ok=True, payload={"data": 42})
         assert frame.ok
         assert frame.payload["data"] == 42
 
     def test_response_frame_error(self):
-        """测试错误响应帧"""
+        """Test error response frames."""
         frame = ResponseFrame(
             id="req-1",
             ok=False,
@@ -114,7 +110,7 @@ class TestFrameModels:
         assert frame.error["code"] == "NOT_FOUND"
 
     def test_event_frame(self):
-        """测试事件帧"""
+        """Test event frames."""
         frame = EventFrame(
             event="message",
             payload={"text": "hello"},
@@ -125,11 +121,11 @@ class TestFrameModels:
 
 
 class TestGateway:
-    """Gateway 测试类"""
+    """Gateway tests."""
 
     @pytest.mark.asyncio
     async def test_connect(self):
-        """测试连接"""
+        """Test connecting a device."""
         gw = Gateway()
         frame = ConnectFrame(device_id="dev-1", platform="test")
         hello = await gw.connect("conn-1", frame)
@@ -139,7 +135,7 @@ class TestGateway:
 
     @pytest.mark.asyncio
     async def test_connect_with_auth(self):
-        """测试带认证的连接"""
+        """Test connecting with authentication."""
         def auth_handler(token):
             if token == "valid-token":
                 return {"user_id": "u1", "tenant_id": "t1"}
@@ -155,7 +151,7 @@ class TestGateway:
 
     @pytest.mark.asyncio
     async def test_disconnect(self):
-        """测试断开连接"""
+        """Test disconnecting a connection."""
         gw = Gateway()
         frame = ConnectFrame(device_id="dev-1")
         await gw.connect("conn-1", frame)
@@ -165,7 +161,7 @@ class TestGateway:
 
     @pytest.mark.asyncio
     async def test_handle_request_method_not_found(self):
-        """测试未知方法"""
+        """Test requests for unknown methods."""
         gw = Gateway()
         frame = ConnectFrame(device_id="dev-1")
         await gw.connect("conn-1", frame)
@@ -177,7 +173,7 @@ class TestGateway:
 
     @pytest.mark.asyncio
     async def test_handle_request_not_connected(self):
-        """测试未连接时请求"""
+        """Test requests from unknown connections."""
         gw = Gateway()
         req = RequestFrame(id="req-1", method="test")
         resp = await gw.handle_request("ghost", req)
@@ -186,7 +182,7 @@ class TestGateway:
 
     @pytest.mark.asyncio
     async def test_handle_request_success(self):
-        """测试成功请求"""
+        """Test successful request handling."""
         gw = Gateway()
 
         async def echo_handler(conn, params):
@@ -204,7 +200,7 @@ class TestGateway:
 
     @pytest.mark.asyncio
     async def test_handle_request_handler_error(self):
-        """测试处理器异常"""
+        """Test handler exceptions."""
         gw = Gateway()
 
         async def bad_handler(conn, params):
@@ -222,7 +218,7 @@ class TestGateway:
 
     @pytest.mark.asyncio
     async def test_idempotency(self):
-        """测试幂等性缓存"""
+        """Test idempotency cache reuse."""
         gw = Gateway()
         call_count = 0
 
@@ -243,13 +239,52 @@ class TestGateway:
         resp1 = await gw.handle_request("conn-1", req)
         resp2 = await gw.handle_request("conn-1", req)
 
-        # 处理器只应被调用一次
+        # The handler should only be called once.
         assert call_count == 1
         assert resp1.payload == resp2.payload
 
     @pytest.mark.asyncio
+    async def test_idempotency_is_scoped_per_connection(self):
+        """The same client key must not share cached responses across connections."""
+        gw = Gateway()
+
+        async def whoami_handler(conn, params):
+            return {"user_id": conn.user_id, "message": params["message"]}
+
+        gw.register_method("whoami", whoami_handler)
+
+        await gw.connect("conn-alice", ConnectFrame(device_id="dev-a"))
+        await gw.connect("conn-bob", ConnectFrame(device_id="dev-b"))
+
+        alice_conn = await gw.get_connection("conn-alice")
+        bob_conn = await gw.get_connection("conn-bob")
+        assert alice_conn is not None
+        assert bob_conn is not None
+        alice_conn.user_id = "alice"
+        bob_conn.user_id = "bob"
+
+        alice_req = RequestFrame(
+            id="req-alice",
+            method="whoami",
+            params={"message": "from-alice"},
+            idempotency_key="shared-key",
+        )
+        bob_req = RequestFrame(
+            id="req-bob",
+            method="whoami",
+            params={"message": "from-bob"},
+            idempotency_key="shared-key",
+        )
+
+        alice_resp = await gw.handle_request("conn-alice", alice_req)
+        bob_resp = await gw.handle_request("conn-bob", bob_req)
+
+        assert alice_resp.payload == {"user_id": "alice", "message": "from-alice"}
+        assert bob_resp.payload == {"user_id": "bob", "message": "from-bob"}
+
+    @pytest.mark.asyncio
     async def test_push_event(self):
-        """测试推送事件"""
+        """Test pushing events."""
         gw = Gateway()
         frame = ConnectFrame(device_id="dev-1")
         await gw.connect("conn-1", frame)
@@ -261,7 +296,7 @@ class TestGateway:
 
     @pytest.mark.asyncio
     async def test_push_event_seq_increments(self):
-        """测试事件序列号递增"""
+        """Test event sequence increments."""
         gw = Gateway()
         frame = ConnectFrame(device_id="dev-1")
         await gw.connect("conn-1", frame)
@@ -272,14 +307,14 @@ class TestGateway:
 
     @pytest.mark.asyncio
     async def test_push_event_no_connection(self):
-        """测试推送到不存在的连接"""
+        """Test pushing events to a missing connection."""
         gw = Gateway()
         result = await gw.push_event("ghost", "test", {})
         assert result is None
 
     @pytest.mark.asyncio
     async def test_broadcast_event(self):
-        """测试广播事件"""
+        """Test broadcasting events."""
         gw = Gateway()
         for i in range(3):
             await gw.connect(f"conn-{i}", ConnectFrame(device_id=f"dev-{i}"))
@@ -289,7 +324,7 @@ class TestGateway:
 
     @pytest.mark.asyncio
     async def test_broadcast_with_filter(self):
-        """测试带过滤的广播"""
+        """Test filtered broadcasts."""
         gw = Gateway()
         gw._auth_handler = lambda t: {"user_id": t, "tenant_id": "t1"}
 
@@ -304,7 +339,7 @@ class TestGateway:
 
     @pytest.mark.asyncio
     async def test_list_connections(self):
-        """测试列出连接"""
+        """Test listing connections."""
         gw = Gateway()
         await gw.connect("c1", ConnectFrame(device_id="d1"))
         await gw.connect("c2", ConnectFrame(device_id="d2"))
@@ -314,7 +349,7 @@ class TestGateway:
 
     @pytest.mark.asyncio
     async def test_method_decorator(self):
-        """测试方法装饰器"""
+        """Test the method decorator."""
         gw = Gateway()
 
         @gw.method("greet")
@@ -329,10 +364,10 @@ class TestGateway:
 
 
 class TestGatewayMessageParser:
-    """GatewayMessageParser 测试类"""
+    """GatewayMessageParser tests."""
 
     def test_parse_connect(self):
-        """测试解析连接帧"""
+        """Test parsing connect frames."""
         msg = json.dumps({"type": "connect", "device_id": "dev-1"})
         frame_type, frame, error = GatewayMessageParser.parse(msg)
         assert frame_type == "connect"
@@ -340,28 +375,28 @@ class TestGatewayMessageParser:
         assert error is None
 
     def test_parse_request(self):
-        """测试解析请求帧"""
+        """Test parsing request frames."""
         msg = json.dumps({"type": "req", "id": "r1", "method": "test"})
         frame_type, frame, error = GatewayMessageParser.parse(msg)
         assert frame_type == "req"
         assert frame.method == "test"
 
     def test_parse_invalid_json(self):
-        """测试解析无效 JSON"""
+        """Test parsing invalid JSON."""
         frame_type, frame, error = GatewayMessageParser.parse("not json")
         assert frame_type is None
         assert error is not None
         assert "Invalid JSON" in error
 
     def test_parse_unknown_type(self):
-        """测试解析未知类型"""
+        """Test parsing unknown frame types."""
         msg = json.dumps({"type": "unknown"})
         frame_type, frame, error = GatewayMessageParser.parse(msg)
         assert frame_type is None
         assert "Unknown frame type" in error
 
     def test_serialize(self):
-        """测试序列化"""
+        """Test frame serialization."""
         frame = HelloOkFrame(connection_id="c1", server_time="now")
         serialized = GatewayMessageParser.serialize(frame)
         data = json.loads(serialized)
