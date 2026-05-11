@@ -30,6 +30,14 @@ import aiofiles
 
 from app.atlasclaw.core.security_guard import encode_if_untrusted
 
+_HOOK_MEMORY_METADATA_PREFIXES = (
+    "- timestamp_utc:",
+    "- module_name:",
+    "- user_id:",
+    "- source_event_ids:",
+)
+
+
 class MemoryType(Enum):
     """Memory storage category."""
     DAILY = "daily"      # Date-scoped short-term memory
@@ -371,6 +379,198 @@ class MemoryManager:
             content = await f.read()
             
         return self._parse_markdown_entries(content, MemoryType.LONG_TERM)
+
+    async def search(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        apply_recency: bool = True,
+    ) -> list[Any]:
+        """
+        Search user-scoped memory files.
+
+        Returned results use the existing HybridSearcher result shape. Each
+        entry includes metadata with a workspace-relative path and line range.
+        """
+        normalized_query = str(query or "").strip()
+        if not normalized_query:
+            return []
+
+        await self.ensure_dirs()
+        entries = await self._load_search_entries()
+        if not entries:
+            return []
+
+        from app.atlasclaw.memory.search import HybridSearcher
+
+        safe_limit = limit if isinstance(limit, int) and limit > 0 else 10
+        searcher = HybridSearcher(user_id=self._user_id, workspace=str(self._workspace))
+        for entry in entries:
+            searcher.index_sync(entry)
+
+        results = await searcher.search(
+            normalized_query,
+            top_k=safe_limit,
+            apply_recency=apply_recency,
+        )
+        return [result for result in results if result.score > 0]
+
+    async def get(
+        self,
+        path: str,
+        offset: Optional[int] = None,
+        limit: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """
+        Read a line slice from a memory file under the current user's memory root.
+        """
+        await self.ensure_dirs()
+        target_path = self._resolve_memory_file(path)
+        if not target_path.exists() or not target_path.is_file():
+            raise FileNotFoundError(f"Memory file not found: {path}")
+
+        async with aiofiles.open(target_path, 'r', encoding=self._encoding) as f:
+            content = await f.read()
+
+        lines = content.splitlines(keepends=True)
+        start_index = offset if isinstance(offset, int) and offset >= 0 else 0
+        if isinstance(limit, int) and limit > 0:
+            selected = lines[start_index:start_index + limit]
+        else:
+            selected = lines[start_index:]
+
+        start_line = start_index + 1
+        end_line = start_line + len(selected) - 1 if selected else start_line
+
+        return {
+            "content": "".join(selected).rstrip("\n"),
+            "path": self._display_memory_path(target_path),
+            "start_line": start_line,
+            "end_line": end_line,
+        }
+
+    async def _load_search_entries(self) -> list[MemoryEntry]:
+        """Load searchable chunks from all Markdown files in this user's memory directory."""
+        entries: list[MemoryEntry] = []
+        for path in self._iter_memory_files():
+            async with aiofiles.open(path, 'r', encoding=self._encoding) as f:
+                content = await f.read()
+            entries.extend(self._parse_search_entries(path, content))
+        return entries
+
+    def _iter_memory_files(self) -> list[Path]:
+        """Return Markdown memory files for the current user."""
+        if not self._memory_dir.exists():
+            return []
+        return sorted(path for path in self._memory_dir.glob("*.md") if path.is_file())
+
+    def _parse_search_entries(self, path: Path, content: str) -> list[MemoryEntry]:
+        """Parse a Markdown memory file into citation-aware searchable chunks."""
+        entries: list[MemoryEntry] = []
+        buffer: list[str] = []
+        start_line: Optional[int] = None
+        lines = content.splitlines()
+
+        def flush(end_line: int) -> None:
+            nonlocal buffer, start_line
+            text = "\n".join(buffer).strip()
+            if text and start_line is not None:
+                timestamp = self._file_timestamp(path)
+                display_path = self._display_memory_path(path)
+                entries.append(
+                    MemoryEntry(
+                        id=MemoryEntry.generate_id(
+                            f"{display_path}:{start_line}:{text}",
+                            timestamp,
+                        ),
+                        content=text,
+                        memory_type=self._memory_type_for_file(path),
+                        timestamp=timestamp,
+                        metadata={
+                            "path": display_path,
+                            "start_line": start_line,
+                            "end_line": end_line,
+                        },
+                    )
+                )
+            buffer = []
+            start_line = None
+
+        for line_number, line in enumerate(lines, start=1):
+            stripped = line.strip()
+            if self._is_memory_delimiter(stripped):
+                flush(line_number - 1)
+                continue
+            if self._is_non_content_memory_line(stripped):
+                flush(line_number - 1)
+                continue
+            if start_line is None:
+                start_line = line_number
+            buffer.append(line)
+
+        flush(len(lines))
+        return entries
+
+    def _is_memory_delimiter(self, line: str) -> bool:
+        """Return whether a Markdown line separates memory entries."""
+        return not line or line == "---"
+
+    def _is_non_content_memory_line(self, line: str) -> bool:
+        """Return whether a Markdown line is structural metadata, not memory text."""
+        if line.startswith("#"):
+            return True
+        if line.startswith("*") and line.endswith("*"):
+            return True
+        return any(line.startswith(prefix) for prefix in _HOOK_MEMORY_METADATA_PREFIXES)
+
+    def _memory_type_for_file(self, path: Path) -> MemoryType:
+        """Infer memory type from the file name."""
+        if path.name == self._long_term_path.name or path.name.startswith("memory_"):
+            return MemoryType.LONG_TERM
+        return MemoryType.DAILY
+
+    def _file_timestamp(self, path: Path) -> datetime:
+        """Return a timezone-aware timestamp for file-backed search entries."""
+        try:
+            return datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+        except OSError:
+            return datetime.now(timezone.utc)
+
+    def _display_memory_path(self, path: Path) -> str:
+        """Return a stable workspace-relative path when possible."""
+        resolved = path.resolve()
+        try:
+            return resolved.relative_to(self._workspace.resolve()).as_posix()
+        except ValueError:
+            return str(resolved)
+
+    def _resolve_memory_file(self, path: str) -> Path:
+        """Resolve a memory path and keep it under this user's memory root."""
+        raw_value = str(path or "").strip()
+        if not raw_value:
+            raise ValueError("Memory path is required")
+
+        raw_path = Path(raw_value)
+        if raw_path.is_absolute():
+            candidates = [raw_path]
+        else:
+            candidates = [
+                self._memory_dir / raw_path,
+                self._workspace / raw_path,
+            ]
+
+        memory_root = self._memory_dir.resolve()
+        resolved_candidates = [candidate.resolve() for candidate in candidates]
+        target = next(
+            (candidate for candidate in resolved_candidates if candidate.exists()),
+            resolved_candidates[0],
+        )
+        try:
+            target.relative_to(memory_root)
+        except ValueError as exc:
+            raise ValueError("Memory path is outside the current user's memory directory") from exc
+        return target
         
     def _parse_markdown_entries(
         self,
@@ -385,7 +585,7 @@ class MemoryManager:
         
         for section in sections:
             section = section.strip()
-            if not section or section.startswith("# "):
+            if not section:
                 continue
                 
             # andcontent
@@ -396,8 +596,12 @@ class MemoryManager:
             tags: list[str] = []
             
             for i, line in enumerate(lines):
+                if line.startswith("# "):
+                    continue
                 # timestamp
                 if line.startswith("## "):
+                    if memory_type == MemoryType.LONG_TERM:
+                        continue
                     time_str = line[3:].strip()
                     try:
                         # parse

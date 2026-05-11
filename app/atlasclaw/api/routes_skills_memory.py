@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,7 @@ from app.atlasclaw.skills.permission_service import skill_permission_service
 from .deps_context import APIContext, get_api_context
 from .schemas import (
     MemorySearchRequest,
+    MemorySearchResult,
     MemoryWriteRequest,
     SkillExecuteRequest,
     SkillExecuteResponse,
@@ -157,6 +159,34 @@ def _build_md_skill_catalog(ctx: APIContext) -> list[dict[str, Any]]:
     return list(catalog_by_qualified_name.values())
 
 
+def _memory_search_result_payload(result: Any) -> dict[str, Any]:
+    entry = getattr(result, "entry", None) or result
+    metadata = getattr(entry, "metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    timestamp = getattr(entry, "timestamp", None)
+    if not isinstance(timestamp, datetime):
+        timestamp = datetime.now(timezone.utc)
+
+    source = (
+        str(getattr(entry, "source", "") or "").strip()
+        or str(metadata.get("path") or metadata.get("source_path") or "").strip()
+    )
+    highlights = getattr(result, "highlights", [])
+    if not isinstance(highlights, list):
+        highlights = []
+
+    return MemorySearchResult(
+        id=str(getattr(entry, "id", "") or ""),
+        content=str(getattr(entry, "content", "") or ""),
+        score=float(getattr(result, "score", 0.0) or 0.0),
+        source=source,
+        timestamp=timestamp,
+        highlights=[str(item) for item in highlights],
+    ).model_dump()
+
+
 def register_skills_memory_routes(router: APIRouter) -> None:
     @router.get("/skills")
     async def list_skills(
@@ -226,7 +256,16 @@ def register_skills_memory_routes(router: APIRouter) -> None:
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
                 detail="Memory system not configured",
             )
-        return {"results": [], "query": request.query}
+
+        results = await ctx.memory_manager.search(
+            request.query,
+            limit=request.top_k,
+            apply_recency=request.apply_recency,
+        )
+        return {
+            "results": [_memory_search_result_payload(result) for result in results],
+            "query": request.query,
+        }
 
     @router.post("/memory/write")
     async def write_memory(
