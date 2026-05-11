@@ -12,6 +12,7 @@ from uuid import uuid4
 
 import aiofiles
 
+from app.atlasclaw.core.user_paths import user_runtime_dir
 from app.atlasclaw.hooks.runtime_models import (
     HookDecision,
     HookContextInjection,
@@ -180,9 +181,7 @@ class HookStateStore:
 
     def _module_dir(self, module_name: str, user_id: str) -> Path:
         module_dir = (
-            self.workspace_path
-            / "users"
-            / user_id
+            user_runtime_dir(self.workspace_path, user_id)
             / "hooks"
             / module_name
         )

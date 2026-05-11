@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from app.atlasclaw.core.user_paths import user_runtime_dir
 from app.atlasclaw.heartbeat.models import (
     HeartbeatEventEnvelope,
     HeartbeatJobDefinition,
@@ -61,7 +62,7 @@ class HeartbeatStateStore:
         return events
 
     def _user_dir(self, user_id: str) -> Path:
-        path = self.workspace_path / "users" / user_id / "heartbeat"
+        path = user_runtime_dir(self.workspace_path, user_id) / "heartbeat"
         path.mkdir(parents=True, exist_ok=True)
         return path
 

@@ -16,6 +16,7 @@ from app.atlasclaw.api.service_provider_schemas import (
     serialize_provider_auth_type,
 )
 from app.atlasclaw.core.config import get_config
+from app.atlasclaw.core.user_paths import user_runtime_dir
 
 
 _SENSITIVE_KEYS = frozenset(
@@ -337,7 +338,7 @@ def _resolve_workspace_path(workspace_path: Optional[str] = None) -> Path:
 
 def get_user_setting_path(user_id: str, workspace_path: Optional[str] = None) -> Path:
     """Return the user settings file path."""
-    return _resolve_workspace_path(workspace_path) / "users" / user_id / "user_setting.json"
+    return user_runtime_dir(_resolve_workspace_path(workspace_path), user_id) / "user_setting.json"
 
 
 def load_user_setting_document(

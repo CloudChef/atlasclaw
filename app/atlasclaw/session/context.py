@@ -51,13 +51,23 @@ class ChatType(Enum):
 
 def _encode_key_segment(value: str) -> str:
     """Escape delimiters inside one session-key segment."""
-    return str(value or "").replace("%", "%25").replace(":", "%3A")
+    return (
+        str(value or "")
+        .replace("%", "%25")
+        .replace(":", "%3A")
+        .replace("/", "%2F")
+        .replace("\\", "%5C")
+    )
 
 
 def _decode_key_segment(value: str) -> str:
     """Decode a session-key segment escaped by `_encode_key_segment`."""
     return (
         str(value or "")
+        .replace("%5C", "\\")
+        .replace("%5c", "\\")
+        .replace("%2F", "/")
+        .replace("%2f", "/")
         .replace("%3A", ":")
         .replace("%3a", ":")
         .replace("%25", "%")

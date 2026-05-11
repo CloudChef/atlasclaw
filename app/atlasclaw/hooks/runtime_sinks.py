@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from app.atlasclaw.core.user_paths import user_runtime_dir
 from app.atlasclaw.hooks.runtime_models import HookContextInjection, HookWriteMemoryRequest
 from app.atlasclaw.hooks.runtime_store import HookStateStore
 
@@ -29,7 +30,7 @@ class MemorySink:
 
     async def write_confirmed(self, request: HookWriteMemoryRequest) -> HookMemoryWriteResult:
         """Persist a confirmed item into `workspace/users/<user_id>/memory/memory_<timestamp>.md`."""
-        user_memory_dir = self.workspace_path / "users" / request.user_id / "memory"
+        user_memory_dir = user_runtime_dir(self.workspace_path, request.user_id) / "memory"
         timestamp = datetime.now(timezone.utc)
         path = user_memory_dir / f"memory_{timestamp.strftime('%Y%m%d_%H%M%S_%f')}.md"
         lines = [

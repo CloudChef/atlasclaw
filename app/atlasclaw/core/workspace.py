@@ -15,6 +15,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from app.atlasclaw.core.user_paths import normalize_runtime_user_id, user_runtime_dir
+
 
 class WorkspaceInitializer:
     """Initialize and manage workspace directory structure.
@@ -205,7 +207,8 @@ class UserWorkspaceInitializer:
         """
         self.workspace_path = Path(workspace_path).resolve()
         self.user_id = user_id
-        self.user_dir = self.workspace_path / "users" / user_id
+        self.storage_user_id = normalize_runtime_user_id(user_id)
+        self.user_dir = user_runtime_dir(self.workspace_path, user_id)
     
     def initialize(self) -> bool:
         """Initialize user directory structure.

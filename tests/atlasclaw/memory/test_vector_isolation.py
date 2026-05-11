@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 from pathlib import Path
 
+from app.atlasclaw.core.user_paths import normalize_runtime_user_id
 from app.atlasclaw.memory.search import HybridSearcher
 from app.atlasclaw.memory.manager import MemoryEntry, MemoryType
 from datetime import datetime, timezone
@@ -34,8 +35,14 @@ class TestVectorIsolation:
 
     def test_index_path_in_memory_subdir(self, tmp_path):
         searcher = HybridSearcher(user_id="u-bob", workspace=str(tmp_path))
-        expected = str(tmp_path / "memory" / "u-bob" / "index.sqlite")
+        expected = str(tmp_path / "users" / "u-bob" / "memory" / "index.sqlite")
         assert searcher._index_path == expected
+
+    def test_dot_only_user_id_uses_default_index_path(self, tmp_path):
+        searcher = HybridSearcher(user_id="..", workspace=str(tmp_path))
+        expected = str(tmp_path / "users" / "default" / "memory" / "index.sqlite")
+        assert searcher._index_path == expected
+        assert normalize_runtime_user_id("..") == "default"
 
     def test_different_users_have_different_index_paths(self, tmp_path):
         s1 = HybridSearcher(user_id="u-alice", workspace=str(tmp_path))

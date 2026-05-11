@@ -142,3 +142,23 @@ class TestSessionKeyUserDimension:
 
         assert restored.user_id == "alice%prod"
         assert restored.peer_id == "peer%3Araw"
+
+    def test_roundtrip_escapes_url_path_separators_in_segments(self):
+        """Session keys used in URL paths should not contain raw path separators."""
+        key = SessionKey(
+            agent_id="main",
+            user_id="alice",
+            channel="web/ui",
+            chat_type=ChatType.DM,
+            peer_id="team/42\\child",
+            thread_id="topic/2026\\05",
+        )
+
+        serialized = key.to_string(scope=SessionScope.PER_CHANNEL_PEER)
+        restored = SessionKey.from_string(serialized)
+
+        assert "/" not in serialized
+        assert "\\" not in serialized
+        assert restored.channel == "web/ui"
+        assert restored.peer_id == "team/42\\child"
+        assert restored.thread_id == "topic/2026\\05"
