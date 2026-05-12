@@ -17,6 +17,7 @@ from app.atlasclaw.auth.guards import (
     get_authorization_context,
 )
 from app.atlasclaw.core.config import get_config, get_config_path
+from app.atlasclaw.memory.manager import MemoryType
 from app.atlasclaw.skills.frontmatter import parse_frontmatter
 from app.atlasclaw.skills.registry import validate_skill_name
 from app.atlasclaw.skills.permission_service import skill_permission_service
@@ -239,22 +240,35 @@ def register_skills_memory_routes(router: APIRouter) -> None:
                 detail="Memory system not configured",
             )
 
-        if request.memory_type == "daily":
+        try:
+            memory_type = MemoryType(request.memory_type)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid memory_type: {request.memory_type}",
+            ) from exc
+
+        if memory_type == MemoryType.DAILY:
             entry = await ctx.memory_manager.write_daily(
                 request.content,
                 source=request.source,
                 tags=request.tags,
             )
-        else:
+        elif memory_type == MemoryType.LONG_TERM:
             entry = await ctx.memory_manager.write_long_term(
                 request.content,
                 source=request.source,
                 tags=request.tags,
                 section=request.section,
             )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid memory_type: {request.memory_type}",
+            )
 
         return {
             "id": entry.id,
-            "memory_type": request.memory_type,
+            "memory_type": memory_type.value,
             "timestamp": entry.timestamp.isoformat(),
         }
