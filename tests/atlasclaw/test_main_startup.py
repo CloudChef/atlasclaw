@@ -67,6 +67,8 @@ class TestMainStartup:
     def test_startup_with_env_vars_succeeds(self, test_config_path):
         """验证有环境变量配置时启动成功"""
         import importlib
+        from app.atlasclaw.api.deps_context import get_api_context
+
         os.environ["DEEPSEEK_API_KEY"] = "test-key"
         
         # 重新加载模块
@@ -78,6 +80,7 @@ class TestMainStartup:
             resp = client.get("/api/health")
             assert resp.status_code == 200
             assert resp.json()["status"] == "healthy"
+            assert get_api_context().memory_manager is not None
 
     def test_startup_loads_all_provider_and_standalone_skills(
         self,

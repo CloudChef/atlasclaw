@@ -34,6 +34,7 @@ from app.atlasclaw.api.channel_hooks import router as channel_hooks_router
 from app.atlasclaw.api.channels import router as channels_router, set_channel_manager
 from app.atlasclaw.api.agent_info import router as agent_info_router
 from app.atlasclaw.api.api_routes import router as db_api_router
+from app.atlasclaw.memory.manager import MemoryManager
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.session.router import SessionManagerRouter
@@ -120,6 +121,7 @@ _global_provider_registry: Optional[ServiceProviderRegistry] = None
 _session_manager: Optional[SessionManager] = None
 _session_manager_router: Optional[SessionManagerRouter] = None
 _session_queue: Optional[SessionQueue] = None
+_memory_manager: Optional[MemoryManager] = None
 _skill_registry: Optional[SkillRegistry] = None
 _agent_runner: Optional[AgentRunner] = None
 _channel_manager: Optional[ChannelManager] = None
@@ -192,7 +194,7 @@ async def lifespan(app: FastAPI):
 
 
     """Application lifespan handler for startup and shutdown."""
-    global _session_manager, _session_manager_router, _session_queue, _skill_registry, _agent_runner, _global_provider_registry, _channel_manager, _hook_state_store, _memory_sink, _context_sink, _hook_runtime, _heartbeat_runtime, _heartbeat_store, _heartbeat_task
+    global _session_manager, _session_manager_router, _session_queue, _memory_manager, _skill_registry, _agent_runner, _global_provider_registry, _channel_manager, _hook_state_store, _memory_sink, _context_sink, _hook_runtime, _heartbeat_runtime, _heartbeat_store, _heartbeat_task
     
     config = get_config()
     config_path = get_config_path()
@@ -300,6 +302,7 @@ async def lifespan(app: FastAPI):
     )
     _session_manager_router = SessionManagerRouter.from_manager(_session_manager)
     _session_queue = SessionQueue(max_concurrent=config.agent_defaults.max_concurrent)
+    _memory_manager = MemoryManager(workspace=workspace_path, user_id="default")
     _hook_state_store = HookStateStore(workspace_path=workspace_path)
     _memory_sink = MemorySink(workspace_path=workspace_path)
     _context_sink = ContextSink(_hook_state_store)
@@ -815,6 +818,7 @@ async def lifespan(app: FastAPI):
         session_manager=_session_manager,
         session_manager_router=_session_manager_router,
         hook_state_store=_hook_state_store,
+        memory_manager=_memory_manager,
         memory_sink=_memory_sink,
         context_sink=_context_sink,
         hook_runtime=_hook_runtime,

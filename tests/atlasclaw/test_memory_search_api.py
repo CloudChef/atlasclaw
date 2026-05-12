@@ -52,7 +52,7 @@ def test_memory_search_route_returns_written_memory(tmp_path):
     results = search_response.json()["results"]
     assert results
     assert "canary release" in results[0]["content"].lower()
-    assert results[0]["source"] == "memory/alice/MEMORY.md"
+    assert results[0]["source"] == "users/alice/memory/MEMORY.md"
 
 
 @pytest.mark.asyncio
@@ -70,7 +70,7 @@ async def test_memory_manager_search_loads_persisted_memory(tmp_path):
 
     assert results
     assert "canary release" in results[0].entry.content.lower()
-    assert results[0].entry.metadata["path"] == "memory/alice/MEMORY.md"
+    assert results[0].entry.metadata["path"] == "users/alice/memory/MEMORY.md"
     assert results[0].entry.metadata["start_line"] > 0
 
 
@@ -82,9 +82,9 @@ async def test_memory_manager_get_returns_line_slice(tmp_path):
         section="Operations",
     )
 
-    payload = await manager.get("memory/alice/MEMORY.md", offset=4, limit=1)
+    payload = await manager.get("users/alice/memory/MEMORY.md", offset=4, limit=1)
 
     assert payload["content"] == "AtlasClaw deployment uses canary release gates"
-    assert payload["path"] == "memory/alice/MEMORY.md"
+    assert payload["path"] == "users/alice/memory/MEMORY.md"
     assert payload["start_line"] == 5
     assert payload["end_line"] == 5
