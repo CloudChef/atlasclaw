@@ -110,6 +110,33 @@ class TestAuthProvider(AuthProvider):
             assert "test_auth" in results["auth"]
             assert AuthRegistry.get("test_auth") is not None
 
+    def test_scan_providers_with_canonical_auth_provider_base(self):
+        """Auth extensions should work with the documented AuthProvider import."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            provider_dir = Path(temp_dir) / "test_provider"
+            auth_dir = provider_dir / "auth"
+            auth_dir.mkdir(parents=True)
+
+            auth_file = auth_dir / "modern_auth.py"
+            auth_file.write_text('''
+from app.atlasclaw.auth.providers.base import AuthProvider
+
+class ModernAuthProvider(AuthProvider):
+    auth_id = "modern_auth"
+    auth_name = "Modern Auth"
+
+    async def authenticate(self, credential):
+        return None
+
+    def provider_name(self):
+        return "modern_auth"
+''')
+
+            results = ProviderScanner.scan_providers(Path(temp_dir))
+
+            assert "modern_auth" in results["auth"]
+            assert AuthRegistry.get("modern_auth") is not None
+
     def test_scan_providers_with_config(self):
         """Test scanning providers with config.json."""
         with tempfile.TemporaryDirectory() as temp_dir:
