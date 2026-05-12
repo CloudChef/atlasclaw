@@ -32,7 +32,23 @@ def _current_user(request_obj: Request) -> UserInfo:
 
 
 def _resolve_scope(request: SessionCreateRequest) -> SessionScope:
-    return SessionScope(request.scope)
+    try:
+        return SessionScope(request.scope)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid session scope: {request.scope}",
+        ) from exc
+
+
+def _resolve_chat_type(value: str) -> SessionChatType:
+    try:
+        return SessionChatType(value)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid chat_type: {value}",
+        ) from exc
 
 
 def _resolve_session_scope_for_thread(account_id: str) -> SessionScope:
@@ -60,7 +76,7 @@ def _build_session_key(
         agent_id=request.agent_id,
         channel=request.channel,
         account_id=getattr(request, "account_id", "default") or "default",
-        chat_type=SessionChatType(request.chat_type),
+        chat_type=_resolve_chat_type(request.chat_type),
         user_id=auth_user.user_id,
         peer_id=_resolve_peer_id(auth_user, request),
         thread_id=thread_id,

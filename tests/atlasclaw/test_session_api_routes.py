@@ -119,21 +119,30 @@ class TestSessionCreateWithChatType:
         # The chat_type should be properly converted to enum and serialized
         assert f":{chat_type}:" in session_key
 
-    def test_create_session_with_invalid_chat_type_raises_error(self, tmp_path):
+    def test_create_session_with_invalid_chat_type_returns_client_error(self, tmp_path):
         """Test that invalid chat_type values raise validation error.
         
-        The endpoint converts string to ChatType enum, so invalid values
-        will raise ValueError.
+        The endpoint converts string to ChatType enum, so invalid values are
+        rejected as client errors instead of bubbling ValueError as a 500.
         """
         client = _build_client(tmp_path)
-        
-        # Use raise_server_exceptions=False to capture the error response
-        import pytest
-        with pytest.raises(ValueError, match="is not a valid ChatType"):
-            client.post(
-                "/api/sessions",
-                json={"chat_type": "invalid_type", "scope": "per-peer"}
-            )
+
+        response = client.post(
+            "/api/sessions",
+            json={"chat_type": "invalid_type", "scope": "per-peer"},
+        )
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Invalid chat_type: invalid_type"
+
+    def test_create_session_with_invalid_scope_returns_client_error(self, tmp_path):
+        """Invalid scope values should be rejected as client errors."""
+        client = _build_client(tmp_path)
+
+        response = client.post("/api/sessions", json={"scope": "not-a-scope"})
+
+        assert response.status_code == 400
+        assert response.json()["detail"] == "Invalid session scope: not-a-scope"
 
     def test_create_session_key_uses_enum_value_method(self, tmp_path):
         """Test that SessionKey.to_string() works with proper ChatType enum.
