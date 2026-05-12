@@ -42,6 +42,17 @@ async def _ensure_runnable_session(ctx: APIContext, auth_user: UserInfo, session
         )
 
 
+def _get_owned_run_or_404(ctx: APIContext, run_id: str, auth_user: UserInfo) -> dict[str, Any]:
+    run_info = get_run_or_404(ctx, run_id)
+    parsed = SessionKey.from_string(str(run_info.get("session_key") or ""))
+    if parsed.user_id != auth_user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Run not found: {run_id}",
+        )
+    return run_info
+
+
 def register_agent_routes(router: APIRouter) -> None:
     @router.get("/agent/capabilities")
     async def list_agent_capabilities(
@@ -186,23 +197,23 @@ def register_agent_routes(router: APIRouter) -> None:
 
     @router.get("/agent/runs/{run_id}/stream")
     async def stream_agent_run(
+        request_obj: Request,
         run_id: str,
         last_event_id: Optional[str] = Header(None, alias="Last-Event-ID"),
         ctx: APIContext = Depends(get_api_context),
     ):
-        if run_id not in ctx.active_runs:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Run not found: {run_id}",
-            )
+        user_info: UserInfo = getattr(request_obj.state, "user_info", ANONYMOUS_USER)
+        _get_owned_run_or_404(ctx, run_id, user_info)
         return await ctx.sse_manager.create_response(run_id, last_event_id=last_event_id)
 
     @router.get("/agent/runs/{run_id}", response_model=AgentStatusResponse)
     async def get_agent_status(
+        request_obj: Request,
         run_id: str,
         ctx: APIContext = Depends(get_api_context),
     ) -> AgentStatusResponse:
-        run_info = get_run_or_404(ctx, run_id)
+        user_info: UserInfo = getattr(request_obj.state, "user_info", ANONYMOUS_USER)
+        run_info = _get_owned_run_or_404(ctx, run_id, user_info)
 
         return AgentStatusResponse(
             run_id=run_id,
@@ -215,8 +226,11 @@ def register_agent_routes(router: APIRouter) -> None:
 
     @router.post("/agent/runs/{run_id}/abort")
     async def abort_agent_run(
+        request_obj: Request,
         run_id: str,
         ctx: APIContext = Depends(get_api_context),
     ) -> dict[str, Any]:
+        user_info: UserInfo = getattr(request_obj.state, "user_info", ANONYMOUS_USER)
+        _get_owned_run_or_404(ctx, run_id, user_info)
         abort_run(ctx, run_id)
         return {"status": "aborted", "run_id": run_id}

@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -66,6 +67,16 @@ def _build_client(tmp_path) -> TestClient:
 
 
 def _build_client_with_runner(tmp_path, runner, *, user_id: str = "anonymous") -> TestClient:
+    client, _ = _build_client_and_context(tmp_path, runner, user_id=user_id)
+    return client
+
+
+def _build_client_and_context(
+    tmp_path,
+    runner,
+    *,
+    user_id: str = "anonymous",
+) -> tuple[TestClient, APIContext]:
     ctx = APIContext(
         session_manager=SessionManager(agents_dir=str(tmp_path / "agents")),
         session_queue=SessionQueue(),
@@ -82,7 +93,7 @@ def _build_client_with_runner(tmp_path, runner, *, user_id: str = "anonymous") -
         return await call_next(request)
 
     app.include_router(create_router())
-    return TestClient(app)
+    return TestClient(app), ctx
 
 
 def _parse_sse_events(body: str) -> list[tuple[str, dict]]:
@@ -201,3 +212,48 @@ def test_agent_run_accepts_current_users_existing_session_key(tmp_path):
     assert response.status_code == 200
     assert response.json()["session_key"] == session_key
     assert runner.called is True
+
+
+def test_agent_run_status_rejects_other_users_run_id(tmp_path):
+    client, ctx = _build_client_and_context(tmp_path, _StreamingRunner(), user_id="bob")
+    ctx.active_runs["run-alice"] = {
+        "status": "running",
+        "session_key": "agent:main:user:alice:main",
+        "started_at": datetime.now(timezone.utc),
+        "message": "secret",
+        "timeout_seconds": 30,
+    }
+
+    response = client.get("/api/agent/runs/run-alice")
+
+    assert response.status_code == 404
+
+
+def test_agent_run_stream_rejects_other_users_run_id(tmp_path):
+    client, ctx = _build_client_and_context(tmp_path, _StreamingRunner(), user_id="bob")
+    ctx.active_runs["run-alice"] = {
+        "status": "running",
+        "session_key": "agent:main:user:alice:main",
+        "started_at": datetime.now(timezone.utc),
+        "message": "secret",
+        "timeout_seconds": 30,
+    }
+
+    with client.stream("GET", "/api/agent/runs/run-alice/stream") as response:
+        assert response.status_code == 404
+
+
+def test_agent_run_abort_rejects_other_users_run_id_without_mutating(tmp_path):
+    client, ctx = _build_client_and_context(tmp_path, _StreamingRunner(), user_id="bob")
+    ctx.active_runs["run-alice"] = {
+        "status": "running",
+        "session_key": "agent:main:user:alice:main",
+        "started_at": datetime.now(timezone.utc),
+        "message": "secret",
+        "timeout_seconds": 30,
+    }
+
+    response = client.post("/api/agent/runs/run-alice/abort")
+
+    assert response.status_code == 404
+    assert ctx.active_runs["run-alice"]["status"] == "running"
