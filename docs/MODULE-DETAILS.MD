@@ -1288,7 +1288,7 @@ Constructor: `workspace`, `memory_dir="memory"`, `long_term_file="MEMORY.md"`, `
 
 **Storage Layout**:
 ```text
-memory/<user_id>/
+users/<user_id>/memory/
 |- YYYY-MM-DD.md    # Daily memories (date-scoped)
 \- MEMORY.md        # Long-term persistent memory
 ```

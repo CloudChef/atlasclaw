@@ -23,7 +23,7 @@ class TestMemoryIsolation:
         await manager.ensure_dirs()
         await manager.write_daily("Test memory content", source="test")
 
-        alice_dir = tmp_path / "memory" / "u-alice"
+        alice_dir = tmp_path / "users" / "u-alice" / "memory"
         assert alice_dir.exists()
         md_files = list(alice_dir.glob("*.md"))
         assert len(md_files) > 0
@@ -31,7 +31,7 @@ class TestMemoryIsolation:
     @pytest.mark.asyncio
     async def test_long_term_path_in_user_subdir(self, tmp_path):
         manager = MemoryManager(workspace=str(tmp_path), user_id="u-bob")
-        expected_path = tmp_path / "memory" / "u-bob" / "MEMORY.md"
+        expected_path = tmp_path / "users" / "u-bob" / "memory" / "MEMORY.md"
         assert manager.long_term_path == expected_path
 
     @pytest.mark.asyncio
@@ -44,8 +44,8 @@ class TestMemoryIsolation:
         await mgr_alice.write_daily("Alice memory", source="test")
         await mgr_bob.write_daily("Bob memory", source="test")
 
-        alice_dir = tmp_path / "memory" / "u-alice"
-        bob_dir = tmp_path / "memory" / "u-bob"
+        alice_dir = tmp_path / "users" / "u-alice" / "memory"
+        bob_dir = tmp_path / "users" / "u-bob" / "memory"
 
         assert alice_dir.exists()
         assert bob_dir.exists()
@@ -57,7 +57,7 @@ class TestMemoryIsolation:
 
     @pytest.mark.asyncio
     async def test_legacy_migration_to_default(self, tmp_path):
-        """Legacy .md files directly in memory/ migrate to memory/default/."""
+        """Legacy .md files directly in memory/ migrate to users/default/memory/."""
         legacy_dir = tmp_path / "memory"
         legacy_dir.mkdir(parents=True)
 
@@ -68,9 +68,23 @@ class TestMemoryIsolation:
         manager = MemoryManager(workspace=str(tmp_path), user_id="default")
         await manager.ensure_dirs()
 
-        default_dir = tmp_path / "memory" / "default"
+        default_dir = tmp_path / "users" / "default" / "memory"
         assert default_dir.exists()
         migrated_files = list(default_dir.glob("*.md"))
         assert any("2025-01-15" in f.name for f in migrated_files)
         # Legacy file should no longer be directly in memory/
         assert not (legacy_dir / "2025-01-15.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_legacy_user_subdir_migrates_to_documented_location(self, tmp_path):
+        """Legacy memory/<user_id>/ files migrate to users/<user_id>/memory/."""
+        legacy_user_dir = tmp_path / "memory" / "u-alice"
+        legacy_user_dir.mkdir(parents=True)
+        (legacy_user_dir / "MEMORY.md").write_text("# Legacy memory\n", encoding="utf-8")
+
+        manager = MemoryManager(workspace=str(tmp_path), user_id="u-alice")
+        await manager.ensure_dirs()
+
+        new_user_dir = tmp_path / "users" / "u-alice" / "memory"
+        assert (new_user_dir / "MEMORY.md").exists()
+        assert not (legacy_user_dir / "MEMORY.md").exists()

@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.atlasclaw.core.config import get_config
 from app.atlasclaw.core.provider_catalog import get_provider_catalog_instances
+from app.atlasclaw.core.user_paths import user_runtime_dir
 from app.atlasclaw.db import get_db_session_dependency as get_db_session
 from app.atlasclaw.db.schemas import (
     AgentCreate,
@@ -414,7 +415,7 @@ async def _refresh_provider_instances_in_api_context(session: AsyncSession) -> N
 
 def _get_user_setting_path(workspace_path: str, user_id: str) -> Path:
     """Return the path to a user's user_setting.json file."""
-    return Path(workspace_path).resolve() / "users" / user_id / "user_setting.json"
+    return user_runtime_dir(workspace_path, user_id) / "user_setting.json"
 
 
 def _load_user_setting_document(workspace_path: str, user_id: str) -> dict[str, object]:

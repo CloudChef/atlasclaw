@@ -9,11 +9,11 @@ for those files.
 
 Storage layout::
 
-    memory/<user_id>/YYYY-MM-DD.md   # daily memories
-    memory/<user_id>/MEMORY.md       # long-term memory
+    users/<user_id>/memory/YYYY-MM-DD.md   # daily memories
+    users/<user_id>/memory/MEMORY.md       # long-term memory
 
-Legacy flat layout (memory/YYYY-MM-DD.md) is migrated to memory/default/ on
-first access.
+Legacy layouts under memory/ are migrated to users/<user_id>/memory/ on first
+access.
 """
 
 import asyncio
@@ -29,6 +29,7 @@ from typing import Any, Optional
 import aiofiles
 
 from app.atlasclaw.core.security_guard import encode_if_untrusted
+from app.atlasclaw.core.user_paths import normalize_runtime_user_id, user_runtime_dir
 
 _HOOK_MEMORY_METADATA_PREFIXES = (
     "- timestamp_utc:",
@@ -82,8 +83,8 @@ class MemoryManager:
 
     The manager maintains:
 
-    - `memory/<user_id>/YYYY-MM-DD.md` for daily memories
-    - `memory/<user_id>/MEMORY.md` for long-term memory
+    - `users/<user_id>/memory/YYYY-MM-DD.md` for daily memories
+    - `users/<user_id>/memory/MEMORY.md` for long-term memory
 
     It supports writing, parsing, loading, and searching memory entries.
     """
@@ -111,8 +112,9 @@ class MemoryManager:
         """
         self._workspace = Path(workspace)
         self._user_id = user_id
-        self._memory_dir = self._workspace / memory_dir / user_id
-        self._long_term_path = self._workspace / memory_dir / user_id / long_term_file
+        self._storage_user_id = normalize_runtime_user_id(user_id)
+        self._memory_dir = user_runtime_dir(self._workspace, user_id) / "memory"
+        self._long_term_path = self._memory_dir / long_term_file
         self._daily_prefix = daily_prefix
         self._encoding = encoding
         self._base_memory_dir = self._workspace / memory_dir
@@ -148,22 +150,33 @@ class MemoryManager:
         self._memory_dir.mkdir(parents=True, exist_ok=True)
     
     async def _migrate_legacy_memory(self) -> None:
-        """Migrate legacy flat memory layout to memory/default/ sub-directory."""
+        """Migrate legacy memory layouts into the documented per-user directory."""
         # Legacy: workspace/memory/YYYY-MM-DD.md (daily files directly in memory/)
-        # New:    workspace/memory/default/YYYY-MM-DD.md
+        # Legacy: workspace/memory/<user_id>/*.md
+        # New:    workspace/users/<user_id>/memory/*.md
         legacy_dir = self._base_memory_dir
-        default_dir = legacy_dir / "default"
         
         if not legacy_dir.exists():
             return
         
         # Detect legacy layout: any .md files directly in memory/
         legacy_md_files = list(legacy_dir.glob("*.md"))
-        if legacy_md_files and not default_dir.exists():
-            default_dir.mkdir(parents=True, exist_ok=True)
+        if legacy_md_files and self._storage_user_id == "default":
+            self._memory_dir.mkdir(parents=True, exist_ok=True)
             for md_file in legacy_md_files:
                 import shutil
-                shutil.move(str(md_file), str(default_dir / md_file.name))
+                target = self._memory_dir / md_file.name
+                if not target.exists():
+                    shutil.move(str(md_file), str(target))
+
+        legacy_user_dir = legacy_dir / self._storage_user_id
+        if legacy_user_dir.exists() and legacy_user_dir.resolve() != self._memory_dir.resolve():
+            self._memory_dir.mkdir(parents=True, exist_ok=True)
+            for md_file in legacy_user_dir.glob("*.md"):
+                import shutil
+                target = self._memory_dir / md_file.name
+                if not target.exists():
+                    shutil.move(str(md_file), str(target))
         
     async def write_daily(
         self,
@@ -390,8 +403,9 @@ class MemoryManager:
         """
         Search user-scoped memory files.
 
-        Returned results use the existing HybridSearcher result shape. Each
-        entry includes metadata with a workspace-relative path and line range.
+        Results are compatible with the built-in ``memory_search`` tool: each
+        returned item includes a ``MemoryEntry`` whose metadata carries
+        ``path``, ``start_line``, and ``end_line`` citation fields.
         """
         normalized_query = str(query or "").strip()
         if not normalized_query:
@@ -423,7 +437,17 @@ class MemoryManager:
         limit: Optional[int] = None,
     ) -> dict[str, Any]:
         """
-        Read a line slice from a memory file under the current user's memory root.
+        Read a memory file slice restricted to the current user's memory root.
+
+        Args:
+            path: Absolute path, workspace-relative path, or memory-dir-relative
+                path to a Markdown memory file.
+            offset: Optional zero-based line offset.
+            limit: Optional maximum number of lines to return.
+
+        Returns:
+            Dictionary with ``content``, ``path``, ``start_line``, and
+            ``end_line`` fields for tool citation formatting.
         """
         await self.ensure_dirs()
         target_path = self._resolve_memory_file(path)
@@ -441,7 +465,10 @@ class MemoryManager:
             selected = lines[start_index:]
 
         start_line = start_index + 1
-        end_line = start_line + len(selected) - 1 if selected else start_line
+        if selected:
+            end_line = start_line + len(selected) - 1
+        else:
+            end_line = start_line
 
         return {
             "content": "".join(selected).rstrip("\n"),
@@ -451,7 +478,7 @@ class MemoryManager:
         }
 
     async def _load_search_entries(self) -> list[MemoryEntry]:
-        """Load searchable chunks from all Markdown files in this user's memory directory."""
+        """Load searchable chunks from every Markdown file in the user memory directory."""
         entries: list[MemoryEntry] = []
         for path in self._iter_memory_files():
             async with aiofiles.open(path, 'r', encoding=self._encoding) as f:
@@ -546,12 +573,11 @@ class MemoryManager:
             return str(resolved)
 
     def _resolve_memory_file(self, path: str) -> Path:
-        """Resolve a memory path and keep it under this user's memory root."""
-        raw_value = str(path or "").strip()
-        if not raw_value:
+        """Resolve a user-supplied memory path and keep it under this user's memory root."""
+        raw_path = Path(str(path or "").strip())
+        if not str(raw_path):
             raise ValueError("Memory path is required")
 
-        raw_path = Path(raw_value)
         if raw_path.is_absolute():
             candidates = [raw_path]
         else:

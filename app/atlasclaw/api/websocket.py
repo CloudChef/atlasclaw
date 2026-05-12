@@ -140,6 +140,11 @@ register handle
         
 """
         self._request_handlers[method] = handler
+
+    @staticmethod
+    def _idempotency_cache_key(conn_info: ConnectionInfo, key: str) -> str:
+        """Return a connection-scoped cache key for a client idempotency key."""
+        return f"{conn_info.connection_id}:{key}"
         
     async def handle_connection(self, websocket: WebSocket) -> None:
         """
@@ -277,8 +282,10 @@ handle WebSocket connection
         idempotency_key = data.get("idempotency_key")
         
         # etc.check
+        idempotency_cache_key = None
         if idempotency_key:
-            cached = self._check_idempotency(idempotency_key)
+            idempotency_cache_key = self._idempotency_cache_key(conn_info, idempotency_key)
+            cached = self._check_idempotency(idempotency_cache_key)
             if cached is not None:
                 await self._send_frame(websocket, {
                     "type": FrameType.RESPONSE.value,
@@ -304,8 +311,8 @@ handle WebSocket connection
             result = await handler(conn_info, **params)
             
             # etc.
-            if idempotency_key:
-                self._cache_idempotency(idempotency_key, result)
+            if idempotency_cache_key:
+                self._cache_idempotency(idempotency_cache_key, result)
                 
             await self._send_frame(websocket, {
                 "type": FrameType.RESPONSE.value,

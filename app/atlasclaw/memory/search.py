@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Protocol
 
 from .manager import MemoryEntry
+from app.atlasclaw.core.user_paths import user_runtime_dir
 
 
 @dataclass
@@ -120,7 +121,7 @@ initialize search
         if workspace:
             from pathlib import Path
             self._index_path: Optional[str] = str(
-                Path(workspace) / "memory" / user_id / "index.sqlite"
+                user_runtime_dir(Path(workspace), user_id) / "memory" / "index.sqlite"
             )
         else:
             self._index_path = None

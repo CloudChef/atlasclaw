@@ -18,6 +18,7 @@ from pydantic import ValidationError
 from dotenv import load_dotenv
 
 from app.atlasclaw.core.config_schema import AtlasClawConfig
+from app.atlasclaw.core.user_paths import user_runtime_dir
 
 
 class ConfigManager:
@@ -193,7 +194,7 @@ initializeConfiguration manager
             User config dict with channels, providers, preferences fields
         """
         workspace_path = Path(self.config.workspace.path)
-        user_dir = workspace_path / "users" / user_id
+        user_dir = user_runtime_dir(workspace_path, user_id)
         
         # First try to load user_setting.json (new format)
         user_config_path = user_dir / "user_setting.json"

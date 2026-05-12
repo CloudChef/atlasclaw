@@ -11,6 +11,7 @@ import json
 import pytest
 from pathlib import Path
 
+from app.atlasclaw.core.user_paths import normalize_runtime_user_id
 from app.atlasclaw.core.workspace import WorkspaceInitializer, UserWorkspaceInitializer
 
 
@@ -354,6 +355,17 @@ class TestUserWorkspaceInitializer:
         memory_dir = initializer.get_memory_dir()
         assert memory_dir == tmp_path / "users" / "test_user" / "memory"
         assert memory_dir.exists()
+
+    def test_user_id_path_segments_are_encoded(self, tmp_path):
+        """External user IDs must stay inside one workspace/users directory segment."""
+        user_id = r"..\..\outside_workspace"
+        initializer = UserWorkspaceInitializer(str(tmp_path), user_id)
+        initializer.initialize()
+
+        expected_dir = tmp_path / "users" / normalize_runtime_user_id(user_id)
+        assert initializer.user_dir == expected_dir
+        assert initializer.user_dir.exists()
+        initializer.user_dir.resolve().relative_to((tmp_path / "users").resolve())
 
 
 class TestWorkspaceIntegration:

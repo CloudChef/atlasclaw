@@ -40,16 +40,20 @@ async def memory_get_tool(
 """
     deps = ctx.deps
     extra = getattr(deps, "extra", {})
-    memory_manager = extra.get("memory_manager")
+    memory_manager = extra.get("memory_manager") or getattr(
+        deps,
+        "memory_manager",
+        None,
+    )
 
     if memory_manager is None:
         return ToolResult.error("MemoryManager not available").to_dict()
 
     try:
-        if hasattr(memory_manager, "get"):
-            content = await memory_manager.get(path, offset=offset, limit=limit)
-        else:
-            content = f"(memory_get not supported for path: {path})"
+        if not hasattr(memory_manager, "get"):
+            return ToolResult.error("MemoryManager get is not available").to_dict()
+
+        content = await memory_manager.get(path, offset=offset, limit=limit)
 
         normalized = _normalize_get_payload(
             payload=content,

@@ -38,7 +38,11 @@ search
 """
     deps = ctx.deps
     extra = getattr(deps, "extra", {})
-    memory_manager = extra.get("memory_manager")
+    memory_manager = extra.get("memory_manager") or getattr(
+        deps,
+        "memory_manager",
+        None,
+    )
 
     if memory_manager is None:
         return ToolResult.text(
@@ -47,10 +51,10 @@ search
         ).to_dict()
 
     try:
-        if hasattr(memory_manager, "search"):
-            results = await memory_manager.search(query, limit=limit)
-        else:
-            results = []
+        if not hasattr(memory_manager, "search"):
+            return ToolResult.error("MemoryManager search is not available").to_dict()
+
+        results = await memory_manager.search(query, limit=limit)
 
         if not results:
             return ToolResult.text(

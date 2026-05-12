@@ -200,6 +200,11 @@ class Gateway:
     def register_method(self, name: str, handler: Callable) -> None:
         """register"""
         self._methods[name] = handler
+
+    @staticmethod
+    def _idempotency_cache_key(conn: ConnectionInfo, key: str) -> str:
+        """Return a connection-scoped cache key for a client idempotency key."""
+        return f"{conn.connection_id}:{key}"
     
     async def connect(
         self,
@@ -302,8 +307,10 @@ Handle a request
         conn.last_activity = datetime.now(timezone.utc)
         
         # check etc.
+        idempotency_cache_key = None
         if frame.idempotency_key:
-            cached = await self._idempotency_cache.get(frame.idempotency_key)
+            idempotency_cache_key = self._idempotency_cache_key(conn, frame.idempotency_key)
+            cached = await self._idempotency_cache.get(idempotency_cache_key)
             if cached is not None:
                 return ResponseFrame(
                     id=frame.id,
@@ -325,8 +332,8 @@ Handle a request
             result = await handler(conn, frame.params)
             
             # etc.
-            if frame.idempotency_key:
-                await self._idempotency_cache.set(frame.idempotency_key, result)
+            if idempotency_cache_key:
+                await self._idempotency_cache.set(idempotency_cache_key, result)
             
             return ResponseFrame(
                 id=frame.id,
