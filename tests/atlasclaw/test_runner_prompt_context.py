@@ -526,10 +526,10 @@ def test_collect_capability_index_snapshot_enriches_md_skill_routing_hints() -> 
                     "metadata": {
                         "provider_type": "acme",
                         "use_when": [
-                            "User already knows the target workflow and is ready to provide direct inputs",
+                            "User wants one resource type with shared parameters and quantity N in a single request flow",
                         ],
                         "avoid_when": [
-                            "User asks for multiple items with distinct item-level differences such as item 1/item 2/item 3 variations",
+                            "User asks for mixed resource types or per-instance differences that should become separate requests",
                         ],
                     },
                 },
@@ -542,11 +542,11 @@ def test_collect_capability_index_snapshot_enriches_md_skill_routing_hints() -> 
                     "metadata": {
                         "provider_type": "acme",
                         "use_when": [
-                            "User asks for multiple items with distinct item-level configuration",
-                            "User enumerates differences like item 1 / item 2 / item 3",
+                            "User asks for mixed resource types that should become separate requests",
+                            "User enumerates per-instance differences like first / second / third",
                         ],
                         "avoid_when": [
-                            "User has direct inputs ready for a single item",
+                            "User wants one resource type with shared parameters and quantity N in one request flow",
                         ],
                     },
                 },
@@ -567,9 +567,9 @@ def test_collect_capability_index_snapshot_enriches_md_skill_routing_hints() -> 
     )
 
     assert "Routing hints:" in request_entry["description"]
-    assert "multiple items with distinct item-level differences" in request_entry["description"]
-    assert "direct inputs ready for a single item" in decomposition_entry["description"]
-    assert "item 1 / item 2 / item 3" in decomposition_entry["description"]
+    assert "one resource type with shared parameters and quantity N" in request_entry["description"]
+    assert "quantity N in one request flow" in decomposition_entry["description"]
+    assert "first / second / third" in decomposition_entry["description"]
 
 
 def test_collect_capability_index_snapshot_uses_explicit_md_tool_artifact_capability() -> None:
@@ -730,11 +730,11 @@ def test_build_system_prompt_capability_index_keeps_md_routing_hints(tmp_path) -
                     "metadata": {
                         "provider_type": "acme",
                         "use_when": [
-                            "User asks for multiple items with distinct item-level configuration",
-                            "User enumerates differences like item 1 / item 2 / item 3",
+                            "User asks for mixed resource types that should become separate requests",
+                            "User enumerates per-instance differences like first / second / third",
                         ],
                         "avoid_when": [
-                            "User has direct inputs ready for a single item",
+                            "User wants one resource type with shared parameters and quantity N in one request flow",
                         ],
                     },
                 }
@@ -757,8 +757,8 @@ def test_build_system_prompt_capability_index_keeps_md_routing_hints(tmp_path) -
     )
 
     assert "Routing hints:" in prompt
-    assert "multiple items with distinct item-level configuration" in prompt
-    assert "User enumerates differences like item 1 / item 2 / item 3" in prompt
+    assert "mixed resource types that should become separate requests" in prompt
+    assert "User enumerates per-instance differences like first / second / third" in prompt
 
 
 def test_build_system_prompt_includes_provider_auth_diagnostics(tmp_path) -> None:
