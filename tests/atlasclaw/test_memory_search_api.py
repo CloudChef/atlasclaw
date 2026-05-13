@@ -8,13 +8,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
+from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.memory.manager import MemoryManager
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillRegistry
 
 
-def _build_memory_client(memory_manager: MemoryManager, tmp_path) -> TestClient:
+def _build_memory_client(memory_manager: MemoryManager, tmp_path, user_id: str = "default") -> TestClient:
     ctx = APIContext(
         session_manager=SessionManager(workspace_path=str(tmp_path), user_id="default"),
         session_queue=SessionQueue(),
@@ -23,13 +24,19 @@ def _build_memory_client(memory_manager: MemoryManager, tmp_path) -> TestClient:
     )
     set_api_context(ctx)
     app = FastAPI()
+
+    @app.middleware("http")
+    async def inject_user_info(request, call_next):
+        request.state.user_info = UserInfo(user_id=user_id, display_name=user_id)
+        return await call_next(request)
+
     app.include_router(create_router())
     return TestClient(app)
 
 
 def test_memory_search_route_returns_written_memory(tmp_path):
-    manager = MemoryManager(workspace=str(tmp_path), user_id="alice")
-    client = _build_memory_client(manager, tmp_path)
+    manager = MemoryManager(workspace=str(tmp_path), user_id="default")
+    client = _build_memory_client(manager, tmp_path, user_id="alice")
 
     write_response = client.post(
         "/api/memory/write",
@@ -53,6 +60,7 @@ def test_memory_search_route_returns_written_memory(tmp_path):
     assert results
     assert "canary release" in results[0]["content"].lower()
     assert results[0]["source"] == "users/alice/memory/MEMORY.md"
+    assert not (tmp_path / "users" / "default" / "memory" / "MEMORY.md").exists()
 
 
 @pytest.mark.asyncio

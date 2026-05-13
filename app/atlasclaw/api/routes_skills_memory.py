@@ -8,9 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.atlasclaw.bootstrap.startup_helpers import derive_provider_namespace
+from app.atlasclaw.auth.models import ANONYMOUS_USER, UserInfo
 from app.atlasclaw.auth.guards import (
     AuthorizationContext,
     ensure_any_permission,
@@ -18,7 +19,7 @@ from app.atlasclaw.auth.guards import (
     get_authorization_context,
 )
 from app.atlasclaw.core.config import get_config, get_config_path
-from app.atlasclaw.memory.manager import MemoryType
+from app.atlasclaw.memory.manager import MemoryManager, MemoryType
 from app.atlasclaw.skills.frontmatter import parse_frontmatter
 from app.atlasclaw.skills.registry import validate_skill_name
 from app.atlasclaw.skills.permission_service import skill_permission_service
@@ -188,6 +189,22 @@ def _memory_search_result_payload(result: Any) -> dict[str, Any]:
     ).model_dump()
 
 
+def _current_user(request_obj: Request) -> UserInfo:
+    return getattr(request_obj.state, "user_info", ANONYMOUS_USER)
+
+
+def _scoped_memory_manager(ctx: APIContext, user_info: UserInfo) -> MemoryManager:
+    if not ctx.memory_manager:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="Memory system not configured",
+        )
+    return MemoryManager(
+        workspace=str(ctx.memory_manager._workspace),
+        user_id=user_info.user_id,
+    )
+
+
 def register_skills_memory_routes(router: APIRouter) -> None:
     @router.get("/skills")
     async def list_skills(
@@ -249,16 +266,13 @@ def register_skills_memory_routes(router: APIRouter) -> None:
 
     @router.post("/memory/search")
     async def search_memory(
+        request_obj: Request,
         request: MemorySearchRequest,
         ctx: APIContext = Depends(get_api_context),
     ) -> dict[str, Any]:
-        if not ctx.memory_manager:
-            raise HTTPException(
-                status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                detail="Memory system not configured",
-            )
+        memory_manager = _scoped_memory_manager(ctx, _current_user(request_obj))
 
-        results = await ctx.memory_manager.search(
+        results = await memory_manager.search(
             request.query,
             limit=request.top_k,
             apply_recency=request.apply_recency,
@@ -270,14 +284,11 @@ def register_skills_memory_routes(router: APIRouter) -> None:
 
     @router.post("/memory/write")
     async def write_memory(
+        request_obj: Request,
         request: MemoryWriteRequest,
         ctx: APIContext = Depends(get_api_context),
     ) -> dict[str, Any]:
-        if not ctx.memory_manager:
-            raise HTTPException(
-                status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                detail="Memory system not configured",
-            )
+        memory_manager = _scoped_memory_manager(ctx, _current_user(request_obj))
 
         try:
             memory_type = MemoryType(request.memory_type)
@@ -288,13 +299,13 @@ def register_skills_memory_routes(router: APIRouter) -> None:
             ) from exc
 
         if memory_type == MemoryType.DAILY:
-            entry = await ctx.memory_manager.write_daily(
+            entry = await memory_manager.write_daily(
                 request.content,
                 source=request.source,
                 tags=request.tags,
             )
         elif memory_type == MemoryType.LONG_TERM:
-            entry = await ctx.memory_manager.write_long_term(
+            entry = await memory_manager.write_long_term(
                 request.content,
                 source=request.source,
                 tags=request.tags,
