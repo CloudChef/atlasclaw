@@ -393,7 +393,13 @@ class MemoryManager:
             
         return self._parse_markdown_entries(content, MemoryType.LONG_TERM)
 
-    async def search(self, query: str, limit: int = 10) -> list[Any]:
+    async def search(
+        self,
+        query: str,
+        limit: int = 10,
+        *,
+        apply_recency: bool = True,
+    ) -> list[Any]:
         """
         Search user-scoped memory files.
 
@@ -420,7 +426,7 @@ class MemoryManager:
         results = await searcher.search(
             normalized_query,
             top_k=safe_limit,
-            apply_recency=False,
+            apply_recency=apply_recency,
         )
         return [result for result in results if result.score > 0]
 
@@ -498,17 +504,18 @@ class MemoryManager:
             text = "\n".join(buffer).strip()
             if text and start_line is not None:
                 timestamp = self._file_timestamp(path)
+                display_path = self._display_memory_path(path)
                 entries.append(
                     MemoryEntry(
                         id=MemoryEntry.generate_id(
-                            f"{self._display_memory_path(path)}:{start_line}:{text}",
+                            f"{display_path}:{start_line}:{text}",
                             timestamp,
                         ),
                         content=text,
                         memory_type=self._memory_type_for_file(path),
                         timestamp=timestamp,
                         metadata={
-                            "path": self._display_memory_path(path),
+                            "path": display_path,
                             "start_line": start_line,
                             "end_line": end_line,
                         },
@@ -545,7 +552,7 @@ class MemoryManager:
         return any(line.startswith(prefix) for prefix in _HOOK_MEMORY_METADATA_PREFIXES)
 
     def _memory_type_for_file(self, path: Path) -> MemoryType:
-        """Infer memory type from file name."""
+        """Infer memory type from the file name."""
         if path.name == self._long_term_path.name or path.name.startswith("memory_"):
             return MemoryType.LONG_TERM
         return MemoryType.DAILY
