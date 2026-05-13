@@ -185,9 +185,9 @@ def test_capability_selector_prompt_keeps_md_routing_hints_inside_descriptions()
                 "name": "acme:request-decomposition-agent",
                 "description": (
                     "Draft provider request plans. Routing hints: use when User asks for "
-                    "multiple items with distinct per-item configuration; use when User "
-                    "enumerates differences like first item / second item / third item; avoid "
-                    "when User has specific parameters ready for a single request."
+                    "multiple items with distinct item-level configuration; use when User "
+                    "enumerates differences like item 1 / item 2 / item 3; avoid "
+                    "when User has direct inputs ready for a single item."
                 ),
                 "declared_tool_names": ["acme_submit_request"],
                 "provider_type": "acme",
@@ -195,9 +195,9 @@ def test_capability_selector_prompt_keeps_md_routing_hints_inside_descriptions()
         ]
     )
 
-    assert "multiple items with distinct per-item configuration" in prompt
-    assert "first item / second item / third item" in prompt
-    assert "specific parameters ready for a single request" in prompt
+    assert "multiple items with distinct item-level configuration" in prompt
+    assert "item 1 / item 2 / item 3" in prompt
+    assert "direct inputs ready for a single item" in prompt
     assert "hidden_export_tool" not in prompt
     assert "provider=acme" not in prompt
 
