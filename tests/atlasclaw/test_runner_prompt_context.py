@@ -567,9 +567,9 @@ def test_collect_capability_index_snapshot_enriches_md_skill_routing_hints() -> 
     )
 
     assert "Routing hints:" in request_entry["description"]
-    assert "multiple items" in request_entry["description"]
-    assert "single request" in decomposition_entry["description"]
-    assert "ordinal item differences" in decomposition_entry["description"]
+    assert "multiple resource requests with per-item differences" in request_entry["description"]
+    assert "specific parameters ready for a single request" in decomposition_entry["description"]
+    assert "first item / second item / third item" in decomposition_entry["description"]
 
 
 def test_collect_capability_index_snapshot_uses_explicit_md_tool_artifact_capability() -> None:
@@ -757,8 +757,8 @@ def test_build_system_prompt_capability_index_keeps_md_routing_hints(tmp_path) -
     )
 
     assert "Routing hints:" in prompt
-    assert "multiple items" in prompt
-    assert "single request" in prompt
+    assert "multiple items with distinct per-item configuration" in prompt
+    assert "User enumerates differences like first item / second item / third item" in prompt
 
 
 def test_build_system_prompt_includes_provider_auth_diagnostics(tmp_path) -> None:

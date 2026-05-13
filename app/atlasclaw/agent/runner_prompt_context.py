@@ -268,8 +268,8 @@ def collect_target_md_skill(deps) -> Optional[dict]:
 def collect_transcript_skill_hint(deps) -> Optional[str]:
     """Read the transcript-based skill continuation hint from `deps.extra`.
 
-    This is a non-binding hint produced by transcript analysis.  It is
-    injected into the prompt as advisory context 鈥?the LLM decides whether
+    This is a non-binding hint produced by transcript analysis. It is
+    injected into the prompt as advisory context - the LLM decides whether
     to follow it.
     """
     extra = deps.extra if isinstance(deps.extra, dict) else {}
@@ -892,23 +892,20 @@ def _extract_md_tool_names(entry: dict) -> list[str]:
 
 
 def _build_md_skill_capability_description(entry: dict[str, Any]) -> str:
-    """Compose a compact routing-aware description for capability selection."""
+    """Compose a compact capability description with raw provider-declared hints."""
     description = str(entry.get("description", "") or "").strip()
     metadata = entry.get("metadata", {})
     if not isinstance(metadata, dict):
         metadata = {}
 
-    use_when = _select_routing_hint_candidates(metadata.get("use_when", []), max_items=2)
-    avoid_when = _select_routing_hint_candidates(metadata.get("avoid_when", []), max_items=1)
-    triggers = _select_routing_hint_candidates(metadata.get("triggers", []), max_items=3)
+    use_when = _collect_md_skill_hint_lines(metadata.get("use_when", []), max_items=2)
+    avoid_when = _collect_md_skill_hint_lines(metadata.get("avoid_when", []), max_items=1)
 
     hint_sections: list[str] = []
     if use_when:
         hint_sections.append("use when " + "; ".join(use_when))
     if avoid_when:
         hint_sections.append("avoid when " + "; ".join(avoid_when))
-    if triggers and not use_when:
-        hint_sections.append("signals " + ", ".join(triggers))
 
     if not hint_sections:
         return description
@@ -917,19 +914,15 @@ def _build_md_skill_capability_description(entry: dict[str, Any]) -> str:
     return f"Routing hints: {'; '.join(hint_sections)}."
 
 
-def _select_routing_hint_candidates(values: Any, *, max_items: int) -> list[str]:
+def _collect_md_skill_hint_lines(values: Any, *, max_items: int) -> list[str]:
     normalized = _normalize_string_list(values)
     if not normalized or max_items <= 0:
         return []
 
-    ranked = sorted(
-        enumerate(normalized),
-        key=lambda item: (-_score_routing_hint(item[1]), item[0]),
-    )
     selected: list[str] = []
     seen: set[str] = set()
-    for _index, text in ranked:
-        cleaned = _clean_routing_hint_text(text)
+    for text in normalized:
+        cleaned = _trim_md_skill_hint_line(text)
         if not cleaned:
             continue
         lowered = cleaned.lower()
@@ -942,110 +935,13 @@ def _select_routing_hint_candidates(values: Any, *, max_items: int) -> list[str]
     return selected
 
 
-def _clean_routing_hint_text(value: Any) -> str:
+def _trim_md_skill_hint_line(value: Any) -> str:
     text = " ".join(str(value or "").strip().split())
     if not text:
         return ""
-    extracted = _extract_high_signal_routing_terms(text)
-    if extracted:
-        return extracted
     if len(text) > 140:
         text = text[:137].rstrip(" ,;:-") + "..."
     return text.rstrip(" .;:")
-
-
-def _extract_high_signal_routing_terms(text: str) -> str:
-    normalized = str(text or "").strip()
-    lowered = normalized.lower()
-    terms: list[str] = []
-
-    def _append(term: str) -> None:
-        if term and term not in terms:
-            terms.append(term)
-
-    if any(token in lowered for token in ("multiple", "multi-", "several", "batch", "quantity")):
-        _append("multiple items")
-    if any(
-        token in lowered
-        for token in (
-            "distinct per-item configuration",
-            "per-item differences",
-            "distinct per-item",
-            "different specs per instance",
-            "different settings per instance",
-            "per-item configuration",
-        )
-    ):
-        _append("per-item differences")
-    if any(token in lowered for token in ("first", "second", "third", "fourth", "fifth", "sixth")):
-        _append("ordinal item differences")
-    if "ready to provide request parameters" in lowered:
-        _append("request parameters ready")
-    if "specific parameters ready for a single request" in lowered:
-        _append("single request parameters ready")
-    elif "single request" in lowered:
-        _append("single request")
-    if "natural language" in lowered:
-        _append("natural-language requests")
-    if "reviewable draft" in lowered or "reviewable draft requests" in lowered:
-        _append("reviewable draft requests")
-    if any(token in normalized for token in ("第一", "第二", "第三", "第四", "第五", "第六")):
-        _append("numbered item differences")
-    if "单台" in normalized or "单个请求" in normalized:
-        _append("single request")
-    if "多项" in normalized or "多台" in normalized or "多个" in normalized:
-        _append("multiple items")
-
-    if not terms:
-        return ""
-    return "; ".join(terms[:2])
-
-
-def _score_routing_hint(text: str) -> int:
-    normalized = str(text or "").strip().lower()
-    if not normalized:
-        return 0
-
-    score = 0
-    high_signal_terms = (
-        "multiple",
-        "multi-",
-        "distinct",
-        "per-item",
-        "first",
-        "second",
-        "third",
-        "fourth",
-        "fifth",
-        "sixth",
-        "ordinal",
-        "quantity",
-        "clarification",
-        "single request",
-        "numbered",
-        "第一",
-        "第二",
-        "第三",
-    )
-    medium_signal_terms = (
-        "natural language",
-        "specific parameters",
-        "ready to provide request parameters",
-        "reviewable draft",
-        "decomposed",
-        "catalog",
-        "request status",
-    )
-
-    for term in high_signal_terms:
-        if term in normalized:
-            score += 10
-    for term in medium_signal_terms:
-        if term in normalized:
-            score += 4
-    if any(char.isdigit() for char in normalized):
-        score += 2
-    return score
 
 
 def _metadata_declares_executable_tool(metadata: dict[str, Any]) -> bool:
