@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import json
 from types import SimpleNamespace
 
@@ -12,6 +13,7 @@ import pytest
 from app.atlasclaw.agent.runner_tool.runner_tool_gate_model import RunnerToolGateModelMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import RunnerExecutionPreparePhaseMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
+    _build_preselected_md_skill_scope_conflict_message,
     _infer_active_skill_from_transcript,
     build_transcript_skill_prompt_intent_plan,
     prune_auto_selected_provider_instance_tools,
@@ -34,7 +36,7 @@ class _GateRunner(RunnerToolGateModelMixin, RunnerToolGateRoutingMixin):
     TOOL_GATE_MUST_USE_MIN_CONFIDENCE = 0.85
 
 
-class _PrepareRunner(RunnerExecutionPreparePhaseMixin):
+class _PrepareRunner(RunnerToolGateModelMixin, RunnerExecutionPreparePhaseMixin):
     pass
 
 
@@ -63,6 +65,66 @@ class _SelectorAgent:
     def __init__(self, payload: dict) -> None:
         self.payload = payload
         self.messages: list[str] = []
+
+    async def run(self, user_message, *, deps):
+        self.messages.append(str(user_message))
+        return SimpleNamespace(output=json.dumps(self.payload))
+
+
+class _RoutingAwareSelectorAgent:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+        self.system_prompts: list[str] = []
+
+    def override(self, *, instructions=None, system_prompt=None, tools=None):
+        prompt = str(instructions or system_prompt or "")
+        if prompt:
+            self.system_prompts.append(prompt)
+        return nullcontext()
+
+    async def run(self, user_message, *, deps):
+        message = str(user_message)
+        self.messages.append(message)
+
+        if "3台2C4G Linux虚拟机" in message:
+            payload = {
+                "action": "use_tools",
+                "targets": ["skill:smartcmp:request"],
+                "reason": "One resource type with shared parameters and quantity should stay in request.",
+            }
+        elif "第五台" in message or "第六台" in message:
+            payload = {
+                "action": "use_tools",
+                "targets": ["skill:smartcmp:request-decomposition-agent"],
+                "reason": "Conflicting ordinal references require decomposition-side clarification.",
+            }
+        elif "第一台" in message and "第二台" in message:
+            payload = {
+                "action": "use_tools",
+                "targets": ["skill:smartcmp:request-decomposition-agent"],
+                "reason": "Per-instance differences should go to decomposition.",
+            }
+        else:
+            payload = {
+                "action": "ask_clarification",
+                "targets": [],
+                "reason": "No deterministic routing signal matched.",
+            }
+
+        return SimpleNamespace(output=json.dumps(payload))
+
+
+class _PreselectedScopeGuardAgent:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.messages: list[str] = []
+        self.system_prompts: list[str] = []
+
+    def override(self, *, instructions=None, system_prompt=None, tools=None):
+        prompt = str(instructions or system_prompt or "")
+        if prompt:
+            self.system_prompts.append(prompt)
+        return nullcontext()
 
     async def run(self, user_message, *, deps):
         self.messages.append(str(user_message))
@@ -205,14 +267,243 @@ def test_capability_selector_prompt_keeps_md_routing_hints_inside_descriptions()
                 ),
                 "declared_tool_names": ["acme_submit_request"],
                 "provider_type": "acme",
-            },
+            }
         ]
     )
 
     assert "one resource type with shared parameters and quantity N" in prompt
     assert "mixed resource types that should become separate requests" in prompt
     assert "first / second / third" in prompt
+    assert "hidden_export_tool" not in prompt
     assert "provider=acme" not in prompt
+
+
+def test_capability_selector_routes_same_type_quantity_request_to_request_skill() -> None:
+    runner = _GateRunner()
+    selector = _RoutingAwareSelectorAgent()
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="帮我申请3台2C4G Linux虚拟机",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "skill:smartcmp:request",
+                    "kind": "md_skill",
+                    "name": "smartcmp:request",
+                    "description": (
+                        "Submit provider requests. Routing hints: use when User wants one "
+                        "resource type with shared parameters and quantity N in a single "
+                        "request flow; avoid when User asks for mixed resource types or "
+                        "per-instance differences that should become separate requests."
+                    ),
+                    "declared_tool_names": ["smartcmp_submit_request"],
+                    "provider_type": "smartcmp",
+                },
+                {
+                    "capability_id": "skill:smartcmp:request-decomposition-agent",
+                    "kind": "md_skill",
+                    "name": "smartcmp:request-decomposition-agent",
+                    "description": (
+                        "Draft provider request plans. Routing hints: use when User asks for "
+                        "mixed resource types that should become separate requests; use when User "
+                        "enumerates per-instance differences like first / second / third; avoid "
+                        "when User wants one resource type with shared parameters and quantity N "
+                        "in one request flow."
+                    ),
+                    "declared_tool_names": ["smartcmp_submit_request"],
+                    "provider_type": "smartcmp",
+                },
+            ],
+        )
+    )
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.USE_TOOLS
+    assert plan.target_skill_names == ["smartcmp:request"]
+    assert selector.system_prompts
+    assert "one resource type with shared parameters and quantity N" in selector.system_prompts[0]
+    assert "first / second / third" in selector.system_prompts[0]
+
+
+def test_capability_selector_routes_per_instance_difference_request_to_decomposition_skill() -> None:
+    runner = _GateRunner()
+    selector = _RoutingAwareSelectorAgent()
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="帮我申请两台虚拟机，第一台2C4G，第二台4C8G",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "skill:smartcmp:request",
+                    "kind": "md_skill",
+                    "name": "smartcmp:request",
+                    "description": (
+                        "Submit provider requests. Routing hints: use when User wants one "
+                        "resource type with shared parameters and quantity N in a single "
+                        "request flow; avoid when User asks for mixed resource types or "
+                        "per-instance differences that should become separate requests."
+                    ),
+                    "declared_tool_names": ["smartcmp_submit_request"],
+                    "provider_type": "smartcmp",
+                },
+                {
+                    "capability_id": "skill:smartcmp:request-decomposition-agent",
+                    "kind": "md_skill",
+                    "name": "smartcmp:request-decomposition-agent",
+                    "description": (
+                        "Draft provider request plans. Routing hints: use when User asks for "
+                        "mixed resource types that should become separate requests; use when User "
+                        "enumerates per-instance differences like first / second / third; avoid "
+                        "when User wants one resource type with shared parameters and quantity N "
+                        "in one request flow."
+                    ),
+                    "declared_tool_names": ["smartcmp_submit_request"],
+                    "provider_type": "smartcmp",
+                },
+            ],
+        )
+    )
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.USE_TOOLS
+    assert plan.target_skill_names == ["smartcmp:request-decomposition-agent"]
+    assert selector.system_prompts
+    assert "mixed resource types that should become separate requests" in selector.system_prompts[0]
+    assert "first / second / third" in selector.system_prompts[0]
+
+
+def test_capability_selector_routes_conflicting_ordinals_to_decomposition_skill() -> None:
+    runner = _GateRunner()
+    selector = _RoutingAwareSelectorAgent()
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="帮我申请四台虚拟机，第二台2C4G，第五台4C8G，第六台8C16G",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "skill:smartcmp:request",
+                    "kind": "md_skill",
+                    "name": "smartcmp:request",
+                    "description": (
+                        "Submit provider requests. Routing hints: use when User wants one "
+                        "resource type with shared parameters and quantity N in a single "
+                        "request flow; avoid when User asks for mixed resource types or "
+                        "per-instance differences that should become separate requests."
+                    ),
+                    "declared_tool_names": ["smartcmp_submit_request"],
+                    "provider_type": "smartcmp",
+                },
+                {
+                    "capability_id": "skill:smartcmp:request-decomposition-agent",
+                    "kind": "md_skill",
+                    "name": "smartcmp:request-decomposition-agent",
+                    "description": (
+                        "Draft provider request plans. Routing hints: use when User asks for "
+                        "mixed resource types that should become separate requests; use when User "
+                        "enumerates per-instance differences like first / second / third; avoid "
+                        "when User wants one resource type with shared parameters and quantity N "
+                        "in one request flow."
+                    ),
+                    "declared_tool_names": ["smartcmp_submit_request"],
+                    "provider_type": "smartcmp",
+                },
+            ],
+        )
+    )
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.USE_TOOLS
+    assert plan.target_skill_names == ["smartcmp:request-decomposition-agent"]
+    assert "clarification" in plan.reason.lower()
+
+
+def test_preselected_md_skill_scope_guard_rejects_same_type_quantity_for_decomposition() -> None:
+    runner = _PrepareRunner()
+    guard_agent = _PreselectedScopeGuardAgent(
+        {
+            "allow": False,
+            "reason": "The request matches an avoid_when boundary for this preselected skill.",
+        }
+    )
+
+    allowed, reason = asyncio.run(
+        runner._should_keep_preselected_md_skill_plan(
+            agent=guard_agent,
+            deps=SimpleNamespace(extra={}),
+            user_message="帮我申请3台2C4G Linux虚拟机",
+            target_md_skill={
+                "qualified_name": "smartcmp:request-decomposition-agent",
+                "provider": "smartcmp",
+                "use_when": [
+                    "User asks for multiple resource types that should become separate requests",
+                    "User asks for multiple resources with distinct per-item configuration",
+                ],
+                "avoid_when": [
+                    "User wants multiple instances of the same resource type with the same parameters in one request flow",
+                ],
+            },
+        )
+    )
+
+    assert allowed is False
+    assert "avoid_when" in reason
+    assert guard_agent.system_prompts
+    assert "preselected markdown-skill scope guard" in guard_agent.system_prompts[0]
+    assert "same parameters in one request flow" in guard_agent.messages[0]
+
+
+def test_preselected_md_skill_scope_guard_keeps_skill_when_no_conflict() -> None:
+    runner = _PrepareRunner()
+    guard_agent = _PreselectedScopeGuardAgent(
+        {
+            "allow": True,
+            "reason": "The request remains within the skill boundary.",
+        }
+    )
+
+    allowed, reason = asyncio.run(
+        runner._should_keep_preselected_md_skill_plan(
+            agent=guard_agent,
+            deps=SimpleNamespace(extra={}),
+            user_message="帮我申请两台虚拟机，第一台2C4G，第二台4C8G",
+            target_md_skill={
+                "qualified_name": "smartcmp:request-decomposition-agent",
+                "provider": "smartcmp",
+                "use_when": [
+                    "User asks for multiple resources with distinct per-item configuration",
+                ],
+                "avoid_when": [
+                    "User wants multiple instances of the same resource type with the same parameters in one request flow",
+                ],
+            },
+        )
+    )
+
+    assert allowed is True
+    assert "within the skill boundary" in reason
+
+
+def test_preselected_md_skill_scope_conflict_message_fails_closed() -> None:
+    message = _build_preselected_md_skill_scope_conflict_message(
+        target_md_skill={
+            "qualified_name": "smartcmp:request-decomposition-agent",
+        },
+        reason="The request matches an avoid_when boundary for this preselected skill.",
+    )
+
+    assert "Cannot continue with preselected skill" in message
+    assert "smartcmp:request-decomposition-agent" in message
+    assert "outside that skill's boundary" in message
+    assert "avoid_when boundary" in message
 
 
 def test_capability_selector_can_select_provider_and_standard_skill_targets() -> None:

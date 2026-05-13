@@ -92,6 +92,7 @@ def _build_client(
     *,
     allowed_skills: list[str],
     provider_instances: dict | None = None,
+    skill_extra: list[str] | None = None,
 ) -> tuple[TestClient, _RecordingAgentRunner]:
     monkeypatch.setenv("ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL", "secret-1")
     registry = SkillRegistry()
@@ -99,6 +100,7 @@ def _build_client(
         tmp_path / "skills" / "preapproval-agent" / "SKILL.md",
         name="preapproval-agent",
         description="smartcmp preapproval",
+        extra=skill_extra,
     )
     registry.load_from_directory(
         str(tmp_path / "skills"),
@@ -374,6 +376,33 @@ class TestWebhookDispatchAPI:
         assert "smartcmp:preapproval-agent" in runner.calls[0]["user_message"]
         assert "approval_id" in runner.calls[0]["user_message"]
         assert runner.calls[0]["deps"].extra["webhook_skill"] == "smartcmp:preapproval-agent"
+
+    def test_dispatch_carries_preselected_skill_routing_hints(self, tmp_path, monkeypatch):
+        client, runner = _build_client(
+            tmp_path,
+            monkeypatch,
+            allowed_skills=["smartcmp:preapproval-agent"],
+            skill_extra=[
+                "use_when:",
+                "  - User wants approval details",
+                "avoid_when:",
+                "  - User asks for same-type quantity requests",
+            ],
+        )
+
+        resp = client.post(
+            "/api/webhook/dispatch",
+            headers={"X-AtlasClaw-SK": "secret-1"},
+            json={
+                "skill": "smartcmp:preapproval-agent",
+                "args": {"approval_id": "A-10001", "agent_identity": "agent-approver"},
+            },
+        )
+
+        assert resp.status_code == 202
+        target_md_skill = runner.calls[0]["deps"].extra["target_md_skill"]
+        assert target_md_skill["use_when"] == ["User wants approval details"]
+        assert target_md_skill["avoid_when"] == ["User asks for same-type quantity requests"]
 
     def test_dispatch_uses_dispatch_scoped_session_keys_without_reset(
         self,
