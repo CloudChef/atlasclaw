@@ -68,6 +68,8 @@ async def execute_webhook_dispatch(
             "provider": skill_entry.provider,
             "qualified_name": skill_entry.qualified_name,
             "file_path": skill_entry.file_path,
+            "use_when": list((skill_entry.metadata or {}).get("use_when", []) or []),
+            "avoid_when": list((skill_entry.metadata or {}).get("avoid_when", []) or []),
         },
     }
     if robot_profile_selection is not None:
