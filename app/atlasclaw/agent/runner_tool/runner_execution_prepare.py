@@ -345,6 +345,27 @@ def _extract_target_md_skill_scope_hints(target_md_skill: Any) -> dict[str, Any]
     }
 
 
+def _build_preselected_md_skill_scope_conflict_message(
+    *,
+    target_md_skill: dict[str, Any],
+    reason: str,
+) -> str:
+    qualified_name = _normalize_text(
+        target_md_skill.get("qualified_name") or target_md_skill.get("name")
+    )
+    skill_label = qualified_name or "the preselected skill"
+    detail = _normalize_text(reason)
+    if detail:
+        return (
+            f"Cannot continue with preselected skill `{skill_label}` because the current request "
+            f"is outside that skill's boundary. {detail}"
+        )
+    return (
+        f"Cannot continue with preselected skill `{skill_label}` because the current request "
+        "is outside that skill's boundary."
+    )
+
+
 def _build_md_skill_tool_index(
     *,
     md_skills_snapshot: list[dict[str, Any]],
@@ -1965,12 +1986,36 @@ class RunnerExecutionPreparePhaseMixin:
                     )
                 )
                 if not keep_preselected_plan:
+                    failure_message = _build_preselected_md_skill_scope_conflict_message(
+                        target_md_skill=preselected_target_md_skill
+                        if isinstance(preselected_target_md_skill, dict)
+                        else {},
+                        reason=preselected_scope_reason,
+                    )
                     _log_step(
                         "target_md_skill_preselected_rejected",
                         reason=preselected_scope_reason,
                         target_skill_names=list(preselected_md_skill_plan.target_skill_names),
                     )
-                    preselected_md_skill_plan = None
+                    run_failed = True
+                    state["run_failed"] = True
+                    await self.runtime_events.trigger_run_failed(
+                        session_key=session_key,
+                        run_id=run_id,
+                        error=failure_message,
+                    )
+                    yield StreamEvent.runtime_update(
+                        "failed",
+                        failure_message,
+                        metadata={
+                            "phase": "preselected_scope_guard",
+                            "target_skill_names": list(preselected_md_skill_plan.target_skill_names),
+                            "elapsed": round(time.monotonic() - start_time, 1),
+                        },
+                    )
+                    yield StreamEvent.error_event(failure_message)
+                    state["should_stop"] = True
+                    return
             if preselected_md_skill_plan is not None:
                 _log_step(
                     "target_md_skill_preselected",
