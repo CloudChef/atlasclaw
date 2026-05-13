@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Type
 
-from .provider import AuthProvider
+from app.atlasclaw.auth.providers.base import AuthProvider
 
 logger = logging.getLogger(__name__)
 

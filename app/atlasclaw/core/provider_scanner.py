@@ -132,7 +132,7 @@ class ProviderScanner:
             module: Imported module
         """
         import inspect
-        from app.atlasclaw.auth.provider import AuthProvider
+        from app.atlasclaw.auth.providers.base import AuthProvider
 
         for name, obj in inspect.getmembers(module):
             if (inspect.isclass(obj) and
