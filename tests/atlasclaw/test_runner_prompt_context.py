@@ -511,6 +511,67 @@ def test_collect_capability_index_snapshot_orders_sources_and_omits_bodies() -> 
     assert all("body" not in item for item in snapshot)
 
 
+def test_collect_capability_index_snapshot_enriches_md_skill_routing_hints() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [],
+            "md_skills_snapshot": [
+                {
+                    "name": "smartcmp:request",
+                    "qualified_name": "smartcmp:request",
+                    "description": "Submit SmartCMP requests.",
+                    "file_path": "/skills/request/SKILL.md",
+                    "provider": "smartcmp",
+                    "metadata": {
+                        "provider_type": "smartcmp",
+                        "use_when": [
+                            "User already knows the service they want and is ready to provide request parameters",
+                        ],
+                        "avoid_when": [
+                            "User asks for multiple virtual machines or multiple resource requests with per-item differences such as quantity, first/second/third configurations, or different specs per instance",
+                        ],
+                    },
+                },
+                {
+                    "name": "smartcmp:request-decomposition-agent",
+                    "qualified_name": "smartcmp:request-decomposition-agent",
+                    "description": "Draft SmartCMP request plans.",
+                    "file_path": "/skills/request-decomposition-agent/SKILL.md",
+                    "provider": "smartcmp",
+                    "metadata": {
+                        "provider_type": "smartcmp",
+                        "use_when": [
+                            "User asks for multiple virtual machines or multiple CMP resources with distinct per-item configuration",
+                            "User enumerates differences like first VM / second VM / third VM",
+                        ],
+                        "avoid_when": [
+                            "User has specific parameters ready for a single request",
+                        ],
+                    },
+                },
+            ],
+            "skills_snapshot": [],
+        }
+    )
+
+    snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
+
+    request_entry = next(
+        item for item in snapshot if item["capability_id"] == "skill:smartcmp:request"
+    )
+    decomposition_entry = next(
+        item
+        for item in snapshot
+        if item["capability_id"] == "skill:smartcmp:request-decomposition-agent"
+    )
+
+    assert "Routing hints:" in request_entry["description"]
+    assert "multiple virtual machines" in request_entry["description"]
+    assert "single request" in decomposition_entry["description"]
+    assert "first VM / second VM / third VM" in decomposition_entry["description"]
+
+
 def test_collect_capability_index_snapshot_uses_explicit_md_tool_artifact_capability() -> None:
     deps = SimpleNamespace(
         extra={
@@ -648,6 +709,56 @@ def test_build_system_prompt_uses_unified_capability_index_surface(tmp_path) -> 
     assert "## Built-in Tools (Use ONLY if no MD Skill matches)" not in prompt
     assert "<available_skills>" not in prompt
     assert "FULL BODY SHOULD NOT APPEAR" not in prompt
+
+
+def test_build_system_prompt_capability_index_keeps_md_routing_hints(tmp_path) -> None:
+    deps = SimpleNamespace(
+        user_info=SimpleNamespace(
+            user_id="anonymous",
+            display_name="",
+            tenant_id="default",
+            roles=[],
+        ),
+        extra={
+            "md_skills_snapshot": [
+                {
+                    "name": "smartcmp:request-decomposition-agent",
+                    "qualified_name": "smartcmp:request-decomposition-agent",
+                    "description": "Draft SmartCMP request plans.",
+                    "file_path": "/skills/request-decomposition-agent/SKILL.md",
+                    "provider": "smartcmp",
+                    "metadata": {
+                        "provider_type": "smartcmp",
+                        "use_when": [
+                            "User asks for multiple virtual machines or multiple CMP resources with distinct per-item configuration",
+                            "User enumerates differences like first VM / second VM / third VM",
+                        ],
+                        "avoid_when": [
+                            "User has specific parameters ready for a single request",
+                        ],
+                    },
+                }
+            ],
+            "skills_snapshot": [],
+        },
+    )
+    builder = PromptBuilder(
+        PromptBuilderConfig(
+            workspace_path=str(tmp_path),
+            capability_index_max_chars=3000,
+        )
+    )
+
+    prompt = build_system_prompt(
+        builder,
+        session=None,
+        deps=deps,
+        agent=SimpleNamespace(tools=[]),
+    )
+
+    assert "Routing hints:" in prompt
+    assert "multiple virtual machines" in prompt
+    assert "single request" in prompt
 
 
 def test_build_system_prompt_includes_provider_auth_diagnostics(tmp_path) -> None:

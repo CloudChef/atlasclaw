@@ -92,7 +92,7 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
                 "capability_id": _build_capability_id("md_skill", name or "unknown"),
                 "kind": "md_skill",
                 "name": name or "unknown",
-                "description": str(item.get("description", "") or "").strip(),
+                "description": _build_md_skill_capability_description(item),
                 "locator": str(item.get("file_path", "") or "").strip() or name or "unknown",
                 "provider_type": _normalize_optional_text(
                     metadata.get("provider_type", ""),
@@ -889,6 +889,167 @@ def _extract_md_tool_names(entry: dict) -> list[str]:
     if fallback_name and fallback_name not in names:
         names.append(fallback_name)
     return _normalize_string_list(names)
+
+
+def _build_md_skill_capability_description(entry: dict[str, Any]) -> str:
+    """Compose a compact routing-aware description for capability selection."""
+    description = str(entry.get("description", "") or "").strip()
+    metadata = entry.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    use_when = _select_routing_hint_candidates(metadata.get("use_when", []), max_items=2)
+    avoid_when = _select_routing_hint_candidates(metadata.get("avoid_when", []), max_items=1)
+    triggers = _select_routing_hint_candidates(metadata.get("triggers", []), max_items=3)
+
+    hint_sections: list[str] = []
+    if use_when:
+        hint_sections.append("use when " + "; ".join(use_when))
+    if avoid_when:
+        hint_sections.append("avoid when " + "; ".join(avoid_when))
+    if triggers and not use_when:
+        hint_sections.append("signals " + ", ".join(triggers))
+
+    if not hint_sections:
+        return description
+    if description:
+        return f"{description} Routing hints: {'; '.join(hint_sections)}."
+    return f"Routing hints: {'; '.join(hint_sections)}."
+
+
+def _select_routing_hint_candidates(values: Any, *, max_items: int) -> list[str]:
+    normalized = _normalize_string_list(values)
+    if not normalized or max_items <= 0:
+        return []
+
+    ranked = sorted(
+        enumerate(normalized),
+        key=lambda item: (-_score_routing_hint(item[1]), item[0]),
+    )
+    selected: list[str] = []
+    seen: set[str] = set()
+    for _index, text in ranked:
+        cleaned = _clean_routing_hint_text(text)
+        if not cleaned:
+            continue
+        lowered = cleaned.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        selected.append(cleaned)
+        if len(selected) >= max_items:
+            break
+    return selected
+
+
+def _clean_routing_hint_text(value: Any) -> str:
+    text = " ".join(str(value or "").strip().split())
+    if not text:
+        return ""
+    extracted = _extract_high_signal_routing_terms(text)
+    if extracted:
+        return extracted
+    if len(text) > 140:
+        text = text[:137].rstrip(" ,;:-") + "..."
+    return text.rstrip(" .;:")
+
+
+def _extract_high_signal_routing_terms(text: str) -> str:
+    normalized = str(text or "").strip()
+    lowered = normalized.lower()
+    terms: list[str] = []
+
+    def _append(term: str) -> None:
+        if term and term not in terms:
+            terms.append(term)
+
+    if "multiple virtual machines" in lowered:
+        _append("multiple virtual machines")
+    if "multiple cmp resources" in lowered and "multiple virtual machines" not in lowered:
+        _append("multiple CMP resources")
+    if "multiple resource requests" in lowered and "multiple virtual machines" not in lowered:
+        _append("multiple resource requests")
+    if "distinct per-item configuration" in lowered:
+        _append("distinct per-item configuration")
+    if "per-item differences" in lowered:
+        _append("per-item differences")
+    if "first vm / second vm / third vm" in lowered:
+        _append("first VM / second VM / third VM")
+    elif all(token in lowered for token in ("first", "second", "third")) and "vm" in lowered:
+        _append("first/second/third VM differences")
+    if "ready to provide request parameters" in lowered:
+        _append("request parameters ready")
+    if "specific parameters ready for a single request" in lowered:
+        _append("single request parameters ready")
+    elif "single request" in lowered:
+        _append("single request")
+    if "natural language" in lowered:
+        _append("natural-language requests")
+    if "reviewable draft" in lowered or "reviewable draft requests" in lowered:
+        _append("reviewable draft requests")
+
+    if "虚拟机" in normalized:
+        _append("多台虚拟机")
+    if "第一台" in normalized and "第二台" in normalized and "第三台" in normalized:
+        _append("第一台/第二台/第三台差异")
+    if "单台" in normalized:
+        _append("单台请求")
+
+    if not terms:
+        return ""
+    return "; ".join(terms[:2])
+
+
+def _score_routing_hint(text: str) -> int:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return 0
+
+    score = 0
+    high_signal_terms = (
+        "multiple",
+        "multi-",
+        "distinct",
+        "per-item",
+        "first",
+        "second",
+        "third",
+        "fourth",
+        "fifth",
+        "sixth",
+        "ordinal",
+        "quantity",
+        "clarification",
+        "single request",
+        "virtual machine",
+        "vm",
+        "虚拟机",
+        "第一台",
+        "第二台",
+        "第三台",
+        "第四台",
+        "第五台",
+        "第六台",
+    )
+    medium_signal_terms = (
+        "natural language",
+        "specific parameters",
+        "ready to provide request parameters",
+        "reviewable draft",
+        "decomposed",
+        "catalog",
+        "request status",
+    )
+
+    for term in high_signal_terms:
+        if term in normalized:
+            score += 10
+    for term in medium_signal_terms:
+        if term in normalized:
+            score += 4
+    if any(char.isdigit() for char in normalized):
+        score += 2
+    return score
 
 
 def _metadata_declares_executable_tool(metadata: dict[str, Any]) -> bool:
