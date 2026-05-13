@@ -299,6 +299,52 @@ def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _normalize_text_list(values: Any) -> list[str]:
+    if isinstance(values, list):
+        raw_values = values
+    elif values in (None, "", (), {}):
+        raw_values = []
+    else:
+        raw_values = [values]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_values:
+        text = _normalize_text(item)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        normalized.append(text)
+    return normalized
+
+
+def _extract_target_md_skill_scope_hints(target_md_skill: Any) -> dict[str, Any]:
+    if not isinstance(target_md_skill, dict):
+        return {
+            "qualified_name": "",
+            "provider": "",
+            "use_when": [],
+            "avoid_when": [],
+        }
+
+    metadata = target_md_skill.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {}
+
+    return {
+        "qualified_name": _normalize_text(
+            target_md_skill.get("qualified_name") or target_md_skill.get("name")
+        ),
+        "provider": _normalize_text(target_md_skill.get("provider")),
+        "use_when": _normalize_text_list(
+            target_md_skill.get("use_when", []) or metadata.get("use_when", [])
+        ),
+        "avoid_when": _normalize_text_list(
+            target_md_skill.get("avoid_when", []) or metadata.get("avoid_when", [])
+        ),
+    }
+
+
 def _build_md_skill_tool_index(
     *,
     md_skills_snapshot: list[dict[str, Any]],
@@ -1245,6 +1291,85 @@ def inject_standard_skill_runtime_tools(
 
 
 class RunnerExecutionPreparePhaseMixin:
+    async def _should_keep_preselected_md_skill_plan(
+        self,
+        *,
+        agent: Any,
+        deps: SkillDeps,
+        user_message: str,
+        target_md_skill: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """Check whether a preselected markdown skill remains in scope for this turn.
+
+        This guard is intentionally narrow: it only prevents hard-forcing a
+        preselected skill when the skill's own routing hints clearly say the
+        current request is out of scope. When uncertain, keep the preselection.
+        """
+        scope_hints = _extract_target_md_skill_scope_hints(target_md_skill)
+        use_when = list(scope_hints.get("use_when", []) or [])
+        avoid_when = list(scope_hints.get("avoid_when", []) or [])
+        if not use_when and not avoid_when:
+            return True, "no_scope_hints"
+
+        runner = getattr(self, "_run_single_with_optional_override", None)
+        if not callable(runner):
+            return True, "scope_guard_unavailable"
+
+        system_prompt = (
+            "You are AtlasClaw's internal preselected markdown-skill scope guard.\n"
+            "Do not answer the user and do not call tools. Return one JSON object only.\n\n"
+            "Task:\n"
+            "Decide whether an authenticated preselected markdown skill should remain hard-selected "
+            "for the current request.\n\n"
+            "Rules:\n"
+            "- Use only the provided skill routing hints and the current user request.\n"
+            "- If the request clearly matches an avoid_when boundary or clearly falls outside the "
+            "skill boundary, return allow=false.\n"
+            "- If the request matches the skill boundary or you are uncertain, return allow=true.\n"
+            "- This guard only decides whether to keep the hard preselection. When allow=false, "
+            "normal routing will decide the turn.\n\n"
+            "Return JSON fields exactly:\n"
+            "{\n"
+            '  "allow": true | false,\n'
+            '  "reason": string\n'
+            "}\n"
+        )
+        selector_message = (
+            f"Preselected skill: {scope_hints.get('qualified_name', '') or 'unknown'}\n"
+            f"Provider: {scope_hints.get('provider', '') or '-'}\n"
+            f"Use when:\n- " + ("\n- ".join(use_when) if use_when else "none") + "\n"
+            f"Avoid when:\n- " + ("\n- ".join(avoid_when) if avoid_when else "none") + "\n\n"
+            f"Current user request:\n{user_message}"
+        )
+        try:
+            raw_output = await runner(
+                agent=agent,
+                user_message=selector_message,
+                deps=deps,
+                system_prompt=system_prompt,
+                purpose="preselected_md_skill_scope_guard",
+                allowed_tool_names=[],
+            )
+        except Exception:
+            logger.warning("preselected_md_skill_scope_guard_failed", exc_info=True)
+            return True, "scope_guard_failed"
+
+        parsed = self._extract_json_object(raw_output)
+        if not parsed:
+            return True, "scope_guard_unparsed"
+        try:
+            payload = json.loads(parsed)
+        except Exception:
+            return True, "scope_guard_invalid_json"
+        if not isinstance(payload, dict):
+            return True, "scope_guard_invalid_payload"
+
+        allow = payload.get("allow")
+        if not isinstance(allow, bool):
+            return True, "scope_guard_missing_allow"
+        reason = _normalize_text(payload.get("reason")) or "preselected_md_skill_scope_guard"
+        return allow, reason
+
     async def _run_prepare_phase(self, *, state: dict[str, Any], _log_step: Any) -> AsyncIterator[StreamEvent]:
         """Prepare runtime/session/prompt/tool-gate phase before model loop."""
         session_key = state.get("session_key")
@@ -1823,6 +1948,29 @@ class RunnerExecutionPreparePhaseMixin:
             # Webhook-selected skills are an authenticated routing decision, so
             # they take precedence over classifier/transcript skill hints.
             preselected_md_skill_plan = build_preselected_md_skill_intent_plan(deps)
+            if preselected_md_skill_plan is not None:
+                preselected_target_md_skill = (
+                    deps.extra.get("target_md_skill")
+                    if isinstance(getattr(deps, "extra", None), dict)
+                    else None
+                )
+                keep_preselected_plan, preselected_scope_reason = (
+                    await self._should_keep_preselected_md_skill_plan(
+                        agent=runtime_agent or self.agent,
+                        deps=deps,
+                        user_message=model_user_message,
+                        target_md_skill=preselected_target_md_skill
+                        if isinstance(preselected_target_md_skill, dict)
+                        else {},
+                    )
+                )
+                if not keep_preselected_plan:
+                    _log_step(
+                        "target_md_skill_preselected_rejected",
+                        reason=preselected_scope_reason,
+                        target_skill_names=list(preselected_md_skill_plan.target_skill_names),
+                    )
+                    preselected_md_skill_plan = None
             if preselected_md_skill_plan is not None:
                 _log_step(
                     "target_md_skill_preselected",

@@ -35,7 +35,7 @@ class _GateRunner(RunnerToolGateModelMixin, RunnerToolGateRoutingMixin):
     TOOL_GATE_MUST_USE_MIN_CONFIDENCE = 0.85
 
 
-class _PrepareRunner(RunnerExecutionPreparePhaseMixin):
+class _PrepareRunner(RunnerToolGateModelMixin, RunnerExecutionPreparePhaseMixin):
     pass
 
 
@@ -111,6 +111,23 @@ class _RoutingAwareSelectorAgent:
             }
 
         return SimpleNamespace(output=json.dumps(payload))
+
+
+class _PreselectedScopeGuardAgent:
+    def __init__(self, payload: dict) -> None:
+        self.payload = payload
+        self.messages: list[str] = []
+        self.system_prompts: list[str] = []
+
+    def override(self, *, instructions=None, system_prompt=None, tools=None):
+        prompt = str(instructions or system_prompt or "")
+        if prompt:
+            self.system_prompts.append(prompt)
+        return nullcontext()
+
+    async def run(self, user_message, *, deps):
+        self.messages.append(str(user_message))
+        return SimpleNamespace(output=json.dumps(self.payload))
 
 
 def test_coordination_only_toolset_is_not_executable_runtime_capability() -> None:
@@ -406,6 +423,72 @@ def test_capability_selector_routes_conflicting_ordinals_to_decomposition_skill(
     assert plan.action is ToolIntentAction.USE_TOOLS
     assert plan.target_skill_names == ["smartcmp:request-decomposition-agent"]
     assert "clarification" in plan.reason.lower()
+
+
+def test_preselected_md_skill_scope_guard_rejects_same_type_quantity_for_decomposition() -> None:
+    runner = _PrepareRunner()
+    guard_agent = _PreselectedScopeGuardAgent(
+        {
+            "allow": False,
+            "reason": "The request matches an avoid_when boundary for this preselected skill.",
+        }
+    )
+
+    allowed, reason = asyncio.run(
+        runner._should_keep_preselected_md_skill_plan(
+            agent=guard_agent,
+            deps=SimpleNamespace(extra={}),
+            user_message="帮我申请3台2C4G Linux虚拟机",
+            target_md_skill={
+                "qualified_name": "smartcmp:request-decomposition-agent",
+                "provider": "smartcmp",
+                "use_when": [
+                    "User asks for multiple resource types that should become separate requests",
+                    "User asks for multiple resources with distinct per-item configuration",
+                ],
+                "avoid_when": [
+                    "User wants multiple instances of the same resource type with the same parameters in one request flow",
+                ],
+            },
+        )
+    )
+
+    assert allowed is False
+    assert "avoid_when" in reason
+    assert guard_agent.system_prompts
+    assert "preselected markdown-skill scope guard" in guard_agent.system_prompts[0]
+    assert "same parameters in one request flow" in guard_agent.messages[0]
+
+
+def test_preselected_md_skill_scope_guard_keeps_skill_when_no_conflict() -> None:
+    runner = _PrepareRunner()
+    guard_agent = _PreselectedScopeGuardAgent(
+        {
+            "allow": True,
+            "reason": "The request remains within the skill boundary.",
+        }
+    )
+
+    allowed, reason = asyncio.run(
+        runner._should_keep_preselected_md_skill_plan(
+            agent=guard_agent,
+            deps=SimpleNamespace(extra={}),
+            user_message="帮我申请两台虚拟机，第一台2C4G，第二台4C8G",
+            target_md_skill={
+                "qualified_name": "smartcmp:request-decomposition-agent",
+                "provider": "smartcmp",
+                "use_when": [
+                    "User asks for multiple resources with distinct per-item configuration",
+                ],
+                "avoid_when": [
+                    "User wants multiple instances of the same resource type with the same parameters in one request flow",
+                ],
+            },
+        )
+    )
+
+    assert allowed is True
+    assert "within the skill boundary" in reason
 
 
 def test_capability_selector_can_select_provider_and_standard_skill_targets() -> None:
