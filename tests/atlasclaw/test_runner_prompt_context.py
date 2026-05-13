@@ -511,6 +511,66 @@ def test_collect_capability_index_snapshot_orders_sources_and_omits_bodies() -> 
     assert all("body" not in item for item in snapshot)
 
 
+def test_collect_capability_index_snapshot_enriches_md_skill_routing_hints() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [],
+            "md_skills_snapshot": [
+                {
+                    "name": "request",
+                    "qualified_name": "acme:request",
+                    "description": "Submit provider requests.",
+                    "file_path": "/skills/acme/request/SKILL.md",
+                    "provider": "acme",
+                    "metadata": {
+                        "provider_type": "acme",
+                        "use_when": [
+                            "User wants one resource type with shared parameters and quantity N in a single request flow.",
+                        ],
+                        "avoid_when": [
+                            "User asks for mixed resource types or per-instance differences that should become separate requests.",
+                        ],
+                    },
+                },
+                {
+                    "name": "request-decomposition-agent",
+                    "qualified_name": "acme:request-decomposition-agent",
+                    "description": "Draft provider request plans.",
+                    "file_path": "/skills/acme/request-decomposition-agent/SKILL.md",
+                    "provider": "acme",
+                    "metadata": {
+                        "provider_type": "acme",
+                        "use_when": [
+                            "User asks for mixed resource types that should become separate requests.",
+                            "User enumerates per-instance differences like first / second / third.",
+                        ],
+                        "avoid_when": [
+                            "User wants one resource type with shared parameters and quantity N in one request flow.",
+                        ],
+                    },
+                },
+            ],
+            "skills_snapshot": [],
+        }
+    )
+
+    snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
+
+    request_entry = next(item for item in snapshot if item["capability_id"] == "skill:acme:request")
+    decomposition_entry = next(
+        item
+        for item in snapshot
+        if item["capability_id"] == "skill:acme:request-decomposition-agent"
+    )
+
+    assert "Routing hints:" in request_entry["description"]
+    assert "one resource type with shared parameters and quantity N" in request_entry["description"]
+    assert "mixed resource types or per-instance differences" in request_entry["description"]
+    assert "first / second / third" in decomposition_entry["description"]
+    assert "quantity N in one request flow" in decomposition_entry["description"]
+
+
 def test_collect_capability_index_snapshot_uses_explicit_md_tool_artifact_capability() -> None:
     deps = SimpleNamespace(
         extra={
@@ -648,6 +708,51 @@ def test_build_system_prompt_uses_unified_capability_index_surface(tmp_path) -> 
     assert "## Built-in Tools (Use ONLY if no MD Skill matches)" not in prompt
     assert "<available_skills>" not in prompt
     assert "FULL BODY SHOULD NOT APPEAR" not in prompt
+
+
+def test_build_system_prompt_capability_index_keeps_md_routing_hints(tmp_path) -> None:
+    deps = SimpleNamespace(
+        user_info=SimpleNamespace(
+            user_id="anonymous",
+            display_name="",
+            tenant_id="default",
+            roles=[],
+        ),
+        extra={
+            "md_skills_snapshot": [
+                {
+                    "name": "request-decomposition-agent",
+                    "qualified_name": "acme:request-decomposition-agent",
+                    "description": "Draft provider request plans.",
+                    "file_path": "/skills/acme/request-decomposition-agent/SKILL.md",
+                    "provider": "acme",
+                    "metadata": {
+                        "provider_type": "acme",
+                        "use_when": [
+                            "User asks for mixed resource types that should become separate requests.",
+                            "User enumerates per-instance differences like first / second / third.",
+                        ],
+                        "avoid_when": [
+                            "User wants one resource type with shared parameters and quantity N in one request flow.",
+                        ],
+                    },
+                }
+            ],
+            "skills_snapshot": [],
+        },
+    )
+    builder = PromptBuilder(
+        PromptBuilderConfig(
+            workspace_path=str(tmp_path),
+            capability_index_max_chars=2000,
+        )
+    )
+
+    prompt = build_system_prompt(builder, session=None, deps=deps, agent=SimpleNamespace(tools=[]))
+
+    assert "Routing hints:" in prompt
+    assert "mixed resource types that should become separate requests" in prompt
+    assert "User enumerates per-instance differences like first / second / third" in prompt
 
 
 def test_build_system_prompt_includes_provider_auth_diagnostics(tmp_path) -> None:

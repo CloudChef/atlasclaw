@@ -174,6 +174,47 @@ def test_capability_selector_prompt_uses_descriptions_only_for_capabilities() ->
     assert "hidden_export_tool" not in prompt
 
 
+def test_capability_selector_prompt_keeps_md_routing_hints_inside_descriptions() -> None:
+    runner = _GateRunner()
+
+    prompt = runner._build_capability_selector_prompt(
+        capability_index=[
+            {
+                "capability_id": "skill:acme:request",
+                "kind": "md_skill",
+                "name": "acme:request",
+                "description": (
+                    "Submit provider requests. Routing hints: use when User wants one "
+                    "resource type with shared parameters and quantity N in a single "
+                    "request flow; avoid when User asks for mixed resource types or "
+                    "per-instance differences that should become separate requests."
+                ),
+                "declared_tool_names": ["acme_submit_request"],
+                "provider_type": "acme",
+            },
+            {
+                "capability_id": "skill:acme:request-decomposition-agent",
+                "kind": "md_skill",
+                "name": "acme:request-decomposition-agent",
+                "description": (
+                    "Draft provider request plans. Routing hints: use when User asks for "
+                    "mixed resource types that should become separate requests; use when User "
+                    "enumerates per-instance differences like first / second / third; avoid "
+                    "when User wants one resource type with shared parameters and quantity N "
+                    "in one request flow."
+                ),
+                "declared_tool_names": ["acme_submit_request"],
+                "provider_type": "acme",
+            },
+        ]
+    )
+
+    assert "one resource type with shared parameters and quantity N" in prompt
+    assert "mixed resource types that should become separate requests" in prompt
+    assert "first / second / third" in prompt
+    assert "provider=acme" not in prompt
+
+
 def test_capability_selector_can_select_provider_and_standard_skill_targets() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
