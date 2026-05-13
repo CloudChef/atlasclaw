@@ -13,6 +13,7 @@ import pytest
 from app.atlasclaw.agent.runner_tool.runner_tool_gate_model import RunnerToolGateModelMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import RunnerExecutionPreparePhaseMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
+    _build_preselected_md_skill_scope_conflict_message,
     _infer_active_skill_from_transcript,
     build_transcript_skill_prompt_intent_plan,
     prune_auto_selected_provider_instance_tools,
@@ -489,6 +490,20 @@ def test_preselected_md_skill_scope_guard_keeps_skill_when_no_conflict() -> None
 
     assert allowed is True
     assert "within the skill boundary" in reason
+
+
+def test_preselected_md_skill_scope_conflict_message_fails_closed() -> None:
+    message = _build_preselected_md_skill_scope_conflict_message(
+        target_md_skill={
+            "qualified_name": "smartcmp:request-decomposition-agent",
+        },
+        reason="The request matches an avoid_when boundary for this preselected skill.",
+    )
+
+    assert "Cannot continue with preselected skill" in message
+    assert "smartcmp:request-decomposition-agent" in message
+    assert "outside that skill's boundary" in message
+    assert "avoid_when boundary" in message
 
 
 def test_capability_selector_can_select_provider_and_standard_skill_targets() -> None:
