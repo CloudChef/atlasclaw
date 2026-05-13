@@ -518,32 +518,32 @@ def test_collect_capability_index_snapshot_enriches_md_skill_routing_hints() -> 
             "tools_snapshot": [],
             "md_skills_snapshot": [
                 {
-                    "name": "smartcmp:request",
-                    "qualified_name": "smartcmp:request",
-                    "description": "Submit SmartCMP requests.",
+                    "name": "acme:request",
+                    "qualified_name": "acme:request",
+                    "description": "Submit provider requests.",
                     "file_path": "/skills/request/SKILL.md",
-                    "provider": "smartcmp",
+                    "provider": "acme",
                     "metadata": {
-                        "provider_type": "smartcmp",
+                        "provider_type": "acme",
                         "use_when": [
                             "User already knows the service they want and is ready to provide request parameters",
                         ],
                         "avoid_when": [
-                            "User asks for multiple virtual machines or multiple resource requests with per-item differences such as quantity, first/second/third configurations, or different specs per instance",
+                            "User asks for multiple resource requests with per-item differences such as quantity, first/second/third configurations, or different settings per instance",
                         ],
                     },
                 },
                 {
-                    "name": "smartcmp:request-decomposition-agent",
-                    "qualified_name": "smartcmp:request-decomposition-agent",
-                    "description": "Draft SmartCMP request plans.",
+                    "name": "acme:request-decomposition-agent",
+                    "qualified_name": "acme:request-decomposition-agent",
+                    "description": "Draft provider request plans.",
                     "file_path": "/skills/request-decomposition-agent/SKILL.md",
-                    "provider": "smartcmp",
+                    "provider": "acme",
                     "metadata": {
-                        "provider_type": "smartcmp",
+                        "provider_type": "acme",
                         "use_when": [
-                            "User asks for multiple virtual machines or multiple CMP resources with distinct per-item configuration",
-                            "User enumerates differences like first VM / second VM / third VM",
+                            "User asks for multiple items with distinct per-item configuration",
+                            "User enumerates differences like first item / second item / third item",
                         ],
                         "avoid_when": [
                             "User has specific parameters ready for a single request",
@@ -558,18 +558,18 @@ def test_collect_capability_index_snapshot_enriches_md_skill_routing_hints() -> 
     snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
 
     request_entry = next(
-        item for item in snapshot if item["capability_id"] == "skill:smartcmp:request"
+        item for item in snapshot if item["capability_id"] == "skill:acme:request"
     )
     decomposition_entry = next(
         item
         for item in snapshot
-        if item["capability_id"] == "skill:smartcmp:request-decomposition-agent"
+        if item["capability_id"] == "skill:acme:request-decomposition-agent"
     )
 
     assert "Routing hints:" in request_entry["description"]
-    assert "multiple virtual machines" in request_entry["description"]
+    assert "multiple items" in request_entry["description"]
     assert "single request" in decomposition_entry["description"]
-    assert "first VM / second VM / third VM" in decomposition_entry["description"]
+    assert "ordinal item differences" in decomposition_entry["description"]
 
 
 def test_collect_capability_index_snapshot_uses_explicit_md_tool_artifact_capability() -> None:
@@ -722,16 +722,16 @@ def test_build_system_prompt_capability_index_keeps_md_routing_hints(tmp_path) -
         extra={
             "md_skills_snapshot": [
                 {
-                    "name": "smartcmp:request-decomposition-agent",
-                    "qualified_name": "smartcmp:request-decomposition-agent",
-                    "description": "Draft SmartCMP request plans.",
+                    "name": "acme:request-decomposition-agent",
+                    "qualified_name": "acme:request-decomposition-agent",
+                    "description": "Draft provider request plans.",
                     "file_path": "/skills/request-decomposition-agent/SKILL.md",
-                    "provider": "smartcmp",
+                    "provider": "acme",
                     "metadata": {
-                        "provider_type": "smartcmp",
+                        "provider_type": "acme",
                         "use_when": [
-                            "User asks for multiple virtual machines or multiple CMP resources with distinct per-item configuration",
-                            "User enumerates differences like first VM / second VM / third VM",
+                            "User asks for multiple items with distinct per-item configuration",
+                            "User enumerates differences like first item / second item / third item",
                         ],
                         "avoid_when": [
                             "User has specific parameters ready for a single request",
@@ -757,7 +757,7 @@ def test_build_system_prompt_capability_index_keeps_md_routing_hints(tmp_path) -
     )
 
     assert "Routing hints:" in prompt
-    assert "multiple virtual machines" in prompt
+    assert "multiple items" in prompt
     assert "single request" in prompt
 
 

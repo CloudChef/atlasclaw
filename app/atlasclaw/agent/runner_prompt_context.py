@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 # Copyright 2026  Qianyun, Inc., www.cloudchef.io, All rights reserved.
 
 """Prompt-context helpers for AgentRunner."""
@@ -269,7 +269,7 @@ def collect_transcript_skill_hint(deps) -> Optional[str]:
     """Read the transcript-based skill continuation hint from `deps.extra`.
 
     This is a non-binding hint produced by transcript analysis.  It is
-    injected into the prompt as advisory context — the LLM decides whether
+    injected into the prompt as advisory context 鈥?the LLM decides whether
     to follow it.
     """
     extra = deps.extra if isinstance(deps.extra, dict) else {}
@@ -963,20 +963,22 @@ def _extract_high_signal_routing_terms(text: str) -> str:
         if term and term not in terms:
             terms.append(term)
 
-    if "multiple virtual machines" in lowered:
-        _append("multiple virtual machines")
-    if "multiple cmp resources" in lowered and "multiple virtual machines" not in lowered:
-        _append("multiple CMP resources")
-    if "multiple resource requests" in lowered and "multiple virtual machines" not in lowered:
-        _append("multiple resource requests")
-    if "distinct per-item configuration" in lowered:
-        _append("distinct per-item configuration")
-    if "per-item differences" in lowered:
+    if any(token in lowered for token in ("multiple", "multi-", "several", "batch", "quantity")):
+        _append("multiple items")
+    if any(
+        token in lowered
+        for token in (
+            "distinct per-item configuration",
+            "per-item differences",
+            "distinct per-item",
+            "different specs per instance",
+            "different settings per instance",
+            "per-item configuration",
+        )
+    ):
         _append("per-item differences")
-    if "first vm / second vm / third vm" in lowered:
-        _append("first VM / second VM / third VM")
-    elif all(token in lowered for token in ("first", "second", "third")) and "vm" in lowered:
-        _append("first/second/third VM differences")
+    if any(token in lowered for token in ("first", "second", "third", "fourth", "fifth", "sixth")):
+        _append("ordinal item differences")
     if "ready to provide request parameters" in lowered:
         _append("request parameters ready")
     if "specific parameters ready for a single request" in lowered:
@@ -987,13 +989,12 @@ def _extract_high_signal_routing_terms(text: str) -> str:
         _append("natural-language requests")
     if "reviewable draft" in lowered or "reviewable draft requests" in lowered:
         _append("reviewable draft requests")
-
-    if "虚拟机" in normalized:
-        _append("多台虚拟机")
-    if "第一台" in normalized and "第二台" in normalized and "第三台" in normalized:
-        _append("第一台/第二台/第三台差异")
-    if "单台" in normalized:
-        _append("单台请求")
+    if any(token in normalized for token in ("第一", "第二", "第三", "第四", "第五", "第六")):
+        _append("numbered item differences")
+    if "单台" in normalized or "单个请求" in normalized:
+        _append("single request")
+    if "多项" in normalized or "多台" in normalized or "多个" in normalized:
+        _append("multiple items")
 
     if not terms:
         return ""
@@ -1021,15 +1022,10 @@ def _score_routing_hint(text: str) -> int:
         "quantity",
         "clarification",
         "single request",
-        "virtual machine",
-        "vm",
-        "虚拟机",
-        "第一台",
-        "第二台",
-        "第三台",
-        "第四台",
-        "第五台",
-        "第六台",
+        "numbered",
+        "第一",
+        "第二",
+        "第三",
     )
     medium_signal_terms = (
         "natural language",
@@ -1333,3 +1329,4 @@ def _normalize_metadata_object(value: Any) -> dict[str, Any]:
         except Exception:
             return {}
     return dict(value) if isinstance(value, dict) else {}
+

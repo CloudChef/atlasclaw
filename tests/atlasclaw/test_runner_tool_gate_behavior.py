@@ -180,24 +180,25 @@ def test_capability_selector_prompt_keeps_md_routing_hints_inside_descriptions()
     prompt = runner._build_capability_selector_prompt(
         capability_index=[
             {
-                "capability_id": "skill:smartcmp:request-decomposition-agent",
+                "capability_id": "skill:acme:request-decomposition-agent",
                 "kind": "md_skill",
-                "name": "smartcmp:request-decomposition-agent",
+                "name": "acme:request-decomposition-agent",
                 "description": (
-                    "Draft SmartCMP request plans. Routing hints: use when User asks for "
-                    "multiple virtual machines or multiple CMP resources with distinct per-item "
-                    "configuration; avoid when User has specific parameters ready for a single request."
+                    "Draft provider request plans. Routing hints: use when User asks for "
+                    "multiple items with distinct per-item configuration; use when ordinal item "
+                    "differences; avoid when User has specific parameters ready for a single request."
                 ),
-                "declared_tool_names": ["smartcmp_submit_request"],
-                "provider_type": "smartcmp",
+                "declared_tool_names": ["acme_submit_request"],
+                "provider_type": "acme",
             }
         ]
     )
 
-    assert "multiple virtual machines" in prompt
+    assert "multiple items" in prompt
+    assert "ordinal item differences" in prompt
     assert "single request" in prompt
     assert "hidden_export_tool" not in prompt
-    assert "provider=smartcmp" not in prompt
+    assert "provider=acme" not in prompt
 
 
 def test_capability_selector_can_select_provider_and_standard_skill_targets() -> None:
