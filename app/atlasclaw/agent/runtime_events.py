@@ -246,6 +246,34 @@ class RuntimeEventDispatcher:
             ),
         )
 
+    async def trigger_memory_auto_write_completed(
+        self,
+        *,
+        session_key: str,
+        run_id: str,
+        status: str,
+        long_term_count: int,
+        diagnostics: dict[str, Any] | None = None,
+    ) -> None:
+        """Emit non-sensitive diagnostics for one automatic memory write attempt."""
+        payload = dict(diagnostics or {})
+        payload.update(
+            {
+                "status": str(status or ""),
+                "long_term_count": int(long_term_count or 0),
+            }
+        )
+        await self._emit_runtime_event(
+            HookEventType.MEMORY_AUTO_WRITE_COMPLETED,
+            session_key=session_key,
+            run_id=run_id,
+            payload=self._with_trace_fields(
+                session_key=session_key,
+                run_id=run_id,
+                payload=payload,
+            ),
+        )
+
     async def trigger_tool_gate_evaluated(
         self,
         *,

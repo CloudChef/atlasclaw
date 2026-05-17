@@ -91,9 +91,8 @@ class ResetConfig(BaseModel):
 class CompactionConfig(BaseModel):
     """Compaction configuration"""
     reserve_tokens_floor: int = Field(default=20000, description="Tokens reserved for new responses")
-    soft_threshold_tokens: int = Field(default=4000, description="Soft threshold for triggering memory refresh")
+    soft_threshold_tokens: int = Field(default=4000, description="Soft threshold before hard compaction")
     context_window: int = Field(default=128000, description="Model context window size")
-    memory_flush_enabled: bool = True
 
 
 class ContextPruningToolConfig(BaseModel):
@@ -119,7 +118,7 @@ class ContextPruningHardClearConfig(BaseModel):
 
 
 class ContextPruningConfig(BaseModel):
-    """Runtime context pruning configuration (OpenClaw-aligned)."""
+    """Runtime context pruning configuration."""
 
     mode: str = Field(default="cache-ttl", description="off | cache-ttl")
     ttl_ms: int = Field(default=5 * 60 * 1000, ge=0)
@@ -371,13 +370,55 @@ class MessagesConfig(BaseModel):
     dedup_ttl_seconds: int = Field(default=60, ge=1)
 
 
+DEFAULT_DIRECT_MEMORY_CHAT_TYPES: tuple[str, ...] = ("dm", "direct")
+
+
+class ActiveMemoryConfig(BaseModel):
+    """Configuration for hidden pre-reply user preference recall.
+
+    Active memory is intentionally scoped to direct conversations by default
+    and bounded with a timeout, cache, and circuit breaker so recall can improve
+    response style without blocking or steering tool selection.
+    """
+
+    enabled: bool = True
+    allowed_chat_types: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_DIRECT_MEMORY_CHAT_TYPES)
+    )
+    timeout_ms: int = Field(default=15000, ge=250, le=120000)
+    max_summary_chars: int = Field(default=220, ge=32, le=4000)
+    cache_ttl_ms: int = Field(default=15000, ge=0, le=120000)
+    circuit_breaker_max_timeouts: int = Field(default=3, ge=1, le=20)
+    circuit_breaker_cooldown_ms: int = Field(default=60000, ge=1000, le=600000)
+
+
+class AutoMemoryWriteConfig(BaseModel):
+    """Configuration for internal post-reply memory distillation.
+
+    Automatic writes are gated by memory permissions at runtime. Limits here
+    keep distilled items small and restrict persistence to stable user
+    experience preferences in ``MEMORY.md`` rather than transcript summaries.
+    """
+
+    enabled: bool = True
+    allowed_chat_types: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_DIRECT_MEMORY_CHAT_TYPES)
+    )
+    timeout_ms: int = Field(default=15000, ge=250, le=120000)
+    max_long_term_items: int = Field(default=3, ge=0, le=10)
+    max_maintained_preferences: int = Field(default=50, ge=1, le=200)
+    max_item_chars: int = Field(default=360, ge=40, le=2000)
+
+
 class MemoryConfig(BaseModel):
-    """Memory configuration."""
+    """User-scoped markdown memory and recall configuration."""
     enabled: bool = True
     vector_weight: float = Field(default=0.7, ge=0, le=1, description="Vector search weight")
     fulltext_weight: float = Field(default=0.3, ge=0, le=1, description="Full-text search weight")
     time_decay_half_life_days: float = Field(default=30.0, ge=1, description="Time decay half-life in days")
     max_results: int = Field(default=6, ge=1)
+    active: ActiveMemoryConfig = Field(default_factory=ActiveMemoryConfig)
+    auto_write: AutoMemoryWriteConfig = Field(default_factory=AutoMemoryWriteConfig)
 
 
 class WorkspaceConfig(BaseModel):

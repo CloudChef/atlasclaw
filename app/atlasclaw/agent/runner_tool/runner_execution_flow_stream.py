@@ -103,7 +103,6 @@ class RunnerExecutionFlowStreamMixin:
         system_prompt = state.get("system_prompt")
         max_tool_calls = int(state.get("max_tool_calls") or 0)
         runtime_context_window = state.get("runtime_context_window")
-        flushed_memory_signatures = state.get("flushed_memory_signatures")
         session_message_history = list(state.get("session_message_history") or [])
         runtime_base_history_len = int(state.get("runtime_base_history_len") or 0)
         persist_run_output_start_index = int(state.get("persist_run_output_start_index") or 0)
@@ -191,20 +190,6 @@ class RunnerExecutionFlowStreamMixin:
             state["latest_agent_messages"] = list(merged_current_messages)
             state["context_history_for_hooks"] = list(merged_current_messages)
 
-            if self.compaction.should_memory_flush(
-                merged_current_messages,
-                session,
-                context_window_override=runtime_context_window,
-            ):
-                await self.history.flush_history_to_timestamped_memory(
-                    session_key=session_key,
-                    messages=merged_current_messages,
-                    deps=deps,
-                    session=session,
-                    context_window=runtime_context_window,
-                    flushed_signatures=flushed_memory_signatures,
-                )
-
             if self.compaction.should_compact(
                 merged_current_messages,
                 session,
@@ -221,10 +206,6 @@ class RunnerExecutionFlowStreamMixin:
                 yield StreamEvent.compaction_start()
                 compressed = await self.compaction.compact(merged_current_messages, session)
                 persist_override_messages = self.history.normalize_messages(compressed)
-                persist_override_messages = await self.history.inject_memory_recall(
-                    persist_override_messages,
-                    deps,
-                )
                 state["context_history_for_hooks"] = list(persist_override_messages)
                 state["persist_override_messages"] = persist_override_messages
                 state["persist_override_base_len"] = len(merged_current_messages)

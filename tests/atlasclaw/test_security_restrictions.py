@@ -86,10 +86,6 @@ async def test_session_and_memory_store_encoded_untrusted_input(tmp_path):
     assert transcript[0].content.startswith("[encoded_input:base64:")
     assert transcript[0].metadata.get("encoded_input") is True
 
-    daily = await memory_manager.write_daily("console.log('x')")
-    assert daily.content.startswith("[encoded_input:base64:")
-    assert "encoded_input" in daily.tags
-
     long_term = await memory_manager.write_long_term("javascript:alert(1)")
     assert long_term.content.startswith("[encoded_input:base64:")
     assert "encoded_input" in long_term.tags

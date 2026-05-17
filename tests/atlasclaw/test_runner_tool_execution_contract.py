@@ -402,7 +402,6 @@ class _LoopRunner(RunnerExecutionFlowPhaseMixin):
     def __init__(self) -> None:
         self.history = _FlowHistory()
         self.compaction = SimpleNamespace(
-            should_memory_flush=lambda *args, **kwargs: False,
             should_compact=lambda *args, **kwargs: False,
         )
         self.context_pruning_settings = SimpleNamespace(enabled=False)

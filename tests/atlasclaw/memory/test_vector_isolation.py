@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 def _make_entry(content: str, entry_id: str | None = None) -> MemoryEntry:
     ts = datetime.now(timezone.utc)
     eid = entry_id or MemoryEntry.generate_id(content, ts)
-    return MemoryEntry(id=eid, content=content, memory_type=MemoryType.DAILY, timestamp=ts)
+    return MemoryEntry(id=eid, content=content, memory_type=MemoryType.LONG_TERM, timestamp=ts)
 
 
 class TestVectorIsolation:

@@ -47,9 +47,50 @@ from app.atlasclaw.agent.tool_gate_models import (
     ToolPolicyMode,
 )
 from app.atlasclaw.core.deps import SkillDeps
+from app.atlasclaw.memory.access import MEMORY_TOOL_NAMES
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_memory_tool(tool: dict[str, Any]) -> bool:
+    """Return whether a runtime tool is one of the read-only memory tools."""
+    name = str(tool.get("name", "") or "").strip()
+    capability_class = str(tool.get("capability_class", "") or "").strip().lower()
+    group_ids = {
+        str(group_id or "").strip().lower()
+        for group_id in (tool.get("group_ids", []) or [])
+        if str(group_id or "").strip()
+    }
+    return (
+        name in MEMORY_TOOL_NAMES
+        or capability_class == "memory"
+        or "group:memory" in group_ids
+    )
+
+
+def filter_implicit_memory_tools(
+    tools: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Hide read-only memory tools from ordinary natural-language routing.
+
+    Users can still select memory tools explicitly via slash capability. For
+    plain chat turns, memory recall and writes are handled by the active-memory
+    and auto-write services so memory cannot steer skill/tool selection or
+    surface unrelated search results.
+    """
+    filtered: list[dict[str, Any]] = []
+    removed: list[str] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        name = str(tool.get("name", "") or "").strip()
+        if _is_memory_tool(tool):
+            if name:
+                removed.append(name)
+            continue
+        filtered.append(tool)
+    return filtered, removed
 
 
 def select_execution_prompt_mode(
@@ -1263,7 +1304,6 @@ class RunnerExecutionPreparePhaseMixin:
         runtime_agent = state.get("runtime_agent")
         selected_token_id = state.get("selected_token_id")
         release_slot = state.get("release_slot")
-        flushed_memory_signatures = state.get("flushed_memory_signatures")
         extra = state.get("extra")
         run_id = state.get("run_id")
         tool_execution_retry_count = state.get("tool_execution_retry_count")
@@ -1541,6 +1581,27 @@ class RunnerExecutionPreparePhaseMixin:
                     target_tool_names=list(selected_tool_intent_plan.target_tool_names),
                 )
             else:
+                filtered_tools, hidden_memory_tools = filter_implicit_memory_tools(available_tools)
+                if hidden_memory_tools:
+                    available_tools = filtered_tools
+                    runtime_allowed_tool_names = [
+                        str(tool.get("name", "") or "").strip()
+                        for tool in available_tools
+                        if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
+                    ]
+                    if isinstance(deps.extra, dict):
+                        deps.extra["tools_snapshot"] = list(available_tools)
+                        deps.extra["tools_snapshot_authoritative"] = True
+                        deps.extra["runtime_allowed_tool_names"] = list(runtime_allowed_tool_names)
+                        deps.extra["tool_groups_snapshot"] = self._build_filtered_group_map(
+                            tool_groups_snapshot,
+                            available_tools,
+                        )
+                    _log_step(
+                        "implicit_memory_tools_hidden",
+                        reason="memory_read_tools_require_explicit_slash_or_internal_services",
+                        removed_tools=hidden_memory_tools,
+                    )
                 capability_index = collect_capability_index_snapshot(
                     agent=runtime_agent or self.agent,
                     deps=deps,
@@ -2096,20 +2157,59 @@ class RunnerExecutionPreparePhaseMixin:
                 )
                 system_prompt = prompt_ctx.get("system_prompt", system_prompt)
 
-            # at iter,.
-            if self.compaction.should_memory_flush(
-                message_history,
-                session,
-                context_window_override=runtime_context_window,
-            ):
-                await self.history.flush_history_to_timestamped_memory(
-                    session_key=session_key,
-                    messages=message_history,
-                    deps=deps,
-                    session=session,
-                    context_window=runtime_context_window,
-                    flushed_signatures=flushed_memory_signatures,
-                )
+            active_memory_allowed_for_turn = (
+                explicit_tool_execution_target is None
+                and not tool_execution_required
+                and not bool(getattr(tool_gate_decision, "needs_tool", False))
+            )
+            if active_memory_allowed_for_turn:
+                # Active memory is intentionally injected only after tool
+                # routing has declined to act. That keeps user preferences from
+                # changing skill/provider/tool selection while still allowing
+                # response UX adaptation for direct answers.
+                active_memory = getattr(self, "active_memory", None)
+                if active_memory is not None:
+                    try:
+                        active_memory_result = await active_memory.recall(
+                            deps=deps,
+                            session_key=session_key,
+                            user_message=user_message,
+                        )
+                    except Exception as exc:
+                        logger.warning("active memory recall failed open: %s", exc)
+                        active_memory_result = None
+                    if active_memory_result is not None and isinstance(deps.extra, dict):
+                        deps.extra["active_memory"] = {
+                            "status": str(getattr(active_memory_result, "status", "") or ""),
+                            "elapsed_ms": int(getattr(active_memory_result, "elapsed_ms", 0) or 0),
+                            "result_count": int(getattr(active_memory_result, "result_count", 0) or 0),
+                        }
+                    active_context = (
+                        str(getattr(active_memory_result, "context", "") or "").strip()
+                        if active_memory_result is not None
+                        else ""
+                    )
+                    if active_context:
+                        system_prompt = f"{active_context}\n\n{system_prompt}"
+                        _log_step(
+                            "active_memory_injected",
+                            status=str(getattr(active_memory_result, "status", "") or ""),
+                            result_count=int(getattr(active_memory_result, "result_count", 0) or 0),
+                            elapsed_ms=int(getattr(active_memory_result, "elapsed_ms", 0) or 0),
+                        )
+                    elif active_memory_result is not None:
+                        _log_step(
+                            "active_memory_skipped",
+                            status=str(getattr(active_memory_result, "status", "") or ""),
+                            elapsed_ms=int(getattr(active_memory_result, "elapsed_ms", 0) or 0),
+                        )
+            elif explicit_tool_execution_target is None and isinstance(deps.extra, dict):
+                deps.extra["active_memory"] = {
+                    "status": "tool_selection_skipped",
+                    "elapsed_ms": 0,
+                    "result_count": 0,
+                }
+                _log_step("active_memory_skipped", status="tool_selection_skipped", elapsed_ms=0)
 
             if message_history and self.compaction.should_compact(
                 message_history,
@@ -2127,7 +2227,6 @@ class RunnerExecutionPreparePhaseMixin:
                 yield StreamEvent.compaction_start()
                 compressed_history = await self.compaction.compact(message_history, session)
                 message_history = self.history.normalize_messages(compressed_history)
-                message_history = await self.history.inject_memory_recall(message_history, deps)
                 context_history_for_hooks = list(message_history)
                 await session_manager.mark_compacted(session_key)
                 compaction_applied = True
@@ -2195,7 +2294,6 @@ class RunnerExecutionPreparePhaseMixin:
                 "runtime_agent": runtime_agent,
                 "selected_token_id": selected_token_id,
                 "release_slot": release_slot,
-                "flushed_memory_signatures": flushed_memory_signatures,
                 "extra": extra,
                 "run_id": run_id,
                 "tool_execution_retry_count": tool_execution_retry_count,

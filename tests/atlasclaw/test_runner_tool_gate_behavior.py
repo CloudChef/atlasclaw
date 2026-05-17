@@ -14,6 +14,7 @@ from app.atlasclaw.agent.runner_tool.runner_execution_prepare import RunnerExecu
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
     _infer_active_skill_from_transcript,
     build_transcript_skill_prompt_intent_plan,
+    filter_implicit_memory_tools,
     prune_auto_selected_provider_instance_tools,
     toolset_has_only_coordination_support_tools,
 )
@@ -102,6 +103,34 @@ def test_coordination_only_toolset_is_not_executable_runtime_capability() -> Non
             },
         ]
     )
+
+
+def test_implicit_memory_tools_are_hidden_from_natural_language_routing() -> None:
+    filtered, removed = filter_implicit_memory_tools(
+        [
+            {
+                "name": "memory_search",
+                "description": "Read-only search of existing user memory",
+                "capability_class": "memory",
+                "group_ids": ["group:memory"],
+            },
+            {
+                "name": "memory_get",
+                "description": "Read-only memory file slice",
+                "capability_class": "memory",
+                "group_ids": ["group:memory"],
+            },
+            {
+                "name": "web_search",
+                "description": "Search the public web",
+                "capability_class": "web_search",
+                "group_ids": ["group:web"],
+            },
+        ]
+    )
+
+    assert removed == ["memory_search", "memory_get"]
+    assert [tool["name"] for tool in filtered] == ["web_search"]
 
 
 def test_capability_selector_uses_authorized_xlsx_skill_without_pptx_substitution() -> None:

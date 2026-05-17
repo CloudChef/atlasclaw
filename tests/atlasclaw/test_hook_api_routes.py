@@ -150,8 +150,7 @@ def test_hook_routes_confirm_and_reject_pending(tmp_path):
     assert reject_response.status_code == 200
     assert reject_response.json()["status"] == "rejected"
 
-    memory_files = list((tmp_path / "users" / "alice" / "memory").glob("memory_*.md"))
-    assert len(memory_files) == 1
+    assert (tmp_path / "users" / "alice" / "memory" / "MEMORY.md").exists()
 
     pending_after = client.get(f"/api/hooks/{quote(RUNTIME_AUDIT_MODULE, safe='')}/pending")
     assert pending_after.status_code == 200

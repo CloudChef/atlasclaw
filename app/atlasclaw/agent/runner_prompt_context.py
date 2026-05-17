@@ -14,6 +14,7 @@ from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import (
     normalize_tool_description,
     normalize_tool_result_mode,
 )
+from app.atlasclaw.memory.access import memory_available_for_deps
 from app.atlasclaw.tools.catalog import STANDARD_SKILL_RUNTIME_TOOL_NAMES
 
 
@@ -42,6 +43,7 @@ def build_system_prompt(
         "mode_override": prompt_mode,
         "transcript_skill_hint": collect_transcript_skill_hint(deps),
         "current_follow_up_context": collect_current_follow_up_context(deps),
+        "memory_available": collect_memory_available(deps),
     }
     build_fn = prompt_builder.build
     try:
@@ -54,6 +56,14 @@ def build_system_prompt(
         kwargs = {key: value for key, value in kwargs.items() if key in accepted}
 
     return build_fn(**kwargs)
+
+
+def collect_memory_available(deps) -> bool:
+    """Return whether prompt text may describe runtime preference memory."""
+    try:
+        return memory_available_for_deps(deps)
+    except Exception:
+        return False
 
 
 def collect_skills_snapshot(deps) -> list[dict]:

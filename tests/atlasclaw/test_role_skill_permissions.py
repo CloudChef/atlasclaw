@@ -274,3 +274,66 @@ def test_collapse_role_skill_permissions_preserves_partial_group_scope(tmp_path:
     assert group_row["member_skill_ids"] == ["web_search"]
     assert group_row["partial"] is True
     assert skill_permission_service.is_skill_enabled([group_row], "web_fetch") is False
+
+
+def test_memory_tool_group_expands_to_search_and_get(tmp_path: Path) -> None:
+    registry = _build_registry(tmp_path)
+    permissions = {
+        "skills": {
+            "skill_permissions": [
+                {
+                    "skill_id": "group:memory",
+                    "skill_name": "group:memory",
+                    "authorized": True,
+                    "enabled": True,
+                },
+            ],
+        },
+    }
+
+    expanded = skill_permission_service.expand_role_skill_permissions_for_storage(
+        permissions,
+        skill_registry=registry,
+    )
+
+    entries = expanded["skills"]["skill_permissions"]
+    assert {entry["skill_id"] for entry in entries} == {"memory_search", "memory_get"}
+    assert skill_permission_service.is_skill_enabled(
+        permissions["skills"]["skill_permissions"],
+        "memory_search",
+    ) is True
+    assert skill_permission_service.is_skill_enabled(
+        permissions["skills"]["skill_permissions"],
+        "memory_get",
+    ) is True
+
+
+def test_disabled_memory_group_disables_memory_members(tmp_path: Path) -> None:
+    registry = _build_registry(tmp_path)
+    permissions = {
+        "skills": {
+            "skill_permissions": [
+                {
+                    "skill_id": "group:memory",
+                    "skill_name": "group:memory",
+                    "authorized": False,
+                    "enabled": False,
+                },
+            ],
+        },
+    }
+
+    expanded = skill_permission_service.expand_role_skill_permissions_for_storage(
+        permissions,
+        skill_registry=registry,
+    )
+
+    entries = expanded["skills"]["skill_permissions"]
+    by_id = {entry["skill_id"]: entry for entry in entries}
+    assert set(by_id) == {"memory_search", "memory_get"}
+    assert by_id["memory_search"]["authorized"] is False
+    assert by_id["memory_search"]["enabled"] is False
+    assert skill_permission_service.is_skill_enabled(
+        permissions["skills"]["skill_permissions"],
+        "memory_search",
+    ) is False

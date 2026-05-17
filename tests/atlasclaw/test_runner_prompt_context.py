@@ -13,6 +13,7 @@ from app.atlasclaw.agent.prompt_builder import PromptBuilder, PromptBuilderConfi
 from app.atlasclaw.agent import prompt_sections
 from app.atlasclaw.agent.runner_prompt_context import (
     build_system_prompt,
+    collect_memory_available,
     collect_capability_index_snapshot,
     collect_tools_snapshot,
 )
@@ -690,6 +691,76 @@ def test_build_system_prompt_includes_provider_auth_diagnostics(tmp_path) -> Non
     assert "paste credentials" in prompt
 
 
+def test_build_system_prompt_includes_memory_behavior_only_when_available(tmp_path) -> None:
+    builder = PromptBuilder(PromptBuilderConfig(workspace_path=str(tmp_path)))
+    deps = SimpleNamespace(
+        user_info=SimpleNamespace(
+            user_id="user-1",
+            display_name="User One",
+            tenant_id="default",
+            roles=["user"],
+        ),
+        memory_manager=object(),
+        extra={
+            "_user_skill_permissions": [
+                {
+                    "skill_id": "memory_search",
+                    "skill_name": "memory_search",
+                    "authorized": True,
+                    "enabled": True,
+                }
+            ],
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [],
+            "md_skills_snapshot": [],
+            "skills_snapshot": [],
+        },
+    )
+
+    prompt = build_system_prompt(builder, session=None, deps=deps, agent=SimpleNamespace(tools=[]))
+    compact_prompt = " ".join(prompt.split())
+
+    assert collect_memory_available(deps) is True
+    assert "Managing long-term memory with semantic retrieval" in prompt
+    assert "## Memory Behavior" in prompt
+    assert "runtime memory after a successful reply" in compact_prompt
+
+
+def test_build_system_prompt_omits_memory_behavior_without_permission(tmp_path) -> None:
+    builder = PromptBuilder(PromptBuilderConfig(workspace_path=str(tmp_path)))
+    deps = SimpleNamespace(
+        user_info=SimpleNamespace(
+            user_id="user-1",
+            display_name="User One",
+            tenant_id="default",
+            roles=["user"],
+        ),
+        memory_manager=object(),
+        extra={
+            "_user_skill_permissions": [
+                {
+                    "skill_id": "memory_search",
+                    "skill_name": "memory_search",
+                    "authorized": False,
+                    "enabled": False,
+                }
+            ],
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [],
+            "md_skills_snapshot": [],
+            "skills_snapshot": [],
+        },
+    )
+
+    prompt = build_system_prompt(builder, session=None, deps=deps, agent=SimpleNamespace(tools=[]))
+    compact_prompt = " ".join(prompt.split())
+
+    assert collect_memory_available(deps) is False
+    assert "Managing long-term memory with semantic retrieval" not in prompt
+    assert "## Memory Behavior" not in prompt
+    assert "runtime memory after a successful reply" not in compact_prompt
+
+
 def test_build_capability_index_truncates_stably_with_budget() -> None:
     config = PromptBuilderConfig(
         workspace_path="",
@@ -1327,6 +1398,32 @@ def test_no_tools_prompt_policy_forbids_external_system_success_claims() -> None
     assert "records are absent" in prompt
     assert "results are empty" in prompt
     assert "logs, timestamps, statuses" in prompt
+    assert "User-experience preference memory requests are direct conversation requests" not in prompt
+    assert "no visible memory write tool is available" not in prompt
+
+
+def test_no_tools_prompt_policy_allows_memory_exception_only_when_available() -> None:
+    prompt = prompt_sections.build_tool_policy(
+        {"mode": "llm_first", "preferred_tools": []},
+        memory_available=True,
+    )
+
+    assert "No tools are available in this turn." in prompt
+    assert "User-experience preference memory requests are direct conversation requests" in prompt
+    assert "no visible memory write tool is available" in prompt
+
+
+def test_memory_behavior_guides_preference_acknowledgement_without_write_tool_claims() -> None:
+    prompt = prompt_sections.build_memory_behavior()
+    compact_prompt = " ".join(prompt.split())
+
+    assert "response language" in prompt
+    assert "assistant nickname" in prompt
+    assert "runtime memory after a successful reply" in compact_prompt
+    assert "Do not claim that" in prompt
+    assert "cannot save memory" in prompt
+    assert "visible memory write tool" in prompt
+    assert "permanently saved" in prompt
 
 
 def test_direct_answer_recovery_forbids_external_system_success_claims() -> None:

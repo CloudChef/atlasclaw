@@ -313,6 +313,7 @@ async def lifespan(app: FastAPI):
             memory_sink=_memory_sink,
             context_sink=_context_sink,
             session_manager_router=_session_manager_router,
+            memory_manager=_memory_manager,
         )
     )
     register_builtin_hook_handlers(_hook_runtime)
@@ -593,6 +594,7 @@ async def lifespan(app: FastAPI):
             user_info=UserInfo(user_id=job.owner_user_id, display_name=job.owner_user_id),
             session_key=heartbeat_session_key,
             session_manager=session_manager,
+            memory_manager=MemoryManager(workspace=workspace_path, user_id=job.owner_user_id),
             extra=enrich_trace_metadata(
                 heartbeat_session_key,
                 extra={"run_id": heartbeat_run_id, "heartbeat_job_id": job.job_id},

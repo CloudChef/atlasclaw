@@ -134,6 +134,7 @@ class PromptBuilder:
         mode_override: Optional[PromptMode] = None,
         transcript_skill_hint: Optional[str] = None,
         current_follow_up_context: Optional[str] = None,
+        memory_available: bool = False,
     ) -> str:
         """
         Build the full system prompt for the current run.
@@ -158,12 +159,15 @@ class PromptBuilder:
         parts = []
         
         # 1. Core identity
-        parts.append(self._build_identity())
+        parts.append(self._build_identity(memory_available=memory_available))
         
         # 2. Tooling section
         if tools:
             parts.append(self._build_tooling(tools))
-        tool_policy_section = self._build_tool_policy(tool_policy)
+        tool_policy_section = self._build_tool_policy(
+            tool_policy,
+            memory_available=memory_available,
+        )
         if tool_policy_section:
             parts.append(tool_policy_section)
         provider_auth_section = self._build_provider_auth_diagnostics(provider_auth_diagnostics)
@@ -173,6 +177,8 @@ class PromptBuilder:
         # 3. Safety section
         parts.append(self._build_safety())
         parts.append(self._build_response_language())
+        if memory_available:
+            parts.append(self._build_memory_behavior())
         
         # 3b. User context (when authenticated)
         if user_info and user_info.user_id not in ("anonymous", ""):
@@ -262,14 +268,25 @@ class PromptBuilder:
     def _build_user_context(self, user_info: "UserInfo") -> str:
         return prompt_sections.build_user_context(user_info)
 
-    def _build_identity(self) -> str:
-        return prompt_sections.build_identity(self.config)
+    def _build_identity(self, *, memory_available: bool = False) -> str:
+        return prompt_sections.build_identity(
+            self.config,
+            memory_available=memory_available,
+        )
     
     def _build_tooling(self, tools: list[dict]) -> str:
         return prompt_sections.build_tooling(tools)
 
-    def _build_tool_policy(self, tool_policy: Optional[dict]) -> str:
-        return prompt_sections.build_tool_policy(tool_policy)
+    def _build_tool_policy(
+        self,
+        tool_policy: Optional[dict],
+        *,
+        memory_available: bool = False,
+    ) -> str:
+        return prompt_sections.build_tool_policy(
+            tool_policy,
+            memory_available=memory_available,
+        )
 
     def _build_provider_auth_diagnostics(self, diagnostics: Optional[dict[str, dict]]) -> str:
         return prompt_sections.build_provider_auth_diagnostics(diagnostics)
@@ -279,6 +296,9 @@ class PromptBuilder:
 
     def _build_response_language(self) -> str:
         return prompt_sections.build_response_language()
+
+    def _build_memory_behavior(self) -> str:
+        return prompt_sections.build_memory_behavior()
     
     def _build_skills_listing(self, skills: list[dict]) -> str:
         return prompt_sections.build_skills_listing(skills)

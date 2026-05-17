@@ -106,9 +106,9 @@ async def test_hook_runtime_confirm_promotes_memory(tmp_path):
     )
 
     assert resolved.status.value == "confirmed"
-    memory_files = list((tmp_path / "users" / "user-a" / "memory").glob("memory_*.md"))
-    assert len(memory_files) == 1
-    content = memory_files[0].read_text(encoding="utf-8")
+    memory_file = tmp_path / "users" / "user-a" / "memory" / "MEMORY.md"
+    assert memory_file.exists()
+    content = memory_file.read_text(encoding="utf-8")
     assert "Review failure" in content
     confirmed_items = await runtime.context_sink.list_confirmed("audit", "user-a")
     assert len(confirmed_items) == 1

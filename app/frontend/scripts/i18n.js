@@ -39,6 +39,16 @@ function interpolateTranslation(value, params = {}) {
     });
 }
 
+function isTransientLocaleFetchError(error) {
+    const message = String(error?.message || error || '').toLowerCase();
+    return (
+        message.includes('failed to fetch') ||
+        message.includes('load failed') ||
+        message.includes('operation was aborted') ||
+        message.includes('networkerror when attempting to fetch resource')
+    );
+}
+
 /**
  * Detect browser language
  * @returns {string} Detected locale code
@@ -108,7 +118,11 @@ export async function loadLocale(locale) {
         console.log(`[i18n] Loaded locale: ${locale}`);
         return translations;
     } catch (e) {
-        console.error(`[i18n] Failed to load locale ${locale}:`, e.message);
+        if (isTransientLocaleFetchError(e)) {
+            console.warn(`[i18n] Failed to load locale ${locale}:`, e.message);
+        } else {
+            console.error(`[i18n] Failed to load locale ${locale}:`, e.message);
+        }
         
         // If not default locale, try loading default
         if (locale !== DEFAULT_LOCALE) {

@@ -195,17 +195,43 @@ def build_current_follow_up_context(context: str) -> str:
     return "\n".join(lines)
 
 
-def build_identity(config) -> str:
+def build_identity(config, *, memory_available: bool = False) -> str:
     """Build the identity section."""
-    return f"""## Identity
+    capabilities = [
+        "- Handling complex multi-turn conversations with context continuity",
+        "- Invoking various business skills (cloud resource management, ITSM, ticket processing, etc.)",
+    ]
+    if memory_available:
+        capabilities.append("- Managing long-term memory with semantic retrieval")
+    capabilities.append("- Supporting multi-step workflows and task collaboration")
+    lines = [
+        "## Identity",
+        "",
+        f"You are {config.agent_name}, {config.agent_description}.",
+        "",
+        "Your core capabilities include:",
+        *capabilities,
+    ]
+    return "\n".join(lines)
 
-You are {config.agent_name}, {config.agent_description}.
 
-Your core capabilities include:
-- Handling complex multi-turn conversations with context continuity
-- Invoking various business skills (cloud resource management, ITSM, ticket processing, etc.)
-- Managing long-term memory with semantic retrieval
-- Supporting multi-step workflows and task collaboration"""
+def build_memory_behavior() -> str:
+    """Build user-facing guidance for preference memory requests."""
+    lines = [
+        "## Memory Behavior",
+        "",
+        "Durable user-experience preferences, such as response language, response style,",
+        "and assistant nickname, are handled by AtlasClaw runtime memory after a",
+        "successful reply when the current user is eligible.",
+        "",
+        "When the user asks you to remember a durable user-experience preference, answer",
+        "naturally and say you will use that preference going forward. Do not claim that",
+        "you lack memory, cannot save memory, or need a visible memory write tool for",
+        "those preference requests. Do not overstate storage guarantees; avoid phrases",
+        'such as "permanently saved" unless a runtime tool result in this turn explicitly',
+        "proves a persistent write.",
+    ]
+    return "\n".join(lines)
 
 
 def build_tooling(tools: list[dict]) -> str:
@@ -221,7 +247,11 @@ def build_tooling(tools: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def build_tool_policy(tool_policy: Optional[dict]) -> str:
+def build_tool_policy(
+    tool_policy: Optional[dict],
+    *,
+    memory_available: bool = False,
+) -> str:
     """Build explicit tool-policy guidance for the current turn."""
     if not isinstance(tool_policy, dict):
         return ""
@@ -356,6 +386,12 @@ def build_tool_policy(tool_policy: Optional[dict]) -> str:
                 "sentences; do not analyze provider capability, wait for tools, or continue a "
                 "prior external-system workflow unless the current request explicitly asks for it."
             )
+            if memory_available:
+                lines.append(
+                    "User-experience preference memory requests are direct conversation requests. "
+                    "Do not reject them just because no visible memory write tool is available; "
+                    "runtime memory handles eligible preferences after the reply."
+                )
             lines.append(
                 "If the user asks for an action or fact that depends on an external provider, "
                 "private system, or unavailable capability, say you cannot perform or verify it "

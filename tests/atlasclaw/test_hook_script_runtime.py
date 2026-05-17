@@ -162,12 +162,12 @@ print(json.dumps({
     stored_events = await store.list_events("script-audit", "user-a")
     pending = await store.list_pending("script-audit", "user-a")
     context_items = await runtime.context_sink.list_confirmed("script-audit", "user-a")
-    memory_files = list((tmp_path / "users" / "user-a" / "memory").glob("memory_*.md"))
+    memory_file = tmp_path / "users" / "user-a" / "memory" / "MEMORY.md"
 
     assert len(stored_events) == 1
     assert len(pending) == 1
     assert pending[0].payload["body"] == "world"
     assert len(context_items) == 1
     assert context_items[0].summary == "Recent note"
-    assert len(memory_files) == 1
-    assert "Persisted from script" in memory_files[0].read_text(encoding="utf-8")
+    assert memory_file.exists()
+    assert "Persisted from script" in memory_file.read_text(encoding="utf-8")

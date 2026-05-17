@@ -153,8 +153,7 @@ def test_hook_runtime_routes_support_events_and_decisions(
             assert pending_after.status_code == 200
             assert pending_after.json() == []
 
-            memory_dir = tmp_path / ".atlasclaw-e2e" / "users" / "admin" / "memory"
-            memory_files = list(memory_dir.glob("memory_*.md"))
-            assert len(memory_files) == 1
+            memory_file = tmp_path / ".atlasclaw-e2e" / "users" / "admin" / "memory" / "MEMORY.md"
+            assert memory_file.exists()
     finally:
         config_module._config_manager = old_config_manager

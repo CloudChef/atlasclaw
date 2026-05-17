@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.atlasclaw.memory.formatting import normalize_memory_search_item
 from app.atlasclaw.tools.base import ToolResult
 
 if TYPE_CHECKING:
@@ -23,19 +24,17 @@ async def memory_search_tool(
     query: str,
     limit: int = 10,
 ) -> dict:
-    """
-
-search
+    """Search user-scoped memory and return text plus structured citations.
 
     Args:
-        ctx:PydanticAI RunContext dependency injection
-        query:search
-        limit:multireturnitemcount
+        ctx: PydanticAI run context carrying request-scoped ``SkillDeps``.
+        query: Search text supplied by the model or selected capability.
+        limit: Maximum number of memory hits to return.
 
     Returns:
-        Serialized `ToolResult` dictionary
-    
-"""
+        Serialized ``ToolResult`` dictionary. The ``details.results`` payload is
+        normalized for API/tool consumers and includes file-line citations.
+    """
     deps = ctx.deps
     extra = getattr(deps, "extra", {})
     memory_manager = extra.get("memory_manager") or getattr(
@@ -65,7 +64,7 @@ search
         structured_results: list[dict[str, Any]] = []
         lines: list[str] = []
         for item in results:
-            normalized = _normalize_search_item(item, query=query)
+            normalized = normalize_memory_search_item(item, query=query)
             structured_results.append(normalized)
             display = normalized["snippet"]
             score = normalized["score"]
@@ -86,66 +85,3 @@ search
 
     except Exception as e:
         return ToolResult.error(str(e)).to_dict()
-
-
-def _safe_int(value: Any, default: int) -> int:
-    try:
-        parsed = int(value)
-        return parsed if parsed > 0 else default
-    except Exception:
-        return default
-
-
-def _build_citation(path: str, start_line: int, end_line: int) -> str:
-    normalized_path = str(path or "").strip()
-    if not normalized_path:
-        return ""
-    safe_end = end_line if end_line >= start_line else start_line
-    return f"{normalized_path}#L{start_line}-L{safe_end}"
-
-
-def _compact_snippet(text: str, max_chars: int = 220) -> str:
-    normalized = " ".join((text or "").split())
-    if len(normalized) <= max_chars:
-        return normalized
-    return f"{normalized[: max(0, max_chars - 3)]}..."
-
-
-def _normalize_search_item(item: Any, *, query: str) -> dict[str, Any]:
-    entry = getattr(item, "entry", None)
-    metadata = {}
-    content = ""
-    if entry is not None:
-        metadata = getattr(entry, "metadata", {}) if isinstance(getattr(entry, "metadata", {}), dict) else {}
-        content = str(getattr(entry, "content", "") or "")
-    else:
-        metadata = getattr(item, "metadata", {}) if isinstance(getattr(item, "metadata", {}), dict) else {}
-        content = str(getattr(item, "content", "") or "")
-
-    path = str(
-        metadata.get("path")
-        or metadata.get("source_path")
-        or getattr(item, "path", "")
-        or ""
-    ).strip()
-    start_line = _safe_int(
-        metadata.get("start_line") or getattr(item, "start_line", None),
-        default=1,
-    )
-    end_line = _safe_int(
-        metadata.get("end_line") or getattr(item, "end_line", None),
-        default=start_line,
-    )
-    score = float(getattr(item, "score", 0.0) or 0.0)
-    snippet = _compact_snippet(content)
-    citation = _build_citation(path, start_line, end_line)
-
-    return {
-        "snippet": snippet,
-        "path": path,
-        "start_line": start_line,
-        "end_line": end_line if end_line >= start_line else start_line,
-        "citation": citation,
-        "score": score,
-        "query": query,
-    }

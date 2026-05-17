@@ -16,6 +16,7 @@ from app.atlasclaw.agent.runner_tool.runner_execution_runtime import RunnerExecu
 from app.atlasclaw.agent.thinking_stream import ThinkingStreamEmitter
 from app.atlasclaw.agent.tool_gate_models import ToolIntentAction, ToolIntentPlan
 from app.atlasclaw.core.trace import bind_trace_context, resolve_trace_context
+from app.atlasclaw.hooks.runtime_models import HookEventType
 
 
 class _HookCollector:
@@ -24,6 +25,14 @@ class _HookCollector:
 
     async def trigger(self, event_name: str, payload: dict) -> None:
         self.calls.append((event_name, payload))
+
+
+class _HookRuntimeCollector:
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    async def emit(self, **kwargs) -> None:
+        self.events.append(kwargs)
 
 
 class _ModelRequestNode:
@@ -64,7 +73,6 @@ class _StreamTestRunner(
         self._nodes = list(nodes)
         self.history = _StreamHistory()
         self.compaction = SimpleNamespace(
-            should_memory_flush=lambda *args, **kwargs: False,
             should_compact=lambda *args, **kwargs: False,
         )
         self.context_pruning_settings = SimpleNamespace(enabled=False, mode="off")
@@ -182,6 +190,40 @@ async def test_runtime_event_dispatcher_llm_input_carries_loop_metadata() -> Non
 
 
 @pytest.mark.asyncio
+async def test_runtime_event_dispatcher_emits_memory_auto_write_diagnostics() -> None:
+    hook_runtime = _HookRuntimeCollector()
+    dispatcher = RuntimeEventDispatcher(hook_runtime=hook_runtime)
+    session_key = "agent:main:user:u1:web:dm:peer-1:topic:thread-memory"
+
+    await dispatcher.trigger_memory_auto_write_completed(
+        session_key=session_key,
+        run_id="run-memory",
+        status="no_memory",
+        long_term_count=0,
+        diagnostics={
+            "json_parse_status": "invalid_json",
+            "raw_output_sha256": "abc",
+            "skip_reason": "distiller_invalid_json",
+        },
+    )
+
+    assert len(hook_runtime.events) == 1
+    event = hook_runtime.events[0]
+    assert event["event_type"] == HookEventType.MEMORY_AUTO_WRITE_COMPLETED
+    assert event["user_id"] == "u1"
+    assert event["session_key"] == session_key
+    assert event["run_id"] == "run-memory"
+    assert event["channel"] == "web"
+    assert event["agent_id"] == "main"
+    assert event["payload"]["trace_id"] == "thread-memory"
+    assert event["payload"]["status"] == "no_memory"
+    assert event["payload"]["long_term_count"] == 0
+    assert event["payload"]["json_parse_status"] == "invalid_json"
+    assert event["payload"]["skip_reason"] == "distiller_invalid_json"
+    assert event["payload"]["raw_output_sha256"] == "abc"
+
+
+@pytest.mark.asyncio
 async def test_stream_emits_loop_status_for_tool_result_reentry() -> None:
     runtime_hooks = _HookCollector()
     assistant_hooks = _HookCollector()
@@ -215,7 +257,6 @@ async def test_stream_emits_loop_status_for_tool_result_reentry() -> None:
         "system_prompt": "system prompt",
         "max_tool_calls": 5,
         "runtime_context_window": None,
-        "flushed_memory_signatures": set(),
         "session_message_history": [],
         "runtime_base_history_len": 0,
         "persist_run_output_start_index": 0,
@@ -327,7 +368,6 @@ async def test_stream_buffers_preamble_when_model_response_contains_tool_call_ev
         "system_prompt": "system prompt",
         "max_tool_calls": 5,
         "runtime_context_window": None,
-        "flushed_memory_signatures": set(),
         "session_message_history": [],
         "runtime_base_history_len": 0,
         "persist_run_output_start_index": 0,
@@ -414,7 +454,6 @@ async def test_stream_buffers_plaintext_dsml_tool_call_attempt_without_leaking_m
         "system_prompt": "system prompt",
         "max_tool_calls": 5,
         "runtime_context_window": None,
-        "flushed_memory_signatures": set(),
         "session_message_history": [],
         "runtime_base_history_len": 0,
         "persist_run_output_start_index": 0,

@@ -44,7 +44,6 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
         runtime_agent: Any = self.agent
         selected_token_id: Optional[str] = None
         release_slot: Optional[Any] = None
-        flushed_memory_signatures: set[str] = set()
         extra = deps.extra if isinstance(deps.extra, dict) else {}
         run_id = str(extra.get("run_id", "") or uuid.uuid4().hex)
         if isinstance(extra, dict):
@@ -114,7 +113,6 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             "runtime_agent": runtime_agent,
             "selected_token_id": selected_token_id,
             "release_slot": release_slot,
-            "flushed_memory_signatures": flushed_memory_signatures,
             "extra": extra,
             "run_id": run_id,
             "tool_execution_retry_count": tool_execution_retry_count,

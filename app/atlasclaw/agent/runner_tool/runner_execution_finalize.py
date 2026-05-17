@@ -30,7 +30,6 @@ class RunnerExecutionFinalizePhaseMixin:
         runtime_agent = state.get("runtime_agent")
         selected_token_id = state.get("selected_token_id")
         release_slot = state.get("release_slot")
-        flushed_memory_signatures = state.get("flushed_memory_signatures")
         extra = state.get("extra")
         run_id = state.get("run_id")
         tool_execution_retry_count = state.get("tool_execution_retry_count")
@@ -108,7 +107,6 @@ class RunnerExecutionFinalizePhaseMixin:
             "runtime_agent": runtime_agent,
             "selected_token_id": selected_token_id,
             "release_slot": release_slot,
-            "flushed_memory_signatures": flushed_memory_signatures,
             "extra": extra,
             "run_id": run_id,
             "tool_execution_retry_count": tool_execution_retry_count,

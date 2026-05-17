@@ -60,6 +60,7 @@ class HookEventType(str, Enum):
     HEARTBEAT_CHANNEL_DEGRADED = "heartbeat.channel.degraded"
     MEMORY_CONFIRMED = "memory.confirmed"
     MEMORY_REJECTED = "memory.rejected"
+    MEMORY_AUTO_WRITE_COMPLETED = "memory.auto_write.completed"
 
 
 class PendingHookStatus(str, Enum):

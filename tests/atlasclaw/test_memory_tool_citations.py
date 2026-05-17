@@ -44,7 +44,7 @@ class _MemoryManagerSearchStub:
                 entry=_MemoryEntryStub(
                     content="Deploy procedure: restart service and verify health checks.",
                     metadata={
-                        "path": "workspace/users/u1/memory/memory_001.md",
+                            "path": "workspace/users/u1/memory/MEMORY.md",
                         "start_line": 12,
                         "end_line": 18,
                     },
@@ -59,7 +59,7 @@ class _MemoryManagerGetStub:
         _ = (path, offset, limit)
         return {
             "content": "line one\nline two",
-            "path": "workspace/users/u1/memory/memory_001.md",
+            "path": "workspace/users/u1/memory/MEMORY.md",
             "start_line": 40,
             "end_line": 41,
         }
@@ -75,7 +75,7 @@ async def test_memory_search_returns_structured_results_with_citation():
     results = details.get("results", [])
     assert isinstance(results, list)
     assert len(results) == 1
-    assert results[0]["citation"] == "workspace/users/u1/memory/memory_001.md#L12-L18"
+    assert results[0]["citation"] == "workspace/users/u1/memory/MEMORY.md#L12-L18"
     assert results[0]["start_line"] == 12
     assert results[0]["end_line"] == 18
 
@@ -85,14 +85,14 @@ async def test_memory_get_returns_citation_in_details():
     ctx = _RunContextStub(deps=_DepsStub(extra={"memory_manager": _MemoryManagerGetStub()}))
     payload = await memory_get_tool(
         ctx,
-        path="workspace/users/u1/memory/memory_001.md",
+        path="workspace/users/u1/memory/MEMORY.md",
         offset=39,
         limit=2,
     )
 
     assert payload["is_error"] is False
     details = payload.get("details", {})
-    assert details["citation"] == "workspace/users/u1/memory/memory_001.md#L40-L41"
+    assert details["citation"] == "workspace/users/u1/memory/MEMORY.md#L40-L41"
     assert details["start_line"] == 40
     assert details["end_line"] == 41
 

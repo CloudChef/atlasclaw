@@ -131,6 +131,50 @@ describe('i18n Module', () => {
             expect(zhCnTranslations.provider.secretUpdatePlaceholder).toBe('如需更新请输入新值');
             expect(enUsTranslations.provider.secretUpdatePlaceholder).toBe('Enter a new value to update');
         });
+
+        test('should warn instead of error for transient locale fetch failures', async () => {
+            const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+            const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+            try {
+                global.fetch.mockRejectedValueOnce(new TypeError('Failed to fetch'));
+
+                const { loadLocale } = await import('../../app/frontend/scripts/i18n.js');
+
+                await expect(loadLocale('en-US')).rejects.toThrow('Failed to fetch');
+                expect(warnSpy).toHaveBeenCalledWith(
+                    '[i18n] Failed to load locale en-US:',
+                    'Failed to fetch'
+                );
+                expect(errorSpy).not.toHaveBeenCalled();
+            } finally {
+                warnSpy.mockRestore();
+                errorSpy.mockRestore();
+            }
+        });
+
+        test('should keep real locale HTTP failures as errors', async () => {
+            const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+            const errorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+            try {
+                global.fetch.mockResolvedValueOnce({
+                    ok: false,
+                    status: 404,
+                    json: () => Promise.resolve({}),
+                });
+
+                const { loadLocale } = await import('../../app/frontend/scripts/i18n.js');
+
+                await expect(loadLocale('en-US')).rejects.toThrow('HTTP 404');
+                expect(errorSpy).toHaveBeenCalledWith(
+                    '[i18n] Failed to load locale en-US:',
+                    'HTTP 404'
+                );
+                expect(warnSpy).not.toHaveBeenCalled();
+            } finally {
+                warnSpy.mockRestore();
+                errorSpy.mockRestore();
+            }
+        });
     });
 
     describe('t (translate)', () => {

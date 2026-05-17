@@ -1,13 +1,10 @@
 # -*- coding: utf-8 -*-
 # Copyright 2026  Qianyun, Inc., www.cloudchef.io, All rights reserved.
 
-"""History normalization and long-term memory coordination for agent runs."""
+"""Transcript normalization helpers for agent runs."""
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Optional
 
 from pydantic_ai.messages import (
@@ -22,15 +19,12 @@ from pydantic_ai.messages import (
 
 from app.atlasclaw.agent.compaction import CompactionPipeline
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import has_hidden_lookup_result_content
-from app.atlasclaw.core.deps import SkillDeps
-from app.atlasclaw.core.user_paths import user_runtime_dir
 
 
 class HistoryMemoryCoordinator:
-    """Encapsulates transcript conversion and long-term memory file management."""
+    """Encapsulates transcript conversion between session storage and model APIs."""
 
     COMPACTION_SUMMARY_PREFIX = "[Compression Summary - Earlier conversation has been summarized]"
-    MEMORY_RECALL_PREFIX = "[Long-term Memory Recall]"
 
     def __init__(self, session_manager: Any, compaction: CompactionPipeline) -> None:
         self.sessions = session_manager
@@ -600,108 +594,8 @@ class HistoryMemoryCoordinator:
             content = str(msg.get("content", ""))
             if content.startswith(self.COMPACTION_SUMMARY_PREFIX):
                 continue
-            if content.startswith(self.MEMORY_RECALL_PREFIX):
-                continue
             pruned.append(msg)
         return pruned
-
-    async def flush_history_to_timestamped_memory(
-        self,
-        *,
-        session_key: str,
-        messages: list[dict],
-        deps: SkillDeps,
-        session: Any,
-        context_window: Optional[int],
-        flushed_signatures: set[str],
-    ) -> None:
-        """Summarize overflow history and write to workspace/users/<userId>/memory/memory_<timestamp>.md."""
-        summary = await self.compaction.summarize_overflow(messages)
-        summary = summary.strip()
-        if not summary:
-            return
-
-        signature = summary[:500]
-        if signature in flushed_signatures:
-            return
-        flushed_signatures.add(signature)
-
-        user_id = getattr(getattr(deps, "user_info", None), "user_id", "") or "default"
-        workspace_root = Path(str(getattr(self.sessions, "workspace_path", "."))).resolve()
-        user_memory_dir = user_runtime_dir(workspace_root, user_id) / "memory"
-        file_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        file_path = user_memory_dir / f"memory_{file_timestamp}.md"
-
-        estimated_tokens = self.compaction.estimate_tokens(messages)
-        lines = [
-            "# Memory Snapshot",
-            "",
-            f"- timestamp_utc: {datetime.now(timezone.utc).isoformat()}",
-            f"- user_id: {user_id}",
-            f"- session_key: {session_key}",
-            f"- estimated_tokens_before: {estimated_tokens}",
-            f"- context_window: {context_window or self.compaction.config.context_window}",
-            "",
-            "## Summary",
-            "",
-            summary,
-            "",
-        ]
-        payload = "\n".join(lines)
-
-        def _write() -> None:
-            user_memory_dir.mkdir(parents=True, exist_ok=True)
-            file_path.write_text(payload, encoding="utf-8")
-
-        await asyncio.to_thread(_write)
-
-        if hasattr(session, "memory_flushed_this_cycle"):
-            session.memory_flushed_this_cycle = True
-
-    async def inject_memory_recall(self, messages: list[dict], deps: SkillDeps) -> list[dict]:
-        """Load recent memory_*.md files and inject one recall system message."""
-        user_id = getattr(getattr(deps, "user_info", None), "user_id", "") or "default"
-        workspace_root = Path(str(getattr(self.sessions, "workspace_path", "."))).resolve()
-        user_memory_dir = user_runtime_dir(workspace_root, user_id) / "memory"
-
-        def _read_recent() -> list[tuple[str, str]]:
-            if not user_memory_dir.exists():
-                return []
-            files = sorted(user_memory_dir.glob("memory_*.md"), reverse=True)[:3]
-            result: list[tuple[str, str]] = []
-            for fp in files:
-                try:
-                    text = fp.read_text(encoding="utf-8").strip()
-                except Exception:
-                    continue
-                if not text:
-                    continue
-                result.append((fp.name, text[:1200]))
-            return result
-
-        recent = await asyncio.to_thread(_read_recent)
-        if not recent:
-            return messages
-
-        recall_lines = [self.MEMORY_RECALL_PREFIX, ""]
-        for name, excerpt in recent:
-            recall_lines.append(f"### {name}")
-            recall_lines.append(excerpt)
-            recall_lines.append("")
-
-        recall_message = {
-            "role": "system",
-            "content": "\n".join(recall_lines).strip(),
-        }
-
-        cleaned: list[dict] = []
-        for msg in messages:
-            if msg.get("role") == "system" and str(msg.get("content", "")).startswith(self.MEMORY_RECALL_PREFIX):
-                continue
-            cleaned.append(msg)
-        if cleaned and cleaned[0].get("role") == "system":
-            return [cleaned[0], recall_message, *cleaned[1:]]
-        return [recall_message, *cleaned]
 
     def _extract_message_role(self, msg: Any) -> str:
         role = getattr(msg, "role", None)

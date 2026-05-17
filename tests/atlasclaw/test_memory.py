@@ -32,12 +32,12 @@ class TestMemoryEntry:
         entry = MemoryEntry(
             id="test-123",
             content="This is a test memory",
-            memory_type=MemoryType.DAILY
+            memory_type=MemoryType.LONG_TERM,
         )
         
         assert entry.id == "test-123"
         assert entry.content == "This is a test memory"
-        assert entry.memory_type == MemoryType.DAILY
+        assert entry.memory_type == MemoryType.LONG_TERM
         
     def test_generate_id(self):
         """测试生成 ID"""
@@ -79,20 +79,6 @@ class TestMemoryManager:
         assert manager is not None
         
     @pytest.mark.asyncio
-    async def test_write_daily(self, temp_workspace):
-        """测试写入每日日志"""
-        manager = MemoryManager(workspace=str(temp_workspace))
-        
-        entry = await manager.write_daily(
-            "User asked about cloud resources",
-            source="session:main",
-            tags=["cloud", "resources"]
-        )
-        
-        assert entry is not None
-        assert entry.memory_type == MemoryType.DAILY
-        assert "cloud" in entry.tags
-        
     @pytest.mark.asyncio
     async def test_write_long_term(self, temp_workspace):
         """测试写入长期记忆"""
@@ -106,6 +92,34 @@ class TestMemoryManager:
         
         assert entry is not None
         assert entry.memory_type == MemoryType.LONG_TERM
+
+    @pytest.mark.asyncio
+    async def test_search_reads_only_long_term_memory_file(self, temp_workspace):
+        """非 MEMORY.md 文件不参与 memory search。"""
+        manager = MemoryManager(workspace=str(temp_workspace))
+        await manager.write_long_term(
+            "User prefers English replies.",
+            section="Preferences",
+        )
+        non_long_term = manager.memory_dir / "2026-05-16.md"
+        non_long_term.write_text("User prefers Go examples.", encoding="utf-8")
+
+        long_term_results = await manager.search("English replies")
+        non_long_term_results = await manager.search("Go examples")
+
+        assert long_term_results
+        assert non_long_term_results == []
+
+    @pytest.mark.asyncio
+    async def test_get_rejects_non_long_term_memory_file(self, temp_workspace):
+        """memory_get 只能读取当前用户的 MEMORY.md。"""
+        manager = MemoryManager(workspace=str(temp_workspace))
+        await manager.write_long_term("User prefers concise answers.", section="Preferences")
+        non_long_term = manager.memory_dir / "2026-05-16.md"
+        non_long_term.write_text("Should not be readable.", encoding="utf-8")
+
+        with pytest.raises(ValueError, match="Only the current user's long-term MEMORY.md"):
+            await manager.get("users/default/memory/2026-05-16.md")
 
 
 class TestHybridSearcher:

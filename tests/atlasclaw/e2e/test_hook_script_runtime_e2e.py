@@ -176,10 +176,11 @@ def test_script_hook_handler_consumes_aggregated_context_event(
             assert len(pending_resp.json()) == 1
             assert pending_resp.json()[0]["payload"]["body"] == "world"
 
-            memory_dir = tmp_path / ".atlasclaw-script-e2e" / "users" / "admin" / "memory"
-            memory_files = list(memory_dir.glob("memory_*.md"))
-            assert len(memory_files) == 1
-            assert "Remember aggregated context output" in memory_files[0].read_text(encoding="utf-8")
+            memory_file = (
+                tmp_path / ".atlasclaw-script-e2e" / "users" / "admin" / "memory" / "MEMORY.md"
+            )
+            assert memory_file.exists()
+            assert "Remember aggregated context output" in memory_file.read_text(encoding="utf-8")
 
             import asyncio as _asyncio
 

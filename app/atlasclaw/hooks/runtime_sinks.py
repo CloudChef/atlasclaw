@@ -3,15 +3,14 @@
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from app.atlasclaw.core.user_paths import user_runtime_dir
 from app.atlasclaw.hooks.runtime_models import HookContextInjection, HookWriteMemoryRequest
 from app.atlasclaw.hooks.runtime_store import HookStateStore
+from app.atlasclaw.memory.manager import MemoryManager
 
 
 @dataclass
@@ -23,19 +22,16 @@ class HookMemoryWriteResult:
 
 
 class MemorySink:
-    """Generic sink that writes confirmed hook content into timestamped memory files."""
+    """Generic sink that writes confirmed hook content into long-term memory."""
 
-    def __init__(self, workspace_path: str):
+    def __init__(self, workspace_path: str) -> None:
+        """Initialize the sink with the workspace that contains user memory."""
         self.workspace_path = Path(workspace_path).resolve()
 
     async def write_confirmed(self, request: HookWriteMemoryRequest) -> HookMemoryWriteResult:
-        """Persist a confirmed item into `workspace/users/<user_id>/memory/memory_<timestamp>.md`."""
-        user_memory_dir = user_runtime_dir(self.workspace_path, request.user_id) / "memory"
+        """Persist a confirmed item into `workspace/users/<user_id>/memory/MEMORY.md`."""
         timestamp = datetime.now(timezone.utc)
-        path = user_memory_dir / f"memory_{timestamp.strftime('%Y%m%d_%H%M%S_%f')}.md"
         lines = [
-            "# Hook Memory Promotion",
-            "",
             f"- timestamp_utc: {timestamp.isoformat()}",
             f"- module_name: {request.module_name}",
             f"- user_id: {request.user_id}",
@@ -48,20 +44,21 @@ class MemorySink:
         lines.extend(
             [
                 "",
-                f"## {request.title.strip() or 'Memory Entry'}",
+                f"### {request.title.strip() or 'Memory Entry'}",
                 "",
                 request.body.strip(),
                 "",
             ]
         )
         payload = "\n".join(lines)
-
-        def _write() -> None:
-            user_memory_dir.mkdir(parents=True, exist_ok=True)
-            path.write_text(payload, encoding="utf-8")
-
-        await asyncio.to_thread(_write)
-        return HookMemoryWriteResult(path=path, content=payload)
+        manager = MemoryManager(workspace=str(self.workspace_path), user_id=request.user_id)
+        entry = await manager.write_long_term(
+            payload,
+            source=f"hook:{request.module_name}",
+            tags=["hook", "confirmed"],
+            section="Hook Memory",
+        )
+        return HookMemoryWriteResult(path=manager.long_term_path, content=entry.content)
 
 
 class ContextSink:

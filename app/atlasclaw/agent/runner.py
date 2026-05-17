@@ -29,6 +29,8 @@ from app.atlasclaw.agent.runner_tool_gate import RunnerToolGateMixin
 from app.atlasclaw.agent.runtime_events import RuntimeEventDispatcher
 from app.atlasclaw.agent.session_titles import SessionTitleGenerator
 from app.atlasclaw.hooks.runtime import HookRuntime
+from app.atlasclaw.memory.active import active_memory_recall_service
+from app.atlasclaw.memory.auto_write import automatic_memory_write_service
 
 if TYPE_CHECKING:
     from app.atlasclaw.agent.agent_pool import AgentInstancePool
@@ -109,6 +111,8 @@ class AgentRunner(RunnerExecutionMixin, RunnerToolGateMixin, RunnerToolEvidenceM
         self.runtime_events = RuntimeEventDispatcher(self.hooks, self.queue, hook_runtime)
         self.title_generator = SessionTitleGenerator()
         self.hook_runtime = hook_runtime
+        self.active_memory = active_memory_recall_service
+        self.auto_memory = automatic_memory_write_service
         self._tool_intent_plan_cache: OrderedDict[str, tuple[float, dict[str, Any]]] = OrderedDict()
         self._turn_toolset_cache: OrderedDict[
             str,

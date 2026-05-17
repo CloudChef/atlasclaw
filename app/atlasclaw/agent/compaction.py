@@ -65,10 +65,9 @@ class CompactionConfig:
 
     Attributes:
         reserve_tokens_floor: Token budget reserved as a hard floor.
-        soft_threshold_tokens: Buffer before the hard floor that triggers
-            pre-emptive memory flushing.
+        soft_threshold_tokens: Buffer before the hard floor used by callers
+            that need an early compaction warning.
         context_window: Total model context window size.
-        memory_flush_enabled: Whether memory flush reminders are enabled.
         keep_recent_turns: Number of recent user/assistant turns to preserve.
         keep_last_assistants: Number of recent assistant messages to preserve.
         soft_trim_enabled: Whether soft-trim behavior is enabled.
@@ -77,7 +76,6 @@ class CompactionConfig:
     reserve_tokens_floor: int = 20000
     soft_threshold_tokens: int = 4000
     context_window: int = 128000
-    memory_flush_enabled: bool = True
     keep_recent_turns: int = 3
     keep_last_assistants: int = 3
     soft_trim_enabled: bool = True
@@ -160,7 +158,7 @@ class CompactionPipeline:
         return self.config.context_window
 
     def get_available_tokens(self, context_window_override: Optional[int] = None) -> int:
-        """Return the token budget available before memory flushing."""
+        """Return the token budget available before the soft threshold."""
         context_window = self._resolve_context_window(context_window_override)
         return (
             context_window
@@ -181,26 +179,6 @@ class CompactionPipeline:
         threshold = context_window - self.config.reserve_tokens_floor
         return estimated > threshold
     
-    def should_memory_flush(
-        self,
-        messages: list[dict],
-        session: Any = None,
-        *,
-        context_window_override: Optional[int] = None,
-    ) -> bool:
-        """Return whether a memory flush reminder should run before compaction."""
-        if not self.config.memory_flush_enabled:
-            return False
-        
-        # Only flush once per compaction cycle when the session tracks the flag.
-        if session and hasattr(session, "memory_flushed_this_cycle"):
-            if session.memory_flushed_this_cycle:
-                return False
-        
-        estimated = self.estimate_tokens(messages)
-        threshold = self.get_available_tokens(context_window_override)
-        return estimated > threshold
-
     def _split_for_compaction(self, messages: list[dict]) -> tuple[Optional[dict], list[dict], list[dict]]:
         """Split messages into system prompt, recent messages, and compressible history."""
         system_prompt = messages[0] if messages and messages[0].get("role") == "system" else None
@@ -691,25 +669,5 @@ class CompactionPipeline:
                         msg["content"] = f"{head}\n...\n{tail}\n[Original size: {original_size} characters]"
             
             result.append(msg)
-        
+
         return result
-    
-    async def memory_flush(
-        self,
-        session: Any,
-        flush_callback: Optional[Callable[[], Awaitable[None]]] = None,
-    ) -> None:
-        """Execute memory flush.
-        
-        Triggers a silent agent turn that reminds the model to write persistent memory.
-        
-        Args:
-            session: Session metadata
-            flush_callback: Optional flush callback
-        """
-        if flush_callback:
-            await flush_callback()
-        
-        # Mark session as flushed
-        if hasattr(session, "memory_flushed_this_cycle"):
-            session.memory_flushed_this_cycle = True

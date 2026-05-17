@@ -11,6 +11,7 @@ from app.atlasclaw.agent.routing import AgentConfig, AgentRouter, DmScope
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.api.request_orchestrator import RequestOrchestrator
 from app.atlasclaw.auth.models import UserInfo
+from app.atlasclaw.memory.manager import MemoryManager
 from app.atlasclaw.session.context import SessionKey
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.skills.registry import SkillRegistry
@@ -68,4 +69,40 @@ async def test_request_orchestrator_uses_canonical_session_key(
     assert parsed.user_id == "alice"
     assert parsed.channel == "web"
     assert parsed.peer_id == "team:ops/42"
-    assert session_key == "agent:resource_agent:user:alice:web:dm:team%3Aops/42"
+    assert session_key == "agent:resource_agent:user:alice:web:dm:team%3Aops%2F42"
+
+
+@pytest.mark.asyncio
+async def test_request_orchestrator_injects_user_scoped_memory_manager(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    captured: dict = {}
+
+    monkeypatch.setattr(
+        "app.atlasclaw.api.request_orchestrator.AgentRunner",
+        lambda **kwargs: _CapturingRunner(captured=captured),
+    )
+
+    orchestrator = RequestOrchestrator(
+        skill_registry=SkillRegistry(),
+        session_manager=SessionManager(workspace_path=str(tmp_path), user_id="default"),
+        agent_router=AgentRouter(),
+        agent_factory=_DummyAgentFactory(),
+        memory_manager=MemoryManager(workspace=str(tmp_path), user_id="default"),
+    )
+
+    events = [
+        event
+        async for event in orchestrator.process(
+            "hello",
+            peer_id="alice",
+            channel="web",
+            user_info=UserInfo(user_id="alice", display_name="Alice"),
+        )
+    ]
+
+    assert any(event.type == "assistant" for event in events)
+    deps = captured["deps"]
+    assert isinstance(deps.memory_manager, MemoryManager)
+    assert deps.memory_manager.memory_dir == tmp_path / "users" / "alice" / "memory"

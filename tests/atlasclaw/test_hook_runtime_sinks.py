@@ -13,7 +13,7 @@ from app.atlasclaw.hooks.runtime_store import HookStateStore
 
 
 @pytest.mark.asyncio
-async def test_memory_sink_writes_timestamped_memory_file(tmp_path):
+async def test_memory_sink_writes_long_term_memory_file(tmp_path):
     sink = MemorySink(workspace_path=str(tmp_path))
 
     result = await sink.write_confirmed(
@@ -28,7 +28,7 @@ async def test_memory_sink_writes_timestamped_memory_file(tmp_path):
     )
 
     assert result.path.exists()
-    assert result.path.parent == tmp_path / "users" / "user-a" / "memory"
+    assert result.path == tmp_path / "users" / "user-a" / "memory" / "MEMORY.md"
     content = result.path.read_text(encoding="utf-8")
     assert "Promoted Lesson" in content
     assert "source_event_ids: evt-1, evt-2" in content

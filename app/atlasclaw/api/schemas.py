@@ -122,7 +122,7 @@ class MemorySearchResult(BaseModel):
 
 class MemoryWriteRequest(BaseModel):
     content: str
-    memory_type: str = "daily"
+    memory_type: str = "long_term"
     source: str = ""
     tags: list[str] = Field(default_factory=list)
     section: str = "General"

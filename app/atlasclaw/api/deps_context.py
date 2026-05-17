@@ -526,10 +526,7 @@ def build_scoped_deps(
     scoped_session_mgr = ctx.session_manager_router.for_user(user_info.user_id)
     scoped_memory_mgr: Optional[MemoryManager] = None
     if ctx.memory_manager is not None:
-        scoped_memory_mgr = MemoryManager(
-            workspace=str(ctx.memory_manager._workspace),
-            user_id=user_info.user_id,
-        )
+        scoped_memory_mgr = ctx.memory_manager.for_user(user_info.user_id)
 
     tools_snapshot_builder = getattr(ctx.skill_registry, "tools_snapshot", None)
     if callable(tools_snapshot_builder):

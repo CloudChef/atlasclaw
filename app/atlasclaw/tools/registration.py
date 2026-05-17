@@ -251,7 +251,10 @@ _TOOL_REGISTRY: dict[str, tuple[ToolMetadata, str, str]] = {
     "memory_search": (
         ToolMetadata(
             name="memory_search",
-            description="Semantic search long-term memory",
+            description=(
+                "Read-only search of existing user memory. Do not use for saving "
+                "new preferences or remember requests."
+            ),
             group="memory",
             capability_class="memory",
             routing_visibility="contextual",
@@ -262,7 +265,10 @@ _TOOL_REGISTRY: dict[str, tuple[ToolMetadata, str, str]] = {
     "memory_get": (
         ToolMetadata(
             name="memory_get",
-            description="Read memory file by offset",
+            description=(
+                "Read-only memory file slice by path and offset, usually after "
+                "a memory_search citation."
+            ),
             group="memory",
             capability_class="memory",
             routing_visibility="contextual",

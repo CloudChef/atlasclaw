@@ -28,6 +28,7 @@ from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.auth.models import ANONYMOUS_USER, UserInfo
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.core.trace import enrich_trace_metadata
+from app.atlasclaw.memory.manager import MemoryManager
 from app.atlasclaw.session.context import ChatType, SessionKey, SessionScope
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
@@ -235,13 +236,21 @@ class RequestOrchestrator:
         intent_recognizer: Optional[IntentRecognizer] = None,
         agent_factory: Optional[AgentFactory] = None,
         service_provider_registry: Optional["ServiceProviderRegistry"] = None,
+        memory_manager: Optional[MemoryManager] = None,
     ):
+        """Create an orchestrator with request-scoped runtime dependencies.
+
+        ``memory_manager`` is treated as a workspace template only. Each request
+        receives a new user-scoped manager so orchestrated runs cannot share
+        another user's memory directory.
+        """
         self.skill_registry = skill_registry
         self.session_manager = session_manager
         self.agent_router = agent_router or AgentRouter()
         self.intent_recognizer = intent_recognizer or IntentRecognizer()
         self.agent_factory = agent_factory or AgentFactory(skill_registry)
         self.service_provider_registry = service_provider_registry
+        self.memory_manager = memory_manager
         self._intent_agent_map: dict[IntentType, str] = {
             IntentType.RESOURCE_QUERY: "resource_agent",
             IntentType.TICKET_SUBMIT: "ticket_agent",
@@ -263,6 +272,13 @@ class RequestOrchestrator:
         max_tool_calls: int = 50,
         timeout_seconds: int = 600,
     ) -> AsyncIterator[StreamEvent]:
+        """Route one user request to an agent and stream its lifecycle events.
+
+        The method resolves a stable session key, builds scoped ``SkillDeps``,
+        injects provider/runtime metadata, and delegates execution to
+        ``AgentRunner``. Errors are converted to stream events so callers keep a
+        single streaming contract.
+        """
         resolved_user_info: UserInfo = (
             user_info
             if user_info is not None
@@ -296,7 +312,16 @@ class RequestOrchestrator:
                 scope=session_scope,
             )
 
-            deps_extra = extra or {}
+            deps_extra = dict(extra or {})
+            scoped_memory_mgr: Optional[MemoryManager] = None
+            if self.memory_manager is not None:
+                # Do not reuse the startup manager directly: its user id is a
+                # placeholder, while orchestration must isolate memory by the
+                # authenticated request user.
+                scoped_memory_mgr = self.memory_manager.for_user(
+                    resolved_user_info.user_id or "default"
+                )
+                deps_extra["memory_manager"] = scoped_memory_mgr
             if self.service_provider_registry is not None:
                 deps_extra["available_providers"] = self.service_provider_registry.get_available_providers_summary()
                 deps_extra["provider_instances"] = self.service_provider_registry.get_all_instance_configs()
@@ -309,6 +334,7 @@ class RequestOrchestrator:
                 peer_id=peer_id,
                 session_key=session_key,
                 channel=channel,
+                memory_manager=scoped_memory_mgr,
                 extra=enrich_trace_metadata(session_key, extra=deps_extra),
             )
 

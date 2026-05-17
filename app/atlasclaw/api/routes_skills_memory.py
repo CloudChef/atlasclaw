@@ -8,17 +8,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.atlasclaw.bootstrap.startup_helpers import derive_provider_namespace
-from app.atlasclaw.auth.models import ANONYMOUS_USER, UserInfo
+from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.auth.guards import (
     AuthorizationContext,
     ensure_any_permission,
     ensure_skill_access,
+    get_current_user,
+    get_optional_authorization_context,
     get_authorization_context,
 )
 from app.atlasclaw.core.config import get_config, get_config_path
+from app.atlasclaw.memory.access import has_memory_access_from_authz, memory_config_enabled
+from app.atlasclaw.memory.formatting import normalize_memory_search_item
 from app.atlasclaw.memory.manager import MemoryManager, MemoryType
 from app.atlasclaw.skills.frontmatter import parse_frontmatter
 from app.atlasclaw.skills.registry import validate_skill_name
@@ -34,12 +38,14 @@ from .schemas import (
 
 
 def _resolve_config_relative_path(config_value: str) -> Path:
+    """Resolve a path from config relative to the active config file."""
     config_path = get_config_path()
     config_root = config_path.parent if config_path is not None else Path.cwd()
     return (config_root / config_value).resolve()
 
 
 def _iter_skill_markdown_files(base_path: Path) -> list[tuple[Path, bool]]:
+    """Return markdown skills under a root with their directory-skill marker."""
     if not base_path.exists():
         return []
 
@@ -161,57 +167,78 @@ def _build_md_skill_catalog(ctx: APIContext) -> list[dict[str, Any]]:
     return list(catalog_by_qualified_name.values())
 
 
-def _memory_search_result_payload(result: Any) -> dict[str, Any]:
-    entry = getattr(result, "entry", None) or result
-    metadata = getattr(entry, "metadata", {})
-    if not isinstance(metadata, dict):
-        metadata = {}
-
-    timestamp = getattr(entry, "timestamp", None)
-    if not isinstance(timestamp, datetime):
-        timestamp = datetime.now(timezone.utc)
-
-    source = (
-        str(getattr(entry, "source", "") or "").strip()
-        or str(metadata.get("path") or metadata.get("source_path") or "").strip()
-    )
-    highlights = getattr(result, "highlights", [])
-    if not isinstance(highlights, list):
-        highlights = []
-
-    return MemorySearchResult(
-        id=str(getattr(entry, "id", "") or ""),
-        content=str(getattr(entry, "content", "") or ""),
-        score=float(getattr(result, "score", 0.0) or 0.0),
-        source=source,
-        timestamp=timestamp,
-        highlights=[str(item) for item in highlights],
-    ).model_dump()
-
-
-def _current_user(request_obj: Request) -> UserInfo:
-    return getattr(request_obj.state, "user_info", ANONYMOUS_USER)
-
-
-def _scoped_memory_manager(ctx: APIContext, user_info: UserInfo) -> MemoryManager:
-    if not ctx.memory_manager:
+def _ensure_memory_configured(ctx: APIContext) -> MemoryManager:
+    """Return the configured base memory manager or raise an HTTP error."""
+    if not memory_config_enabled() or ctx.memory_manager is None:
         raise HTTPException(
             status_code=status.HTTP_501_NOT_IMPLEMENTED,
             detail="Memory system not configured",
         )
-    return MemoryManager(
-        workspace=str(ctx.memory_manager._workspace),
-        user_id=user_info.user_id,
+    return ctx.memory_manager
+
+
+def _ensure_memory_authorized(authz: AuthorizationContext | None) -> None:
+    """Raise 403 when RBAC is active and the user lacks memory tool access."""
+    if authz is None:
+        return
+    if has_memory_access_from_authz(authz):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Missing permission to use memory skills",
     )
 
 
+def _scoped_memory_manager(
+    base_manager: MemoryManager,
+    authz: AuthorizationContext | None,
+    current_user: UserInfo,
+) -> MemoryManager:
+    """Build a memory manager scoped to the authenticated runtime user."""
+    user_id = str(current_user.user_id or "default")
+    if authz is not None:
+        user_id = str(getattr(authz.user, "user_id", "") or user_id or "default")
+    return base_manager.for_user(user_id)
+
+
+def _memory_search_result_payload(result: Any, *, query: str) -> dict[str, Any]:
+    """Serialize memory search output with the API schema and citation metadata."""
+    normalized = normalize_memory_search_item(result, query=query)
+    timestamp = normalized.get("timestamp")
+    if not isinstance(timestamp, datetime):
+        timestamp = datetime.now(timezone.utc)
+
+    payload = MemorySearchResult(
+        id=normalized["id"],
+        content=normalized["content"],
+        score=normalized["score"],
+        source=normalized["source"],
+        timestamp=timestamp,
+        highlights=normalized["highlights"],
+    ).model_dump()
+    payload.update(
+        {
+            "snippet": normalized["snippet"],
+            "path": normalized["path"],
+            "start_line": normalized["start_line"],
+            "end_line": normalized["end_line"],
+            "citation": normalized["citation"],
+            "query": normalized["query"],
+        }
+    )
+    return payload
+
+
 def register_skills_memory_routes(router: APIRouter) -> None:
+    """Attach skill catalog/execution and permission-gated memory API routes."""
+
     @router.get("/skills")
     async def list_skills(
         include_metadata: bool = False,
         ctx: APIContext = Depends(get_api_context),
         authz: AuthorizationContext = Depends(get_authorization_context),
     ) -> dict[str, Any]:
+        """Return the role-facing skill catalog visible to administrators."""
         ensure_any_permission(
             authz,
             ("skills.view", "skills.manage_permissions", "roles.manage_permissions"),
@@ -240,6 +267,7 @@ def register_skills_memory_routes(router: APIRouter) -> None:
         ctx: APIContext = Depends(get_api_context),
         authz: AuthorizationContext = Depends(get_authorization_context),
     ) -> SkillExecuteResponse:
+        """Execute an authorized skill through the registry API."""
         ensure_skill_access(
             authz,
             request.skill_name,
@@ -266,59 +294,55 @@ def register_skills_memory_routes(router: APIRouter) -> None:
 
     @router.post("/memory/search")
     async def search_memory(
-        request_obj: Request,
         request: MemorySearchRequest,
         ctx: APIContext = Depends(get_api_context),
+        current_user: UserInfo = Depends(get_current_user),
+        authz: AuthorizationContext | None = Depends(get_optional_authorization_context),
     ) -> dict[str, Any]:
-        memory_manager = _scoped_memory_manager(ctx, _current_user(request_obj))
-
+        """Search the authenticated user's memory and return citation metadata."""
+        base_memory_manager = _ensure_memory_configured(ctx)
+        _ensure_memory_authorized(authz)
+        memory_manager = _scoped_memory_manager(base_memory_manager, authz, current_user)
+        limit = request.top_k if isinstance(request.top_k, int) and request.top_k > 0 else 10
         results = await memory_manager.search(
             request.query,
-            limit=request.top_k,
+            limit=limit,
             apply_recency=request.apply_recency,
         )
         return {
-            "results": [_memory_search_result_payload(result) for result in results],
+            "results": [
+                _memory_search_result_payload(item, query=request.query)
+                for item in results
+            ],
             "query": request.query,
         }
 
     @router.post("/memory/write")
     async def write_memory(
-        request_obj: Request,
         request: MemoryWriteRequest,
         ctx: APIContext = Depends(get_api_context),
+        current_user: UserInfo = Depends(get_current_user),
+        authz: AuthorizationContext | None = Depends(get_optional_authorization_context),
     ) -> dict[str, Any]:
-        memory_manager = _scoped_memory_manager(ctx, _current_user(request_obj))
+        """Write long-term memory for the authenticated user only."""
+        base_memory_manager = _ensure_memory_configured(ctx)
+        _ensure_memory_authorized(authz)
+        memory_manager = _scoped_memory_manager(base_memory_manager, authz, current_user)
 
-        try:
-            memory_type = MemoryType(request.memory_type)
-        except ValueError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid memory_type: {request.memory_type}",
-            ) from exc
-
-        if memory_type == MemoryType.DAILY:
-            entry = await memory_manager.write_daily(
-                request.content,
-                source=request.source,
-                tags=request.tags,
-            )
-        elif memory_type == MemoryType.LONG_TERM:
-            entry = await memory_manager.write_long_term(
-                request.content,
-                source=request.source,
-                tags=request.tags,
-                section=request.section,
-            )
-        else:
+        if request.memory_type != MemoryType.LONG_TERM.value:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid memory_type: {request.memory_type}",
             )
+        entry = await memory_manager.write_long_term(
+            request.content,
+            source=request.source,
+            tags=request.tags,
+            section=request.section,
+        )
 
         return {
             "id": entry.id,
-            "memory_type": memory_type.value,
+            "memory_type": MemoryType.LONG_TERM.value,
             "timestamp": entry.timestamp.isoformat(),
         }

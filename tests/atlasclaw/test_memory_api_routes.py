@@ -15,7 +15,7 @@ from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillRegistry
 
 
-def _build_client(tmp_path, user_id: str | None = None) -> TestClient:
+def _build_client(tmp_path, user_id: str = "default") -> TestClient:
     ctx = APIContext(
         session_manager=SessionManager(workspace_path=str(tmp_path), user_id="default"),
         session_queue=SessionQueue(),
@@ -26,17 +26,16 @@ def _build_client(tmp_path, user_id: str | None = None) -> TestClient:
 
     app = FastAPI()
 
-    if user_id is not None:
-        @app.middleware("http")
-        async def inject_user(request, call_next):
-            request.state.user_info = UserInfo(user_id=user_id, display_name=user_id)
-            return await call_next(request)
+    @app.middleware("http")
+    async def inject_user(request, call_next):
+        request.state.user_info = UserInfo(user_id=user_id, display_name=user_id)
+        return await call_next(request)
 
     app.include_router(create_router())
     return TestClient(app, raise_server_exceptions=False)
 
 
-@pytest.mark.parametrize("memory_type", ["not-a-type", "ephemeral"])
+@pytest.mark.parametrize("memory_type", ["daily", "not-a-type", "ephemeral"])
 def test_memory_write_rejects_unsupported_memory_type(tmp_path, memory_type: str) -> None:
     client = _build_client(tmp_path)
 
@@ -50,17 +49,28 @@ def test_memory_write_rejects_unsupported_memory_type(tmp_path, memory_type: str
     assert not (tmp_path / "users" / "default" / "memory" / "MEMORY.md").exists()
 
 
-@pytest.mark.parametrize("memory_type", ["daily", "long_term"])
-def test_memory_write_accepts_supported_memory_type(tmp_path, memory_type: str) -> None:
+def test_memory_write_accepts_long_term_memory_type(tmp_path) -> None:
     client = _build_client(tmp_path)
 
     response = client.post(
         "/api/memory/write",
-        json={"content": "memory content", "memory_type": memory_type},
+        json={"content": "memory content", "memory_type": "long_term"},
     )
 
     assert response.status_code == 200
-    assert response.json()["memory_type"] == memory_type
+    assert response.json()["memory_type"] == "long_term"
+
+
+def test_memory_write_defaults_to_long_term(tmp_path) -> None:
+    client = _build_client(tmp_path)
+
+    response = client.post(
+        "/api/memory/write",
+        json={"content": "memory content"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["memory_type"] == "long_term"
 
 
 def test_memory_write_uses_authenticated_user_memory_dir(tmp_path) -> None:

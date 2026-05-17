@@ -40,6 +40,35 @@ const buildSkillPermissions = (overrides = {}) => [
   ...(overrides[skill.skill_id] || {})
 }))
 
+const installMemorySkillCatalogFetchMock = () => {
+  const defaultFetch = global.fetch
+  global.fetch = jest.fn((url, options = {}) => {
+    const target = String(url)
+    if (target === '/api/skills') {
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          skills: [
+            { name: 'jira-manager', description: 'Jira integration', runtime_enabled: true, type: 'executable' },
+            { name: 'confluence', description: 'Confluence integration', runtime_enabled: true, type: 'executable' },
+            { name: 'pdf', description: 'PDF helper', runtime_enabled: false, type: 'markdown' },
+            {
+              name: 'group:memory',
+              description: 'Built-in tool group: memory (memory_search, memory_get)',
+              runtime_enabled: true,
+              type: 'tool_group',
+              group_id: 'group:memory',
+              member_skill_ids: ['memory_search', 'memory_get']
+            }
+          ]
+        })
+      })
+    }
+    return defaultFetch(url, options)
+  })
+}
+
 const buildAdminPermissions = () => ({
   skills: { module_permissions: { view: true, enable_disable: true, manage_permissions: true }, allow_all: true, skill_permissions: buildSkillPermissions() },
   providers: buildProvidersPermission({}, true, [], true),
@@ -702,6 +731,92 @@ describe('role management page', () => {
     expect(refreshedChannelsSearchInput.selectionStart).toBe('fei'.length)
     expect(container.querySelector('.role-provider-list').textContent).toContain('Feishu')
     expect(container.querySelector('.role-provider-list').textContent).not.toContain('WebSocket')
+  })
+
+  test('memory tool group is searchable and can be enabled in save payload', async () => {
+    installMemorySkillCatalogFetchMock()
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+    container.querySelector('[data-role-select="role-ops"]').click()
+
+    const skillsSearchInput = container.querySelector('#skillsSearchInput')
+    skillsSearchInput.value = 'memory'
+    skillsSearchInput.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const skillListText = container.querySelector('.role-skill-list').textContent
+    expect(skillListText).toContain('group:memory')
+    expect(skillListText).toContain('memory_search')
+    expect(skillListText).toContain('memory_get')
+    expect(skillListText).not.toContain('jira-manager')
+
+    const memoryToggle = container.querySelector('[data-skill-id="group:memory"]')
+    expect(memoryToggle.checked).toBe(false)
+    memoryToggle.checked = true
+    memoryToggle.dispatchEvent(new Event('change', { bubbles: true }))
+
+    container.querySelector('#saveRoleChanges').click()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const putCall = global.fetch.mock.calls.find(([url, options]) => (
+      url === '/api/roles/role-ops' && options?.method === 'PUT'
+    ))
+    expect(putCall).toBeDefined()
+    const payload = JSON.parse(putCall[1].body)
+    expect(payload.permissions.skills.skill_permissions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        skill_id: 'group:memory',
+        authorized: true,
+        enabled: true
+      }),
+      expect.objectContaining({
+        skill_id: 'jira-manager',
+        authorized: true,
+        enabled: true
+      }),
+      expect.objectContaining({
+        skill_id: 'confluence',
+        authorized: false,
+        enabled: false
+      })
+    ]))
+  })
+
+  test('turning memory permission off saves disabled unauthorized payload', async () => {
+    installMemorySkillCatalogFetchMock()
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+    container.querySelector('[data-role-select="role-ops"]').click()
+
+    const skillsSearchInput = container.querySelector('#skillsSearchInput')
+    skillsSearchInput.value = 'memory'
+    skillsSearchInput.dispatchEvent(new Event('input', { bubbles: true }))
+
+    const memoryToggle = container.querySelector('[data-skill-id="group:memory"]')
+    memoryToggle.checked = true
+    memoryToggle.dispatchEvent(new Event('change', { bubbles: true }))
+    const enabledMemoryToggle = container.querySelector('[data-skill-id="group:memory"]')
+    enabledMemoryToggle.checked = false
+    enabledMemoryToggle.dispatchEvent(new Event('change', { bubbles: true }))
+
+    container.querySelector('#saveRoleChanges').click()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const putCall = global.fetch.mock.calls.find(([url, options]) => (
+      url === '/api/roles/role-ops' && options?.method === 'PUT'
+    ))
+    expect(putCall).toBeDefined()
+    const payload = JSON.parse(putCall[1].body)
+    expect(payload.permissions.skills.skill_permissions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        skill_id: 'group:memory',
+        authorized: false,
+        enabled: false
+      })
+    ]))
   })
 
   test('builtin user role provider access can be edited and saved', async () => {
