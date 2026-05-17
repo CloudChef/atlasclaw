@@ -57,8 +57,8 @@ class PromptBuilderConfig:
     user_timezone: Optional[str] = None
     time_format: str = "auto"  # auto | 12 | 24
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
-    agent_name: str = "AtlasClaw"
-    agent_description: str = "Enterprise AI Assistant"
+    agent_name: str = ""
+    agent_description: str = ""
     # Marker file used to detect a newly initialized workspace
     new_workspace_marker: str = ".atlasclaw_new_workspace"
     # Total character budget for the Markdown skill index section
@@ -152,7 +152,7 @@ class PromptBuilder:
         effective_mode = mode_override or self.config.mode
 
         if effective_mode == PromptMode.NONE:
-            return f"You are {self.config.agent_name}, {self.config.agent_description}."
+            return prompt_sections.build_identity_line(self.config)
 
         self._runtime_warnings.clear()
         

@@ -108,6 +108,27 @@ async def test_active_memory_injects_user_scoped_summary_with_citation(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_active_memory_gives_assistant_nickname_identity_priority(tmp_path: Path) -> None:
+    manager = MemoryManager(workspace=str(tmp_path), user_id="alice")
+    await manager.write_long_term(
+        "The assistant's nickname is MomoY.",
+        section="Preferences",
+    )
+    service = ActiveMemoryRecallService()
+
+    result = await service.recall(
+        deps=_deps(manager, permissions=_memory_permissions()),
+        session_key=_session_key(),
+        user_message="你好",
+    )
+
+    assert result.status == "ok"
+    assert "MomoY" in result.context
+    assert "highest-priority user-facing assistant name" in result.context
+    assert "self-introductions" in result.context
+
+
+@pytest.mark.asyncio
 async def test_active_memory_recalls_language_preference_for_same_user_only(
     tmp_path: Path,
 ) -> None:

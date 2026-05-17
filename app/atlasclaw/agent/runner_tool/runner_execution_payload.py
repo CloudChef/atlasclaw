@@ -258,7 +258,7 @@ def build_finalize_payload(
     provider_auth_instruction = _provider_auth_system_instruction(provider_auth_diagnostic)
     return {
         "system_prompt": (
-            "You are AtlasClaw. Produce a concise markdown answer using only the supplied tool evidence. "
+            "You are the assistant. Produce a concise markdown answer using only the supplied tool evidence. "
             "Do not fabricate facts or mention hidden reasoning. "
             "If a Provider authentication diagnostic appears in the supplied evidence, follow that diagnostic exactly: "
             "when it says a personal provider access credential is not configured, rejected, invalid, or expired, "
@@ -332,7 +332,7 @@ def build_tool_failure_fallback_payload(
     provider_auth_instruction = _provider_auth_system_instruction(provider_auth_diagnostic)
     return {
         "system_prompt": (
-            "You are AtlasClaw. The runtime attempted tools first, but they did not produce a usable final answer. "
+            "You are the assistant. The runtime attempted tools first, but they did not produce a usable final answer. "
             "Produce a concise markdown answer.\n"
             "If a Provider authentication diagnostic appears below, follow that diagnostic exactly: "
             "when it says a personal provider access credential is not configured, rejected, invalid, or expired, "
@@ -373,7 +373,7 @@ def build_direct_answer_recovery_payload(
     invalid_preview = str(invalid_output or "").strip() or "(empty draft)"
     return {
         "system_prompt": (
-            "You are AtlasClaw. No tools are available in this turn.\n"
+            "You are the assistant. No tools are available in this turn.\n"
             "Answer the user directly from model knowledge.\n"
             "Do not emit tool-call markup, XML tags, or pseudo tool invocations such as "
             "<tool_call>, <web_search>, or similar placeholders.\n"
@@ -440,7 +440,7 @@ def build_lookup_dump_recovery_payload(
     invalid_preview = str(invalid_output or "").strip() or "(empty draft)"
     return {
         "system_prompt": (
-            "You are AtlasClaw. The previous draft incorrectly echoed raw internal lookup metadata.\n"
+            "You are the assistant. The previous draft incorrectly echoed raw internal lookup metadata.\n"
             "Use only the supplied tool evidence to continue the workflow in natural language.\n"
             "Preserve decisions already made in the workflow notes instead of restarting from an earlier lookup step.\n"
             "Ask the next concise user-facing question or confirmation when appropriate.\n"

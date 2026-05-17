@@ -705,8 +705,8 @@ capabilities can satisfy required grounding, and whether the final answer must b
 | `user_timezone` | `None` | User timezone |
 | `time_format` | `"auto"` | Time format (auto/12/24) |
 | `sandbox` | `SandboxConfig()` | Sandbox settings |
-| `agent_name` | `"AtlasClaw"` | Agent display name |
-| `agent_description` | `"Enterprise AI Assistant"` | Agent description |
+| `agent_name` | `""` | Agent display name supplied by runtime agent configuration |
+| `agent_description` | `""` | Optional agent description supplied by runtime agent configuration |
 | `md_skills_max_index_chars` | `3000` | Max MD skills index size |
 | `md_skills_desc_max_chars` | `200` | Max per-skill description size |
 | `md_skills_max_count` | `20` | Max MD skills in index |

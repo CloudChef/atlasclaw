@@ -195,8 +195,22 @@ def build_current_follow_up_context(context: str) -> str:
     return "\n".join(lines)
 
 
+def build_identity_line(config) -> str:
+    """Build the single identity sentence from runtime agent configuration."""
+    agent_name = str(getattr(config, "agent_name", "") or "").strip()
+    agent_description = str(getattr(config, "agent_description", "") or "").strip()
+    if agent_name and agent_description:
+        return f"You are {agent_name}, {agent_description}."
+    elif agent_name:
+        return f"You are {agent_name}."
+    elif agent_description:
+        return f"You are {agent_description}."
+    return "You are an assistant."
+
+
 def build_identity(config, *, memory_available: bool = False) -> str:
     """Build the identity section."""
+    identity_line = build_identity_line(config)
     capabilities = [
         "- Handling complex multi-turn conversations with context continuity",
         "- Invoking various business skills (cloud resource management, ITSM, ticket processing, etc.)",
@@ -207,7 +221,7 @@ def build_identity(config, *, memory_available: bool = False) -> str:
     lines = [
         "## Identity",
         "",
-        f"You are {config.agent_name}, {config.agent_description}.",
+        identity_line,
         "",
         "Your core capabilities include:",
         *capabilities,

@@ -305,7 +305,7 @@ def build_explicit_tool_execution_prompt(
         capability_line = f"{capability_line}; provider={provider_type}"
 
     prompt = (
-        "You are AtlasClaw.\n"
+        "You are the assistant.\n"
         "This turn has already been narrowed to exactly one allowed runtime tool.\n"
         "Your valid actions are:\n"
         "1) If the tool has not been called yet this turn, call the allowed tool exactly once with concrete arguments.\n"

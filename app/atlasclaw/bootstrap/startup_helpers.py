@@ -295,7 +295,7 @@ async def load_agent_config_from_db(session, agent_id: str):
 
     return AgentConfig(
         agent_id=agent_id,
-        name=agent_model.name,
+        name=str(soul.get("name", "") or agent_model.name),
         display_name=agent_model.display_name,
         system_prompt=soul.get("system_prompt", ""),
         capabilities=soul.get("capabilities", []),

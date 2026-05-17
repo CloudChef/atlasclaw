@@ -188,6 +188,30 @@ class TestPromptBuilder:
         prompt = builder.build()
         
         assert len(prompt) > 0
+        assert "You are an assistant." in prompt
+        assert "You are AtlasClaw" not in prompt
+
+    def test_build_prompt_uses_configured_agent_name(self):
+        """PromptBuilder should use the runtime agent name instead of a hard-coded name."""
+        config = PromptBuilderConfig(agent_name="Momo AI Assistant")
+        builder = PromptBuilder(config)
+
+        prompt = builder.build()
+
+        assert "You are Momo AI Assistant." in prompt
+        assert "You are AtlasClaw" not in prompt
+
+    def test_build_prompt_uses_configured_agent_description_when_present(self):
+        """PromptBuilder should include description only when runtime configuration provides one."""
+        config = PromptBuilderConfig(
+            agent_name="Momo",
+            agent_description="enterprise collaboration partner",
+        )
+        builder = PromptBuilder(config)
+
+        prompt = builder.build()
+
+        assert "You are Momo, enterprise collaboration partner." in prompt
         
     def test_prompt_modes(self):
         """测试不同提示模式"""
@@ -210,6 +234,7 @@ class TestPromptBuilder:
         assert len(full_prompt) > 0
         assert len(minimal_prompt) > 0
         assert len(none_prompt) >= 0  # NONE 模式可能很短
+        assert none_prompt == "You are an assistant."
         
     def test_build_with_tools(self):
         """测试构建带工具的提示词"""

@@ -1207,7 +1207,7 @@ class RunnerExecutionFlowPostMixin:
                             ),
                             deps,
                             system_prompt=(
-                                "You are AtlasClaw. The runtime could not execute the "
+                                "You are the assistant. The runtime could not execute the "
                                 "tool-backed operation requested in this turn. Write a concise "
                                 "final answer in the user's language. Use only the structured "
                                 "facts. State clearly that no action was executed. Explain that "

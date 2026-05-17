@@ -485,6 +485,16 @@ async def lifespan(app: FastAPI):
 
     agent_configs: dict[str, Any] = {"main": main_agent_config}
 
+    def _agent_runtime_name(agent_cfg: Any) -> str:
+        name = str(getattr(agent_cfg, "name", "") or "").strip()
+        agent_id = str(getattr(agent_cfg, "agent_id", "") or "").strip()
+        if name and name not in {agent_id, "main"}:
+            return name
+        display_name = str(getattr(agent_cfg, "display_name", "") or "").strip()
+        if display_name and display_name not in {agent_id, "main"}:
+            return display_name
+        return ""
+
     def _build_agent_for(agent_id: str, token: TokenEntry) -> Any:
         agent_cfg = agent_configs.get(agent_id)
         if agent_cfg is None:
@@ -494,7 +504,7 @@ async def lifespan(app: FastAPI):
         built_agent = Agent(
             model_instance,
             deps_type=SkillDeps,
-            system_prompt=agent_cfg.system_prompt or "You are AtlasClaw, an enterprise AI assistant.",
+            system_prompt=agent_cfg.system_prompt or "You are an assistant.",
         )
         _skill_registry.register_to_agent(built_agent)
         return built_agent
@@ -506,6 +516,7 @@ async def lifespan(app: FastAPI):
     prompt_builder = PromptBuilder(
         PromptBuilderConfig(
             workspace_path=workspace_path,
+            agent_name=_agent_runtime_name(main_agent_config),
             md_skills_max_count=config.skills.md_skills_max_count,
             md_skills_desc_max_chars=config.skills.md_skills_desc_max_chars,
             md_skills_max_index_chars=config.skills.md_skills_index_max_chars,
