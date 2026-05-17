@@ -64,6 +64,11 @@ class ChannelRegistry:
                 "provisioning": handler_class.describe_provisioning(),
             })
         return result
+
+    @classmethod
+    def registered_channel_types(cls) -> List[str]:
+        """Return channel types registered for external channel handling."""
+        return sorted(cls._handlers.keys())
     
     @classmethod
     def create_instance(

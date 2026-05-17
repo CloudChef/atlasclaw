@@ -11,11 +11,19 @@ from types import SimpleNamespace
 import pytest
 
 from app.atlasclaw.auth.models import UserInfo
+from app.atlasclaw.channels.handler import ChannelHandler
+from app.atlasclaw.channels.registry import ChannelRegistry
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.memory.active import ActiveMemoryRecallService
 from app.atlasclaw.memory.auto_write import AutomaticMemoryWriteService
 from app.atlasclaw.memory.manager import MemoryManager
 from app.atlasclaw.session.context import ChatType, SessionKey, SessionScope
+
+
+class _RegisteredUsageProfileChannel(ChannelHandler):
+    """Minimal registered channel type for usage-profile memory tests."""
+
+    channel_type = "feishu"
 
 
 def _config() -> SimpleNamespace:
@@ -68,12 +76,22 @@ def _permissions(enabled: bool = True) -> list[dict]:
     ]
 
 
-def _deps(manager: MemoryManager, *, user_id: str = "alice", enabled: bool = True) -> SkillDeps:
+def _deps(
+    manager: MemoryManager,
+    *,
+    user_id: str = "alice",
+    enabled: bool = True,
+    channel: str = "web",
+    extra: dict | None = None,
+) -> SkillDeps:
+    deps_extra = dict(extra or {})
+    deps_extra["_user_skill_permissions"] = _permissions(enabled=enabled)
     return SkillDeps(
         user_info=UserInfo(user_id=user_id, display_name=user_id),
         session_key=_session_key(user_id),
+        channel=channel,
         memory_manager=manager,
-        extra={"_user_skill_permissions": _permissions(enabled=enabled)},
+        extra=deps_extra,
     )
 
 
@@ -92,6 +110,8 @@ def _memory_config(monkeypatch):
     monkeypatch.setattr("app.atlasclaw.memory.active.get_config", lambda: cfg)
     monkeypatch.setattr("app.atlasclaw.memory.auto_write.get_config", lambda: cfg)
     monkeypatch.setattr("app.atlasclaw.memory.access.get_config", lambda: cfg)
+    monkeypatch.setattr(ChannelRegistry, "_handlers", dict(ChannelRegistry._handlers))
+    ChannelRegistry.register("feishu", _RegisteredUsageProfileChannel)
     return cfg
 
 
@@ -183,6 +203,171 @@ async def test_auto_write_requires_model_distiller_for_explicit_remember_request
     assert result.diagnostics["json_parse_status"] == "not_attempted"
     assert result.diagnostics["skip_reason"] == "distiller_not_available"
     assert not manager.memory_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_auto_write_records_used_provider_skill_and_im_channel(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(workspace=str(tmp_path), user_id="alice")
+    service = AutomaticMemoryWriteService()
+    tools_snapshot = [
+        {
+            "name": "smartcmp_submit_request",
+            "provider_type": "smartcmp",
+            "qualified_skill_name": "smartcmp:preapproval-agent",
+            "provider_instance_name": "prod-cmp",
+        }
+    ]
+
+    async def run_single(*args, **kwargs) -> str:
+        _ = (args, kwargs)
+        return '{"long_term":[],"skip_reason":"no_durable_memory"}'
+
+    result = await service.write_after_success(
+        deps=_deps(
+            manager,
+            channel="feishu",
+            extra={"tools_snapshot": tools_snapshot},
+        ),
+        session_key=_session_key("alice"),
+        run_id="run-usage-profile",
+        user_message="提交这条服务申请。",
+        assistant_message="申请已提交。",
+        final_messages=[
+            {
+                "role": "tool",
+                "tool_name": "smartcmp_submit_request",
+                "content": "request_id=RES20260516000001 instance=prod-cmp",
+            }
+        ],
+        run_single=run_single,
+    )
+
+    assert result.status == "ok"
+    assert result.long_term_count == 3
+    assert result.diagnostics["written_usage_profile_count"] == 3
+    long_term_text = manager.long_term_path.read_text(encoding="utf-8")
+    assert "## Usage Profile" in long_term_text
+    assert "User has used provider: smartcmp." in long_term_text
+    assert "User has used skill: smartcmp:preapproval-agent." in long_term_text
+    assert "User has used IM channel: feishu." in long_term_text
+    assert "RES20260516000001" not in long_term_text
+    assert "prod-cmp" not in long_term_text
+    assert "request_id" not in long_term_text
+
+
+@pytest.mark.asyncio
+async def test_auto_write_does_not_duplicate_usage_profile_entries(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(workspace=str(tmp_path), user_id="alice")
+    service = AutomaticMemoryWriteService()
+    tools_snapshot = [
+        {
+            "name": "smartcmp_submit_request",
+            "provider_type": "smartcmp",
+            "qualified_skill_name": "smartcmp:preapproval-agent",
+        }
+    ]
+
+    async def run_single(*args, **kwargs) -> str:
+        _ = (args, kwargs)
+        return '{"long_term":[],"skip_reason":"no_durable_memory"}'
+
+    for index in range(2):
+        await service.write_after_success(
+            deps=_deps(
+                manager,
+                channel="feishu",
+                extra={"tools_snapshot": tools_snapshot},
+            ),
+            session_key=_session_key("alice"),
+            run_id=f"run-usage-profile-{index}",
+            user_message="提交这条服务申请。",
+            assistant_message="申请已提交。",
+            final_messages=[
+                {"role": "tool", "tool_name": "smartcmp_submit_request", "content": "ok"}
+            ],
+            run_single=run_single,
+        )
+
+    long_term_text = manager.long_term_path.read_text(encoding="utf-8")
+    assert long_term_text.count("User has used provider: smartcmp.") == 1
+    assert long_term_text.count("User has used skill: smartcmp:preapproval-agent.") == 1
+    assert long_term_text.count("User has used IM channel: feishu.") == 1
+
+
+@pytest.mark.asyncio
+async def test_auto_write_records_only_registered_im_channel(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(workspace=str(tmp_path), user_id="alice")
+    service = AutomaticMemoryWriteService()
+
+    async def run_single(*args, **kwargs) -> str:
+        _ = (args, kwargs)
+        return '{"long_term":[],"skip_reason":"no_durable_memory"}'
+
+    result = await service.write_after_success(
+        deps=_deps(manager, channel="cli"),
+        session_key=_session_key("alice"),
+        run_id="run-unregistered-channel",
+        user_message="hello",
+        assistant_message="hi",
+        final_messages=[],
+        run_single=run_single,
+    )
+
+    assert result.status == "no_memory"
+    assert result.diagnostics["written_usage_profile_count"] == 0
+    assert not manager.long_term_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_auto_write_merges_usage_profile_under_manager_write_lock(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(workspace=str(tmp_path), user_id="alice")
+    await manager.write_long_term(
+        "User has used provider: jira.",
+        source="seed",
+        section="Usage Profile",
+    )
+    service = AutomaticMemoryWriteService()
+    tools_snapshot = [
+        {
+            "name": "smartcmp_submit_request",
+            "provider_type": "smartcmp",
+            "qualified_skill_name": "smartcmp:preapproval-agent",
+        }
+    ]
+
+    async def run_single(*args, **kwargs) -> str:
+        _ = (args, kwargs)
+        return '{"long_term":[],"skip_reason":"no_durable_memory"}'
+
+    result = await service.write_after_success(
+        deps=_deps(
+            manager,
+            channel="feishu",
+            extra={"tools_snapshot": tools_snapshot},
+        ),
+        session_key=_session_key("alice"),
+        run_id="run-merge-usage-profile",
+        user_message="提交这条服务申请。",
+        assistant_message="申请已提交。",
+        final_messages=[{"role": "tool", "tool_name": "smartcmp_submit_request"}],
+        run_single=run_single,
+    )
+
+    assert result.status == "ok"
+    assert result.diagnostics["written_usage_profile_count"] == 3
+    long_term_text = manager.long_term_path.read_text(encoding="utf-8")
+    assert "User has used provider: jira." in long_term_text
+    assert "User has used provider: smartcmp." in long_term_text
+    assert "User has used skill: smartcmp:preapproval-agent." in long_term_text
+    assert "User has used IM channel: feishu." in long_term_text
 
 
 @pytest.mark.asyncio
@@ -498,6 +683,41 @@ async def test_auto_write_model_maintenance_keeps_unrelated_preferences(
     assert "User prefers concise answers." in long_term_text
     assert "User prefers Chinese replies." in long_term_text
     assert "User prefers English replies." not in long_term_text
+
+
+@pytest.mark.asyncio
+async def test_auto_write_preference_maintenance_preserves_usage_profile_section(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(workspace=str(tmp_path), user_id="alice")
+    await manager.write_long_term(
+        "User has used provider: smartcmp.",
+        source="seed",
+        section="Usage Profile",
+    )
+    service = AutomaticMemoryWriteService()
+
+    async def run_single(*args, **kwargs) -> str:
+        _ = kwargs
+        if "Maintain the final Preferences section" in str(args[0]):
+            return '{"preferences":["User prefers Chinese replies."],"skip_reason":"none"}'
+        return '{"long_term":["User prefers Chinese replies."],"skip_reason":"none"}'
+
+    result = await service.write_after_success(
+        deps=_deps(manager),
+        session_key=_session_key("alice"),
+        run_id="run-preserve-usage-profile",
+        user_message="请记住：以后一直用中文回复。",
+        assistant_message="好的，以后我会一直用中文回复。",
+        final_messages=[],
+        run_single=run_single,
+    )
+
+    assert result.status == "ok"
+    long_term_text = manager.long_term_path.read_text(encoding="utf-8")
+    assert "User prefers Chinese replies." in long_term_text
+    assert "## Usage Profile" in long_term_text
+    assert "User has used provider: smartcmp." in long_term_text
 
 
 @pytest.mark.asyncio

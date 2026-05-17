@@ -1263,11 +1263,13 @@ Constructor: `workspace_path="."`, `user_id="default"`, `reset_mode=DAILY`, `dai
 
 **Path**: `app/atlasclaw/memory/`
 
-Markdown-backed memory storage with hybrid search (keyword + semantic).
+User-scoped, Markdown-backed long-term memory. The runtime persists only
+`users/<user_id>/memory/MEMORY.md`; it does not create daily, ephemeral,
+database-backed, or transcript-summary memory.
 
 ### 8.1 Memory Manager (`memory/manager.py`)
 
-**Enum: `MemoryType`** -`DAILY`, `LONG_TERM`, `EPHEMERAL`
+**Enum: `MemoryType`** -`LONG_TERM`
 
 **Dataclass: `MemoryEntry`**
 
@@ -1284,26 +1286,65 @@ Markdown-backed memory storage with hybrid search (keyword + semantic).
 
 **Class: `MemoryManager`**
 
-Constructor: `workspace`, `memory_dir="memory"`, `long_term_file="MEMORY.md"`, `user_id="default"`, `daily_prefix=""`, `encoding="utf-8"`
+Constructor: `workspace`, `long_term_file="MEMORY.md"`, `user_id="default"`, `encoding="utf-8"`
 
 **Storage Layout**:
 ```text
 users/<user_id>/memory/
-|- YYYY-MM-DD.md    # Daily memories (date-scoped)
 \- MEMORY.md        # Long-term persistent memory
 ```
 
+**Long-term Sections**:
+- `Preferences` -durable user-experience preferences such as response language,
+  style, formatting, and assistant nickname.
+- `Usage Profile` -deterministic past-use facts only:
+  `User has used provider: <provider_type>.`,
+  `User has used skill: <qualified_or_skill_name>.`,
+  `User has used IM channel: <channel>.`
+
+Usage Profile must not store request IDs, arguments, provider instances, peer
+IDs, tool outputs, credentials, or operation content.
+
 | Method | Signature | Description |
 |---|---|---|
-| `write` | `(entry: MemoryEntry) -> str` | Write memory entry, returns entry ID |
-| `read` | `(memory_type: MemoryType) -> list[MemoryEntry]` | Read all entries of type |
-| `search` | `(query: str, top_k: int) -> list[MemoryEntry]` | Hybrid search |
-| `delete` | `(entry_id: str) -> bool` | Delete entry by ID |
-| `parse_memory_file` | `(path: Path) -> list[MemoryEntry]` | Parse Markdown memory file |
-| `append_to_daily` | `(content: str, tags: list) -> None` | Append to today's daily file |
-| `append_to_long_term` | `(content: str, tags: list) -> None` | Append to MEMORY.md |
+| `for_user` | `(user_id: str) -> MemoryManager` | Create an isolated manager for another user |
+| `write_long_term` | `(content, source="", tags=None, section="General") -> MemoryEntry` | Append one long-term Markdown entry |
+| `replace_long_term_section` | `(contents, source="", tags=None, section="General") -> list[MemoryEntry]` | Replace one maintained section while preserving others |
+| `merge_long_term_section` | `(contents, source="", tags=None, section="General", key_fn=None) -> list[MemoryEntry]` | Append unique lines to one section atomically under the memory write lock |
+| `read_long_term_section` | `(section: str) -> list[tuple[int, str]]` | Read lines from one long-term section with citations |
+| `read_long_term_sections` | `(sections: list[str]) -> list[tuple[str, int, str]]` | Read multiple long-term sections through one manager-owned file read |
+| `search` | `(query: str, limit=10, apply_recency=True) -> list[Any]` | Hybrid search over the current user's `MEMORY.md` |
+| `get` | `(path, offset=None, limit=None) -> dict[str, Any]` | Read an allowed slice from the current user's `MEMORY.md` |
 
-### 8.2 Hybrid Search (`memory/hybrid_search.py`)
+### 8.2 Active Memory (`memory/active.py`)
+
+`ActiveMemoryRecallService` reads long-term memory before a direct answer when
+memory is enabled, RBAC allows memory, and the chat type is allowed.
+
+- Normal active recall injects `Preferences` and `Usage Profile` as hidden,
+  untrusted context. Preferences may adapt response UX; Usage Profile may answer
+  direct questions about familiar work context but is not a routing instruction.
+- Routing usage recall reads only `Usage Profile` and injects it into the
+  capability selector as low-priority hints. These hints can break ties among
+  authorized, currently available provider/skill capabilities, but cannot
+  override user instructions, permissions, provider auth state, or tool policy.
+
+### 8.3 Auto Write (`memory/auto_write.py`)
+
+`AutomaticMemoryWriteService` runs after a successful user-facing reply.
+
+- Preferences are distilled and maintained by a no-tools model pass.
+- Usage Profile is deterministic: it is derived from actual tool-result
+  metadata in the completed run plus the external IM channel. Entries are merged
+  and de-duplicated in `MEMORY.md` by `MemoryManager.merge_long_term_section`,
+  so existing Usage Profile lines and new lines are read and rewritten under one
+  memory write lock.
+- IM channel recording follows `ChannelRegistry` registration. Registered
+  external channel handlers such as Feishu, DingTalk, and WeCom can be recorded;
+  internal entry channels such as web, REST, SSE, and WebSocket are not recorded
+  because they are not registered as external channel handlers.
+
+### 8.4 Hybrid Search (`memory/search.py`)
 
 Combines keyword matching and semantic similarity with configurable weights:
 - `vector_weight` (default 0.7) -Embedding similarity score

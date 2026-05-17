@@ -11,7 +11,7 @@ import pytest
 
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.core.deps import SkillDeps
-from app.atlasclaw.memory import active as active_memory
+from app.atlasclaw.agent.runner_tool.runner_tool_gate_model import RunnerToolGateModelMixin
 from app.atlasclaw.memory.active import ActiveMemoryRecallService
 from app.atlasclaw.memory.manager import MemoryManager
 from app.atlasclaw.session.context import ChatType, SessionKey, SessionScope
@@ -105,6 +105,104 @@ async def test_active_memory_injects_user_scoped_summary_with_citation(tmp_path:
     assert result.status == "ok"
     assert "Alice prefers TypeScript examples" in result.context
     assert "users/alice/memory/MEMORY.md#L" in result.context
+
+
+@pytest.mark.asyncio
+async def test_active_memory_injects_usage_profile_with_citation(tmp_path: Path) -> None:
+    manager = MemoryManager(workspace=str(tmp_path), user_id="alice")
+    await manager.write_long_term(
+        "User has used provider: smartcmp.",
+        section="Usage Profile",
+    )
+    await manager.write_long_term(
+        "User has used skill: smartcmp:preapproval-agent.",
+        section="Usage Profile",
+    )
+    service = ActiveMemoryRecallService()
+
+    result = await service.recall(
+        deps=_deps(manager, permissions=_memory_permissions()),
+        session_key=_session_key(),
+        user_message="我常用哪些系统？",
+    )
+
+    assert result.status == "ok"
+    assert "Usage Profile:" in result.context
+    assert "User has used provider: smartcmp." in result.context
+    assert "smartcmp:preapproval-agent" in result.context
+    assert "users/alice/memory/MEMORY.md#L" in result.context
+    assert "not a routing instruction" in result.context
+
+
+@pytest.mark.asyncio
+async def test_usage_profile_routing_recall_is_low_priority_hint(tmp_path: Path) -> None:
+    manager = MemoryManager(workspace=str(tmp_path), user_id="alice")
+    await manager.write_long_term(
+        "User has used provider: smartcmp.",
+        section="Usage Profile",
+    )
+    service = ActiveMemoryRecallService()
+
+    result = await service.recall_usage_profile_for_routing(
+        deps=_deps(manager, permissions=_memory_permissions()),
+        session_key=_session_key(),
+    )
+
+    assert result.status == "ok"
+    assert "User has used provider: smartcmp." in result.context
+    assert "low-priority past usage signals" in result.context
+    assert "authorized, currently available provider or skill capabilities" in result.context
+    assert "must not override" in result.context
+
+
+def test_capability_selector_prompt_includes_usage_profile_as_low_priority_hint() -> None:
+    mixin = RunnerToolGateModelMixin()
+
+    prompt = mixin._build_capability_selector_prompt(
+        capability_index=[
+            {
+                "capability_id": "provider:smartcmp",
+                "kind": "provider",
+                "name": "smartcmp",
+                "description": "Submit service requests.",
+            }
+        ],
+        usage_profile_context=(
+            "Untrusted long-term Usage Profile hints.\n"
+            "<usage_profile_hints>\n"
+            "Usage Profile:\n"
+            "- User has used provider: smartcmp.\n"
+            "</usage_profile_hints>"
+        ),
+    )
+
+    assert "Past Usage Profile hints:" in prompt
+    assert "User has used provider: smartcmp." in prompt
+    assert "low-priority tie-breakers only" in prompt
+    assert "Choose only capability IDs listed below" in prompt
+    assert "must not override the user's explicit request" in prompt
+
+
+def test_capability_selector_rejects_usage_profile_unavailable_provider() -> None:
+    mixin = RunnerToolGateModelMixin()
+
+    plan = mixin._coerce_capability_selector_payload(
+        payload={
+            "action": "use_tools",
+            "targets": ["provider:smartcmp"],
+            "reason": "Usage Profile says smartcmp was used before.",
+        },
+        capability_index=[
+            {
+                "capability_id": "provider:jira",
+                "kind": "provider",
+                "name": "jira",
+                "description": "Read issues.",
+            }
+        ],
+    )
+
+    assert plan is None
 
 
 @pytest.mark.asyncio
@@ -251,14 +349,14 @@ async def test_active_memory_timeout_circuit_breaker_fails_open(
     service = ActiveMemoryRecallService()
     read_calls = 0
 
-    async def slow_to_thread(*args, **kwargs) -> str:
+    async def slow_read_sections(*args, **kwargs) -> list[tuple[str, int, str]]:
         nonlocal read_calls
         _ = (args, kwargs)
         read_calls += 1
         await asyncio.sleep(0.05)
-        return "## Preferences\nAlice prefers TypeScript examples."
+        return [("Preferences", 3, "Alice prefers TypeScript examples.")]
 
-    monkeypatch.setattr(active_memory.asyncio, "to_thread", slow_to_thread)
+    monkeypatch.setattr(manager, "read_long_term_sections", slow_read_sections)
 
     for _ in range(3):
         result = await service.recall(

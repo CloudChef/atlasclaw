@@ -95,12 +95,16 @@ class RunnerToolGateModelMixin:
         user_message: str,
         recent_history: list[dict[str, Any]],
         capability_index: list[dict[str, Any]],
+        usage_profile_context: str = "",
     ) -> Optional[ToolIntentPlan]:
         """Ask the model to select authorized capabilities for a natural-language turn."""
         if agent is None:
             return None
 
-        selector_prompt = self._build_capability_selector_prompt(capability_index=capability_index)
+        selector_prompt = self._build_capability_selector_prompt(
+            capability_index=capability_index,
+            usage_profile_context=usage_profile_context,
+        )
         selector_message = self._build_capability_selector_message(
             user_message=user_message,
             recent_history=recent_history,
@@ -137,6 +141,7 @@ class RunnerToolGateModelMixin:
         self,
         *,
         capability_index: list[dict[str, Any]],
+        usage_profile_context: str = "",
     ) -> str:
         """Build the LLM selector prompt from authorized capability descriptions only."""
         capability_lines: list[str] = []
@@ -155,6 +160,7 @@ class RunnerToolGateModelMixin:
                 f"- {capability_id} | kind={kind} | name={name} | desc={description or '-'}"
             )
 
+        usage_context = str(usage_profile_context or "").strip() or "- none"
         return (
             "You are AtlasClaw's internal capability selector.\n"
             "Do not answer the user and do not call tools. Return one JSON object only.\n\n"
@@ -175,8 +181,13 @@ class RunnerToolGateModelMixin:
             "- If the request needs data and a file deliverable, include both targets in execution order.\n"
             "- Standard markdown skills may have no declared public tool; selecting the skill is enough "
             "for the runtime to provide controlled internal execution tools.\n"
+            "- Past Usage Profile hints are low-priority tie-breakers only. They must not override "
+            "the user's explicit request, RBAC/permissions, current authorized capabilities, "
+            "provider authentication state, or current tool policy.\n"
             "Authorized capabilities:\n"
             f"{chr(10).join(capability_lines) if capability_lines else '- none'}\n\n"
+            "Past Usage Profile hints:\n"
+            f"{usage_context}\n\n"
             "Return JSON fields exactly:\n"
             "{\n"
             '  "action": "direct_answer" | "use_tools" | "ask_clarification",\n'

@@ -13,6 +13,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
+from app.atlasclaw.channels.registry import ChannelRegistry
 from app.atlasclaw.core.config import get_config
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.memory.access import (
@@ -21,10 +22,21 @@ from app.atlasclaw.memory.access import (
     memory_manager_from_deps,
 )
 from app.atlasclaw.memory.formatting import compact_text
-from app.atlasclaw.memory.manager import LONG_TERM_PREFERENCES_SECTION
+from app.atlasclaw.memory.manager import (
+    LONG_TERM_PREFERENCES_SECTION,
+    LONG_TERM_USAGE_PROFILE_SECTION,
+)
+from app.atlasclaw.session.context import SessionKey
+from app.atlasclaw.tools.catalog import STANDARD_SKILL_RUNTIME_TOOL_NAMES
 
 
 RunSingleCallable = Callable[..., Awaitable[str]]
+
+
+_USAGE_PROFILE_PATTERN = re.compile(
+    r"^User has used (?P<kind>provider|skill|IM channel): (?P<value>.+)\.$",
+    flags=re.IGNORECASE,
+)
 
 
 @dataclass(frozen=True)
@@ -53,12 +65,13 @@ class _MaintenanceResult:
 
 
 class AutomaticMemoryWriteService:
-    """Distill completed replies into user-scoped long-term preference memory.
+    """Persist completed replies into user-scoped long-term memory.
 
     This service is an internal post-success side effect, not a chat-visible
     write tool. It writes only when memory is globally enabled, the request has
-    memory permission, the chat type is allowed, and the model returns a
-    structured distillation payload for ``MEMORY.md``.
+    memory permission, and the chat type is allowed. Preferences are distilled
+    by the model; Usage Profile entries are deterministically derived from
+    actual runtime metadata and stored in ``MEMORY.md``.
     """
 
     async def write_after_success(
@@ -99,6 +112,13 @@ class AutomaticMemoryWriteService:
             diagnostics["skip_reason"] = "memory_manager_unavailable"
             return self._build_result("unavailable", diagnostics=diagnostics)
         diagnostics["memory_path"] = self._display_memory_path(memory_manager)
+        source = f"auto:{run_id or session_key}"
+        usage_profile_items = self._build_usage_profile_items(
+            deps=deps,
+            session_key=session_key,
+            final_messages=final_messages,
+        )
+        diagnostics["usage_profile_candidate_count"] = len(usage_profile_items)
 
         payload: dict[str, list[str]] = {"long_term": []}
         if callable(run_single):
@@ -129,9 +149,21 @@ class AutomaticMemoryWriteService:
                 diagnostics["skip_reason"] = "sanitize_empty"
             elif diagnostics.get("skip_reason") in {"", "none"}:
                 diagnostics["skip_reason"] = "distiller_no_long_term"
+            usage_written_count = await self._write_usage_profile_items(
+                memory_manager,
+                usage_profile_items,
+                source=source,
+            )
+            diagnostics["written_usage_profile_count"] = usage_written_count
+            if usage_written_count:
+                diagnostics["skip_reason"] = "none"
+                return self._build_result(
+                    "ok",
+                    long_term_count=usage_written_count,
+                    diagnostics=diagnostics,
+                )
             return self._build_result("no_memory", diagnostics=diagnostics)
 
-        source = f"auto:{run_id or session_key}"
         maintained_items = long_term_items
         if callable(run_single) and self._has_existing_memory(memory_manager):
             maintenance = await self._maintain_memory_with_model(
@@ -154,6 +186,19 @@ class AutomaticMemoryWriteService:
                     diagnostics["skip_reason"] = "memory_maintainer_empty"
                 else:
                     diagnostics["skip_reason"] = str(diagnostics["memory_maintainer_skip_reason"])
+                usage_written_count = await self._write_usage_profile_items(
+                    memory_manager,
+                    usage_profile_items,
+                    source=source,
+                )
+                diagnostics["written_usage_profile_count"] = usage_written_count
+                if usage_written_count:
+                    diagnostics["skip_reason"] = "none"
+                    return self._build_result(
+                        "ok",
+                        long_term_count=usage_written_count,
+                        diagnostics=diagnostics,
+                    )
                 return self._build_result("no_memory", diagnostics=diagnostics)
             entries = await memory_manager.replace_long_term_section(
                 maintained_items,
@@ -173,14 +218,194 @@ class AutomaticMemoryWriteService:
                 )
                 written_count += 1
 
+        usage_written_count = await self._write_usage_profile_items(
+            memory_manager,
+            usage_profile_items,
+            source=source,
+        )
         diagnostics["written_long_term_count"] = written_count
+        diagnostics["written_usage_profile_count"] = usage_written_count
         diagnostics["skip_reason"] = "none"
-        return self._build_result("ok", long_term_count=written_count, diagnostics=diagnostics)
+        return self._build_result(
+            "ok",
+            long_term_count=written_count + usage_written_count,
+            diagnostics=diagnostics,
+        )
 
     @staticmethod
     def _resolve_config() -> Any:
         """Return automatic-memory-write config with schema defaults applied."""
         return getattr(get_config().memory, "auto_write", None)
+
+    def _build_usage_profile_items(
+        self,
+        *,
+        deps: SkillDeps,
+        session_key: str,
+        final_messages: list[dict[str, Any]],
+    ) -> list[str]:
+        """Build deterministic long-term usage-profile lines from actual runtime use."""
+        executed_tool_names = self._collect_executed_tool_names(final_messages)
+        if not executed_tool_names:
+            channel = self._extract_recordable_channel(deps=deps, session_key=session_key)
+            return [self._usage_profile_item("IM channel", channel)] if channel else []
+
+        extra = deps.extra if isinstance(deps.extra, dict) else {}
+        tools_by_name = self._tools_by_name(extra.get("tools_snapshot"))
+        providers: list[str] = []
+        skills: list[str] = []
+        for tool_name in executed_tool_names:
+            tool = tools_by_name.get(tool_name)
+            if isinstance(tool, dict):
+                provider_type = self._normalize_usage_value(tool.get("provider_type"))
+                if provider_type:
+                    providers.append(provider_type.lower())
+                skill_name = self._normalize_usage_value(
+                    tool.get("qualified_skill_name") or tool.get("skill_name")
+                )
+                if skill_name:
+                    skills.append(skill_name)
+            if tool_name in STANDARD_SKILL_RUNTIME_TOOL_NAMES:
+                target_md_skill = extra.get("target_md_skill")
+                if isinstance(target_md_skill, dict):
+                    metadata = target_md_skill.get("metadata")
+                    metadata_provider = (
+                        metadata.get("provider_type") if isinstance(metadata, dict) else ""
+                    )
+                    provider_type = self._normalize_usage_value(
+                        target_md_skill.get("provider")
+                        or target_md_skill.get("provider_type")
+                        or metadata_provider
+                    )
+                    if provider_type:
+                        providers.append(provider_type.lower())
+                    skill_name = self._normalize_usage_value(
+                        target_md_skill.get("qualified_name") or target_md_skill.get("name")
+                    )
+                    if skill_name:
+                        skills.append(skill_name)
+
+        channel = self._extract_recordable_channel(deps=deps, session_key=session_key)
+        items: list[str] = []
+        for provider_type in self._dedupe_strings(providers):
+            items.append(self._usage_profile_item("provider", provider_type))
+        for skill_name in self._dedupe_strings(skills):
+            items.append(self._usage_profile_item("skill", skill_name))
+        if channel:
+            items.append(self._usage_profile_item("IM channel", channel))
+        return items
+
+    async def _write_usage_profile_items(
+        self,
+        memory_manager: Any,
+        new_items: list[str],
+        *,
+        source: str,
+    ) -> int:
+        """Merge and write deterministic usage-profile entries into ``MEMORY.md``."""
+        sanitized_new_items = self._sanitize_items(
+            new_items,
+            max_items=50,
+            max_chars=180,
+        )
+        if not sanitized_new_items:
+            return 0
+        entries = await memory_manager.merge_long_term_section(
+            sanitized_new_items,
+            source=source,
+            tags=["auto", "usage_profile"],
+            section=LONG_TERM_USAGE_PROFILE_SECTION,
+            key_fn=self._usage_profile_key,
+        )
+        return len(entries)
+
+    @staticmethod
+    def _collect_executed_tool_names(final_messages: list[dict[str, Any]]) -> list[str]:
+        """Return tool names with actual tool-result evidence in final messages."""
+        tool_names: list[str] = []
+        for message in final_messages or []:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role", "") or "").strip().lower()
+            if role in {"tool", "toolresult", "tool_result"}:
+                tool_name = AutomaticMemoryWriteService._normalize_usage_value(
+                    message.get("tool_name") or message.get("name")
+                )
+                if tool_name:
+                    tool_names.append(tool_name)
+            tool_results = message.get("tool_results")
+            if isinstance(tool_results, list):
+                for result in tool_results:
+                    if not isinstance(result, dict):
+                        continue
+                    tool_name = AutomaticMemoryWriteService._normalize_usage_value(
+                        result.get("tool_name") or result.get("name")
+                    )
+                    if tool_name:
+                        tool_names.append(tool_name)
+        return AutomaticMemoryWriteService._dedupe_strings(tool_names)
+
+    @staticmethod
+    def _tools_by_name(value: Any) -> dict[str, dict[str, Any]]:
+        """Index a tool snapshot by tool name."""
+        if not isinstance(value, list):
+            return {}
+        result: dict[str, dict[str, Any]] = {}
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            name = AutomaticMemoryWriteService._normalize_usage_value(item.get("name"))
+            if name and name not in result:
+                result[name] = item
+        return result
+
+    @staticmethod
+    def _extract_recordable_channel(*, deps: SkillDeps, session_key: str) -> str:
+        """Return an external IM channel suitable for long-term usage memory."""
+        channel = AutomaticMemoryWriteService._normalize_usage_value(getattr(deps, "channel", ""))
+        if not channel:
+            channel = AutomaticMemoryWriteService._normalize_usage_value(
+                SessionKey.from_string(session_key).channel
+            )
+        normalized = channel.lower()
+        if normalized not in ChannelRegistry.registered_channel_types():
+            return ""
+        return normalized
+
+    @staticmethod
+    def _usage_profile_key(item: str) -> tuple[str, str] | None:
+        """Return the semantic dedupe key for one usage-profile line."""
+        match = _USAGE_PROFILE_PATTERN.match(str(item or "").strip())
+        if not match:
+            return None
+        return (
+            match.group("kind").strip().lower(),
+            match.group("value").strip().lower(),
+        )
+
+    @staticmethod
+    def _usage_profile_item(kind: str, value: str) -> str:
+        """Format one usage-profile item using the long-term memory contract."""
+        return f"User has used {kind}: {value}."
+
+    @staticmethod
+    def _normalize_usage_value(value: Any) -> str:
+        """Normalize metadata values before storing usage-profile memory."""
+        return compact_text(str(value or ""), 120).strip(" .")
+
+    @staticmethod
+    def _dedupe_strings(values: list[str]) -> list[str]:
+        """Return unique non-empty strings while preserving first-seen casing."""
+        results: list[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized = AutomaticMemoryWriteService._normalize_usage_value(value)
+            key = normalized.lower()
+            if not normalized or key in seen:
+                continue
+            seen.add(key)
+            results.append(normalized)
+        return results
 
     async def _distill_with_model(
         self,
@@ -496,6 +721,8 @@ class AutomaticMemoryWriteService:
             "model_skip_reason": "",
             "sanitized_long_term_count": 0,
             "written_long_term_count": 0,
+            "usage_profile_candidate_count": 0,
+            "written_usage_profile_count": 0,
             "maintained_long_term_count": 0,
             "memory_maintainer_attempted": False,
             "memory_maintainer_elapsed_ms": 0,

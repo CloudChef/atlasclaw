@@ -15,6 +15,7 @@ Storage layout::
 import asyncio
 import hashlib
 import re
+from collections.abc import Callable, Hashable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -33,6 +34,7 @@ _HOOK_MEMORY_METADATA_PREFIXES = (
     "- source_event_ids:",
 )
 LONG_TERM_PREFERENCES_SECTION = "Preferences"
+LONG_TERM_USAGE_PROFILE_SECTION = "Usage Profile"
 
 
 class MemoryType(Enum):
@@ -248,6 +250,199 @@ class MemoryManager:
                 await f.write(updated_content)
 
         return entries
+
+    async def merge_long_term_section(
+        self,
+        contents: list[str],
+        *,
+        source: str = "",
+        tags: Optional[list[str]] = None,
+        section: str = "General",
+        key_fn: Optional[Callable[[str], Hashable | None]] = None,
+    ) -> list[MemoryEntry]:
+        """
+        Append unique entries to one section while holding the memory write lock.
+
+        Args:
+            contents: Candidate entries to append to the target section.
+            source: Source identifier applied to returned entries.
+            tags: Optional tag list applied to returned entries.
+            section: Target section name in ``MEMORY.md``.
+            key_fn: Optional semantic key builder used to merge duplicates. When
+                omitted, normalized line text is used as the duplicate key.
+
+        Returns:
+            Memory entries for newly added lines only. Existing lines are read
+            and merged under the same write lock as the final section rewrite, so
+            concurrent writers do not overwrite each other's section additions.
+        """
+        normalized_section = str(section or "").strip()
+        if not normalized_section:
+            return []
+
+        timestamp = datetime.now(timezone.utc)
+        candidate_entries: list[tuple[MemoryEntry, str]] = []
+        for content in contents:
+            normalized = str(content or "").strip()
+            if not normalized:
+                continue
+            safe_content, encoded = encode_if_untrusted(normalized)
+            candidate_entries.append(
+                (
+                    MemoryEntry(
+                        id=MemoryEntry.generate_id(normalized, timestamp),
+                        content=safe_content,
+                        memory_type=MemoryType.LONG_TERM,
+                        source=source,
+                        timestamp=timestamp,
+                        tags=(tags or []) + (["encoded_input"] if encoded else []),
+                        metadata={"section": normalized_section},
+                    ),
+                    safe_content,
+                )
+            )
+        if not candidate_entries:
+            return []
+
+        async with self._write_lock:
+            self._long_term_path.parent.mkdir(parents=True, exist_ok=True)
+            existing_content = ""
+            if self._long_term_path.exists():
+                async with aiofiles.open(self._long_term_path, 'r', encoding=self._encoding) as f:
+                    existing_content = await f.read()
+
+            existing_lines = [
+                text for _, text in self.extract_section_lines(existing_content, normalized_section)
+            ]
+            merged_lines, seen_keys = self._dedupe_section_lines(existing_lines, key_fn=key_fn)
+            added_entries: list[MemoryEntry] = []
+            for entry, safe_content in candidate_entries:
+                key = self._section_line_key(safe_content, key_fn=key_fn)
+                if key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                merged_lines.append(safe_content)
+                added_entries.append(entry)
+
+            if not added_entries and merged_lines == existing_lines:
+                return []
+
+            updated_content = self._replace_long_term_section_content(
+                existing_content,
+                merged_lines,
+                normalized_section,
+            )
+            async with aiofiles.open(self._long_term_path, 'w', encoding=self._encoding) as f:
+                await f.write(updated_content)
+
+        return added_entries
+
+    async def read_long_term_section(self, section: str) -> list[tuple[int, str]]:
+        """
+        Return content lines from one section in the current user's ``MEMORY.md``.
+
+        Args:
+            section: Markdown ``##`` section title to read.
+
+        Returns:
+            Tuples of original one-based line number and stripped content. Only
+            the current user's long-term memory file is read; missing files or
+            missing sections return an empty list.
+        """
+        normalized_section = str(section or "").strip()
+        if not normalized_section or not self._long_term_path.exists():
+            return []
+        try:
+            async with aiofiles.open(self._long_term_path, 'r', encoding=self._encoding) as f:
+                content = await f.read()
+        except OSError:
+            return []
+        return self.extract_section_lines(content, normalized_section)
+
+    async def read_long_term_sections(self, sections: list[str]) -> list[tuple[str, int, str]]:
+        """
+        Return content lines from multiple ``MEMORY.md`` sections in request order.
+
+        Args:
+            sections: Markdown ``##`` section titles to read.
+
+        Returns:
+            Tuples of section name, original one-based line number, and stripped
+            content. The file is read once using this manager's configured
+            encoding; missing files or missing sections return an empty list.
+        """
+        normalized_sections = [str(section or "").strip() for section in sections]
+        normalized_sections = [section for section in normalized_sections if section]
+        if not normalized_sections or not self._long_term_path.exists():
+            return []
+        try:
+            async with aiofiles.open(self._long_term_path, 'r', encoding=self._encoding) as f:
+                content = await f.read()
+        except OSError:
+            return []
+
+        candidates: list[tuple[str, int, str]] = []
+        for section in normalized_sections:
+            for line_number, text in self.extract_section_lines(content, section):
+                candidates.append((section, line_number, text))
+        return candidates
+
+    @staticmethod
+    def extract_section_lines(content: str, section: str) -> list[tuple[int, str]]:
+        """Extract non-structural lines from one Markdown ``##`` section."""
+        normalized_section = str(section or "").strip().lower()
+        if not normalized_section:
+            return []
+
+        candidates: list[tuple[int, str]] = []
+        in_requested_section = False
+        for line_number, raw_line in enumerate(str(content or "").splitlines(), start=1):
+            stripped = raw_line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("## "):
+                heading = stripped[3:].strip().lower()
+                in_requested_section = heading == normalized_section
+                continue
+            if stripped.startswith("#") or stripped.startswith("*"):
+                continue
+            if in_requested_section:
+                candidates.append((line_number, stripped))
+        return candidates
+
+    @classmethod
+    def _dedupe_section_lines(
+        cls,
+        lines: list[str],
+        *,
+        key_fn: Optional[Callable[[str], Hashable | None]],
+    ) -> tuple[list[str], set[Hashable]]:
+        """Return unique section lines and the keys already present."""
+        deduped: list[str] = []
+        seen: set[Hashable] = set()
+        for line in lines:
+            normalized = str(line or "").strip()
+            if not normalized:
+                continue
+            key = cls._section_line_key(normalized, key_fn=key_fn)
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(normalized)
+        return deduped, seen
+
+    @staticmethod
+    def _section_line_key(
+        line: str,
+        *,
+        key_fn: Optional[Callable[[str], Hashable | None]],
+    ) -> Hashable:
+        """Return a semantic section-line key with normalized text as backup."""
+        normalized = str(line or "").strip()
+        if key_fn is None:
+            return ("line", normalized.lower())
+        key = key_fn(normalized)
+        return key if key is not None else ("line", normalized.lower())
         
     def _update_long_term_content(
         self,

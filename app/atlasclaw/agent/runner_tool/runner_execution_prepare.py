@@ -1606,12 +1606,36 @@ class RunnerExecutionPreparePhaseMixin:
                     agent=runtime_agent or self.agent,
                     deps=deps,
                 )
+                usage_profile_context = ""
+                usage_profile_result = await self.active_memory.recall_usage_profile_for_routing(
+                    deps=deps,
+                    session_key=session_key,
+                )
+                if isinstance(deps.extra, dict):
+                    deps.extra["usage_profile_routing"] = {
+                        "status": str(getattr(usage_profile_result, "status", "") or ""),
+                        "elapsed_ms": int(getattr(usage_profile_result, "elapsed_ms", 0) or 0),
+                        "result_count": int(
+                            getattr(usage_profile_result, "result_count", 0) or 0
+                        ),
+                    }
+                usage_profile_context = str(
+                    getattr(usage_profile_result, "context", "") or ""
+                ).strip()
+                if usage_profile_context:
+                    _log_step(
+                        "usage_profile_routing_hints_injected",
+                        status=str(getattr(usage_profile_result, "status", "") or ""),
+                        result_count=int(getattr(usage_profile_result, "result_count", 0) or 0),
+                        elapsed_ms=int(getattr(usage_profile_result, "elapsed_ms", 0) or 0),
+                    )
                 capability_selector_intent_plan = await self._select_capability_intent_plan_with_model(
                     agent=runtime_agent or self.agent,
                     deps=deps,
                     user_message=tool_request_message,
                     recent_history=message_history,
                     capability_index=capability_index,
+                    usage_profile_context=usage_profile_context,
                 )
                 metadata_candidates = {
                     "reason": "llm_capability_selector",
