@@ -394,17 +394,18 @@ class RunnerToolGateRoutingMixin:
         )
         return combined, combined != normalized_user_message
 
-    @staticmethod
-    def _looks_like_choice_follow_up_prompt(message: str) -> bool:
+    @classmethod
+    def _looks_like_choice_follow_up_prompt(cls, message: str) -> bool:
         text = " ".join((message or "").split()).strip()
         if not text:
             return False
         normalized_text = unicodedata.normalize("NFKC", text)
         lowered = normalized_text.lower()
         return bool(
-            re.search(r"\b(or|versus|vs)\b", lowered)
-            or "\u8fd8\u662f" in lowered
-            or "\u6216" in lowered
+            len(cls._extract_visible_choice_options(normalized_text)) >= 2
+            or re.search(r"\b(or|versus|vs)\b", lowered)
+            or "还是" in normalized_text
+            or "或" in normalized_text
         )
 
     @classmethod
@@ -427,17 +428,33 @@ class RunnerToolGateRoutingMixin:
             selected_index = int(normalized_reply)
             return 1 <= selected_index <= len(numbered_options)
 
-        visible_options = [
-            *numbered_options,
-            *cls._extract_short_line_choice_options(normalized_prompt),
-            *cls._extract_inline_choice_options(normalized_prompt),
-        ]
+        visible_options = cls._extract_visible_choice_options(normalized_prompt)
+        if normalized_reply.isdigit() and visible_options:
+            selected_index = int(normalized_reply)
+            return 1 <= selected_index <= len(visible_options)
+
         for option in visible_options:
             option_key = cls._choice_match_key(option)
             if cls._choice_keys_match(reply_key, option_key):
                 return True
 
         return False
+
+    @classmethod
+    def _extract_visible_choice_options(cls, prompt: str) -> list[str]:
+        options: list[str] = []
+        seen: set[str] = set()
+        for option in [
+            *cls._extract_numbered_choice_options(prompt),
+            *cls._extract_short_line_choice_options(prompt),
+            *cls._extract_inline_choice_options(prompt),
+        ]:
+            option_key = cls._choice_match_key(option)
+            if not option_key or option_key in seen:
+                continue
+            seen.add(option_key)
+            options.append(option)
+        return options
 
     @staticmethod
     def _extract_numbered_choice_options(prompt: str) -> list[str]:
@@ -458,30 +475,16 @@ class RunnerToolGateRoutingMixin:
     def _extract_short_line_choice_options(prompt: str) -> list[str]:
         options: list[str] = []
         for raw_line in str(prompt or "").splitlines():
+            raw = unicodedata.normalize("NFKC", raw_line).strip()
+            if not raw or re.search(r"[:：?？;；.!。]\s*$", raw):
+                continue
             line = RunnerToolGateRoutingMixin._strip_choice_decoration(raw_line)
             if not line:
                 continue
             compact_len = len(re.sub(r"\s+", "", line))
             if compact_len < 2 or compact_len > 64:
                 continue
-            lowered = line.casefold()
-            if re.search(r"[?:;]\s*$", line):
-                continue
-            if any(
-                marker in lowered
-                for marker in (
-                    "please ",
-                    "reply ",
-                    "select ",
-                    "choose ",
-                    "confirm ",
-                    "would you ",
-                    "available ",
-                    "current ",
-                    "recommended ",
-                    "deployment ",
-                )
-            ):
+            if len(line.split()) > 8:
                 continue
             options.append(line)
         return options
@@ -518,7 +521,7 @@ class RunnerToolGateRoutingMixin:
     @staticmethod
     def _choice_match_key(text: str) -> str:
         candidate = RunnerToolGateRoutingMixin._strip_choice_decoration(text).casefold()
-        candidate = re.sub(r"^(?:resource\s+pool|option|selection|choice)\s*[:：-]\s*", "", candidate)
+        candidate = re.sub(r"^(?:option|selection|choice)\s*[:：-]\s*", "", candidate)
         return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", candidate)
 
     @staticmethod
@@ -708,13 +711,13 @@ class RunnerToolGateRoutingMixin:
         # Keep follow-up turns on the same LLM-driven gate path.
         # Do not inject runtime web defaults here.
         return decision
-    @staticmethod
-    def _looks_like_follow_up_request(message: str) -> bool:
-        text = " ".join((message or "").split())
-        if not text:
+    @classmethod
+    def _looks_like_follow_up_request(cls, message: str) -> bool:
+        raw_text = str(message or "").strip()
+        if not " ".join(raw_text.split()):
             return False
-        normalized_text = unicodedata.normalize("NFKC", text)
-        lowered = normalized_text.lower()
+        normalized_text = unicodedata.normalize("NFKC", raw_text)
+        lowered = " ".join(normalized_text.split()).lower()
         question_count = normalized_text.count("?") + normalized_text.count("？")
         numbered_choices = len(
             re.findall(r"(?:^|[\s\n])(?:\[\d+\]|\d[\)\.])", normalized_text)
@@ -722,84 +725,30 @@ class RunnerToolGateRoutingMixin:
         enumerated_field_lines = len(
             re.findall(r"(?m)^\s*(?:\[\d+\]|\d[\.\)])\s+.+?(?::\s*)?$", normalized_text)
         )
-        interaction_markers = (
-            "please reply",
-            "reply with",
-            "choose",
-            "confirm",
-            "clarify",
-            "specify",
-            "select",
-            "tell me",
-            "provide",
-            "prefer",
-            "preference",
-            "would you like",
-            "which",
-            "\u8bf7\u95ee",
-            "\u503e\u5411",
-            "\u60a8\u5e0c\u671b",
-            "\u54ea\u4e2a",
-            "\u54ea\u4e00\u4e2a",
-            "请回复",
-            "请提供",
-            "请补充",
-            "请填写",
-            "请输入",
-            "请选择",
-            "请确认",
-            "确认",
-            "提供",
-            "补充",
-            "填写",
-            "输入",
-            "选择",
-            "以下信息",
-            "以下字段",
-        )
-        selection_prompt_markers = (
-            "enter number",
-            "input number",
-            "choose a number",
-            "select a number",
-            "输入编号",
-            "请输入编号",
-            "选择编号",
-            "回复编号",
-            "输入序号",
-        )
-        has_choice_connector = bool(
-            re.search(r"\b(or|versus|vs)\b", lowered)
-            or "\u8fd8\u662f" in lowered
-            or "\u6216" in lowered
-        )
-        marker_hits = sum(1 for marker in interaction_markers if marker in lowered)
-        has_selection_prompt = any(marker in lowered for marker in selection_prompt_markers)
-        has_prompt_suffix = bool(re.search(r"[:：?？]\s*$", normalized_text))
-        has_bounded_confirmation_prompt = (
-            question_count >= 1
-            and marker_hits >= 1
-            and (
-                has_prompt_suffix
-                or "\u662f\u5426" in lowered
-                or "use" in lowered
-                or "proceed" in lowered
+        field_prompt_lines = len(
+            re.findall(
+                r"(?m)^\s*(?:[-*•]|\[\d+\]|\d[\.\)])?\s*"
+                r"[^:：?？\n]{2,48}[:：]\s*$",
+                normalized_text,
             )
         )
+        visible_choice_count = len(cls._extract_visible_choice_options(normalized_text))
+        has_boolean_response_format = bool(
+            re.search(r"\b(?:yes\s*/\s*no|y\s*/\s*n|true\s*/\s*false)\b", lowered)
+            or "是/否" in normalized_text
+            or "是否" in normalized_text
+        )
+        has_prompt_suffix = bool(re.search(r"[:：?？]\s*$", normalized_text))
         if numbered_choices >= 2 and enumerated_field_lines >= 2:
             return True
-        if numbered_choices >= 2 and marker_hits >= 1:
+        if numbered_choices >= 2:
             return True
-        if numbered_choices >= 2 and has_prompt_suffix:
+        if visible_choice_count >= 2:
             return True
-        if marker_hits >= 1 and has_choice_connector:
+        if field_prompt_lines >= 2:
             return True
-        if has_bounded_confirmation_prompt:
+        if field_prompt_lines >= 1 and has_prompt_suffix:
             return True
-        if marker_hits >= 1 and has_selection_prompt:
-            return True
-        if question_count >= 2 and marker_hits >= 1:
-            return True
-        if question_count >= 1 and marker_hits >= 2:
+        if question_count >= 1 and has_boolean_response_format:
             return True
         return False
