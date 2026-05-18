@@ -326,6 +326,24 @@ class RunnerToolGateRoutingMixin:
         if not previous_user_message:
             return normalized_user_message, False
 
+        visible_choice_reply = self._reply_matches_visible_choice_prompt(
+            last_assistant_raw_message,
+            normalized_user_message,
+        )
+        if visible_choice_reply and not structured_field_response:
+            recent_context = self._format_recent_follow_up_context(
+                recent_history=recent_history,
+                start_index=(previous_user_index + 1) if previous_user_index is not None else 0,
+                end_index=last_assistant_index,
+            )
+            combined = self._build_contextual_follow_up_request(
+                previous_user_message=previous_user_message,
+                recent_context=recent_context,
+                assistant_prompt=last_assistant_raw_message,
+                current_user_message=normalized_user_message,
+            )
+            return combined, combined != normalized_user_message
+
         if low_information_follow_up:
             if assistant_requests_follow_up:
                 recent_context = self._format_recent_follow_up_context(
@@ -346,6 +364,24 @@ class RunnerToolGateRoutingMixin:
                 )
             return combined, combined != normalized_user_message
 
+        if (
+            assistant_requests_follow_up
+            and not structured_field_response
+            and self._looks_like_choice_follow_up_prompt(last_assistant_message)
+        ):
+            recent_context = self._format_recent_follow_up_context(
+                recent_history=recent_history,
+                start_index=(previous_user_index + 1) if previous_user_index is not None else 0,
+                end_index=last_assistant_index,
+            )
+            combined = self._build_contextual_follow_up_request(
+                previous_user_message=previous_user_message,
+                recent_context=recent_context,
+                assistant_prompt=last_assistant_raw_message,
+                current_user_message=normalized_user_message,
+            )
+            return combined, combined != normalized_user_message
+
         if long_structured_follow_up and not assistant_requests_follow_up:
             return normalized_user_message, False
 
@@ -357,6 +393,143 @@ class RunnerToolGateRoutingMixin:
             normalized_user_message,
         )
         return combined, combined != normalized_user_message
+
+    @staticmethod
+    def _looks_like_choice_follow_up_prompt(message: str) -> bool:
+        text = " ".join((message or "").split()).strip()
+        if not text:
+            return False
+        normalized_text = unicodedata.normalize("NFKC", text)
+        lowered = normalized_text.lower()
+        return bool(
+            re.search(r"\b(or|versus|vs)\b", lowered)
+            or "\u8fd8\u662f" in lowered
+            or "\u6216" in lowered
+        )
+
+    @classmethod
+    def _reply_matches_visible_choice_prompt(cls, prompt: str, reply: str) -> bool:
+        normalized_prompt = unicodedata.normalize("NFKC", str(prompt or ""))
+        normalized_reply = " ".join(str(reply or "").split()).strip()
+        if not normalized_prompt or not normalized_reply:
+            return False
+
+        reply_compact_len = len(re.sub(r"\s+", "", normalized_reply))
+        if reply_compact_len > 48:
+            return False
+
+        reply_key = cls._choice_match_key(normalized_reply)
+        if not reply_key:
+            return False
+
+        numbered_options = cls._extract_numbered_choice_options(normalized_prompt)
+        if normalized_reply.isdigit() and numbered_options:
+            selected_index = int(normalized_reply)
+            return 1 <= selected_index <= len(numbered_options)
+
+        visible_options = [
+            *numbered_options,
+            *cls._extract_short_line_choice_options(normalized_prompt),
+            *cls._extract_inline_choice_options(normalized_prompt),
+        ]
+        for option in visible_options:
+            option_key = cls._choice_match_key(option)
+            if cls._choice_keys_match(reply_key, option_key):
+                return True
+
+        return False
+
+    @staticmethod
+    def _extract_numbered_choice_options(prompt: str) -> list[str]:
+        options: list[str] = []
+        for raw_line in str(prompt or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            match = re.match(r"^(?:\[(\d+)\]|(\d+)[\.\)])\s+(.+?)\s*$", line)
+            if not match:
+                continue
+            candidate = RunnerToolGateRoutingMixin._strip_choice_decoration(match.group(3))
+            if candidate:
+                options.append(candidate)
+        return options
+
+    @staticmethod
+    def _extract_short_line_choice_options(prompt: str) -> list[str]:
+        options: list[str] = []
+        for raw_line in str(prompt or "").splitlines():
+            line = RunnerToolGateRoutingMixin._strip_choice_decoration(raw_line)
+            if not line:
+                continue
+            compact_len = len(re.sub(r"\s+", "", line))
+            if compact_len < 2 or compact_len > 64:
+                continue
+            lowered = line.casefold()
+            if re.search(r"[?:;]\s*$", line):
+                continue
+            if any(
+                marker in lowered
+                for marker in (
+                    "please ",
+                    "reply ",
+                    "select ",
+                    "choose ",
+                    "confirm ",
+                    "would you ",
+                    "available ",
+                    "current ",
+                    "recommended ",
+                    "deployment ",
+                )
+            ):
+                continue
+            options.append(line)
+        return options
+
+    @staticmethod
+    def _extract_inline_choice_options(prompt: str) -> list[str]:
+        options: list[str] = []
+        normalized = unicodedata.normalize("NFKC", str(prompt or ""))
+        chunks = [normalized, *normalized.splitlines()]
+        connector_pattern = re.compile(
+            r"(.{1,160}?)\s+(?:or|versus|vs|\u8fd8\u662f|\u6216)\s+(.{1,160}?)(?:[?？。.;；\n]|$)",
+            flags=re.IGNORECASE,
+        )
+        for chunk in chunks:
+            for match in connector_pattern.finditer(chunk):
+                left = RunnerToolGateRoutingMixin._strip_choice_decoration(match.group(1))
+                right = RunnerToolGateRoutingMixin._strip_choice_decoration(match.group(2))
+                if left:
+                    options.append(left)
+                if right:
+                    options.append(right)
+        return options
+
+    @staticmethod
+    def _strip_choice_decoration(text: str) -> str:
+        candidate = unicodedata.normalize("NFKC", str(text or "")).strip()
+        if not candidate:
+            return ""
+        candidate = re.sub(r"^\s*(?:[-*]|\[\d+\]|\d+[\.\)])\s*", "", candidate)
+        candidate = re.sub(r"\([^)]*\)|\[[^\]]*\]|\uff08[^\uff09]*\uff09", " ", candidate)
+        candidate = candidate.strip(" \t\r\n:：,，.。;；?？")
+        return " ".join(candidate.split()).strip()
+
+    @staticmethod
+    def _choice_match_key(text: str) -> str:
+        candidate = RunnerToolGateRoutingMixin._strip_choice_decoration(text).casefold()
+        candidate = re.sub(r"^(?:resource\s+pool|option|selection|choice)\s*[:：-]\s*", "", candidate)
+        return re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", candidate)
+
+    @staticmethod
+    def _choice_keys_match(reply_key: str, option_key: str) -> bool:
+        if not reply_key or not option_key:
+            return False
+        if reply_key == option_key:
+            return True
+        if len(reply_key) < 3:
+            return False
+        return option_key.startswith(reply_key) or option_key.endswith(reply_key)
 
     @classmethod
     def _identifier_request_is_self_contained(cls, text: str) -> bool:
@@ -559,6 +732,15 @@ class RunnerToolGateRoutingMixin:
             "select",
             "tell me",
             "provide",
+            "prefer",
+            "preference",
+            "would you like",
+            "which",
+            "\u8bf7\u95ee",
+            "\u503e\u5411",
+            "\u60a8\u5e0c\u671b",
+            "\u54ea\u4e2a",
+            "\u54ea\u4e00\u4e2a",
             "请回复",
             "请提供",
             "请补充",
@@ -586,14 +768,33 @@ class RunnerToolGateRoutingMixin:
             "回复编号",
             "输入序号",
         )
+        has_choice_connector = bool(
+            re.search(r"\b(or|versus|vs)\b", lowered)
+            or "\u8fd8\u662f" in lowered
+            or "\u6216" in lowered
+        )
         marker_hits = sum(1 for marker in interaction_markers if marker in lowered)
         has_selection_prompt = any(marker in lowered for marker in selection_prompt_markers)
         has_prompt_suffix = bool(re.search(r"[:：?？]\s*$", normalized_text))
+        has_bounded_confirmation_prompt = (
+            question_count >= 1
+            and marker_hits >= 1
+            and (
+                has_prompt_suffix
+                or "\u662f\u5426" in lowered
+                or "use" in lowered
+                or "proceed" in lowered
+            )
+        )
         if numbered_choices >= 2 and enumerated_field_lines >= 2:
             return True
         if numbered_choices >= 2 and marker_hits >= 1:
             return True
         if numbered_choices >= 2 and has_prompt_suffix:
+            return True
+        if marker_hits >= 1 and has_choice_connector:
+            return True
+        if has_bounded_confirmation_prompt:
             return True
         if marker_hits >= 1 and has_selection_prompt:
             return True

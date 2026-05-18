@@ -868,6 +868,276 @@ def test_resolve_contextual_tool_request_recognizes_bracketed_selection_prompt()
     assert used_follow_up_context is True
 
 
+def test_resolve_contextual_tool_request_reuses_previous_request_for_named_confirmation_reply() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="Target A",
+        recent_history=[
+            {
+                "role": "user",
+                "content": "Create the development environment named app-03.",
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "Recommended deployment target: Target A.\n\n"
+                    "Please confirm whether to use Target A for deployment?"
+                ),
+            },
+        ],
+    )
+
+    assert "Create the development environment" in resolved
+    assert resolved.endswith("\nTarget A")
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_recognizes_named_or_choice_reply() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="Target A",
+        recent_history=[
+            {"role": "user", "content": "Create the development environment named app-03."},
+            {
+                "role": "assistant",
+                "content": "Would you prefer Target A or Target B for deployment?",
+            },
+        ],
+    )
+
+    assert "Original user request:\nCreate the development environment" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "Target A or Target B" in resolved
+    assert "User reply to that prompt:\nTarget A" in resolved
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_recognizes_named_chinese_choice_reply() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="Target A",
+        recent_history=[
+            {"role": "user", "content": "Create the development environment named app-03."},
+            {
+                "role": "assistant",
+                "content": "Would you prefer Target A \u8fd8\u662f Target B?",
+            },
+        ],
+    )
+
+    assert "Original user request:\nCreate the development environment" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "Target A \u8fd8\u662f Target B" in resolved
+    assert "User reply to that prompt:\nTarget A" in resolved
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_recognizes_chinese_question_choice_reply() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="Target A",
+        recent_history=[
+            {"role": "user", "content": "Create the development environment named app-06."},
+            {
+                "role": "assistant",
+                "content": (
+                    "\u8bf7\u95ee\u60a8\u5e0c\u671b\u5c06 app-06 "
+                    "\u90e8\u7f72\u5728 Target A \u8fd8\u662f Target B\uff1f"
+                ),
+            },
+        ],
+    )
+
+    assert "Original user request:\nCreate the development environment" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "Target A \u8fd8\u662f Target B" in resolved
+    assert "User reply to that prompt:\nTarget A" in resolved
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_matches_visible_resource_pool_name_reply() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="vSphere\u8d44\u6e90\u6c60",
+        recent_history=[
+            {
+                "role": "user",
+                "content": (
+                    "Apply for linux with mysql name test-agent-linuxMySQL-06, "
+                    "development department, CentOS 7.9, MySQL 5.7, 40 GB, root password."
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "\u5f53\u524d\u53ef\u9009\u8d44\u6e90\u6c60\u6709\u4e24\u4e2a:\n\n"
+                    "vSphere\u8d44\u6e90\u6c60"
+                    "\uff08\u9002\u7528\u4e8e\u5185\u90e8\u5f00\u53d1\u73af\u5883\uff09\n"
+                    "aliyun\u8d44\u6e90\u6c60"
+                    "\uff08\u676d\u5dde\u5730\u57df\uff0c\u6d4b\u8bd5\u73af\u5883\uff09\n"
+                    "\u8bf7\u95ee\u60a8\u503e\u5411\u90e8\u7f72\u5728 "
+                    "vSphere\u8d44\u6e90\u6c60 \u8fd8\u662f aliyun\u8d44\u6e90\u6c60?"
+                ),
+            },
+        ],
+    )
+
+    assert "Original user request:\nApply for linux with mysql" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "vSphere\u8d44\u6e90\u6c60" in resolved
+    assert "User reply to that prompt:\nvSphere\u8d44\u6e90\u6c60" in resolved
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_matches_visible_ascii_choice_reply() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="vSphere",
+        recent_history=[
+            {
+                "role": "user",
+                "content": "Apply for linux with mysql named test-agent-linuxMySQL-06.",
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "\u8bf7\u95ee\u60a8\u5e0c\u671b\u5c06 test-agent-linuxMySQL-06 "
+                    "\u90e8\u7f72\u5728 vSphere\uff08local development\uff09 "
+                    "\u8fd8\u662f aliyun\uff08cloud test\uff09?"
+                ),
+            },
+        ],
+    )
+
+    assert "Original user request:\nApply for linux with mysql" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "User reply to that prompt:\nvSphere" in resolved
+    assert used_follow_up_context is True
+
+
+def test_visible_choice_matching_uses_extracted_options_not_prompt_wide_words() -> None:
+    assert RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        "Would you like to use Target A or Target B?",
+        "Target A",
+    )
+    assert not RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        "Would you like to use Target A or Target B?",
+        "use",
+    )
+
+
+def test_resolve_contextual_tool_request_matches_numbered_choice_even_without_prompt_markers() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="1",
+        recent_history=[
+            {
+                "role": "user",
+                "content": "Apply for linux with mysql named test-agent-linuxMySQL-06.",
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "Deployment targets\n"
+                    "1. vSphere resource pool\n"
+                    "2. aliyun resource pool"
+                ),
+            },
+        ],
+    )
+
+    assert "Original user request:\nApply for linux with mysql" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "User reply to that prompt:\n1" in resolved
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_handles_multi_question_choice_reply() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="Target A",
+        recent_history=[
+            {"role": "user", "content": "Create the development environment named app-03."},
+            {
+                "role": "assistant",
+                "content": (
+                    "Please confirm two items:\n\n"
+                    "1. Deployment preference: Target A or Target B?\n"
+                    "2. Network policy: use the default if no requirement is specified.\n\n"
+                    "Reply with Target A, Target B, or describe the network requirement."
+                ),
+            },
+        ],
+    )
+
+    assert "Original user request:\nCreate the development environment" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "Deployment preference: Target A or Target B?" in resolved
+    assert "User reply to that prompt:\nTarget A" in resolved
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_handles_reply_with_named_choice_without_question_mark() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="Target A",
+        recent_history=[
+            {"role": "user", "content": "Create the development environment named app-03."},
+            {
+                "role": "assistant",
+                "content": (
+                    "Available deployment targets:\n\n"
+                    "Target A (recommended for development)\n"
+                    "Target B (for test)\n"
+                    "Please reply with Target A or Target B."
+                ),
+            },
+        ],
+    )
+
+    assert "Original user request:\nCreate the development environment" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "Please reply with Target A or Target B." in resolved
+    assert "User reply to that prompt:\nTarget A" in resolved
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_keeps_numbered_selection_prompt() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="1",
+        recent_history=[
+            {"role": "user", "content": "Create the development environment named app-03."},
+            {
+                "role": "assistant",
+                "content": (
+                    "Select a deployment target by number:\n"
+                    "1. Target A\n"
+                    "2. Target B\n"
+                    "Reply with the number only, e.g. 1."
+                ),
+            },
+        ],
+    )
+
+    assert "Original user request:\nCreate the development environment" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "Select a deployment target by number" in resolved
+    assert "Target A" in resolved
+    assert "User reply to that prompt:\n1" in resolved
+    assert used_follow_up_context is True
+
+
 def test_resolve_contextual_tool_request_preserves_latest_prompt_for_repeated_numeric_choices() -> None:
     runner = _GateRunner()
 
