@@ -22,6 +22,16 @@ from app.atlasclaw.core.trace import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _enable_trace_loggers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep caplog assertions isolated from Alembic fileConfig logger disabling."""
+    for logger_name in (
+        "app.atlasclaw.agent.runtime_events",
+        "app.atlasclaw.agent.runner_tool.runner_execution_loop",
+    ):
+        monkeypatch.setattr(logging.getLogger(logger_name), "disabled", False)
+
+
 class _HookCollector:
     def __init__(self) -> None:
         self.calls: list[tuple[str, dict]] = []
@@ -77,7 +87,7 @@ async def test_runtime_event_dispatcher_llm_input_carries_trace_fields(caplog: p
     dispatcher = RuntimeEventDispatcher(hooks=hooks)
     session_key = "agent:main:user:u1:web:dm:peer-1:topic:thread-1"
 
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level(logging.INFO, logger="app.atlasclaw.agent.runtime_events"):
         await dispatcher.trigger_llm_input(
             session_key=session_key,
             run_id="run-1",
@@ -253,7 +263,10 @@ async def test_runner_run_step_log_includes_trace_fields(caplog: pytest.LogCaptu
     deps = type("Deps", (), {"extra": {}, "user_info": type("User", (), {"user_id": "u1"})(), "channel": "web"})()
     session_key = "agent:main:user:u1:web:dm:peer-1:topic:thread-77"
 
-    with caplog.at_level(logging.WARNING):
+    with caplog.at_level(
+        logging.WARNING,
+        logger="app.atlasclaw.agent.runner_tool.runner_execution_loop",
+    ):
         events = [
             event
             async for event in runner.run(

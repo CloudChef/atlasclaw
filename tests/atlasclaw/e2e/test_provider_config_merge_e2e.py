@@ -12,6 +12,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+import app.atlasclaw.api.deps_context as deps_context_module
+from app.atlasclaw.bootstrap.startup_helpers import run_alembic_upgrade
 from app.atlasclaw.api.routes import get_api_context
 from app.atlasclaw.db.database import DatabaseConfig, init_database
 from app.atlasclaw.db.orm.service_provider_config import ServiceProviderConfigService
@@ -20,8 +22,9 @@ from app.atlasclaw.db.schemas import ServiceProviderConfigCreate
 
 def _seed_db_provider_config(db_path: Path) -> None:
     async def _seed() -> None:
-        manager = await init_database(DatabaseConfig(db_type="sqlite", sqlite_path=str(db_path)))
-        await manager.create_tables()
+        db_config = DatabaseConfig(db_type="sqlite", sqlite_path=str(db_path))
+        await run_alembic_upgrade(db_config)
+        manager = await init_database(db_config)
 
         async with manager.get_session() as session:
             await ServiceProviderConfigService.create(
@@ -94,17 +97,17 @@ def test_provider_config_db_overrides_json_on_startup(tmp_path: Path, monkeypatc
     }
 
     config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
-    _seed_db_provider_config(db_path)
-
     monkeypatch.setenv("ATLASCLAW_CONFIG", str(config_path.resolve()))
 
     import app.atlasclaw.core.config as config_module
     from app.atlasclaw.main import create_app
 
     old_config_manager = config_module._config_manager
+    old_api_context = deps_context_module._api_context
     config_module._config_manager = config_module.ConfigManager(config_path=str(config_path.resolve()))
 
     try:
+        _seed_db_provider_config(db_path)
         app = create_app()
         with TestClient(app):
             ctx = get_api_context()
@@ -116,3 +119,4 @@ def test_provider_config_db_overrides_json_on_startup(tmp_path: Path, monkeypatc
             assert cfg["api_version"] == "3"
     finally:
         config_module._config_manager = old_config_manager
+        deps_context_module._api_context = old_api_context

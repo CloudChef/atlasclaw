@@ -6,8 +6,20 @@ from __future__ import annotations
 import asyncio
 import logging
 
+import pytest
+
 from app.atlasclaw.core.provider_registry import ServiceProviderRegistry
 from app.atlasclaw.tools.providers.instance_tools import list_provider_instances_tool
+
+
+@pytest.fixture(autouse=True)
+def _enable_provider_registry_logger(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep caplog tests isolated from Alembic fileConfig logger disabling."""
+    monkeypatch.setattr(
+        logging.getLogger("app.atlasclaw.core.provider_registry"),
+        "disabled",
+        False,
+    )
 
 
 def _smartcmp_instance_config() -> dict[str, str]:
@@ -49,7 +61,7 @@ def test_service_provider_registry_redacts_schema_sensitive_fields() -> None:
 def test_service_provider_registry_skips_unknown_auth_type_and_logs_error(caplog) -> None:
     registry = ServiceProviderRegistry()
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.ERROR, logger="app.atlasclaw.core.provider_registry"):
         registry.load_instances_from_config(
             {
                 "smartcmp": {

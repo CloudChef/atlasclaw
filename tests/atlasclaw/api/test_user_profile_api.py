@@ -31,9 +31,10 @@ from app.atlasclaw.auth.config import AuthConfig
 from app.atlasclaw.auth.middleware import setup_auth_middleware
 from app.atlasclaw.db import get_db_session
 from app.atlasclaw.db.database import DatabaseConfig, DatabaseManager, init_database
+from app.atlasclaw.db.orm.role import RoleService
 from app.atlasclaw.db.orm.service_provider_config import ServiceProviderConfigService
 from app.atlasclaw.db.orm.user import UserService
-from app.atlasclaw.db.schemas import ServiceProviderConfigCreate, UserCreate
+from app.atlasclaw.db.schemas import RoleCreate, ServiceProviderConfigCreate, UserCreate, UserUpdate
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillRegistry
@@ -144,6 +145,57 @@ def _create_provider_config_sync(
             )
 
     asyncio.run(_create())
+
+
+def _grant_provider_access_sync(
+    manager: DatabaseManager,
+    *,
+    provider_type: str,
+    instance_name: str,
+    username: str = "testuser",
+) -> None:
+    """Grant one provider-instance permission in the temporary SQLite test database."""
+
+    def _identifier_part(value: str) -> str:
+        allowed = set("abcdefghijklmnopqrstuvwxyz0123456789")
+        return "".join(ch if ch in allowed else "_" for ch in value.lower()).strip("_")
+
+    async def _grant() -> None:
+        async with manager.get_session() as session:
+            role_identifier = (
+                f"provider_access_{_identifier_part(provider_type)}_"
+                f"{_identifier_part(instance_name)}"
+            )
+            role = await RoleService.get_by_identifier(session, role_identifier)
+            if role is None:
+                role = await RoleService.create(
+                    session,
+                    RoleCreate(
+                        name=f"Provider Access {provider_type}.{instance_name}",
+                        identifier=role_identifier,
+                        description=f"Allows test access to {provider_type}.{instance_name}.",
+                        permissions={
+                            "providers": {
+                                "provider_permissions": [
+                                    {
+                                        "provider_type": provider_type,
+                                        "instance_name": instance_name,
+                                        "allowed": True,
+                                    }
+                                ]
+                            }
+                        },
+                        is_active=True,
+                    ),
+                )
+
+            user = await UserService.get_by_username(session, username)
+            assert user is not None
+            roles = dict(user.roles or {})
+            roles[role.identifier] = True
+            await UserService.update(session, user.id, UserUpdate(roles=roles))
+
+    asyncio.run(_grant())
 
 
 @contextmanager
@@ -512,6 +564,7 @@ class TestUserProfileAPI:
     def test_get_my_provider_settings_redacts_sensitive_values(self, tmp_path):
         """Authenticated users should not receive saved sensitive provider values back."""
         manager = _init_database_sync(tmp_path)
+        _grant_provider_access_sync(manager, provider_type="smartcmp", instance_name="default")
         client = _build_client(tmp_path, _get_auth_config())
         token = _login_as(client, "testuser", "testpass123")
         workspace_path = tmp_path / "workspace"
@@ -561,6 +614,7 @@ class TestUserProfileAPI:
     def test_get_my_provider_settings_redacts_unknown_provider_sensitive_values(self, tmp_path):
         """Sensitive config keys are redacted even when a provider has no built-in schema."""
         manager = _init_database_sync(tmp_path)
+        _grant_provider_access_sync(manager, provider_type="external", instance_name="default")
         client = _build_client(tmp_path, _get_auth_config())
         token = _login_as(client, "testuser", "testpass123")
         workspace_path = tmp_path / "workspace"
@@ -616,6 +670,7 @@ class TestUserProfileAPI:
     def test_put_my_provider_settings_persists_user_token_without_mutating_template_url(self, tmp_path):
         """Authenticated users can save personal provider credentials without storing base_url."""
         manager = _init_database_sync(tmp_path)
+        _grant_provider_access_sync(manager, provider_type="smartcmp", instance_name="default")
         client = _build_client(tmp_path, _get_auth_config())
         token = _login_as(client, "testuser", "testpass123")
         workspace_path = tmp_path / "workspace"
@@ -673,6 +728,7 @@ class TestUserProfileAPI:
     def test_put_my_provider_settings_uses_db_managed_provider_template(self, tmp_path):
         """User-owned provider settings use the merged DB/config provider catalog."""
         manager = _init_database_sync(tmp_path)
+        _grant_provider_access_sync(manager, provider_type="smartcmp", instance_name="db-managed")
         client = _build_client(tmp_path, _get_auth_config())
         token = _login_as(client, "testuser", "testpass123")
         workspace_path = tmp_path / "workspace"
@@ -716,6 +772,7 @@ class TestUserProfileAPI:
     def test_put_my_provider_settings_preserves_existing_sensitive_values_when_omitted(self, tmp_path):
         """Omitted sensitive fields should be preserved so redacted GET payloads do not erase them."""
         manager = _init_database_sync(tmp_path)
+        _grant_provider_access_sync(manager, provider_type="smartcmp", instance_name="default")
         client = _build_client(tmp_path, _get_auth_config())
         token = _login_as(client, "testuser", "testpass123")
         workspace_path = tmp_path / "workspace"
@@ -778,6 +835,7 @@ class TestUserProfileAPI:
     def test_put_my_provider_settings_uses_template_auth_chain_for_multi_auth_templates(self, tmp_path):
         """Multi-auth templates keep template auth chain authoritative over user-submitted auth_type."""
         manager = _init_database_sync(tmp_path)
+        _grant_provider_access_sync(manager, provider_type="smartcmp", instance_name="default")
         client = _build_client(tmp_path, _get_auth_config())
         token = _login_as(client, "testuser", "testpass123")
         workspace_path = tmp_path / "workspace"
@@ -822,6 +880,7 @@ class TestUserProfileAPI:
     def test_put_my_provider_settings_does_not_persist_template_secrets_for_multi_auth_templates(self, tmp_path):
         """User settings must not copy template-owned auth fields into the persisted user config."""
         manager = _init_database_sync(tmp_path)
+        _grant_provider_access_sync(manager, provider_type="smartcmp", instance_name="default")
         client = _build_client(tmp_path, _get_auth_config())
         token = _login_as(client, "testuser", "testpass123")
         workspace_path = tmp_path / "workspace"
@@ -865,6 +924,7 @@ class TestUserProfileAPI:
     def test_put_my_provider_settings_does_not_allow_user_provider_token_override(self, tmp_path):
         """Shared provider tokens are template-owned and cannot be persisted from user settings."""
         manager = _init_database_sync(tmp_path)
+        _grant_provider_access_sync(manager, provider_type="smartcmp", instance_name="default")
         client = _build_client(tmp_path, _get_auth_config())
         token = _login_as(client, "testuser", "testpass123")
         workspace_path = tmp_path / "workspace"
@@ -909,6 +969,7 @@ class TestUserProfileAPI:
     def test_put_my_provider_settings_rejects_template_without_user_token(self, tmp_path):
         """Users can only save settings for provider templates that include user_token."""
         manager = _init_database_sync(tmp_path)
+        _grant_provider_access_sync(manager, provider_type="smartcmp", instance_name="default")
         client = _build_client(tmp_path, _get_auth_config())
         token = _login_as(client, "testuser", "testpass123")
         workspace_path = tmp_path / "workspace"
@@ -950,6 +1011,7 @@ class TestUserProfileAPI:
     def test_put_my_provider_settings_requires_initial_user_token(self, tmp_path):
         """A first-time personal provider setting must include a user_token."""
         manager = _init_database_sync(tmp_path)
+        _grant_provider_access_sync(manager, provider_type="smartcmp", instance_name="default")
         client = _build_client(tmp_path, _get_auth_config())
         token = _login_as(client, "testuser", "testpass123")
         workspace_path = tmp_path / "workspace"

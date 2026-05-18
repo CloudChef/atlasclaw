@@ -29,6 +29,8 @@ async def test_bing_adapter_returns_normalized_results(monkeypatch) -> None:
 
 @pytest.mark.asyncio
 async def test_bing_adapter_accepts_generic_h2_result_blocks(monkeypatch) -> None:
+    pytest.importorskip("bs4")
+
     provider = BingHtmlFallbackProvider(trust_env=True)
 
     async def fake_fetch(*args, **kwargs):
@@ -139,6 +141,8 @@ def test_classify_bing_html_treats_footer_only_shell_with_scripts_as_empty_shell
 
 
 def test_parse_bing_results_uses_loose_parser_for_alt_serp() -> None:
+    pytest.importorskip("bs4")
+
     html = (
         '<html><head><title>苏州徒步推荐 - Search</title></head><body><main>'
         '<section class="card"><h2><a href="https://example.com/trails/suzhou-a">苏州灵岩山徒步</a></h2>'

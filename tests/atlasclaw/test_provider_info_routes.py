@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import app.atlasclaw.api.deps_context as deps_context_module
 import app.atlasclaw.core.config as config_module
 from app.atlasclaw.api.provider_info_routes import router as provider_info_router
 from app.atlasclaw.api.service_provider_schemas import (
@@ -22,12 +23,19 @@ from tests.atlasclaw.provider_schema_fixtures import register_default_provider_s
 
 
 @pytest.fixture(autouse=True)
-def reset_config_manager():
+def reset_config_manager(monkeypatch):
+    monkeypatch.setattr(
+        logging.getLogger("app.atlasclaw.api.provider_info_routes"),
+        "disabled",
+        False,
+    )
     config_module._config_manager = None
+    monkeypatch.setattr(deps_context_module, "_api_context", None)
     clear_provider_schema_definitions()
     register_default_provider_schemas()
     yield
     config_module._config_manager = None
+    deps_context_module._api_context = None
     clear_provider_schema_definitions()
 
 
@@ -349,7 +357,7 @@ def test_available_instances_skips_unknown_auth_type_and_logs_error(
     app.include_router(provider_info_router, prefix="/api")
     client = TestClient(app)
 
-    with caplog.at_level(logging.ERROR):
+    with caplog.at_level(logging.ERROR, logger="app.atlasclaw.api.provider_info_routes"):
         response = client.get("/api/service-providers/available-instances")
 
     assert response.status_code == 200

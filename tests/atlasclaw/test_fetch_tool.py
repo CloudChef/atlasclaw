@@ -62,6 +62,8 @@ async def test_web_fetch_tool_returns_error_payload_when_fetch_fails(monkeypatch
 
 
 def test_html_to_text_prefers_readable_blocks_over_navigation() -> None:
+    pytest.importorskip("bs4")
+
     html = """
     <html>
       <body>
