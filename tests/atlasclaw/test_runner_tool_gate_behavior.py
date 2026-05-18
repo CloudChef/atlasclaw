@@ -201,6 +201,49 @@ def test_capability_selector_prompt_uses_descriptions_only_for_capabilities() ->
     assert "declared_tools=" not in prompt
     assert "smartcmp" not in prompt
     assert "hidden_export_tool" not in prompt
+    assert "across languages" in prompt
+
+
+def test_capability_selector_can_select_markdown_vault_for_cross_language_request() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "action": "use_tools",
+            "targets": ["skill:markdown-vault:markdown-vault-query"],
+            "reason": "The user asked to answer from the configured knowledge base.",
+        }
+    )
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="\u57fa\u4e8e\u77e5\u8bc6\u5e93\uff0c"
+            "\u7533\u8bf7\u865a\u62df\u673a\u9700\u8981\u54ea\u4e9b\u6b65\u9aa4\uff1f",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "skill:markdown-vault:markdown-vault-query",
+                    "kind": "md_skill",
+                    "name": "markdown-vault:markdown-vault-query",
+                    "description": (
+                        "Search and retrieve read-only configured Markdown vault "
+                        "knowledge-base content with file and line citations."
+                    ),
+                    "provider_type": "markdown-vault",
+                    "declared_tool_names": [
+                        "markdown_vault_search",
+                        "markdown_vault_get",
+                    ],
+                    "declares_executable_tools": True,
+                }
+            ],
+        )
+    )
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.USE_TOOLS
+    assert plan.target_skill_names == ["markdown-vault:markdown-vault-query"]
 
 
 def test_capability_selector_can_select_provider_and_standard_skill_targets() -> None:

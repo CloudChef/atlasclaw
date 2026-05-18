@@ -12,7 +12,11 @@ from ..auth.models import ANONYMOUS_USER, UserInfo
 from ..auth.guards import AuthorizationContext, get_optional_authorization_context
 from ..agent.selected_capability import SELECTED_CAPABILITY_KEY
 from ..session.context import SessionKey
-from .agent_capabilities import build_agent_capabilities, resolve_selected_capability
+from .agent_capabilities import (
+    build_agent_capabilities,
+    resolve_auto_selected_capability,
+    resolve_selected_capability,
+)
 from .deps_context import APIContext, get_api_context
 from .schemas import AgentRunRequest, AgentRunResponse, AgentStatusResponse
 from .services.run_service import (
@@ -159,6 +163,15 @@ def register_agent_routes(router: APIRouter) -> None:
                     detail="Selected skill or provider capability is not available.",
             )
             request_context[SELECTED_CAPABILITY_KEY] = canonical_capability
+        else:
+            auto_selected_capability = resolve_auto_selected_capability(
+                ctx=ctx,
+                message=safe_message,
+                authz=resolved_authz,
+                provider_instances=provider_config or (ctx.provider_instances or {}),
+            )
+            if auto_selected_capability is not None:
+                request_context[SELECTED_CAPABILITY_KEY] = auto_selected_capability
 
         # Always pass RBAC result to runtime when DB is available (including
         # empty list which means deny-all).  Only skip when RBAC is not

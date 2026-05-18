@@ -33,7 +33,7 @@ from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
-from app.atlasclaw.skills.registry import SkillRegistry
+from app.atlasclaw.skills.registry import MdSkillEntry, SkillRegistry
 
 
 class _StreamingRunner:
@@ -62,6 +62,40 @@ class _RecordingRunner(_StreamingRunner):
             yield event
 
 
+class _DepsRecordingRunner(_StreamingRunner):
+    def __init__(self):
+        self.deps_extra = None
+
+    async def run(self, session_key, user_message, deps, timeout_seconds=600, **kwargs):
+        self.deps_extra = dict(getattr(deps, "extra", {}) or {})
+        async for event in super().run(session_key, user_message, deps, timeout_seconds, **kwargs):
+            yield event
+
+
+def _markdown_vault_registry(tmp_path) -> SkillRegistry:
+    registry = SkillRegistry()
+    registry._md_skills["markdown-vault:markdown-vault-query"] = MdSkillEntry(
+        name="markdown-vault-query",
+        description="Search and retrieve configured Markdown vault knowledge.",
+        file_path=str(tmp_path / "markdown-vault" / "markdown-vault-query" / "SKILL.md"),
+        provider="markdown-vault",
+        qualified_name="markdown-vault:markdown-vault-query",
+        location="provider",
+        metadata={
+            "provider_type": "markdown-vault",
+            "auto_select": True,
+            "auto_select_triggers": [
+                "knowledge base",
+            ],
+        },
+    )
+    registry._md_skill_tools["markdown-vault:markdown-vault-query"] = {
+        "markdown_vault_search",
+        "markdown_vault_get",
+    }
+    return registry
+
+
 def _build_client(tmp_path) -> TestClient:
     return _build_client_with_runner(tmp_path, _StreamingRunner())
 
@@ -76,12 +110,15 @@ def _build_client_and_context(
     runner,
     *,
     user_id: str = "anonymous",
+    skill_registry: SkillRegistry | None = None,
+    provider_instances: dict | None = None,
 ) -> tuple[TestClient, APIContext]:
     ctx = APIContext(
         session_manager=SessionManager(agents_dir=str(tmp_path / "agents")),
         session_queue=SessionQueue(),
-        skill_registry=SkillRegistry(),
+        skill_registry=skill_registry or SkillRegistry(),
         agent_runner=runner,
+        provider_instances=provider_instances or {},
     )
     set_api_context(ctx)
 
@@ -212,6 +249,41 @@ def test_agent_run_accepts_current_users_existing_session_key(tmp_path):
     assert response.status_code == 200
     assert response.json()["session_key"] == session_key
     assert runner.called is True
+
+
+def test_agent_run_does_not_fake_cross_language_api_auto_select(tmp_path):
+    runner = _DepsRecordingRunner()
+    client, _ctx = _build_client_and_context(
+        tmp_path,
+        runner,
+        user_id="alice",
+        skill_registry=_markdown_vault_registry(tmp_path),
+        provider_instances={
+            "markdown-vault": {
+                "default": {
+                    "auth_type": "app_credentials",
+                    "vault_path": str(tmp_path / "vault"),
+                }
+            }
+        },
+    )
+    session = client.post("/api/sessions", json={})
+    assert session.status_code == 200
+    session_key = session.json()["session_key"]
+
+    response = client.post(
+        "/api/agent/run",
+        json={
+            "session_key": session_key,
+            "message": "\u57fa\u4e8e\u77e5\u8bc6\u5e93\uff0c"
+            "\u7533\u8bf7\u865a\u62df\u673a\u9700\u8981\u54ea\u4e9b\u6b65\u9aa4\uff1f",
+            "timeout_seconds": 30,
+        },
+    )
+
+    assert response.status_code == 200
+    selected = (runner.deps_extra or {}).get("_selected_capability")
+    assert selected is None
 
 
 def test_agent_run_status_rejects_other_users_run_id(tmp_path):

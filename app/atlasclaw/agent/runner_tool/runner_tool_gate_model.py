@@ -170,6 +170,7 @@ class RunnerToolGateModelMixin:
             "ordinary natural-language requests.\n\n"
             "Rules:\n"
             "- Choose only capability IDs listed below.\n"
+            "- Match user intent across languages using the capability names and descriptions.\n"
             "- Use direct_answer when the request does not need an authorized runtime capability.\n"
             "- Use ask_clarification when the user intent or required target is ambiguous.\n"
             "- Use use_tools when the request needs provider data, private context, artifact creation, "

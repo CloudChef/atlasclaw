@@ -22,6 +22,13 @@ from .deps_context import (
 
 
 _COMMAND_PART_PATTERN = re.compile(r"[^A-Za-z0-9_.:-]+")
+_ASCII_WORD_PATTERN = re.compile(r"^[a-z0-9][a-z0-9 _.-]*[a-z0-9]$|^[a-z0-9]$")
+_AUTO_SELECT_TRIGGER_KEYS = (
+    "auto_select_triggers",
+    "triggers",
+    "aliases",
+    "keywords",
+)
 
 
 def _normalize_text(value: Any) -> str:
@@ -45,6 +52,25 @@ def _unique_text(values: list[Any]) -> list[str]:
         seen.add(key)
         result.append(normalized)
     return result
+
+
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _flatten_text_values(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        flattened: list[str] = []
+        for item in value:
+            flattened.extend(_flatten_text_values(item))
+        return flattened
+    return [_normalize_text(value)]
 
 
 def _command_part(value: Any) -> str:
@@ -193,6 +219,21 @@ def _md_tool_names(ctx: APIContext, qualified_name: str, metadata: dict[str, Any
     return _unique_text(names)
 
 
+def _auto_select_config_from_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
+    if not _coerce_bool(metadata.get("auto_select")):
+        return {}
+
+    triggers: list[Any] = []
+    for key in _AUTO_SELECT_TRIGGER_KEYS:
+        triggers.extend(_flatten_text_values(metadata.get(key)))
+
+    return {
+        "auto_select": True,
+        "auto_select_mode": _normalize_lower(metadata.get("auto_select_mode")),
+        "auto_select_triggers": _unique_text(triggers),
+    }
+
+
 def _group_ids_from_metadata(metadata: dict[str, Any], provider_type: str) -> list[str]:
     values: list[Any] = []
     for key in ("group", "groups", "tool_group", "tool_groups", "group_ids"):
@@ -230,11 +271,12 @@ def _build_standalone_skill_item(
     source: str,
     tool_names: list[str] | None = None,
     group_ids: list[str] | None = None,
+    auto_select_config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     display_name = _display_skill_name(qualified_skill_name or skill_name)
     command = f"/{_command_part(display_name)}"
     target_skill_names = _unique_text([qualified_skill_name, skill_name])
-    return {
+    item = {
         "kind": "skill",
         "command": command,
         "label": display_name,
@@ -246,6 +288,8 @@ def _build_standalone_skill_item(
         "target_tool_names": _unique_text(tool_names or []),
         "target_group_ids": _unique_text(group_ids or []),
     }
+    item.update(auto_select_config or {})
+    return item
 
 
 def _build_provider_skill_items(
@@ -259,6 +303,7 @@ def _build_provider_skill_items(
     source: str,
     tool_names: list[str] | None = None,
     group_ids: list[str] | None = None,
+    auto_select_config: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     instances = _provider_instances_for(provider_instances, provider_type)
     if not instances:
@@ -272,24 +317,24 @@ def _build_provider_skill_items(
     items: list[dict[str, Any]] = []
     for instance_name in sorted(instances.keys()):
         command = f"/{_command_part(instance_name)}.{_command_part(display_skill_name)}"
-        items.append(
-            {
-                "kind": "provider_skill",
-                "command": command,
-                "label": f"{instance_name}.{display_skill_name}",
-                "provider_type": provider_type,
-                "provider_display_name": provider_display_name,
-                "instance_name": instance_name,
-                "skill_name": skill_name,
-                "qualified_skill_name": qualified_skill_name or skill_name,
-                "description": description,
-                "source": source,
-                "target_provider_types": _unique_text([provider_type]),
-                "target_skill_names": target_skill_names,
-                "target_tool_names": target_tool_names,
-                "target_group_ids": target_group_ids,
-            }
-        )
+        item = {
+            "kind": "provider_skill",
+            "command": command,
+            "label": f"{instance_name}.{display_skill_name}",
+            "provider_type": provider_type,
+            "provider_display_name": provider_display_name,
+            "instance_name": instance_name,
+            "skill_name": skill_name,
+            "qualified_skill_name": qualified_skill_name or skill_name,
+            "description": description,
+            "source": source,
+            "target_provider_types": _unique_text([provider_type]),
+            "target_skill_names": target_skill_names,
+            "target_tool_names": target_tool_names,
+            "target_group_ids": target_group_ids,
+        }
+        item.update(auto_select_config or {})
+        items.append(item)
     return items
 
 
@@ -323,6 +368,7 @@ def build_agent_capabilities(
         tool_names = _md_tool_names(ctx, qualified_skill_name, metadata)
         md_tool_names_seen.update(_normalize_lower(name) for name in tool_names)
         group_ids = _group_ids_from_metadata(metadata, provider_type)
+        auto_select_config = _auto_select_config_from_metadata(metadata)
         if provider_type:
             for item in _build_provider_skill_items(
                 ctx=ctx,
@@ -334,6 +380,7 @@ def build_agent_capabilities(
                 source="markdown",
                 tool_names=tool_names,
                 group_ids=group_ids,
+                auto_select_config=auto_select_config,
             ):
                 _append_capability(items, seen, item)
             continue
@@ -348,6 +395,7 @@ def build_agent_capabilities(
                 source="markdown",
                 tool_names=tool_names,
                 group_ids=group_ids,
+                auto_select_config=auto_select_config,
             ),
         )
 
@@ -473,3 +521,61 @@ def resolve_selected_capability(
     if len(matches) != 1:
         return None
     return dict(matches[0])
+
+
+def resolve_auto_selected_capability(
+    *,
+    ctx: APIContext,
+    message: str,
+    authz: AuthorizationContext | None = None,
+    provider_instances: dict[str, dict[str, dict[str, Any]]] | None = None,
+) -> dict[str, Any] | None:
+    """Auto-select a unique request-visible capability declared by metadata."""
+    catalog = build_agent_capabilities(
+        ctx=ctx,
+        authz=authz,
+        provider_instances=provider_instances,
+    )
+    matches = [
+        dict(item)
+        for item in catalog.get("capabilities", [])
+        if isinstance(item, dict)
+        and _auto_select_capability_matches(item, message)
+    ]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _auto_select_capability_matches(item: dict[str, Any], message: str) -> bool:
+    if not _coerce_bool(item.get("auto_select")):
+        return False
+
+    normalized = _normalize_lower(message)
+    if not normalized:
+        return False
+
+    triggers = [
+        _normalize_lower(trigger)
+        for trigger in _flatten_text_values(item.get("auto_select_triggers"))
+        if _normalize_text(trigger)
+    ]
+    if any(_auto_select_trigger_matches(normalized, trigger) for trigger in triggers):
+        return True
+
+    if _normalize_lower(item.get("auto_select_mode")) == "always":
+        return True
+    return False
+
+
+def _auto_select_trigger_matches(normalized_message: str, normalized_trigger: str) -> bool:
+    if not normalized_message or not normalized_trigger:
+        return False
+    if _ASCII_WORD_PATTERN.fullmatch(normalized_trigger):
+        pattern = (
+            r"(?<![a-z0-9])"
+            + re.escape(normalized_trigger)
+            + r"(?![a-z0-9])"
+        )
+        return re.search(pattern, normalized_message) is not None
+    return normalized_trigger in normalized_message

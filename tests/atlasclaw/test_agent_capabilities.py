@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from app.atlasclaw.api.agent_capabilities import (
     build_agent_capabilities,
+    resolve_auto_selected_capability,
     resolve_selected_capability,
 )
 from app.atlasclaw.agent.selected_capability import (
@@ -45,6 +46,35 @@ def _build_context(tmp_path) -> APIContext:
         ),
         _handler,
     )
+    return APIContext(
+        session_manager=SessionManager(agents_dir=str(tmp_path / "agents")),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+    )
+
+
+def _build_markdown_vault_context(tmp_path) -> APIContext:
+    registry = SkillRegistry()
+    registry._md_skills["markdown-vault:markdown-vault-query"] = MdSkillEntry(
+        name="markdown-vault-query",
+        description="Search and retrieve configured Markdown vault knowledge.",
+        file_path=str(tmp_path / "markdown-vault" / "markdown-vault-query" / "SKILL.md"),
+        provider="markdown-vault",
+        qualified_name="markdown-vault:markdown-vault-query",
+        location="provider",
+        metadata={
+            "provider_type": "markdown-vault",
+            "auto_select": True,
+            "auto_select_triggers": [
+                "knowledge base",
+                "wiki",
+            ],
+        },
+    )
+    registry._md_skill_tools["markdown-vault:markdown-vault-query"] = {
+        "markdown_vault_search",
+        "markdown_vault_get",
+    }
     return APIContext(
         session_manager=SessionManager(agents_dir=str(tmp_path / "agents")),
         session_queue=SessionQueue(),
@@ -264,3 +294,119 @@ def test_selected_capability_targets_normalize_for_reusable_permission_checks():
     assert targets.group_ids == ["group:smartcmp"]
     assert targets.has_any() is True
     assert selected_capability_provider_instance_ref(selected) == ("SmartCMP", "default")
+
+
+def test_auto_selects_unique_provider_capability_from_declared_trigger(tmp_path):
+    ctx = _build_markdown_vault_context(tmp_path)
+
+    selected = resolve_auto_selected_capability(
+        ctx=ctx,
+        message="Based on the knowledge base, what are the VM request steps",
+        provider_instances={
+            "markdown-vault": {
+                "default": {"vault_path": str(tmp_path / "vault")},
+            }
+        },
+    )
+
+    assert selected is not None
+    assert selected["provider_type"] == "markdown-vault"
+    assert selected["instance_name"] == "default"
+    assert set(selected["target_tool_names"]) == {
+        "markdown_vault_search",
+        "markdown_vault_get",
+    }
+
+
+def test_auto_select_ignores_question_without_declared_trigger(tmp_path):
+    ctx = _build_markdown_vault_context(tmp_path)
+
+    selected = resolve_auto_selected_capability(
+        ctx=ctx,
+        message="How do I request a VM?",
+        provider_instances={
+            "markdown-vault": {
+                "default": {"vault_path": str(tmp_path / "vault")},
+            }
+        },
+    )
+
+    assert selected is None
+
+
+def test_auto_select_does_not_infer_cross_language_trigger_in_api_router(tmp_path):
+    ctx = _build_markdown_vault_context(tmp_path)
+
+    selected = resolve_auto_selected_capability(
+        ctx=ctx,
+        message="\u57fa\u4e8e\u77e5\u8bc6\u5e93\uff0c"
+        "\u7533\u8bf7\u865a\u62df\u673a\u9700\u8981\u54ea\u4e9b\u6b65\u9aa4\uff1f",
+        provider_instances={
+            "markdown-vault": {
+                "default": {"vault_path": str(tmp_path / "vault")},
+            }
+        },
+    )
+
+    assert selected is None
+
+
+def test_auto_select_trigger_uses_word_boundaries_for_short_ascii_terms(tmp_path):
+    ctx = _build_markdown_vault_context(tmp_path)
+
+    selected = resolve_auto_selected_capability(
+        ctx=ctx,
+        message="What does the wiki say about release approvals?",
+        provider_instances={
+            "markdown-vault": {
+                "default": {"vault_path": str(tmp_path / "vault")},
+            }
+        },
+    )
+
+    assert selected is not None
+
+    selected = resolve_auto_selected_capability(
+        ctx=ctx,
+        message="What is Wikipedia?",
+        provider_instances={
+            "markdown-vault": {
+                "default": {"vault_path": str(tmp_path / "vault")},
+            }
+        },
+    )
+
+    assert selected is None
+
+
+def test_auto_select_markdown_vault_ignores_ordinary_chat(tmp_path):
+    ctx = _build_markdown_vault_context(tmp_path)
+
+    selected = resolve_auto_selected_capability(
+        ctx=ctx,
+        message="你好",
+        provider_instances={
+            "markdown-vault": {
+                "default": {"vault_path": str(tmp_path / "vault")},
+            }
+        },
+    )
+
+    assert selected is None
+
+
+def test_auto_select_markdown_vault_does_not_guess_between_instances(tmp_path):
+    ctx = _build_markdown_vault_context(tmp_path)
+
+    selected = resolve_auto_selected_capability(
+        ctx=ctx,
+        message="Based on the knowledge base, what are the VM request steps",
+        provider_instances={
+            "markdown-vault": {
+                "team-a": {"vault_path": str(tmp_path / "a")},
+                "team-b": {"vault_path": str(tmp_path / "b")},
+            }
+        },
+    )
+
+    assert selected is None

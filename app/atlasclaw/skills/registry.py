@@ -14,7 +14,6 @@ precedence:
 
 from __future__ import annotations
 
-import json
 import inspect
 import logging
 import re
