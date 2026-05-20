@@ -37,6 +37,7 @@ DEFAULT_SUMMARY_MERGE_INSTRUCTIONS = (
     "Merge partial summaries into one cohesive summary. "
     "Preserve decisions, constraints, unresolved issues, and tool failures."
 )
+COMPACTION_SUMMARY_PREFIX = "[Compression Summary - Earlier conversation has been summarized]"
 TOOL_RESULT_ROLES = {"tool", "toolresult", "tool_result"}
 TOOL_DETAIL_FIELD_MARKERS = {
     "detail",
@@ -181,7 +182,13 @@ class CompactionPipeline:
     
     def _split_for_compaction(self, messages: list[dict]) -> tuple[Optional[dict], list[dict], list[dict]]:
         """Split messages into system prompt, recent messages, and compressible history."""
-        system_prompt = messages[0] if messages and messages[0].get("role") == "system" else None
+        system_prompt = (
+            messages[0]
+            if messages
+            and messages[0].get("role") == "system"
+            and not self._is_compaction_summary_message(messages[0])
+            else None
+        )
 
         keep_count = self.config.keep_recent_turns * 2
         recent_messages = messages[-keep_count:] if keep_count > 0 else []
@@ -190,6 +197,14 @@ class CompactionPipeline:
         end_idx = len(messages) - keep_count if keep_count > 0 else len(messages)
         to_compress = messages[start_idx:end_idx]
         return system_prompt, recent_messages, to_compress
+
+    @staticmethod
+    def _is_compaction_summary_message(message: dict) -> bool:
+        """Return whether a system message is a synthetic compaction summary."""
+        if str(message.get("role", "") or "").strip().lower() != "system":
+            return False
+        content = str(message.get("content", "") or "").strip()
+        return content.startswith(COMPACTION_SUMMARY_PREFIX)
 
     async def summarize_overflow(self, messages: list[dict]) -> str:
         """Generate a summary for the overflow section only (without rebuilding transcript)."""
@@ -231,7 +246,7 @@ class CompactionPipeline:
         # Insert the generated summary as a synthetic system message.
         result.append({
             "role": "system",
-            "content": f"[Compression Summary - Earlier conversation has been summarized]\n{summary}",
+            "content": f"{COMPACTION_SUMMARY_PREFIX}\n{summary}",
         })
 
         # Preserve the recent conversation verbatim.
