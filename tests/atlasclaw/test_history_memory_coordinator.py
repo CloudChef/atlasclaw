@@ -3,14 +3,22 @@
 
 from __future__ import annotations
 
-from pydantic_ai.messages import ModelRequest, ModelResponse, SystemPromptPart, ToolCallPart, ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    SystemPromptPart,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+)
 
 from app.atlasclaw.agent.compaction import CompactionConfig, CompactionPipeline
 from app.atlasclaw.agent.history_memory import HistoryMemoryCoordinator
 from app.atlasclaw.session.context import TranscriptEntry
 
 
-def test_history_memory_normalize_messages_splits_system_and_user_parts():
+def test_history_memory_normalize_messages_drops_runtime_system_prompt_parts():
     coordinator = HistoryMemoryCoordinator(
         session_manager=object(),
         compaction=CompactionPipeline(CompactionConfig()),
@@ -25,9 +33,62 @@ def test_history_memory_normalize_messages_splits_system_and_user_parts():
     normalized = coordinator.normalize_messages([message])
 
     assert normalized == [
-        {"role": "system", "content": "system rules"},
         {"role": "user", "content": "hello atlas"},
     ]
+
+
+def test_history_memory_prune_summary_messages_keeps_only_compaction_system_messages():
+    coordinator = HistoryMemoryCoordinator(
+        session_manager=object(),
+        compaction=CompactionPipeline(CompactionConfig()),
+    )
+    summary = f"{coordinator.COMPACTION_SUMMARY_PREFIX}\nEarlier facts."
+
+    pruned = coordinator.prune_summary_messages(
+        [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": summary},
+        ]
+    )
+
+    assert pruned == [
+        {"role": "user", "content": "hi"},
+        {"role": "system", "content": summary},
+    ]
+
+
+def test_history_memory_to_model_message_history_replays_summary_as_user_context():
+    coordinator = HistoryMemoryCoordinator(
+        session_manager=object(),
+        compaction=CompactionPipeline(CompactionConfig()),
+    )
+    summary = f"{coordinator.COMPACTION_SUMMARY_PREFIX}\nEarlier facts."
+
+    model_history = coordinator.to_model_message_history(
+        [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hi"},
+            {"role": "system", "content": summary},
+            {"role": "assistant", "content": "hello"},
+        ]
+    )
+
+    assert len(model_history) == 3
+    assert isinstance(model_history[0], ModelRequest)
+    assert isinstance(model_history[0].parts[0], UserPromptPart)
+    assert model_history[0].parts[0].content == summary
+    assert isinstance(model_history[1], ModelRequest)
+    assert isinstance(model_history[1].parts[0], UserPromptPart)
+    assert model_history[1].parts[0].content == "hi"
+    assert isinstance(model_history[2], ModelResponse)
+    assert isinstance(model_history[2].parts[0], TextPart)
+    assert model_history[2].parts[0].content == "hello"
+    assert not any(
+        isinstance(part, SystemPromptPart)
+        for message in model_history
+        for part in getattr(message, "parts", [])
+    )
 
 
 def test_history_memory_to_model_message_history_preserves_tool_call_and_return_structure():

@@ -5,7 +5,11 @@ from __future__ import annotations
 
 import pytest
 
-from app.atlasclaw.agent.compaction import CompactionConfig, CompactionPipeline
+from app.atlasclaw.agent.compaction import (
+    COMPACTION_SUMMARY_PREFIX,
+    CompactionConfig,
+    CompactionPipeline,
+)
 
 
 def _build_long_messages(*, history_count: int, history_chars: int) -> list[dict]:
@@ -106,6 +110,52 @@ async def test_compaction_keeps_original_history_when_summary_fails():
     compacted = await pipeline.compact(messages)
 
     assert compacted == messages
+
+
+@pytest.mark.asyncio
+async def test_compaction_merges_existing_summary_instead_of_accumulating():
+    previous_summary = f"{COMPACTION_SUMMARY_PREFIX}\nprevious compressed facts"
+    captured_batches: list[list[dict]] = []
+
+    async def _summarizer(batch: list[dict]) -> str:
+        captured_batches.append(batch)
+        return "merged summary"
+
+    pipeline = CompactionPipeline(
+        CompactionConfig(
+            context_window=4000,
+            reserve_tokens_floor=200,
+            soft_threshold_tokens=100,
+            keep_recent_turns=1,
+            max_history_share=1.0,
+            safeguard_enabled=False,
+        ),
+        summarizer=_summarizer,
+    )
+    messages = [
+        {"role": "system", "content": previous_summary},
+        {"role": "user", "content": "older user"},
+        {"role": "assistant", "content": "older assistant"},
+        {"role": "user", "content": "latest user"},
+        {"role": "assistant", "content": "latest assistant"},
+    ]
+
+    compacted = await pipeline.compact(messages)
+
+    summary_messages = [
+        message
+        for message in compacted
+        if message.get("role") == "system"
+        and str(message.get("content", "")).startswith(COMPACTION_SUMMARY_PREFIX)
+    ]
+    assert len(summary_messages) == 1
+    assert compacted == [
+        {"role": "system", "content": f"{COMPACTION_SUMMARY_PREFIX}\nmerged summary"},
+        {"role": "user", "content": "latest user"},
+        {"role": "assistant", "content": "latest assistant"},
+    ]
+    assert captured_batches
+    assert captured_batches[0][0] == {"role": "system", "content": previous_summary}
 
 
 @pytest.mark.asyncio

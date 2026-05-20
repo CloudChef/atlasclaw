@@ -17,14 +17,17 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from app.atlasclaw.agent.compaction import CompactionPipeline
+from app.atlasclaw.agent.compaction import (
+    COMPACTION_SUMMARY_PREFIX as COMPACTION_SUMMARY_PREFIX_VALUE,
+    CompactionPipeline,
+)
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import has_hidden_lookup_result_content
 
 
 class HistoryMemoryCoordinator:
     """Encapsulates transcript conversion between session storage and model APIs."""
 
-    COMPACTION_SUMMARY_PREFIX = "[Compression Summary - Earlier conversation has been summarized]"
+    COMPACTION_SUMMARY_PREFIX = COMPACTION_SUMMARY_PREFIX_VALUE
 
     def __init__(self, session_manager: Any, compaction: CompactionPipeline) -> None:
         self.sessions = session_manager
@@ -39,6 +42,8 @@ class HistoryMemoryCoordinator:
                 item.setdefault("role", "assistant")
                 item.setdefault("content", "")
                 role = str(item.get("role", "") or "").strip().lower()
+                if role == "system" and not self._should_keep_system_message(item.get("content")):
+                    continue
                 if role == "tool":
                     tool_name = str(item.get("tool_name", "") or item.get("name", "")).strip()
                     item["content"] = self._sanitize_tool_content_for_runtime_message(
@@ -49,12 +54,17 @@ class HistoryMemoryCoordinator:
                 continue
 
             expanded = self._expand_structured_message(msg)
+            if self._is_structured_model_message(msg):
+                normalized.extend(expanded)
+                continue
             if expanded:
                 normalized.extend(expanded)
                 continue
 
             role = self._extract_message_role(msg)
             content = self._extract_message_content(msg)
+            if str(role).strip().lower() == "system" and not self._should_keep_system_message(content):
+                continue
             item = {
                 "role": str(role),
                 "content": content if isinstance(content, str) else str(content),
@@ -90,7 +100,7 @@ class HistoryMemoryCoordinator:
                 part_kind = getattr(part, "part_kind", "")
                 part_content = getattr(part, "content", None)
                 if part_kind == "system-prompt":
-                    if not part_content:
+                    if not part_content or not self._should_keep_system_message(part_content):
                         continue
                     expanded.append({"role": "system", "content": str(part_content)})
                     continue
@@ -204,6 +214,7 @@ class HistoryMemoryCoordinator:
     def to_model_message_history(self, messages: list[dict]) -> list[Any]:
         """Convert normalized transcript messages into PydanticAI model messages."""
         model_messages: list[Any] = []
+        context_messages: list[Any] = []
         pending_tool_calls: list[dict[str, Any]] = []
         for message in messages:
             role = str(message.get("role", "")).strip().lower()
@@ -217,8 +228,8 @@ class HistoryMemoryCoordinator:
 
             if role == "system":
                 content_text = str(content).strip()
-                if content_text:
-                    model_messages.append(ModelRequest(parts=[SystemPromptPart(content=content_text)]))
+                if content_text and self._should_keep_system_message(content_text):
+                    context_messages.append(ModelRequest(parts=[UserPromptPart(content=content_text)]))
                 continue
 
             if role == "assistant":
@@ -254,7 +265,21 @@ class HistoryMemoryCoordinator:
                 request_parts = self._build_tool_return_parts(message)
                 if request_parts:
                     model_messages.append(ModelRequest(parts=request_parts))
-        return model_messages
+        return context_messages + model_messages
+
+    @staticmethod
+    def _is_structured_model_message(msg: Any) -> bool:
+        """Return whether the value is a PydanticAI structured message container."""
+        kind = getattr(msg, "kind", "")
+        if kind not in {"request", "response"}:
+            return False
+        return getattr(msg, "parts", None) is not None
+
+    @classmethod
+    def _should_keep_system_message(cls, content: Any) -> bool:
+        """Keep only synthetic system messages that are safe to replay as context."""
+        content_text = str(content or "").strip()
+        return content_text.startswith(cls.COMPACTION_SUMMARY_PREFIX)
 
     @staticmethod
     def _normalize_tool_call(tool_call: Any) -> dict[str, Any] | None:
@@ -585,16 +610,16 @@ class HistoryMemoryCoordinator:
         return ""
 
     def prune_summary_messages(self, messages: list[dict]) -> list[dict]:
-        """Remove previously injected summary/recall system messages from session context."""
+        """Drop runtime system prompts while preserving synthetic compaction summaries."""
         pruned: list[dict] = []
         for msg in messages:
-            if msg.get("role") != "system":
+            role = str(msg.get("role", "") or "").strip().lower()
+            if role != "system":
                 pruned.append(msg)
                 continue
             content = str(msg.get("content", ""))
-            if content.startswith(self.COMPACTION_SUMMARY_PREFIX):
-                continue
-            pruned.append(msg)
+            if self._should_keep_system_message(content):
+                pruned.append(msg)
         return pruned
 
     def _extract_message_role(self, msg: Any) -> str:
