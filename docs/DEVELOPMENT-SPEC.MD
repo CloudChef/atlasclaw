@@ -1564,27 +1564,74 @@ Environment="ATLASCLAW_CONFIG=/opt/atlasclaw/AtlasClaw-Core/atlasclaw.json"
 ExecStart=/opt/atlasclaw/venv/bin/uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000 --workers 4
 Restart=always
 RestartSec=5
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
+sudo install -m 0644 build/systemd/atlasclaw.service /etc/systemd/system/atlasclaw.service
 sudo systemctl daemon-reload
 sudo systemctl enable atlasclaw
 sudo systemctl start atlasclaw
 ```
 
+The standard VM service sends stdout/stderr to journald:
+
+```bash
+journalctl -u atlasclaw -f
+```
+
+To use the standard VM file-log drop-in, install the drop-in and create
+`/opt/atlasclaw/logs` with ownership for the `atlasclaw` user:
+
+```bash
+sudo install -d -o atlasclaw -g atlasclaw -m 0755 /opt/atlasclaw/logs
+sudo install -d /etc/systemd/system/atlasclaw.service.d
+sudo install -m 0644 build/systemd/atlasclaw-file-log.conf \
+  /etc/systemd/system/atlasclaw.service.d/file-log.conf
+sudo systemctl daemon-reload
+sudo systemctl restart atlasclaw
+```
+
+The drop-in adds these `[Service]` settings:
+
+```ini
+StandardOutput=append:/opt/atlasclaw/logs/atlasclaw.log
+StandardError=append:/opt/atlasclaw/logs/atlasclaw.log
+```
+
+When the file-log drop-in is enabled, application stdout/stderr is appended to
+`/opt/atlasclaw/logs/atlasclaw.log`.
+
 **Log rotation**:
+```bash
+sudo install -m 0644 build/systemd/atlasclaw.logrotate /etc/logrotate.d/atlasclaw
+sudo install -m 0644 build/systemd/atlasclaw-logrotate.service \
+  /etc/systemd/system/atlasclaw-logrotate.service
+sudo install -m 0644 build/systemd/atlasclaw-logrotate.timer \
+  /etc/systemd/system/atlasclaw-logrotate.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now atlasclaw-logrotate.timer
+```
+
+The standard VM logrotate policy uses the same retention shape as the Docker
+`json-file` configuration: rotate at 100 MB and keep 10 files. The timer checks
+the file size every minute so VM file logging does not depend on the host's
+default daily logrotate cadence.
+
 ```bash
 # /etc/logrotate.d/atlasclaw
 /opt/atlasclaw/logs/*.log {
-    daily
-    rotate 14
+    size 100M
+    rotate 10
     compress
     delaycompress
     missingok
     notifempty
+    copytruncate
     create 0644 atlasclaw atlasclaw
 }
 ```

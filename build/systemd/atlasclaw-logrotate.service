@@ -1,0 +1,7 @@
+[Unit]
+Description=Rotate AtlasClaw VM file logs
+ConditionPathExists=/etc/logrotate.d/atlasclaw
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/logrotate /etc/logrotate.d/atlasclaw

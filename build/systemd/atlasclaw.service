@@ -1,0 +1,20 @@
+[Unit]
+Description=AtlasClaw Core Service
+After=network.target
+
+[Service]
+Type=simple
+User=atlasclaw
+Group=atlasclaw
+WorkingDirectory=/opt/atlasclaw/AtlasClaw-Core
+Environment="PATH=/opt/atlasclaw/venv/bin"
+Environment="NO_PROXY=*"
+Environment="ATLASCLAW_CONFIG=/opt/atlasclaw/AtlasClaw-Core/atlasclaw.json"
+ExecStart=/opt/atlasclaw/venv/bin/uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000 --workers 4
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import logging
+from pathlib import Path
 
 import httpx
 import pytest
@@ -79,6 +81,29 @@ def test_resolve_trace_context_prefers_thread_id_then_session_key(
     assert trace.thread_id == expected_thread_id
     assert trace.run_id == "run-1"
     assert trace.session_key == session_key
+
+
+def test_alembic_env_preserves_application_loggers() -> None:
+    """Startup migrations must not disable uvicorn or app.atlasclaw runtime loggers."""
+    project_root = Path(__file__).resolve().parents[2]
+    env_source = (project_root / "migrations" / "env.py").read_text(encoding="utf-8")
+    module = ast.parse(env_source)
+    file_config_calls = [
+        node
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "fileConfig"
+    ]
+
+    assert file_config_calls
+    assert any(
+        keyword.arg == "disable_existing_loggers"
+        and isinstance(keyword.value, ast.Constant)
+        and keyword.value.value is False
+        for call in file_config_calls
+        for keyword in call.keywords
+    )
 
 
 @pytest.mark.asyncio

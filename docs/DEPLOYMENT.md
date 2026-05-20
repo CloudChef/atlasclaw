@@ -22,7 +22,7 @@
 ### 1. Prepare Directory Structure
 
 ```bash
-mkdir -p /opt/atlasclaw/{config,data,logs,backups}
+mkdir -p /opt/atlasclaw/{config,data,backups}
 cd /opt/atlasclaw
 ```
 
@@ -96,14 +96,20 @@ services:
     container_name: atlasclaw
     ports:
       - "8000:8000"
+    environment:
+      - ATLASCLAW_CONFIG=/app/atlasclaw.json
     volumes:
       - ./config/atlasclaw.json:/app/atlasclaw.json:ro
       - ./data:/app/data
-      - ./logs:/app/logs
     depends_on:
       mysql:
         condition: service_healthy
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "10"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s
@@ -138,20 +144,20 @@ services:
 
 ```bash
 cd /opt/atlasclaw
-docker-compose up -d
+docker compose up -d
 ```
 
 ### 5. Run Database Migrations
 
 ```bash
-docker-compose exec atlasclaw alembic upgrade head
+docker compose exec atlasclaw alembic upgrade head
 ```
 
 ### 6. Verify Deployment
 
 ```bash
 # Check container status
-docker-compose ps
+docker compose ps
 
 # Health check
 curl http://localhost:8000/api/health
@@ -280,9 +286,15 @@ curl http://localhost:8000/api/health
 ### View Logs
 
 ```bash
-docker-compose logs -f atlasclaw
-docker-compose logs -f mysql
+docker compose logs -f atlasclaw
+docker compose logs -f mysql
 ```
+
+AtlasClaw writes execution and runtime logs to stdout/stderr by default. In
+Docker Compose deployments, use `docker compose logs` as the authoritative log
+stream. The standard Compose configuration uses Docker's `json-file` log driver
+with `max-size=100m` and `max-file=10`; it does not write application logs to a
+mounted logs directory unless you add an explicit file-log sink.
 
 ### Backup
 
@@ -306,17 +318,17 @@ find ./backups -name "*.gz" -mtime +30 -delete
 
 ```bash
 # Pull latest image
-docker-compose pull atlasclaw
+docker compose pull atlasclaw
 
 # Restart with migrations
-docker-compose up -d
-docker-compose exec atlasclaw alembic upgrade head
+docker compose up -d
+docker compose exec atlasclaw alembic upgrade head
 ```
 
 ### Stop
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
 ---
@@ -327,20 +339,20 @@ docker-compose down
 
 ```bash
 # Check logs
-docker-compose logs atlasclaw
+docker compose logs atlasclaw
 
 # Check config syntax
-docker-compose exec atlasclaw python -c "import json; json.load(open('atlasclaw.json'))"
+docker compose exec atlasclaw python -c "import json; json.load(open('atlasclaw.json'))"
 ```
 
 ### Database Connection Failed
 
 ```bash
 # Check MySQL is healthy
-docker-compose ps mysql
+docker compose ps mysql
 
 # Test connection manually
-docker-compose exec mysql mysql -u atlasclaw -p -e "SELECT 1"
+docker compose exec mysql mysql -u atlasclaw -p -e "SELECT 1"
 ```
 
 ---

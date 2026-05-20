@@ -1,0 +1,10 @@
+/opt/atlasclaw/logs/*.log {
+    size 100M
+    rotate 10
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0644 atlasclaw atlasclaw
+}

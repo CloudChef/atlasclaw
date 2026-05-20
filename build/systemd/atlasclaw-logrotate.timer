@@ -1,0 +1,12 @@
+[Unit]
+Description=Check AtlasClaw VM file logs for size-based rotation
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+AccuracySec=10s
+Persistent=true
+Unit=atlasclaw-logrotate.service
+
+[Install]
+WantedBy=timers.target

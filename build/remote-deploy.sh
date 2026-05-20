@@ -17,6 +17,6 @@ echo "[deploy] Building on remote..."
 ssh $SSH_OPTS "$REMOTE_HOST" "cd $REMOTE_DIR/build && ./build.sh --mode opensource"
 
 echo "[deploy] Starting services..."
-ssh $SSH_OPTS "$REMOTE_HOST" "cd $REMOTE_DIR/build && docker-compose down && docker-compose up -d"
+ssh $SSH_OPTS "$REMOTE_HOST" "cd $REMOTE_DIR/build && docker compose down && docker compose up -d"
 
 echo "[deploy] Done!"

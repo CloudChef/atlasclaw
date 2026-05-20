@@ -18,6 +18,11 @@ services:
       - /opt/atlasclaw/extensions/skills:/app/extensions/skills
       - /opt/atlasclaw/extensions/channels:/app/extensions/channels
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "10"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/api/health"]
       interval: 30s

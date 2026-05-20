@@ -209,6 +209,10 @@ To run in the background (Linux):
 nohup uvicorn app.atlasclaw.main:app --host 0.0.0.0 --port 8000 > atlasclaw.log 2>&1 &
 ```
 
+When running in the foreground, logs are printed to the terminal. With the
+`nohup` command above, execution and runtime logs are redirected to
+`atlasclaw.log`.
+
 ---
 
 ## 7. Access the Web UI
@@ -335,7 +339,7 @@ cp -r ../atlasclaw-providers/skills/* /opt/atlasclaw/extensions/skills/
 
 # Start
 cd build
-docker-compose up -d
+docker compose up -d
 ```
 
 Access `http://<server-ip>:8000` to start using the application.

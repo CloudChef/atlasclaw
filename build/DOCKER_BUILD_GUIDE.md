@@ -8,9 +8,9 @@ AtlasClaw container uses the following internal directory structure:
 
 ```
 /app/
-├── workspace/          # Configuration, user data, logs, agents
+├── workspace/          # Configuration, user data, optional file logs, agents
 │   ├── atlasclaw.json  # Main configuration file
-│   └── logs/           # Application logs
+│   └── logs/           # Optional file-log directory; stdout/stderr is the default sink
 ├── data/               # Database files
 └── extensions/         # Custom extensions
     ├── providers/      # Service provider integrations
@@ -114,7 +114,7 @@ mkdir -p /opt/atlasclaw/{workspace,data,extensions/{providers,skills,channels}}
 cp config/atlasclaw.json /opt/atlasclaw/workspace/
 
 # Start container
-docker-compose up -d
+docker compose up -d
 ```
 
 ### Enterprise Edition
@@ -148,10 +148,10 @@ mkdir -p /opt/atlasclaw/{workspace,data,extensions/{providers,skills,channels}}
 cp config/atlasclaw.json /opt/atlasclaw/workspace/
 
 # Start container
-docker-compose up -d
+docker compose up -d
 
 # Run database migrations
-docker-compose exec atlasclaw alembic upgrade head
+docker compose exec atlasclaw alembic upgrade head
 ```
 
 ## Build Script
@@ -225,14 +225,20 @@ Edit `config/atlasclaw.json`:
 ### View Logs
 
 ```bash
-docker-compose logs -f atlasclaw
-docker-compose logs -f mysql    # Enterprise only
+docker compose logs -f atlasclaw
+docker compose logs -f mysql    # Enterprise only
 ```
+
+AtlasClaw writes execution and runtime logs to stdout/stderr. The standard
+Compose files keep container logs in Docker's `json-file` log driver with
+rotation, so `docker compose logs -f atlasclaw` is the authoritative log stream.
+The mounted `workspace/logs/` directory is reserved for deployments that add
+explicit file logging; it is not written by default.
 
 ### Stop
 
 ```bash
-docker-compose down
+docker compose down
 ```
 
 ### Backup

@@ -76,7 +76,7 @@ cd /opt/atlasclaw
 ```
 /opt/atlasclaw/
 ├── docker-compose.yml      # Docker Compose orchestration file
-├── workspace/              # Configuration, logs, user data
+├── workspace/              # Configuration, optional file logs, user data
 │   └── atlasclaw.json      # Main configuration file
 ├── data/                   # SQLite database and runtime data
 └── extensions/
@@ -300,6 +300,12 @@ docker compose restart atlasclaw
 ```bash
 docker compose logs -f atlasclaw
 ```
+
+Execution and runtime logs are emitted to stdout/stderr by default. Use
+`docker compose logs` for container deployments. The standard Compose file uses
+Docker's `json-file` log driver with `max-size=100m` and `max-file=10`; the
+mounted `workspace/logs/` directory is only used when you add an explicit
+file-log sink.
 
 ### Stop Services
 
