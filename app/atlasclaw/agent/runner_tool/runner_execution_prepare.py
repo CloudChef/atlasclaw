@@ -1519,6 +1519,7 @@ class RunnerExecutionPreparePhaseMixin:
             tool_request_message, used_follow_up_context = self._resolve_contextual_tool_request(
                 user_message=user_message,
                 recent_history=message_history,
+                deps=deps,
             )
             if isinstance(deps.extra, dict):
                 if used_follow_up_context and tool_request_message != user_message:

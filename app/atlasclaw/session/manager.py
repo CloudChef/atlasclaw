@@ -28,7 +28,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import quote
 import aiofiles
 import aiofiles.os
@@ -624,6 +624,20 @@ manager = SessionManager(agents_dir="/path/to/legacy-agents")
         normalized_title = (title or "").strip()
         session.title = normalized_title
         session.title_status = title_status
+        session.updated_at = datetime.now()
+        await self._save_metadata()
+
+    async def update_extra(self, session_key: str, updates: dict[str, Any]) -> None:
+        """Merge persistent metadata into a session's extra dictionary.
+
+        Args:
+            session_key: Serialized session key.
+            updates: JSON-serializable extra metadata to merge at the top level.
+                Existing nested values are replaced by the provided values.
+        """
+        session = await self.get_or_create(session_key)
+        session.extra = dict(session.extra or {})
+        session.extra.update(dict(updates or {}))
         session.updated_at = datetime.now()
         await self._save_metadata()
     

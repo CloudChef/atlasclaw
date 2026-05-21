@@ -59,6 +59,17 @@ configuration metadata lives in the fixed sibling file `provider.schema.json`.
 Runtime must not parse config schema, auth fields, labels, placeholders, icons,
 or redaction rules from `PROVIDER.md` body tables.
 
+### 3.0 Provider instance usage metadata
+
+Provider instances under `service_providers.<provider_type>.<instance_name>` may
+declare an optional `usage_hint` string. This value is public runtime metadata:
+it may be shown to the LLM, APIs, and frontend surfaces to help choose between
+multiple instances of the same provider type.
+
+`usage_hint` must describe when to use that instance in provider-agnostic
+terms and must not contain secrets, tokens, cookies, passwords, or private
+credential material.
+
 ### 3.1 Required provider keys
 
 | Key | Type | Required | Example |

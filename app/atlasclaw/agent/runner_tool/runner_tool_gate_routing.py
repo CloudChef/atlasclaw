@@ -21,6 +21,89 @@ class RunnerToolGateRoutingMixin:
         compact_len = len(re.sub(r"\s+", "", normalized))
         return compact_len <= 8
 
+    @classmethod
+    def _is_context_route_change_request(
+        cls,
+        text: str,
+        *,
+        deps: Optional[SkillDeps] = None,
+    ) -> bool:
+        normalized = unicodedata.normalize("NFKC", " ".join((text or "").split()).strip())
+        if not normalized:
+            return False
+        if cls._is_low_information_follow_up_text(normalized):
+            return False
+
+        route_terms = cls._collect_context_route_terms(deps)
+        if not route_terms:
+            return False
+
+        folded = normalized.casefold()
+        return any(cls._route_term_matches(folded, term) for term in route_terms)
+
+    @classmethod
+    def _collect_context_route_terms(cls, deps: Optional[SkillDeps]) -> set[str]:
+        if deps is None or not isinstance(getattr(deps, "extra", None), dict):
+            return set()
+
+        provider_instances = deps.extra.get("provider_instances")
+        if not isinstance(provider_instances, dict):
+            return set()
+
+        terms: set[str] = set()
+        for provider_type, instances in provider_instances.items():
+            cls._add_identifier_route_terms(terms, provider_type)
+            if not isinstance(instances, dict):
+                continue
+            for instance_name, instance_config in instances.items():
+                cls._add_identifier_route_terms(terms, instance_name)
+                if isinstance(instance_config, dict):
+                    cls._add_usage_hint_route_terms(
+                        terms,
+                        instance_config.get("usage_hint", ""),
+                    )
+        return terms
+
+    @classmethod
+    def _add_identifier_route_terms(cls, terms: set[str], value: Any) -> None:
+        normalized = unicodedata.normalize("NFKC", str(value or "")).strip()
+        if not normalized:
+            return
+        for raw_term in re.split(r"[^0-9A-Za-z\u4e00-\u9fff]+", normalized):
+            cls._add_route_term(terms, raw_term, allow_short=True)
+
+    @classmethod
+    def _add_usage_hint_route_terms(cls, terms: set[str], value: Any) -> None:
+        text = unicodedata.normalize("NFKC", str(value or ""))
+        for match in re.finditer(r"[A-Za-z][A-Za-z0-9_-]*", text):
+            token = match.group(0)
+            has_internal_upper = any(char.isupper() for char in token[1:])
+            is_acronym = token.isupper() and len(token) >= 2
+            if has_internal_upper or is_acronym:
+                cls._add_route_term(terms, token, allow_short=True)
+
+        for token in re.findall(r"[\u4e00-\u9fff]{2,}", text):
+            cls._add_route_term(terms, token, allow_short=False)
+
+    @staticmethod
+    def _add_route_term(terms: set[str], value: str, *, allow_short: bool) -> None:
+        term = unicodedata.normalize("NFKC", str(value or "")).strip().casefold()
+        if not term or term in {"default"}:
+            return
+        compact_len = len(re.sub(r"\s+", "", term))
+        if compact_len < (2 if allow_short else 4):
+            return
+        terms.add(term)
+
+    @staticmethod
+    def _route_term_matches(text: str, term: str) -> bool:
+        if re.search(r"[\u4e00-\u9fff]", term):
+            return term in text
+        return re.search(
+            rf"(?<![0-9a-z_]){re.escape(term)}(?![0-9a-z_])",
+            text,
+        ) is not None
+
     @staticmethod
     def _combine_follow_up_request(previous_user_message: str, current_user_message: str) -> str:
         previous = " ".join((previous_user_message or "").split()).strip()
@@ -254,6 +337,7 @@ class RunnerToolGateRoutingMixin:
         *,
         user_message: str,
         recent_history: list[dict[str, Any]],
+        deps: Optional[SkillDeps] = None,
     ) -> tuple[str, bool]:
         normalized_user_message = " ".join((user_message or "").split()).strip()
         if not normalized_user_message:
@@ -276,6 +360,8 @@ class RunnerToolGateRoutingMixin:
             break
 
         if last_assistant_index is None:
+            return normalized_user_message, False
+        if self._is_context_route_change_request(normalized_user_message, deps=deps):
             return normalized_user_message, False
 
         assistant_requests_follow_up = self._looks_like_follow_up_request(last_assistant_message)

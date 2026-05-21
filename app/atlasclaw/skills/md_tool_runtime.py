@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import importlib.util
 import json
@@ -17,6 +18,9 @@ from typing import Any, Callable, Optional
 
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import should_hide_lookup_output
 from app.atlasclaw.core.trace import sanitize_log_value
+from app.atlasclaw.tools.providers.instance_tools import (
+    resolve_provider_instance_selection,
+)
 
 
 @dataclass(frozen=True)
@@ -203,6 +207,24 @@ def create_script_wrapper(
     """Create a wrapper function that executes a script file."""
     config = invocation_config or ScriptInvocationConfig()
 
+    def _provider_bucket(extra: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        target_provider = str(provider_type or "").strip()
+        provider_instances = extra.get("provider_instances")
+        if not target_provider or not isinstance(provider_instances, dict):
+            return {}
+
+        bucket = provider_instances.get(target_provider)
+        if not isinstance(bucket, dict):
+            bucket = provider_instances.get(target_provider.lower())
+        if not isinstance(bucket, dict):
+            return {}
+
+        return {
+            str(instance_name): dict(instance_config)
+            for instance_name, instance_config in bucket.items()
+            if str(instance_name or "").strip() and isinstance(instance_config, dict)
+        }
+
     async def script_handler(ctx=None, **kwargs) -> dict:
         import os
 
@@ -249,6 +271,29 @@ def create_script_wrapper(
 
         if deps is not None and hasattr(deps, "extra"):
             extra = deps.extra
+            provider_resolution = resolve_provider_instance_selection(
+                provider_type=str(provider_type or ""),
+                instances=_provider_bucket(extra),
+                extra=extra,
+                deps=deps,
+            )
+            if not provider_resolution.resolved:
+                for _ in range(10):
+                    await asyncio.sleep(0.05)
+                    provider_resolution = resolve_provider_instance_selection(
+                        provider_type=str(provider_type or ""),
+                        instances=_provider_bucket(extra),
+                        extra=extra,
+                        deps=deps,
+                    )
+                    if provider_resolution.resolved:
+                        break
+            if not provider_resolution.resolved:
+                return {
+                    "success": False,
+                    "error": "Provider instance selection required",
+                    "output": provider_resolution.error_text,
+                }
             provider_config = extra.get("provider_config", {}) if extra else {}
             # Fallback: build provider_config from provider_instances (channel path)
             if not provider_config and extra:
@@ -313,13 +358,29 @@ def create_script_wrapper(
 
             provider_instance = extra.get("provider_instance")
             if provider_instance:
+                safe_provider_instance = sanitize_log_value(
+                    provider_instance,
+                    redacted_text="***...",
+                    provider_type=str(provider_type or ""),
+                    field_defaults=provider_instance,
+                )
                 print(
                     "[DEBUG] Using selected provider_instance: "
-                    f"{sanitize_log_value(provider_instance, redacted_text='***...', provider_type=str(provider_type or ''), field_defaults=provider_instance)}"
+                    f"{safe_provider_instance}"
                 )
                 for key, value in provider_instance.items():
                     if value is not None and key not in ("token", "secret"):
                         env[key.upper()] = str(value)
+                        formatted_value = _format_log_value(
+                            key,
+                            value,
+                            provider_type=provider_type,
+                            config=provider_instance,
+                        )
+                        print(
+                            "[DEBUG] Set env var: "
+                            f"{key.upper()}={formatted_value}"
+                        )
             elif "provider_instances" in extra:
                 provider_instances = extra["provider_instances"]
                 print(f"[DEBUG] Available provider_types: {list(provider_instances.keys())}")

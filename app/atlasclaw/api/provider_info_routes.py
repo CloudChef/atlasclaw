@@ -144,10 +144,15 @@ def _visible_config_keys(instance_config: dict[str, Any]) -> list[str]:
             continue
         if _is_sensitive_config_key(normalized):
             continue
-        if normalized in {"base_url", "auth_type"}:
+        if normalized in {"base_url", "auth_type", "usage_hint"}:
             continue
         keys.append(normalized)
     return sorted(keys)
+
+
+def _get_usage_hint(instance_config: dict[str, Any]) -> str:
+    """Return the public usage hint configured for one provider instance."""
+    return str(instance_config.get("usage_hint", "") or "").strip()
 
 
 def _is_sensitive_config_key(key: str) -> bool:
@@ -323,6 +328,7 @@ async def get_available_instances(
                     "base_url": str(instance_config.get("base_url", "") or "").strip()
                     or _get_schema_default(provider_type, "base_url"),
                     "auth_type": auth_type,
+                    "usage_hint": _get_usage_hint(instance_config),
                     "config_keys": _visible_config_keys(instance_config),
                 }
             )

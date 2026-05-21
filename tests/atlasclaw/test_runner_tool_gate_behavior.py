@@ -10,6 +10,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.atlasclaw.agent.runner_tool.runner_tool_gate_model import RunnerToolGateModelMixin
+from app.atlasclaw.agent.runner_tool.runner_execution_loop import (
+    hydrate_session_provider_instance_selections,
+)
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import RunnerExecutionPreparePhaseMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
     _infer_active_skill_from_transcript,
@@ -33,6 +36,16 @@ from app.atlasclaw.agent.tool_gate_models import (
 class _GateRunner(RunnerToolGateModelMixin, RunnerToolGateRoutingMixin):
     TOOL_GATE_SHORT_CIRCUIT_MIN_CONFIDENCE = 0.55
     TOOL_GATE_MUST_USE_MIN_CONFIDENCE = 0.85
+
+
+class _ProviderSelectionSessionManager:
+    def __init__(self, selections):
+        self._session = SimpleNamespace(
+            extra={"provider_instance_selections": selections}
+        )
+
+    async def get_session(self, session_key):
+        return self._session
 
 
 class _PrepareRunner(RunnerExecutionPreparePhaseMixin):
@@ -435,6 +448,43 @@ def test_prune_auto_selected_provider_instance_tools_removes_provider_coordinati
     assert trace["auto_selected_provider_types"] == ["smartcmp"]
 
 
+def test_hydrate_session_provider_instance_selections_keeps_visible_selection() -> None:
+    deps = SimpleNamespace(
+        session_key="agent:main:user:u-1:main",
+        session_manager=_ProviderSelectionSessionManager({"smartcmp": "dev"}),
+        extra={
+            "provider_instances": {
+                "smartcmp": {
+                    "prod": {"base_url": "https://cmp.example.com"},
+                    "dev": {"base_url": "https://dev-cmp.example.com"},
+                }
+            }
+        },
+    )
+
+    asyncio.run(hydrate_session_provider_instance_selections(deps))
+
+    assert deps.extra["provider_instance_selections"] == {"smartcmp": "dev"}
+
+
+def test_hydrate_session_provider_instance_selections_ignores_stale_selection() -> None:
+    deps = SimpleNamespace(
+        session_key="agent:main:user:u-1:main",
+        session_manager=_ProviderSelectionSessionManager({"smartcmp": "prod"}),
+        extra={
+            "provider_instances": {
+                "smartcmp": {
+                    "dev": {"base_url": "https://dev-cmp.example.com"},
+                }
+            }
+        },
+    )
+
+    asyncio.run(hydrate_session_provider_instance_selections(deps))
+
+    assert "provider_instance_selections" not in deps.extra
+
+
 def test_prune_selected_provider_instance_tools_removes_selector_with_multiple_instances() -> None:
     filtered_tools, trace = prune_auto_selected_provider_instance_tools(
         available_tools=[
@@ -760,6 +810,39 @@ def test_resolve_contextual_tool_request_reuses_previous_user_message_for_low_in
 
     assert resolved == "明天北京天气呢\n上海呢"
     assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_keeps_provider_route_query_self_contained() -> None:
+    runner = _GateRunner()
+    deps = SimpleNamespace(
+        extra={
+            "provider_instances": {
+                "markdown-vault": {
+                    "knowledgebase": {
+                        "usage_hint": "Use for SmartCMP knowledge-base questions.",
+                    },
+                    "atlasclaw-docs": {
+                        "usage_hint": "Use for AtlasClaw product documentation.",
+                    },
+                }
+            }
+        }
+    )
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="SmartCMP 知识库里服务申请和部署日志如何关联？",
+        recent_history=[
+            {"role": "user", "content": "请从 AtlasClaw 文档知识库回答：标准用户第一次登录后应该检查哪些事项？"},
+            {
+                "role": "assistant",
+                "content": "请提供你要查询的章节或具体问题。",
+            },
+        ],
+        deps=deps,
+    )
+
+    assert resolved == "SmartCMP 知识库里服务申请和部署日志如何关联？"
+    assert used_follow_up_context is False
 
 
 def test_resolve_contextual_tool_request_reuses_previous_request_for_structured_follow_up_reply() -> None:

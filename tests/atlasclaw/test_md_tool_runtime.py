@@ -14,6 +14,11 @@ from app.atlasclaw.skills.md_tool_runtime import (
     register_executable_tools_from_md,
 )
 from app.atlasclaw.skills.registry import MdSkillEntry, SkillMetadata, SkillRegistry
+from app.atlasclaw.tools.providers.instance_tools import (
+    clear_recorded_provider_instance_selections,
+    get_recorded_provider_instance_selection,
+    record_provider_instance_selection,
+)
 
 
 def test_script_wrapper_serializes_positional_and_flag_arguments(tmp_path: Path) -> None:
@@ -356,6 +361,168 @@ def test_script_wrapper_logs_tool_name_and_masks_sensitive_env_values(
     assert "super-secret-password" not in captured.out
     assert "provider-session-cookie" not in captured.out
     assert "fake-provider-user-token" not in captured.out
+
+
+def test_script_wrapper_requires_provider_instance_selection_for_multiple_instances(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "should_not_run.py"
+    script.write_text("print('unexpected')\n", encoding="utf-8")
+
+    class _Deps:
+        cookies = {}
+        extra = {
+            "provider_instances": {
+                "provider": {
+                    "prod": {
+                        "base_url": "https://provider.example.com/prod",
+                        "usage_hint": "Use for production provider requests.",
+                    },
+                    "dev": {
+                        "base_url": "https://provider.example.com/dev",
+                        "usage_hint": "Use for development provider requests.",
+                    },
+                }
+            }
+        }
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(
+        script,
+        provider_type="provider",
+        tool_name="provider_list_flavors",
+    )
+
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is False
+    assert result["error"] == "Provider instance selection required"
+    assert "Provider 'provider' has 2 instances" in result["output"]
+    assert "Use for production provider requests." in result["output"]
+    assert "Use for development provider requests." in result["output"]
+
+
+def test_script_wrapper_uses_session_sticky_provider_instance(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "echo_instance.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "print(json.dumps({",
+                "  'provider_type': os.environ.get('ATLASCLAW_PROVIDER_TYPE', ''),",
+                "  'provider_instance': os.environ.get('ATLASCLAW_PROVIDER_INSTANCE', ''),",
+                "  'base_url': os.environ.get('BASE_URL', ''),",
+                "}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Deps:
+        cookies = {}
+        extra = {
+            "provider_instance_selections": {"provider": "dev"},
+            "provider_instances": {
+                "provider": {
+                    "prod": {"base_url": "https://provider.example.com/prod"},
+                    "dev": {"base_url": "https://provider.example.com/dev"},
+                }
+            },
+        }
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(
+        script,
+        provider_type="provider",
+        tool_name="provider_list_flavors",
+    )
+
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is True
+    payload = json.loads(result["output"].strip())
+    assert payload == {
+        "provider_type": "provider",
+        "provider_instance": "dev",
+        "base_url": "https://provider.example.com/dev",
+    }
+
+
+def test_script_wrapper_uses_recorded_same_run_provider_selection(
+    tmp_path: Path,
+) -> None:
+    script = tmp_path / "echo_recorded_instance.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "print(json.dumps({",
+                "  'provider_type': os.environ.get('ATLASCLAW_PROVIDER_TYPE', ''),",
+                "  'provider_instance': os.environ.get('ATLASCLAW_PROVIDER_INSTANCE', ''),",
+                "  'base_url': os.environ.get('BASE_URL', ''),",
+                "}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Deps:
+        session_key = "agent:main:user:test:web:dm:test:topic:same-run-selection"
+        cookies = {}
+        extra = {
+            "run_id": "run-same-run-selection",
+            "provider_instances": {
+                "provider": {
+                    "prod": {"base_url": "https://provider.example.com/prod"},
+                    "dev": {"base_url": "https://provider.example.com/dev"},
+                }
+            },
+        }
+
+    class _Ctx:
+        deps = _Deps()
+
+    record_provider_instance_selection(_Ctx.deps, "provider", "dev")
+    wrapper = create_script_wrapper(
+        script,
+        provider_type="provider",
+        tool_name="provider_list_flavors",
+    )
+
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is True
+    payload = json.loads(result["output"].strip())
+    assert payload == {
+        "provider_type": "provider",
+        "provider_instance": "dev",
+        "base_url": "https://provider.example.com/dev",
+    }
+    clear_recorded_provider_instance_selections(_Ctx.deps)
+
+
+def test_recorded_provider_selection_is_scoped_to_run_id() -> None:
+    class _RunOneDeps:
+        session_key = "agent:main:user:test:web:dm:test:topic:selection-cache"
+        extra = {"run_id": "run-one"}
+
+    class _RunTwoDeps:
+        session_key = "agent:main:user:test:web:dm:test:topic:selection-cache"
+        extra = {"run_id": "run-two"}
+
+    record_provider_instance_selection(_RunOneDeps(), "provider", "dev")
+
+    assert get_recorded_provider_instance_selection(_RunOneDeps(), "provider") == "dev"
+    assert get_recorded_provider_instance_selection(_RunTwoDeps(), "provider") == ""
+
+    clear_recorded_provider_instance_selections(_RunOneDeps())
+    assert get_recorded_provider_instance_selection(_RunOneDeps(), "provider") == ""
 
 
 def test_script_wrapper_exposes_provider_sso_runtime_context_to_script_environment(

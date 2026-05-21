@@ -74,7 +74,8 @@
       "default": {
         "_comment": "auth_type=cookie — Embedded behind a host system. AtlasClaw reads the configured host authentication cookie from the browser automatically. No static credentials needed.",
         "base_url": "https://172.16.0.81",
-        "auth_type": "cookie"
+        "auth_type": "cookie",
+        "usage_hint": "Use for the default CMP environment for service catalog, approvals, requests, deployments, and operations."
       },
 
       "_example_provider_token": {
@@ -130,6 +131,27 @@
         "password": "${JIRA_PASSWORD}",
         "api_version": "2",
         "default_project": "TEST"
+      }
+    },
+    
+    "markdown-vault": {
+      "knowledgebase": {
+        "auth_type": "app_credentials",
+        "vault_path": "${MARKDOWN_VAULT_REPO_PATH}",
+        "usage_hint": "Use for SmartCMP knowledge-base questions, including service catalog, requests, deployments, approvals, and operation logs."
+      },
+      "atlasclaw-docs": {
+        "auth_type": "app_credentials",
+        "vault_path": "${PWD}/tests/markdown-vault-atlasclaw-docs",
+        "usage_hint": "Use for AtlasClaw function introduction, user workflows, conversations, skills, tools, and product usage documentation."
+      }
+    },
+
+    "github": {
+      "github": {
+        "base_url": "https://api.github.com",
+        "hostname": "github.com",
+        "auth_type": "user_token"
       }
     }
   },

@@ -14,6 +14,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
+from app.atlasclaw.tools.providers.instance_tools import (
+    resolve_provider_instance_selection,
+)
+
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
     from app.atlasclaw.core.deps import SkillDeps
@@ -428,18 +432,6 @@ class ServiceProviderRegistry:
             # Expose provider instances to skills without widening a request-scoped filter.
             extra.setdefault("provider_instances", runtime_registry.get_all_instance_configs())
 
-            selected_type = str(extra.get("provider_type", ""))
-            selected_name = str(extra.get("provider_instance_name", ""))
-            selected_cfg = extra.get("provider_instance")
-
-            # If already selected and valid for this provider, run directly.
-            if (
-                selected_type == provider_type
-                and selected_name
-                and isinstance(selected_cfg, dict)
-            ):
-                return await handler(ctx, **kwargs)
-
             instances = runtime_registry.list_instances(provider_type)
             if len(instances) == 0:
                 return {
@@ -449,34 +441,25 @@ class ServiceProviderRegistry:
                     ],
                 }
 
-            # Keep an explicitly chosen instance name if present.
-            if selected_type == provider_type and selected_name in instances:
-                cfg = runtime_registry.get_instance_config(provider_type, selected_name) or {}
-                extra["provider_type"] = provider_type
-                extra["provider_instance_name"] = selected_name
-                extra["provider_instance"] = cfg
+            instance_configs: dict[str, dict[str, Any]] = {}
+            for instance_name in instances:
+                instance_configs[instance_name] = (
+                    runtime_registry.get_instance_config(provider_type, instance_name) or {}
+                )
+            resolution = resolve_provider_instance_selection(
+                provider_type=provider_type,
+                instances=instance_configs,
+                extra=extra,
+            )
+            if resolution.resolved:
                 return await handler(ctx, **kwargs)
 
-            # Auto-select if exactly one instance exists.
-            if len(instances) == 1:
-                instance_name = instances[0]
-                cfg = runtime_registry.get_instance_config(provider_type, instance_name) or {}
-                extra["provider_type"] = provider_type
-                extra["provider_instance_name"] = instance_name
-                extra["provider_instance"] = cfg
-                return await handler(ctx, **kwargs)
-
-            # Multiple instances and no selection.
             return {
                 "is_error": True,
                 "content": [
                     {
                         "type": "text",
-                        "text": (
-                            f"Provider '{provider_type}' has {len(instances)} instances: "
-                            f"{', '.join(instances)}. Call list_provider_instances('{provider_type}') "
-                            "then select_provider_instance before invoking provider skills."
-                        ),
+                        "text": resolution.error_text,
                     }
                 ],
             }

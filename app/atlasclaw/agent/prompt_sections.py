@@ -459,6 +459,42 @@ def build_tool_policy(
     return "\n".join(lines)
 
 
+def build_provider_instance_routing(provider_instance_contexts: Optional[list[dict]]) -> str:
+    """Build provider instance routing guidance from safe public hints."""
+    if not isinstance(provider_instance_contexts, list) or not provider_instance_contexts:
+        return ""
+
+    lines = [
+        "## Provider Instance Routing",
+        "",
+        "Some provider types have multiple visible instances. Use usage hints to "
+        "choose the right instance before calling provider tools.",
+        "When a usage hint clearly matches the user's target, call `select_provider_instance` "
+        "first. If multiple usage hints match or none are clear, ask the user which instance to use.",
+        "",
+    ]
+    shown = 0
+    for item in provider_instance_contexts:
+        if not isinstance(item, dict):
+            continue
+        provider_type = str(item.get("provider_type", "") or "").strip()
+        instance_name = str(item.get("instance_name", "") or "").strip()
+        if not provider_type or not instance_name:
+            continue
+        usage_hint = str(item.get("usage_hint", "") or "").strip()
+        selected = bool(item.get("selected"))
+        suffix_parts = []
+        if usage_hint:
+            suffix_parts.append(f"usage_hint: {usage_hint}")
+        if selected:
+            suffix_parts.append("current session selection")
+        suffix = " — " + "; ".join(suffix_parts) if suffix_parts else ""
+        lines.append(f"- `{provider_type}.{instance_name}`{suffix}")
+        shown += 1
+
+    return "\n".join(lines) if shown else ""
+
+
 def build_provider_auth_diagnostics(diagnostics: Optional[dict[str, dict]]) -> str:
     """Build provider-auth guidance from request-scoped runtime diagnostics."""
     if not isinstance(diagnostics, dict) or not diagnostics:

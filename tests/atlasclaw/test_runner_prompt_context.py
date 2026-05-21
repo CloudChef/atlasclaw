@@ -15,6 +15,7 @@ from app.atlasclaw.agent.runner_prompt_context import (
     build_system_prompt,
     collect_memory_available,
     collect_capability_index_snapshot,
+    collect_provider_instance_contexts,
     collect_tools_snapshot,
 )
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
@@ -43,6 +44,93 @@ def test_collect_tools_snapshot_prefers_deps_extra_snapshot() -> None:
     assert snapshot == [
         {"name": "web_search", "description": "search web", "capability_class": "web_search"}
     ]
+
+
+def test_collect_provider_instance_contexts_exposes_only_multi_instance_hints() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "provider_instance_selections": {"smartcmp": "dev"},
+            "provider_instances": {
+                "smartcmp": {
+                    "prod": {"usage_hint": "Use for production CMP requests."},
+                    "dev": {"usage_hint": "Use for development CMP testing."},
+                },
+                "github": {
+                    "default": {"usage_hint": "Use for GitHub."},
+                },
+            },
+        }
+    )
+
+    contexts = collect_provider_instance_contexts(deps)
+
+    assert contexts == [
+        {
+            "provider_type": "smartcmp",
+            "instance_name": "dev",
+            "usage_hint": "Use for development CMP testing.",
+            "selected": True,
+        },
+        {
+            "provider_type": "smartcmp",
+            "instance_name": "prod",
+            "usage_hint": "Use for production CMP requests.",
+            "selected": False,
+        },
+    ]
+
+
+def test_provider_instance_routing_prompt_lists_hints_and_active_selection() -> None:
+    section = prompt_sections.build_provider_instance_routing(
+        [
+            {
+                "provider_type": "smartcmp",
+                "instance_name": "dev",
+                "usage_hint": "Use for development CMP testing.",
+                "selected": True,
+            },
+            {
+                "provider_type": "smartcmp",
+                "instance_name": "prod",
+                "usage_hint": "Use for production CMP requests.",
+                "selected": False,
+            },
+        ]
+    )
+
+    assert "## Provider Instance Routing" in section
+    assert "`smartcmp.dev`" in section
+    assert "Use for development CMP testing." in section
+    assert "current session selection" in section
+    assert "select_provider_instance" in section
+
+
+def test_prompt_builder_includes_provider_instance_routing_in_minimal_mode(tmp_path) -> None:
+    builder = PromptBuilder(PromptBuilderConfig(workspace_path=str(tmp_path)))
+
+    prompt = builder.build(
+        tools=[],
+        provider_instance_contexts=[
+            {
+                "provider_type": "markdown-vault",
+                "instance_name": "knowledgebase",
+                "usage_hint": "Use for SmartCMP knowledge-base questions.",
+                "selected": False,
+            },
+            {
+                "provider_type": "markdown-vault",
+                "instance_name": "atlasclaw-docs",
+                "usage_hint": "Use for AtlasClaw product documentation.",
+                "selected": False,
+            },
+        ],
+        mode_override=PromptMode.MINIMAL,
+    )
+
+    assert "## Provider Instance Routing" in prompt
+    assert "`markdown-vault.knowledgebase`" in prompt
+    assert "Use for SmartCMP knowledge-base questions." in prompt
+    assert "select_provider_instance" in prompt
 
 
 def test_collect_tools_snapshot_keeps_authoritative_snapshot_without_remerge() -> None:
@@ -389,6 +477,33 @@ def test_collect_tools_snapshot_preserves_runtime_tool_metadata_fields() -> None
             "use_when": ["User asks for a forecast by place and date"],
             "avoid_when": ["User asks for enterprise approvals"],
             "result_mode": "tool_only_ok",
+        }
+    ]
+
+
+def test_collect_tools_snapshot_preserves_coordination_only_metadata() -> None:
+    agent = SimpleNamespace(
+        tools=[
+            {
+                "name": "select_provider_instance",
+                "description": "Select Provider service instance",
+                "group_ids": ["group:providers"],
+                "capability_class": "provider:generic",
+                "coordination_only": True,
+            }
+        ]
+    )
+    deps = SimpleNamespace(extra={"tools_snapshot": []})
+
+    snapshot = collect_tools_snapshot(agent=agent, deps=deps)
+
+    assert snapshot == [
+        {
+            "name": "select_provider_instance",
+            "description": "Select Provider service instance",
+            "group_ids": ["group:providers"],
+            "capability_class": "provider:generic",
+            "coordination_only": True,
         }
     ]
 

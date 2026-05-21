@@ -61,7 +61,8 @@ def test_available_instances_exposes_manifest_providers_and_skips_core_channels(
         "APIKey": "api-key",
         "sessionCookie": "session-cookie",
         "credentialAlias": "credential-alias",
-        "region": "cn-north-1"
+        "region": "cn-north-1",
+        "usage_hint": "Use for managed production requests."
       }
     },
     "dingtalk": {
@@ -100,6 +101,7 @@ def test_available_instances_exposes_manifest_providers_and_skips_core_channels(
         "instance_name": "default",
         "base_url": "https://managed.example.com",
         "auth_type": "credential",
+        "usage_hint": "Use for managed production requests.",
         "config_keys": ["region", "username"],
     }
 
@@ -139,6 +141,7 @@ def test_available_instances_fall_back_to_schema_defaults_when_base_url_missing(
         "instance_name": "default",
         "base_url": "https://managed.example.com",
         "auth_type": "user_token",
+        "usage_hint": "",
         "config_keys": ["username"],
     }
 
@@ -307,6 +310,7 @@ def test_available_instances_include_db_managed_provider_configs(tmp_path, monke
                 "instance_name": "db-managed",
                 "base_url": "https://db.managed.example.com",
                 "auth_type": ["provider_token", "user_token"],
+                "usage_hint": "",
                 "config_keys": [],
             }
         ]

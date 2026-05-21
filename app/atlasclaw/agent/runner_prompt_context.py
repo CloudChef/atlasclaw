@@ -15,6 +15,10 @@ from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import (
     normalize_tool_result_mode,
 )
 from app.atlasclaw.memory.access import memory_available_for_deps
+from app.atlasclaw.tools.providers.instance_tools import (
+    PROVIDER_INSTANCE_SELECTIONS_KEY,
+    provider_instance_usage_hint,
+)
 from app.atlasclaw.tools.catalog import STANDARD_SKILL_RUNTIME_TOOL_NAMES
 
 
@@ -38,6 +42,7 @@ def build_system_prompt(
         "tool_policy": collect_tool_policy(deps),
         "user_info": deps.user_info,
         "provider_contexts": collect_provider_contexts(deps),
+        "provider_instance_contexts": collect_provider_instance_contexts(deps),
         "provider_auth_diagnostics": collect_provider_auth_diagnostics(deps),
         "context_window_tokens": context_window_tokens,
         "mode_override": prompt_mode,
@@ -329,6 +334,44 @@ def collect_provider_contexts(deps) -> dict[str, dict]:
         return {}
 
 
+def collect_provider_instance_contexts(deps) -> list[dict[str, Any]]:
+    """Collect safe provider instance usage hints for prompt-time selection."""
+    extra = deps.extra if isinstance(deps.extra, dict) else {}
+    provider_instances = extra.get("provider_instances")
+    if not isinstance(provider_instances, dict):
+        return []
+
+    selected = extra.get(PROVIDER_INSTANCE_SELECTIONS_KEY)
+    selected_map = dict(selected) if isinstance(selected, dict) else {}
+    direct_provider_type = _normalize_optional_text(extra.get("provider_type", ""))
+    direct_instance_name = _normalize_optional_text(extra.get("provider_instance_name", ""))
+    if direct_provider_type and direct_instance_name:
+        selected_map[direct_provider_type] = direct_instance_name
+
+    contexts: list[dict[str, Any]] = []
+    for provider_type in sorted(str(key) for key in provider_instances.keys()):
+        instances = provider_instances.get(provider_type)
+        if not isinstance(instances, dict) or len(instances) < 2:
+            continue
+        active_instance = _normalize_optional_text(
+            selected_map.get(provider_type),
+            selected_map.get(provider_type.lower()),
+        )
+        for instance_name in sorted(str(key) for key in instances.keys()):
+            instance_config = instances.get(instance_name)
+            if not isinstance(instance_config, dict):
+                continue
+            contexts.append(
+                {
+                    "provider_type": provider_type,
+                    "instance_name": instance_name,
+                    "usage_hint": provider_instance_usage_hint(instance_config),
+                    "selected": bool(active_instance and active_instance == instance_name),
+                }
+            )
+    return contexts
+
+
 def collect_tool_policy(deps) -> Optional[dict]:
     """Read a structured tool policy from `deps.extra` if present."""
     extra = deps.extra if isinstance(deps.extra, dict) else {}
@@ -406,6 +449,7 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
         use_when: Any = None,
         avoid_when: Any = None,
         result_mode: Any = None,
+        coordination_only: Any = None,
         live_data: Any = None,
         browser_interaction: Any = None,
         public_web: Any = None,
@@ -528,6 +572,12 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             )
         if normalized_result_mode:
             tool_record["result_mode"] = normalized_result_mode
+        if bool(
+            coordination_only
+            if coordination_only is not None
+            else indexed_meta.get("coordination_only", False)
+        ):
+            tool_record["coordination_only"] = True
         normalized_success_contract = _normalize_metadata_object(
             success_contract if success_contract is not None else indexed_meta.get("success_contract", {})
         )
@@ -580,6 +630,7 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             use_when=tool.get("use_when"),
             avoid_when=tool.get("avoid_when"),
             result_mode=tool.get("result_mode"),
+            coordination_only=tool.get("coordination_only"),
             live_data=tool.get("live_data"),
             browser_interaction=tool.get("browser_interaction"),
             public_web=tool.get("public_web"),
@@ -610,6 +661,7 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             live_data = tool.get("live_data")
             browser_interaction = tool.get("browser_interaction")
             public_web = tool.get("public_web")
+            coordination_only = tool.get("coordination_only")
         else:
             name = getattr(tool, "name", None) or getattr(tool, "__name__", None)
             description = getattr(tool, "description", "") or getattr(tool, "__doc__", "") or ""
@@ -684,6 +736,10 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
                 getattr(tool, "public_web", None)
                 or getattr(getattr(tool, "metadata", None), "public_web", None)
             )
+            coordination_only = (
+                getattr(tool, "coordination_only", None)
+                or getattr(getattr(tool, "metadata", None), "coordination_only", None)
+            )
         _append_tool_record(
             name=name,
             description=description,
@@ -700,6 +756,7 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             use_when=use_when,
             avoid_when=avoid_when,
             result_mode=result_mode,
+            coordination_only=coordination_only,
             live_data=live_data,
             browser_interaction=browser_interaction,
             public_web=public_web,
@@ -826,6 +883,7 @@ def _build_skill_metadata_index(
             "avoid_when": _normalize_string_list(item.get("avoid_when", [])),
             "result_mode": _normalize_optional_text(item.get("result_mode", "")),
             "success_contract": _normalize_metadata_object(item.get("success_contract", {})),
+            "coordination_only": bool(item.get("coordination_only", False)),
             "live_data": bool(item.get("live_data", False)),
             "browser_interaction": bool(item.get("browser_interaction", False)),
             "public_web": bool(item.get("public_web", False)),
@@ -1062,6 +1120,8 @@ def _normalize_snapshot_tool(item: dict[str, Any]) -> dict[str, Any]:
         normalized["avoid_when"] = avoid_when
     if result_mode:
         normalized["result_mode"] = result_mode
+    if bool(item.get("coordination_only", False)):
+        normalized["coordination_only"] = True
     if live_data:
         normalized["live_data"] = True
     if browser_interaction:

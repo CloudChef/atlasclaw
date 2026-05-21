@@ -17,9 +17,56 @@ from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.agent.runner_tool.runner_execution_finalize import RunnerExecutionFinalizePhaseMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_flow import RunnerExecutionFlowPhaseMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import RunnerExecutionPreparePhaseMixin
+from app.atlasclaw.tools.providers.instance_tools import (
+    PROVIDER_INSTANCE_SELECTIONS_KEY,
+    clear_recorded_provider_instance_selections,
+)
 
 
 logger = logging.getLogger(__name__)
+
+
+async def hydrate_session_provider_instance_selections(deps: SkillDeps) -> None:
+    """Load valid session-sticky provider instance selections into request extras."""
+    extra = deps.extra if isinstance(deps.extra, dict) else {}
+    session_manager = getattr(deps, "session_manager", None)
+    session_key = str(getattr(deps, "session_key", "") or "").strip()
+    if session_manager is None or not session_key:
+        return
+
+    get_session = getattr(session_manager, "get_session", None)
+    if not callable(get_session):
+        return
+
+    session = await get_session(session_key)
+    session_extra = getattr(session, "extra", {}) if session is not None else {}
+    raw_selections = {}
+    if isinstance(session_extra, dict) and isinstance(
+        session_extra.get(PROVIDER_INSTANCE_SELECTIONS_KEY),
+        dict,
+    ):
+        raw_selections = dict(session_extra[PROVIDER_INSTANCE_SELECTIONS_KEY])
+
+    provider_instances = extra.get("provider_instances")
+    if not isinstance(provider_instances, dict) or not raw_selections:
+        return
+
+    valid_selections: dict[str, str] = {}
+    for provider_type, instance_name in raw_selections.items():
+        normalized_provider_type = str(provider_type or "").strip()
+        normalized_instance_name = str(instance_name or "").strip()
+        instances = provider_instances.get(normalized_provider_type)
+        if not isinstance(instances, dict):
+            instances = provider_instances.get(normalized_provider_type.lower())
+        if isinstance(instances, dict) and normalized_instance_name in instances:
+            valid_selections[normalized_provider_type] = normalized_instance_name
+
+    if valid_selections:
+        current = extra.get(PROVIDER_INSTANCE_SELECTIONS_KEY)
+        merged = dict(valid_selections)
+        if isinstance(current, dict):
+            merged.update(current)
+        extra[PROVIDER_INSTANCE_SELECTIONS_KEY] = merged
 
 
 class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecutionFlowPhaseMixin, RunnerExecutionFinalizePhaseMixin):
@@ -52,6 +99,7 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
         if isinstance(extra, dict):
             extra["trace_id"] = trace_context.trace_id
             extra["thread_id"] = trace_context.thread_id
+        await hydrate_session_provider_instance_selections(deps)
         tool_execution_retry_count = int(extra.get("_tool_execution_retry_count", 0) or 0)
         run_failed = False
         message_history: list[dict] = []
@@ -215,6 +263,7 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             selected_token_id = phase_state.get("selected_token_id")
             release_slot = phase_state.get("release_slot")
             deps_obj = phase_state.get("deps", deps)
+            clear_recorded_provider_instance_selections(deps_obj)
             if selected_token_id and self.token_interceptor is not None:
                 headers = self._extract_rate_limit_headers(deps_obj)
                 if headers:
