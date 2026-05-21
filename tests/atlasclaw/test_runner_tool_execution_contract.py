@@ -1074,6 +1074,39 @@ def test_sanitize_turn_messages_for_persistence_drops_unmatched_tool_calls() -> 
     assert sanitized == [{"role": "user", "content": "查下CMP详情"}]
 
 
+def test_sanitize_turn_messages_for_persistence_restores_raw_user_message() -> None:
+    runner = _PostRunner()
+    sanitized = runner._sanitize_turn_messages_for_persistence(
+        messages=[
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+            {
+                "role": "user",
+                "content": (
+                    "Use only the selected knowledge base. You must call the selected search tool.\n"
+                    "Do not call realtime APIs. Do not access external systems.\n\n"
+                    "Question: TLS config?\n\n"
+                    "Please output:\n"
+                    "1. Top 5 retrieved paths\n"
+                    "2. Citations\n"
+                    "3. A short answer"
+                ),
+            },
+            {"role": "assistant", "content": "Tool-backed answer"},
+        ],
+        start_index=2,
+        final_assistant="Tool-backed answer",
+        persist_user_message="TLS config?",
+    )
+
+    assert sanitized == [
+        {"role": "user", "content": "previous question"},
+        {"role": "assistant", "content": "previous answer"},
+        {"role": "user", "content": "TLS config?"},
+        {"role": "assistant", "content": "Tool-backed answer"},
+    ]
+
+
 @pytest.mark.asyncio
 async def test_tool_required_turn_with_tool_error_falls_back_to_llm_answer() -> None:
     runner = _PostRunner()

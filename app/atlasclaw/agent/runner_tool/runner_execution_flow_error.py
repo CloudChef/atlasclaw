@@ -113,6 +113,7 @@ class RunnerExecutionFlowErrorMixin:
                     start_index=persist_run_output_start_index,
                     final_assistant=tool_only_answer,
                     clear_tool_planning_text=True,
+                    persist_user_message=user_message,
                 )
                 if thinking_emitter is not None:
                     async for event in thinking_emitter.close_if_active():
