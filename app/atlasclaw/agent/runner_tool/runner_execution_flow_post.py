@@ -831,6 +831,7 @@ class RunnerExecutionFlowPostMixin:
                 start_index=persist_run_output_start_index,
                 final_assistant="",
                 clear_tool_planning_text=tool_execution_required,
+                persist_user_message=user_message,
             )
             await session_manager.persist_transcript(session_key, safe_messages)
             await self.runtime_events.trigger_run_context_ready(
@@ -1087,6 +1088,7 @@ class RunnerExecutionFlowPostMixin:
             start_index=persist_run_output_start_index,
             final_assistant=final_assistant,
             clear_tool_planning_text=tool_execution_required,
+            persist_user_message=user_message,
         )
 
         if not assistant_output_streamed and final_assistant and not should_block_assistant_emit:
@@ -1293,6 +1295,7 @@ class RunnerExecutionFlowPostMixin:
                     start_index=persist_run_output_start_index,
                     final_assistant=final_assistant,
                     clear_tool_planning_text=tool_execution_required,
+                    persist_user_message=user_message,
                 )
                 if not assistant_output_streamed:
                     thinking_emitter = state.get("thinking_emitter")
@@ -1358,6 +1361,7 @@ class RunnerExecutionFlowPostMixin:
                     start_index=persist_run_output_start_index,
                     final_assistant="",
                     clear_tool_planning_text=tool_execution_required,
+                    persist_user_message=user_message,
                 )
                 await session_manager.persist_transcript(session_key, safe_messages)
                 await self.runtime_events.trigger_run_context_ready(
@@ -1424,6 +1428,7 @@ class RunnerExecutionFlowPostMixin:
                         start_index=persist_run_output_start_index,
                         final_assistant=final_assistant,
                         clear_tool_planning_text=tool_execution_required,
+                        persist_user_message=user_message,
                     )
                     if not assistant_output_streamed:
                         state.get("thinking_emitter").assistant_emitted = True
@@ -1445,6 +1450,7 @@ class RunnerExecutionFlowPostMixin:
                             start_index=persist_run_output_start_index,
                             final_assistant=final_assistant,
                             clear_tool_planning_text=tool_execution_required,
+                            persist_user_message=user_message,
                         )
                         if not assistant_output_streamed:
                             state.get("thinking_emitter").assistant_emitted = True
@@ -1472,6 +1478,7 @@ class RunnerExecutionFlowPostMixin:
                     start_index=persist_run_output_start_index,
                     final_assistant="",
                     clear_tool_planning_text=tool_execution_required,
+                    persist_user_message=user_message,
                 )
                 await session_manager.persist_transcript(session_key, safe_messages)
                 await self.runtime_events.trigger_run_context_ready(

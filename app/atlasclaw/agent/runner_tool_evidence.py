@@ -809,10 +809,12 @@ class RunnerToolEvidenceMixin:
         start_index: int,
         final_assistant: str = "",
         clear_tool_planning_text: bool = False,
+        persist_user_message: str | None = None,
     ) -> list[dict[str, Any]]:
         sanitized: list[dict[str, Any]] = []
         safe_start = max(0, min(int(start_index), len(messages)))
         final_assistant_text = str(final_assistant or "").strip()
+        raw_user_message = None if persist_user_message is None else str(persist_user_message)
         matched_tool_call_keys = self._collect_matched_tool_call_keys(
             messages=messages,
             start_index=safe_start,
@@ -876,6 +878,16 @@ class RunnerToolEvidenceMixin:
             if narrowed_tool_message is None:
                 continue
             sanitized[tool_index] = narrowed_tool_message
+
+        if raw_user_message is not None and raw_user_message.strip():
+            for index in range(safe_start, len(sanitized)):
+                item = sanitized[index]
+                if str(item.get("role", "")).strip().lower() != "user":
+                    continue
+                restored_user_message = dict(item)
+                restored_user_message["content"] = raw_user_message
+                sanitized[index] = restored_user_message
+                break
 
         if not final_assistant_text:
             return sanitized
