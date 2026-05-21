@@ -27,6 +27,21 @@ from sqlalchemy.pool import NullPool, QueuePool
 logger = logging.getLogger(__name__)
 
 
+def _ensure_aiomysql_pre_ping_uses_reconnect_arg(engine: AsyncEngine) -> None:
+    """Keep SQLAlchemy aiomysql pre-ping compatible with its async adapter."""
+    dialect = getattr(getattr(engine, "sync_engine", None), "dialect", None)
+    if getattr(dialect, "driver", "") != "aiomysql":
+        return
+
+    # SQLAlchemy inherits the PyMySQL ping decision for aiomysql, but the
+    # aiomysql async adapter requires ping(False). Force that path so
+    # pool_pre_ping does not call the adapter with no arguments.
+    try:
+        setattr(dialect, "_send_false_to_ping", True)
+    except Exception:
+        logger.debug("Failed to force aiomysql pre-ping argument", exc_info=True)
+
+
 def _resolve_mysql_tls(config_value: Any = True) -> bool:
     """Resolve MySQL TLS flag: MYSQL_TLS env var takes priority over config file.
 
@@ -185,6 +200,7 @@ class DatabaseManager:
                 pool_pre_ping=True,
                 connect_args=build_mysql_connect_args(config.mysql_tls),
             )
+            _ensure_aiomysql_pre_ping_uses_reconnect_arg(self._engine)
             logger.info(f"MySQL TLS enabled: {config.mysql_tls}")
 
         # Create session factory

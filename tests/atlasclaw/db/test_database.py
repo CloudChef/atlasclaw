@@ -22,7 +22,12 @@ import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.atlasclaw.db.database import DatabaseConfig, DatabaseManager, init_database
+from app.atlasclaw.db.database import (
+    DatabaseConfig,
+    DatabaseManager,
+    _ensure_aiomysql_pre_ping_uses_reconnect_arg,
+    init_database,
+)
 from app.atlasclaw.db.models import AgentModel, TokenModel, UserModel, ChannelModel
 from app.atlasclaw.db.orm import (
     AgentConfigService,
@@ -169,6 +174,37 @@ class TestDatabaseConfig:
         url = config.get_connection_url()
         assert "mysql+aiomysql://" in url
         assert "user:pass@localhost:3306/testdb" in url
+
+    def test_aiomysql_pre_ping_uses_reconnect_arg(self):
+        """aiomysql pre-ping must call the adapter as ping(False)."""
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        class FakeAiomysqlConnection:
+            def __init__(self) -> None:
+                self.ping_calls: list[bool] = []
+
+            def ping(self, reconnect: bool) -> None:
+                self.ping_calls.append(reconnect)
+
+        config = DatabaseConfig(
+            db_type="mysql",
+            mysql_host="127.0.0.1",
+            mysql_port=3306,
+            mysql_database="testdb",
+            mysql_user="user",
+            mysql_password="pass",
+        )
+        engine = create_async_engine(config.get_connection_url(), pool_pre_ping=True)
+        try:
+            engine.sync_engine.dialect._send_false_to_ping = False
+
+            _ensure_aiomysql_pre_ping_uses_reconnect_arg(engine)
+
+            fake_connection = FakeAiomysqlConnection()
+            engine.sync_engine.dialect.do_ping(fake_connection)
+            assert fake_connection.ping_calls == [False]
+        finally:
+            engine.sync_engine.dispose()
 
     def test_unsupported_db_type_raises(self):
         """Test unsupported database type raises ValueError."""
