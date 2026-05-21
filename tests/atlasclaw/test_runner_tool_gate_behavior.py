@@ -897,6 +897,236 @@ def test_resolve_contextual_tool_request_recognizes_bracketed_selection_prompt()
     assert used_follow_up_context is True
 
 
+def test_resolve_contextual_tool_request_recognizes_named_or_choice_reply() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="Target A",
+        recent_history=[
+            {"role": "user", "content": "Create the development environment named app-03."},
+            {
+                "role": "assistant",
+                "content": "Would you prefer Target A or Target B for deployment?",
+            },
+        ],
+    )
+
+    assert "Original user request:\nCreate the development environment" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "Target A or Target B" in resolved
+    assert "User reply to that prompt:\nTarget A" in resolved
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_does_not_match_chinese_inline_connector() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="Target A",
+        recent_history=[
+            {"role": "user", "content": "Create the development environment named app-03."},
+            {
+                "role": "assistant",
+                "content": "Would you prefer Target A 还是 Target B?",
+            },
+        ],
+    )
+
+    assert resolved == "Create the development environment named app-03.\nTarget A"
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_does_not_use_chinese_prompt_words_for_choices() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="Target A",
+        recent_history=[
+            {"role": "user", "content": "Create the development environment named app-06."},
+            {
+                "role": "assistant",
+                "content": (
+                    "请问您希望将 app-06 "
+                    "部署在 Target A 还是 Target B？"
+                ),
+            },
+        ],
+    )
+
+    assert resolved == "Create the development environment named app-06.\nTarget A"
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_matches_visible_resource_pool_name_reply() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="vSphere资源池",
+        recent_history=[
+            {
+                "role": "user",
+                "content": (
+                    "Apply for linux with mysql name test-agent-linuxMySQL-06, "
+                    "development department, CentOS 7.9, MySQL 5.7, 40 GB, root password."
+                ),
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "当前可选资源池有两个:\n\n"
+                    "vSphere资源池"
+                    "（适用于内部开发环境）\n"
+                    "aliyun资源池"
+                    "（杭州地域，测试环境）\n"
+                    "请问您倾向部署在 "
+                    "vSphere资源池 还是 aliyun资源池?"
+                ),
+            },
+        ],
+    )
+
+    assert "Original user request:\nApply for linux with mysql" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "vSphere资源池" in resolved
+    assert "User reply to that prompt:\nvSphere资源池" in resolved
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_does_not_trim_chinese_inline_prompt_prefix() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="vSphere",
+        recent_history=[
+            {
+                "role": "user",
+                "content": "Apply for linux with mysql named test-agent-linuxMySQL-06.",
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "请问您希望将 test-agent-linuxMySQL-06 "
+                    "部署在 vSphere（local development） "
+                    "还是 aliyun（cloud test）?"
+                ),
+            },
+        ],
+    )
+
+    assert resolved == "Apply for linux with mysql named test-agent-linuxMySQL-06.\nvSphere"
+    assert used_follow_up_context is True
+
+
+def test_visible_choice_matching_uses_extracted_options_not_prompt_wide_words() -> None:
+    assert RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        "Would you prefer Target A or Target B for deployment?",
+        "Target A",
+    )
+    assert not RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        "Would you prefer Target A or Target B for deployment?",
+        "would",
+    )
+    assert not RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        "Would you prefer Target A or Target B for deployment?",
+        "deployment",
+    )
+
+
+def test_visible_choice_matching_handles_do_you_want_left_option_reply() -> None:
+    assert RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        "Do you want Target A or Target B?",
+        "Target A",
+    )
+    assert RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        "Do you want Target A or Target B?",
+        "Target B",
+    )
+
+
+def test_visible_choice_matching_handles_imperative_left_option_reply() -> None:
+    assert RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        "Choose Target A or Target B.",
+        "Target A",
+    )
+    assert RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        "Select Target A or Target B.",
+        "Target A",
+    )
+
+
+def test_visible_choice_matching_rejects_unspaced_chinese_inline_connector() -> None:
+    assert not RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        "请问您希望部署在"
+        "vSphere资源池还是aliyun资源池？",
+        "vSphere资源池",
+    )
+
+
+def test_visible_choice_matching_rejects_chinese_inline_connector_words() -> None:
+    assert not RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        "请问要选择 生产环境华东一区资源池A或者生产环境华东一区资源池B？",
+        "生产环境华东一区资源池B",
+    )
+
+
+def test_resolve_contextual_tool_request_ignores_explanatory_or_sentence() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="delete resources",
+        recent_history=[
+            {"role": "user", "content": "What operations are available?"},
+            {
+                "role": "assistant",
+                "content": "You can create or delete resources.",
+            },
+        ],
+    )
+
+    assert resolved == "delete resources"
+    assert used_follow_up_context is False
+
+
+def test_visible_choice_matching_rejects_ambiguous_shared_suffix_reply() -> None:
+    prompt = "Would you prefer Target A resource pool or Target B resource pool?"
+
+    assert RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        prompt,
+        "Target A resource pool",
+    )
+    assert not RunnerToolGateRoutingMixin._reply_matches_visible_choice_prompt(
+        prompt,
+        "resource pool",
+    )
+
+
+def test_resolve_contextual_tool_request_matches_numbered_choice_even_without_prompt_markers() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="1",
+        recent_history=[
+            {
+                "role": "user",
+                "content": "Apply for linux with mysql named test-agent-linuxMySQL-06.",
+            },
+            {
+                "role": "assistant",
+                "content": (
+                    "Deployment targets\n"
+                    "1. vSphere resource pool\n"
+                    "2. aliyun resource pool"
+                ),
+            },
+        ],
+    )
+
+    assert "Original user request:\nApply for linux with mysql" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "User reply to that prompt:\n1" in resolved
+    assert used_follow_up_context is True
+
+
 def test_resolve_contextual_tool_request_preserves_latest_prompt_for_repeated_numeric_choices() -> None:
     runner = _GateRunner()
 
