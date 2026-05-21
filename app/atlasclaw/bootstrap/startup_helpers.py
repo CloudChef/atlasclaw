@@ -125,6 +125,11 @@ def create_pydantic_model(token: TokenEntry):
     from pydantic_ai.models.openai import OpenAIChatModel, OpenAIModelProfile
     from pydantic_ai.providers.openai import OpenAIProvider
 
+    from app.atlasclaw.models.openai_chat_compat import (
+        QwenVllmOpenAIChatModel,
+        requires_single_leading_system_message,
+    )
+
     provider = OpenAIProvider(
         api_key=token.api_key,
         base_url=token.base_url,
@@ -133,7 +138,16 @@ def create_pydantic_model(token: TokenEntry):
     # Use reasoning_content as the OpenAI-compatible thinking field when available.
     # For models/providers that do not emit it, this remains a no-op.
     profile = OpenAIModelProfile(openai_chat_thinking_field="reasoning_content")
-    return OpenAIChatModel(token.model, provider=provider, profile=profile)
+    model_class = (
+        QwenVllmOpenAIChatModel
+        if requires_single_leading_system_message(
+            provider=token.provider,
+            model=token.model,
+            base_url=token.base_url,
+        )
+        else OpenAIChatModel
+    )
+    return model_class(token.model, provider=provider, profile=profile)
 
 
 def merge_token_entries(primary: list[TokenEntry], secondary: list[TokenEntry]) -> list[TokenEntry]:

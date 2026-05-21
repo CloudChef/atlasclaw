@@ -340,7 +340,7 @@ create PydanticAI Model instance
 
         try:
             if config.api_type == "openai":
-                return self._create_openai_model(model_id, config)
+                return self._create_openai_model(model_id, config, provider_name=provider_name)
             elif config.api_type == "anthropic":
                 return self._create_anthropic_model(model_id, config)
             elif config.api_type == "google":
@@ -357,10 +357,21 @@ create PydanticAI Model instance
                 f"Failed to create model '{model_ref}': {e}"
             ) from e
 
-    def _create_openai_model(self, model_id: str, config: ProviderConfig) -> Any:
+    def _create_openai_model(
+        self,
+        model_id: str,
+        config: ProviderConfig,
+        *,
+        provider_name: str = "",
+    ) -> Any:
         """Create an OpenAI chat model instance."""
         from pydantic_ai.models.openai import OpenAIChatModel, OpenAIModelProfile
         from pydantic_ai.providers.openai import OpenAIProvider
+
+        from app.atlasclaw.models.openai_chat_compat import (
+            QwenVllmOpenAIChatModel,
+            requires_single_leading_system_message,
+        )
 
         provider_kwargs: dict[str, Any] = {}
         if config.base_url:
@@ -384,7 +395,16 @@ create PydanticAI Model instance
                 openai_chat_thinking_field="reasoning_content",
             )
 
-        return OpenAIChatModel(model_id, **model_kwargs)
+        model_class = (
+            QwenVllmOpenAIChatModel
+            if requires_single_leading_system_message(
+                provider=provider_name,
+                model=model_id,
+                base_url=config.base_url,
+            )
+            else OpenAIChatModel
+        )
+        return model_class(model_id, **model_kwargs)
 
     def _create_anthropic_model(self, model_id: str, config: ProviderConfig) -> Any:
         """
