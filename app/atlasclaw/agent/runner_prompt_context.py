@@ -184,6 +184,11 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
         capability_index.append(provider_record)
 
     for item in collect_skills_snapshot(deps):
+        routing_visibility = _normalize_optional_text(
+            item.get("routing_visibility", item.get("planner_visibility", ""))
+        )
+        if routing_visibility in {"hidden", "internal"}:
+            continue
         skill_name = str(item.get("name") or "unknown").strip() or "unknown"
         if skill_name in tool_names:
             continue

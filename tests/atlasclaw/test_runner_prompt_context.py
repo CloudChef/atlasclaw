@@ -708,6 +708,32 @@ def test_collect_capability_index_snapshot_omits_internal_tools() -> None:
     assert [item["capability_id"] for item in snapshot] == ["tool:public_lookup"]
 
 
+def test_collect_capability_index_snapshot_omits_internal_skill_snapshots() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [],
+            "md_skills_snapshot": [],
+            "skills_snapshot": [
+                {
+                    "name": "atlasclaw_catalog_query",
+                    "description": "Query runtime catalogs",
+                    "routing_visibility": "internal",
+                },
+                {
+                    "name": "public_report",
+                    "description": "Create a user-visible report",
+                    "routing_visibility": "general",
+                },
+            ],
+        }
+    )
+
+    snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
+
+    assert [item["capability_id"] for item in snapshot] == ["skill:public_report"]
+
+
 def test_build_system_prompt_uses_unified_capability_index_surface(tmp_path) -> None:
     agent = SimpleNamespace(
         tools=[
