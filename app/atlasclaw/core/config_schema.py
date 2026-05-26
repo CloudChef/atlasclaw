@@ -448,6 +448,7 @@ class DatabaseConfig(BaseModel):
     mysql: Optional[MySqlDatabaseConfig] = Field(default=None, description="MySQL configuration")
     pool_size: int = Field(default=5, ge=1, description="Connection pool size (MySQL only)")
     max_overflow: int = Field(default=10, ge=0, description="Max overflow connections (MySQL only)")
+    pool_pre_ping: bool = Field(default=False, description="Enable SQLAlchemy pool pre-ping for MySQL connections")
     echo: bool = Field(default=False, description="Echo SQL statements for debugging")
 
 

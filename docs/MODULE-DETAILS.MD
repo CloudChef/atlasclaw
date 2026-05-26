@@ -1660,7 +1660,11 @@ Relational database abstraction with SQLAlchemy ORM, supporting SQLite (default)
 | `mysql_charset` | `str` | `"utf8mb4"` | MySQL charset |
 | `pool_size` | `int` | `5` | Connection pool size |
 | `max_overflow` | `int` | `10` | Max overflow connections |
+| `pool_pre_ping` | `bool` | `False` | Enable SQLAlchemy pool pre-ping for MySQL connections |
 | `echo` | `bool` | `False` | Log SQL statements |
+
+`pool_pre_ping` is disabled by default for aiomysql compatibility. Enable it only
+for MySQL deployments where SQLAlchemy pre-ping is known to work reliably.
 
 **Class: `DatabaseManager`**
 

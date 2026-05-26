@@ -73,7 +73,8 @@ AtlasClaw uses a hybrid storage approach combining file-system and relational da
       "user": "${MYSQL_USER}",
       "password": "${MYSQL_PASSWORD}",
       "charset": "utf8mb4"
-    }
+    },
+    "pool_pre_ping": false
   }
 }
 ```
@@ -81,6 +82,8 @@ AtlasClaw uses a hybrid storage approach combining file-system and relational da
 **Key Design Principles**:
 - SQLite: No manual SQL needed; schema controlled by ORM models
 - MySQL: Enterprise deployments use Alembic for migration control
+- MySQL pool pre-ping defaults to disabled for aiomysql compatibility; enable
+  `database.pool_pre_ping` only for deployments where SQLAlchemy pre-ping is known to work
 - Provider configs merge: JSON config + DB entries, with DB taking precedence on same `(provider_type, instance_name)`
 
 ### 1.5 Multi-Channel Access
