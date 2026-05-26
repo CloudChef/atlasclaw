@@ -18,6 +18,7 @@ from app.atlasclaw.agent.context_window_guard import evaluate_context_window_gua
 from app.atlasclaw.agent.runner_prompt_context import (
     build_system_prompt,
     collect_capability_index_snapshot,
+    collect_md_skill_capability_entries,
     collect_tool_groups_snapshot,
     collect_tools_snapshot,
 )
@@ -48,6 +49,7 @@ from app.atlasclaw.agent.tool_gate_models import (
 )
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.memory.access import MEMORY_TOOL_NAMES
+from app.atlasclaw.tools.providers.instance_tools import PROVIDER_INSTANCE_SELECTIONS_KEY
 
 
 logger = logging.getLogger(__name__)
@@ -147,6 +149,7 @@ def build_user_selected_tool_intent_plan(deps: SkillDeps) -> ToolIntentPlan | No
 
     return ToolIntentPlan(
         action=ToolIntentAction.USE_TOOLS,
+        target_provider_instances=targets.provider_instances,
         target_provider_types=targets.provider_types,
         target_skill_names=targets.skill_names,
         target_group_ids=targets.group_ids,
@@ -443,6 +446,7 @@ def _intent_plan_has_explicit_targets(intent_plan: ToolIntentPlan | None) -> boo
         return False
     return any(
         [
+            list(intent_plan.target_provider_instances or []),
             list(intent_plan.target_provider_types or []),
             list(intent_plan.target_skill_names or []),
             list(intent_plan.target_group_ids or []),
@@ -450,6 +454,196 @@ def _intent_plan_has_explicit_targets(intent_plan: ToolIntentPlan | None) -> boo
             list(intent_plan.target_tool_names or []),
         ]
     )
+
+
+def _split_provider_instance_ref(value: Any) -> tuple[str, str]:
+    normalized = _normalize_text(value)
+    if "." not in normalized:
+        return "", ""
+    provider_type, instance_name = normalized.split(".", 1)
+    return provider_type.strip(), instance_name.strip()
+
+
+def _provider_instance_bucket(
+    provider_instances: dict[str, Any],
+    provider_type: str,
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    normalized = _normalize_text(provider_type)
+    if not normalized:
+        return "", {}
+    for key in (normalized, normalized.lower()):
+        bucket = provider_instances.get(key)
+        if isinstance(bucket, dict):
+            return str(key), {
+                str(name): dict(config)
+                for name, config in bucket.items()
+                if str(name or "").strip() and isinstance(config, dict)
+            }
+    for key, bucket in provider_instances.items():
+        if str(key or "").strip().lower() != normalized.lower() or not isinstance(bucket, dict):
+            continue
+        return str(key), {
+            str(name): dict(config)
+            for name, config in bucket.items()
+            if str(name or "").strip() and isinstance(config, dict)
+        }
+    return normalized, {}
+
+
+def _provider_types_for_target_tools(
+    *,
+    extra: dict[str, Any],
+    target_tool_names: list[str],
+) -> list[str]:
+    """Infer provider types for provider-backed tool targets from the tool snapshot."""
+    target_names = {
+        _normalize_text(name).lower()
+        for name in target_tool_names
+        if _normalize_text(name)
+    }
+    if not target_names:
+        return []
+
+    tools_snapshot = extra.get("tools_snapshot")
+    if not isinstance(tools_snapshot, list):
+        return []
+
+    provider_types: list[str] = []
+    seen: set[str] = set()
+    for tool in tools_snapshot:
+        if not isinstance(tool, dict):
+            continue
+        tool_name = _normalize_text(tool.get("name")).lower()
+        if tool_name not in target_names:
+            continue
+        provider_type = _normalize_text(tool.get("provider_type"))
+        provider_key = provider_type.lower()
+        if not provider_key or provider_key in seen:
+            continue
+        seen.add(provider_key)
+        provider_types.append(provider_type)
+    return provider_types
+
+
+def _apply_direct_provider_instance(
+    *,
+    extra: dict[str, Any],
+    provider_type: str,
+    instance_name: str,
+    instance_config: dict[str, Any],
+) -> None:
+    instance = dict(instance_config)
+    instance["provider_type"] = provider_type
+    instance["instance_name"] = instance_name
+    extra["provider_type"] = provider_type
+    extra["provider_instance_name"] = instance_name
+    extra["provider_instance"] = instance
+
+
+def apply_provider_instance_selection_policy(
+    *,
+    deps: SkillDeps,
+    intent_plan: ToolIntentPlan | None,
+) -> tuple[ToolIntentPlan | None, dict[str, Any]]:
+    """Apply instance-level routing targets to request extras before tool projection."""
+    trace: dict[str, Any] = {
+        "enabled": False,
+        "selected_provider_instances": [],
+        "defaulted_provider_instances": [],
+        "target_provider_types": [],
+    }
+    if intent_plan is None or not isinstance(getattr(deps, "extra", None), dict):
+        return intent_plan, trace
+
+    extra = deps.extra
+    provider_instances = extra.get("provider_instances")
+    if not isinstance(provider_instances, dict) or not provider_instances:
+        return intent_plan, trace
+
+    target_refs: list[tuple[str, str, str, dict[str, Any], bool]] = []
+    provider_types = [
+        _normalize_text(item).lower()
+        for item in (intent_plan.target_provider_types or [])
+        if _normalize_text(item)
+    ]
+    for inferred_provider_type in _provider_types_for_target_tools(
+        extra=extra,
+        target_tool_names=list(intent_plan.target_tool_names or []),
+    ):
+        provider_key = inferred_provider_type.lower()
+        if provider_key not in provider_types:
+            provider_types.append(provider_key)
+
+    for raw_ref in intent_plan.target_provider_instances or []:
+        raw_provider_type, instance_name = _split_provider_instance_ref(raw_ref)
+        provider_type, bucket = _provider_instance_bucket(provider_instances, raw_provider_type)
+        if not provider_type or not instance_name or instance_name not in bucket:
+            continue
+        target_refs.append(
+            (
+                provider_type,
+                instance_name,
+                f"{provider_type}.{instance_name}",
+                bucket[instance_name],
+                False,
+            )
+        )
+        if provider_type.lower() not in provider_types:
+            provider_types.append(provider_type.lower())
+
+    if not target_refs:
+        for raw_provider_type in provider_types:
+            provider_type, bucket = _provider_instance_bucket(provider_instances, raw_provider_type)
+            if not provider_type or not bucket:
+                continue
+            instance_name, instance_config = next(iter(bucket.items()))
+            target_refs.append(
+                (
+                    provider_type,
+                    instance_name,
+                    f"{provider_type}.{instance_name}",
+                    instance_config,
+                    True,
+                )
+            )
+            if provider_type.lower() not in provider_types:
+                provider_types.append(provider_type.lower())
+
+    if not target_refs:
+        return intent_plan, trace
+
+    selections = extra.setdefault(PROVIDER_INSTANCE_SELECTIONS_KEY, {})
+    if not isinstance(selections, dict):
+        selections = {}
+        extra[PROVIDER_INSTANCE_SELECTIONS_KEY] = selections
+    for provider_type, instance_name, _, instance_config, _ in target_refs:
+        selections[provider_type] = instance_name
+        selections[provider_type.lower()] = instance_name
+        if len(target_refs) == 1:
+            _apply_direct_provider_instance(
+                extra=extra,
+                provider_type=provider_type,
+                instance_name=instance_name,
+                instance_config=instance_config,
+            )
+
+    selected_refs = [ref for _, _, ref, _, defaulted in target_refs if not defaulted]
+    defaulted_refs = [ref for _, _, ref, _, defaulted in target_refs if defaulted]
+    updated_plan = intent_plan.model_copy(
+        update={
+            "target_provider_instances": selected_refs + defaulted_refs,
+            "target_provider_types": provider_types,
+        }
+    )
+    trace.update(
+        {
+            "enabled": True,
+            "selected_provider_instances": selected_refs,
+            "defaulted_provider_instances": defaulted_refs,
+            "target_provider_types": provider_types,
+        }
+    )
+    return updated_plan, trace
 
 
 def _artifact_classes_for_entry(entry: dict[str, Any]) -> set[str]:
@@ -554,6 +748,9 @@ def resolve_selected_md_skill_target(
         return None
 
     capability_index = collect_capability_index_snapshot(agent=agent, deps=deps)
+    capability_index.extend(
+        collect_md_skill_capability_entries(deps, include_provider_bound=True)
+    )
     if not capability_index:
         return None
 
@@ -1011,6 +1208,7 @@ def prune_auto_selected_provider_instance_tools(
     trace: dict[str, Any] = {
         "enabled": False,
         "removed_tools": [],
+        "target_provider_instances": [],
         "target_provider_types": [],
         "auto_selected_provider_types": [],
         "explicit_selected_provider_types": [],
@@ -1028,6 +1226,7 @@ def prune_auto_selected_provider_instance_tools(
 
     explicit_selected_provider_types: list[str] = []
     explicit_selected_instances: list[str] = []
+    target_provider_instances: list[str] = []
     selected_capability = extra.get(SELECTED_CAPABILITY_KEY)
     if isinstance(selected_capability, dict):
         selected_provider_type, selected_instance_name = selected_capability_provider_instance_ref(
@@ -1040,6 +1239,17 @@ def prune_auto_selected_provider_instance_tools(
 
     target_provider_types: list[str] = []
     if intent_plan is not None:
+        for item in (intent_plan.target_provider_instances or []):
+            provider_type, instance_name = _split_provider_instance_ref(item)
+            provider_type = provider_type.strip().lower()
+            if not provider_type or not instance_name:
+                continue
+            target_provider_instances.append(f"{provider_type}.{instance_name}")
+            if provider_type not in target_provider_types:
+                target_provider_types.append(provider_type)
+            if provider_type not in explicit_selected_provider_types:
+                explicit_selected_provider_types.append(provider_type)
+                explicit_selected_instances.append(instance_name)
         for item in (intent_plan.target_provider_types or []):
             provider_type = str(item or "").strip().lower()
             if provider_type and provider_type not in target_provider_types:
@@ -1060,22 +1270,10 @@ def prune_auto_selected_provider_instance_tools(
             selected_provider_type = str(extra.get("provider_type", "") or "").strip().lower()
         if selected_provider_type:
             target_provider_types.append(selected_provider_type)
-
-    if not target_provider_types:
-        visible_provider_types: list[str] = []
-        for tool in available_tools:
-            if not isinstance(tool, dict):
-                continue
-            if tool_is_coordination_support(tool):
-                continue
-            provider_type = str(tool.get("provider_type", "") or "").strip().lower()
-            if provider_type and provider_type not in visible_provider_types:
-                visible_provider_types.append(provider_type)
-        if len(visible_provider_types) == 1:
-            target_provider_types = list(visible_provider_types)
-
-    if not target_provider_types:
-        return list(available_tools), trace
+        selected_instance_name = str(extra.get("provider_instance_name", "") or "").strip()
+        if selected_provider_type and selected_instance_name:
+            explicit_selected_provider_types.append(selected_provider_type)
+            explicit_selected_instances.append(selected_instance_name)
 
     auto_selected_provider_types = [
         provider_type
@@ -1114,6 +1312,7 @@ def prune_auto_selected_provider_instance_tools(
         {
             "enabled": bool(removed_tools),
             "removed_tools": removed_tools,
+            "target_provider_instances": target_provider_instances,
             "target_provider_types": list(target_provider_types),
             "auto_selected_provider_types": auto_selected_provider_types,
             "explicit_selected_provider_types": explicit_selected_provider_types,
@@ -1567,6 +1766,9 @@ class RunnerExecutionPreparePhaseMixin:
                 metadata_candidates = {
                     "reason": "user_selected_capability",
                     "confidence": 1.0,
+                    "preferred_provider_instances": list(
+                        selected_tool_intent_plan.target_provider_instances
+                    ),
                     "preferred_provider_types": list(selected_tool_intent_plan.target_provider_types),
                     "preferred_group_ids": list(selected_tool_intent_plan.target_group_ids),
                     "preferred_capability_classes": list(
@@ -1577,6 +1779,9 @@ class RunnerExecutionPreparePhaseMixin:
                 }
                 _log_step(
                     "user_selected_capability_applied",
+                    target_provider_instances=list(
+                        selected_tool_intent_plan.target_provider_instances
+                    ),
                     target_provider_types=list(selected_tool_intent_plan.target_provider_types),
                     target_skill_names=list(selected_tool_intent_plan.target_skill_names),
                     target_tool_names=list(selected_tool_intent_plan.target_tool_names),
@@ -1641,6 +1846,11 @@ class RunnerExecutionPreparePhaseMixin:
                 metadata_candidates = {
                     "reason": "llm_capability_selector",
                     "confidence": 1.0 if capability_selector_intent_plan is not None else 0.0,
+                    "preferred_provider_instances": (
+                        list(capability_selector_intent_plan.target_provider_instances)
+                        if capability_selector_intent_plan is not None
+                        else []
+                    ),
                     "preferred_provider_types": (
                         list(capability_selector_intent_plan.target_provider_types)
                         if capability_selector_intent_plan is not None
@@ -1675,6 +1885,11 @@ class RunnerExecutionPreparePhaseMixin:
                         if capability_selector_intent_plan is not None
                         else ""
                     ),
+                    target_provider_instances=(
+                        list(capability_selector_intent_plan.target_provider_instances)
+                        if capability_selector_intent_plan is not None
+                        else []
+                    ),
                     target_provider_types=(
                         list(capability_selector_intent_plan.target_provider_types)
                         if capability_selector_intent_plan is not None
@@ -1695,6 +1910,9 @@ class RunnerExecutionPreparePhaseMixin:
                 "status": "capability_selector",
                 "reason": str(metadata_candidates.get("reason", "") or "capability_selector"),
                 "confidence": float(metadata_candidates.get("confidence", 0.0) or 0.0),
+                "preferred_provider_instances": list(
+                    metadata_candidates.get("preferred_provider_instances", []) or []
+                ),
                 "preferred_provider_types": list(
                     metadata_candidates.get("preferred_provider_types", []) or []
                 ),
@@ -1714,6 +1932,9 @@ class RunnerExecutionPreparePhaseMixin:
             _log_step(
                 "capability_selector_recorded",
                 confidence=float(metadata_candidates.get("confidence", 0.0) or 0.0),
+                preferred_provider_instances=list(
+                    metadata_candidates.get("preferred_provider_instances", []) or []
+                ),
                 preferred_provider_types=list(
                     metadata_candidates.get("preferred_provider_types", []) or []
                 ),
@@ -1747,10 +1968,49 @@ class RunnerExecutionPreparePhaseMixin:
                         reason=transcript_skill_intent_plan.reason,
                         target_skill_names=list(transcript_skill_intent_plan.target_skill_names),
                     )
+            metadata_tool_intent_plan, provider_instance_selection_trace = (
+                apply_provider_instance_selection_policy(
+                    deps=deps,
+                    intent_plan=metadata_tool_intent_plan,
+                )
+            )
+            if provider_instance_selection_trace.get("enabled"):
+                metadata_candidates["preferred_provider_instances"] = list(
+                    metadata_tool_intent_plan.target_provider_instances
+                    if metadata_tool_intent_plan is not None
+                    else []
+                )
+                metadata_candidates["preferred_provider_types"] = list(
+                    metadata_tool_intent_plan.target_provider_types
+                    if metadata_tool_intent_plan is not None
+                    else []
+                )
+                _log_step(
+                    "provider_instance_selection_applied",
+                    selected_provider_instances=list(
+                        provider_instance_selection_trace.get(
+                            "selected_provider_instances", []
+                        )
+                        or []
+                    ),
+                    defaulted_provider_instances=list(
+                        provider_instance_selection_trace.get(
+                            "defaulted_provider_instances", []
+                        )
+                        or []
+                    ),
+                    target_provider_types=list(
+                        provider_instance_selection_trace.get("target_provider_types", [])
+                        or []
+                    ),
+                )
             if metadata_tool_intent_plan is not None:
                 _log_step(
                     "capability_selector_plan_resolved",
                     action=metadata_tool_intent_plan.action.value,
+                    target_provider_instances=list(
+                        metadata_tool_intent_plan.target_provider_instances
+                    ),
                     target_provider_types=list(metadata_tool_intent_plan.target_provider_types),
                     target_skill_names=list(metadata_tool_intent_plan.target_skill_names),
                     target_capability_classes=list(metadata_tool_intent_plan.target_capability_classes),
@@ -1758,13 +2018,14 @@ class RunnerExecutionPreparePhaseMixin:
                 )
             if selected_tool_intent_plan is not None:
                 explicit_capability_match = True
-                tool_intent_plan = selected_tool_intent_plan
+                tool_intent_plan = metadata_tool_intent_plan
             else:
                 tool_intent_plan = metadata_tool_intent_plan
                 explicit_capability_match = bool(
                     tool_intent_plan is not None
                     and any(
                         [
+                            list(tool_intent_plan.target_provider_instances or []),
                             list(tool_intent_plan.target_provider_types or []),
                             list(tool_intent_plan.target_skill_names or []),
                             list(tool_intent_plan.target_group_ids or []),
@@ -1798,6 +2059,9 @@ class RunnerExecutionPreparePhaseMixin:
                     if tool_intent_plan is not None
                     else ""
                 ),
+                target_provider_instances=list(tool_intent_plan.target_provider_instances or [])
+                if tool_intent_plan is not None
+                else [],
                 target_provider_types=list(tool_intent_plan.target_provider_types or [])
                 if tool_intent_plan is not None
                 else [],

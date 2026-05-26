@@ -85,6 +85,31 @@ def collect_workspace_download_references_from_tool_results(
 
 
 class RunnerExecutionFlowStreamMixin:
+    def _stash_tool_only_answer_for_loop_stop(
+        self,
+        *,
+        state: dict[str, Any],
+        messages: list[dict[str, Any]],
+        start_index: int,
+    ) -> None:
+        build_answer = getattr(self, "_build_tool_only_markdown_answer_from_messages", None)
+        if not callable(build_answer):
+            return
+        answer = str(
+            build_answer(
+                messages=messages,
+                start_index=start_index,
+            )
+            or ""
+        ).strip()
+        if not answer:
+            return
+        looks_raw = getattr(self, "_looks_like_raw_tool_payload_dump", None)
+        if callable(looks_raw) and looks_raw(answer):
+            return
+        state["tool_only_answer_override"] = answer
+        state["force_tool_only_finalize"] = True
+
     async def _run_agent_node_stream(
         self,
         *,
@@ -425,6 +450,11 @@ class RunnerExecutionFlowStreamMixin:
                 )
                 if repeated_tool_names:
                     repeated_tool_name = repeated_tool_names[0]
+                    self._stash_tool_only_answer_for_loop_stop(
+                        state=state,
+                        messages=list(state.get("latest_agent_messages") or state.get("message_history") or []),
+                        start_index=persist_run_output_start_index,
+                    )
                     state["repeated_tool_loop"] = {
                         "tool_name": repeated_tool_name,
                         "count": len(
@@ -604,6 +634,11 @@ class RunnerExecutionFlowStreamMixin:
                     threshold=2,
                 )
                 if repeated_no_progress is not None:
+                    self._stash_tool_only_answer_for_loop_stop(
+                        state=state,
+                        messages=latest_messages,
+                        start_index=persist_run_output_start_index,
+                    )
                     state["repeated_tool_no_progress"] = repeated_no_progress
                     yield StreamEvent.runtime_update(
                         "warning",

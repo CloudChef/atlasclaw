@@ -314,9 +314,9 @@ def build_resolved_provider_instances(
     return {
         provider_type: {
             instance_name: dict(instance_config)
-            for instance_name, instance_config in sorted(instances.items())
+            for instance_name, instance_config in instances.items()
         }
-        for provider_type, instances in sorted(resolved_instances.items())
+        for provider_type, instances in resolved_instances.items()
     }
 
 
@@ -511,9 +511,9 @@ def build_user_provider_instances(
     return {
         provider_type: {
             instance_name: dict(instance_config)
-            for instance_name, instance_config in sorted(instances.items())
+            for instance_name, instance_config in instances.items()
         }
-        for provider_type, instances in sorted(resolved_instances.items())
+        for provider_type, instances in resolved_instances.items()
     }
 
 

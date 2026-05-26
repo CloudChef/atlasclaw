@@ -138,20 +138,39 @@ def resolve_provider_instance_selection(
 
     The policy is shared by provider skill wrappers and Markdown provider tools:
     use an explicit selected instance first, then a session-sticky selection, then
-    a same-run recorded selection, then auto-select only when one visible instance
-    exists. Multiple visible instances without a selection fail closed with safe
-    candidate names and usage hints.
+    a same-run recorded selection, then the first configured visible instance.
+    The prompt still asks the LLM to pick by instance usage hints; the runtime
+    policy guarantees provider tools receive a concrete instance before execution.
     """
     target_provider = str(provider_type or "").strip()
     visible_instances = _normalize_instance_configs(instances)
-    if not target_provider or not visible_instances:
+    if not target_provider:
         return ProviderInstanceSelectionResolution(
             resolved=True,
             provider_type=target_provider,
         )
-
     selected_type = str(extra.get("provider_type", "") or "").strip()
     selected_name = str(extra.get("provider_instance_name", "") or "").strip()
+    direct_instance = extra.get("provider_instance")
+    if not visible_instances:
+        if isinstance(direct_instance, dict):
+            direct_type = str(direct_instance.get("provider_type", "") or selected_type).strip()
+            direct_name = str(direct_instance.get("instance_name", "") or selected_name).strip()
+            if direct_type == target_provider and direct_name:
+                return _apply_provider_instance_selection(
+                    extra=extra,
+                    provider_type=target_provider,
+                    instance_name=direct_name,
+                    instance_config=direct_instance,
+                )
+        return ProviderInstanceSelectionResolution(
+            resolved=False,
+            provider_type=target_provider,
+            error_text=(
+                f"Provider instance selection required for provider '{target_provider}'."
+            ),
+        )
+
     if selected_type == target_provider and selected_name in visible_instances:
         return _apply_provider_instance_selection(
             extra=extra,
@@ -189,24 +208,12 @@ def resolve_provider_instance_selection(
             selections[target_provider] = recorded_name
         return selection
 
-    if len(visible_instances) == 1:
-        instance_name, instance_config = next(iter(visible_instances.items()))
-        return _apply_provider_instance_selection(
-            extra=extra,
-            provider_type=target_provider,
-            instance_name=instance_name,
-            instance_config=instance_config,
-        )
-
-    return ProviderInstanceSelectionResolution(
-        resolved=False,
+    instance_name, instance_config = next(iter(visible_instances.items()))
+    return _apply_provider_instance_selection(
+        extra=extra,
         provider_type=target_provider,
-        error_text=(
-            format_provider_instance_choices(target_provider, visible_instances)
-            + "\nCall select_provider_instance before invoking this provider tool. "
-            "If the usage hints do not clearly identify the user's target, "
-            "ask the user which instance to use."
-        ),
+        instance_name=instance_name,
+        instance_config=instance_config,
     )
 
 

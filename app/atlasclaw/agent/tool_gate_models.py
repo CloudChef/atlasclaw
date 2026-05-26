@@ -54,6 +54,7 @@ class ToolIntentPlan(BaseModel):
     """Structured planning result used to derive the minimal toolset for a turn."""
 
     action: ToolIntentAction = ToolIntentAction.DIRECT_ANSWER
+    target_provider_instances: list[str] = Field(default_factory=list)
     target_provider_types: list[str] = Field(default_factory=list)
     target_skill_names: list[str] = Field(default_factory=list)
     target_group_ids: list[str] = Field(default_factory=list)

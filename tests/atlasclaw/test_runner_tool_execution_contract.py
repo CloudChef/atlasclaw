@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+import json
 from types import SimpleNamespace
 import time
 
@@ -19,7 +20,6 @@ from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     RunnerExecutionPayloadMixin,
     build_finalize_payload,
     build_lookup_dump_recovery_payload,
-    build_tool_failure_fallback_payload,
     provider_auth_diagnostic_user_message,
     select_provider_auth_diagnostic,
 )
@@ -66,28 +66,6 @@ class _SessionManager:
         return None
 
 
-def test_build_tool_failure_fallback_payload_forbids_inferred_side_effect_claims() -> None:
-    payload = build_tool_failure_fallback_payload(
-        user_message="申请 Linux VM",
-        tool_results=[],
-        attempted_tools=[
-            {"name": "smartcmp_list_components", "args": {"source_key": "resource.iaas.machine.instance.abstract"}},
-        ],
-        failure_reasons=["Repeated tool execution for smartcmp_list_components did not add new evidence."],
-    )
-
-    assert "Never infer that a side-effecting action" in payload["system_prompt"]
-    assert "Never infer that an unavailable external or private-system action" in payload["system_prompt"]
-    assert "service the user is trying to use is currently unavailable" in payload["system_prompt"]
-    assert "personal provider access credential is not configured" in payload["system_prompt"]
-    assert "personal account settings" in payload["system_prompt"]
-    assert "contact an administrator" in payload["system_prompt"]
-    assert "diagnostic questions about backend setup" in payload["system_prompt"]
-    assert "paste access credentials into chat" in payload["system_prompt"]
-    assert "atlasclaw.json" not in payload["system_prompt"]
-    assert "Authoritative workflow notes" not in payload["user_prompt"]
-
-
 def test_provider_auth_diagnostic_sanitizes_user_token_failure() -> None:
     diagnostic = select_provider_auth_diagnostic(
         extra={
@@ -113,34 +91,10 @@ def test_provider_auth_diagnostic_sanitizes_user_token_failure() -> None:
         tool_results=[],
     )
 
-    payload = build_tool_failure_fallback_payload(
-        user_message="申请服务",
-        tool_results=[
-            {
-                "tool_name": "providerx_list_services",
-                "content": (
-                    "[ERROR] Provider configuration not available.\n"
-                    "Configure one of the following in atlasclaw.json:\n"
-                    "base_url + cookie"
-                ),
-            }
-        ],
-        attempted_tools=[{"name": "providerx_list_services"}],
-        failure_reasons=[
-            "providerx_list_services error: [ERROR] Provider configuration not available. "
-            "Configure one of the following in atlasclaw.json or pass a session token in the HTTP request."
-        ],
-        provider_auth_diagnostic=diagnostic,
-    )
-
     assert diagnostic and diagnostic["missing_user_token"] is True
-    assert "personal provider access credential is not configured" in payload["user_prompt"]
-    assert "`user_token`" not in payload["user_prompt"]
-    assert "contact an administrator" not in payload["user_prompt"]
-    assert "atlasclaw.json" not in payload["user_prompt"]
-    assert "HTTP request" not in payload["user_prompt"]
-    assert "base_url" not in payload["user_prompt"]
-    assert "cookie" not in payload["user_prompt"].lower()
+    message = provider_auth_diagnostic_user_message(diagnostic)
+    assert "personal provider access credential is not configured" in message
+    assert "contact an administrator" not in message
 
 
 def test_provider_auth_diagnostic_sanitizes_rejected_user_token_failure() -> None:
@@ -171,28 +125,14 @@ def test_provider_auth_diagnostic_sanitizes_rejected_user_token_failure() -> Non
         ],
     )
 
-    payload = build_tool_failure_fallback_payload(
-        user_message="申请服务",
-        tool_results=[
-            {
-                "tool_name": "providerx_list_services",
-                "content": "HTTP 401: {}",
-            }
-        ],
-        attempted_tools=[{"name": "providerx_list_services"}],
-        failure_reasons=["providerx_list_services error: HTTP 401: {}"],
-        provider_auth_diagnostic=diagnostic,
-    )
-
     assert diagnostic and diagnostic["user_token_configured"] is True
-    assert "personal provider access credential was rejected" in payload["user_prompt"]
-    assert "`user_token`" not in payload["user_prompt"]
-    assert "personal account settings" in payload["user_prompt"]
-    assert "contact an administrator" not in payload["user_prompt"]
-    assert "HTTP 401" not in payload["user_prompt"]
+    message = provider_auth_diagnostic_user_message(diagnostic)
+    assert "personal provider access credential was rejected" in message
+    assert "personal account settings" in message
+    assert "contact an administrator" not in message
 
 
-def test_provider_auth_diagnostic_does_not_fall_back_to_unmatched_provider() -> None:
+def test_provider_auth_diagnostic_ignores_unmatched_provider() -> None:
     diagnostic = select_provider_auth_diagnostic(
         extra={
             "provider_auth_diagnostics": {
@@ -217,7 +157,7 @@ def test_provider_auth_diagnostic_does_not_fall_back_to_unmatched_provider() -> 
     assert diagnostic is None
 
 
-def test_provider_auth_diagnostic_sanitizes_admin_required_failure() -> None:
+def test_provider_auth_diagnostic_user_message_for_admin_required_failure() -> None:
     diagnostic = {
         "provider_type": "providerx",
         "instance_name": "default",
@@ -225,19 +165,9 @@ def test_provider_auth_diagnostic_sanitizes_admin_required_failure() -> None:
         "contact_admin": True,
     }
 
-    payload = build_tool_failure_fallback_payload(
-        user_message="申请服务",
-        tool_results=[],
-        attempted_tools=[{"name": "providerx_list_services"}],
-        failure_reasons=[
-            "providerx_list_services error: Provider binding 'providerx/default' has no usable auth mode"
-        ],
-        provider_auth_diagnostic=diagnostic,
-    )
-
-    assert "contact an administrator" in payload["user_prompt"]
-    assert "personal provider access credential" not in payload["user_prompt"]
-    assert "Provider binding" not in payload["user_prompt"]
+    message = provider_auth_diagnostic_user_message(diagnostic)
+    assert "Contact an administrator" in message
+    assert "personal provider access credential" not in message
 
 
 class _PostRunner(
@@ -250,8 +180,6 @@ class _PostRunner(
     def __init__(self) -> None:
         self.history = _History()
         self.runtime_events = _RuntimeEvents()
-        self.fallback_answer = ""
-        self.fallback_calls = []
         self.unsupported_answer = (
             "I can't execute that operation with the available runtime tool. "
             "No action was executed. Supported options are `enable` and `disable`."
@@ -290,10 +218,6 @@ class _PostRunner(
         if False:
             yield None
         return
-
-    async def _generate_missing_tool_evidence_fallback_answer(self, **kwargs):
-        self.fallback_calls.append(kwargs)
-        return self.fallback_answer
 
     async def run_single(self, user_message, deps, *, system_prompt=None, agent=None, allowed_tool_names=None):
         self.unsupported_calls.append(
@@ -690,7 +614,6 @@ async def test_tool_required_missing_tool_after_retry_asks_llm_for_unsupported_t
     assert "Supported options are `enable` and `disable`" in assistant_text
     assert "A grounded tool-backed answer" not in assistant_text
     assert runner.retry_after_missing_tool_execution_calls == []
-    assert runner.fallback_calls == []
     assert len(runner.unsupported_calls) == 1
     assert runner.unsupported_calls[0]["allowed_tool_names"] == []
     assert "item_operation" in runner.unsupported_calls[0]["user_message"]
@@ -1034,6 +957,40 @@ def test_repeated_tool_loop_limit_does_not_block_standard_skill_runtime_tools() 
     assert exceeded == []
 
 
+def test_repeated_tool_loop_stashes_tool_only_answer_before_stop() -> None:
+    runner = _StreamRunnerWithEvidence()
+    state: dict[str, object] = {}
+
+    runner._stash_tool_only_answer_for_loop_stop(
+        state=state,
+        messages=[
+            {"role": "user", "content": "SmartCMP 是否支持泛微 OA 审批？"},
+            {
+                "role": "tool",
+                "tool_name": "markdown_vault_search",
+                "content": json.dumps(
+                    {
+                        "success": True,
+                        "results": [
+                            {
+                                "title": "OA 系统对接",
+                                "path": "20-功能域/第三方系统对接与集成/OA 系统对接.md",
+                                "text": "支持泛微 OA 对接审批，需按接口文档配置认证和回调。",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+        start_index=1,
+    )
+
+    assert state["force_tool_only_finalize"] is True
+    assert "OA 系统对接" in str(state["tool_only_answer_override"])
+    assert '"results"' not in str(state["tool_only_answer_override"])
+
+
 def test_merge_runtime_messages_with_session_prefix_restores_full_turn_view() -> None:
     merged = _PayloadRunner._merge_runtime_messages_with_session_prefix(
         session_message_history=[
@@ -1108,12 +1065,8 @@ def test_sanitize_turn_messages_for_persistence_restores_raw_user_message() -> N
 
 
 @pytest.mark.asyncio
-async def test_tool_required_turn_with_tool_error_falls_back_to_llm_answer() -> None:
+async def test_tool_required_turn_with_tool_error_fails_without_llm_fallback() -> None:
     runner = _PostRunner()
-    runner.fallback_answer = (
-        "我没能通过 CMP 工具取到这条工单的详情。"
-        "请确认工单标识是否正确，或稍后再试一次。"
-    )
     session_manager = _SessionManager()
     state = {
         "start_time": 0.0,
@@ -1209,21 +1162,16 @@ async def test_tool_required_turn_with_tool_error_falls_back_to_llm_answer() -> 
         if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "answered"
     ]
     assistant_chunks = [event.content for event in events if event.type == "assistant"]
-    assert failed_states == []
-    assert answered_states
-    assert runner.fallback_calls
-    assert any("CMP 工具" in chunk for chunk in assistant_chunks)
+    assert failed_states
+    assert answered_states == []
+    assert assistant_chunks == []
     await runner._await_background_post_success_tasks()
     assert session_manager.persisted_messages is not None
 
 
 @pytest.mark.asyncio
-async def test_tool_required_turn_with_terminal_no_results_falls_back_to_llm_answer() -> None:
+async def test_tool_required_turn_with_terminal_no_results_uses_tool_only_answer() -> None:
     runner = _PostRunner()
-    runner.fallback_answer = (
-        "工具没有查到明确结果。以下是基于已有知识的建议："
-        "可以优先考虑崇明岛环岛绿道、滴水湖环湖骑行线和淀山湖周边骑行路线。"
-    )
     session_manager = _SessionManager()
     state = {
         "start_time": 0.0,
@@ -1322,19 +1270,215 @@ async def test_tool_required_turn_with_terminal_no_results_falls_back_to_llm_ans
 
     assert failed_states == []
     assert answered_states
-    assert runner.fallback_calls
-    assert any("崇明岛" in chunk for chunk in assistant_chunks)
+    assert any("returned no results" in chunk for chunk in assistant_chunks)
     await runner._await_background_post_success_tasks()
     assert session_manager.persisted_messages is not None
 
 
 @pytest.mark.asyncio
-async def test_artifact_request_with_only_lookup_results_falls_back_in_same_turn() -> None:
+async def test_must_use_tool_turn_with_real_evidence_uses_tool_only_answer_after_loop() -> None:
     runner = _PostRunner()
-    runner.fallback_answer = (
-        "我已经拿到了申请列表，但这轮没有真正生成 PPT 文件。"
-        "如果继续，我可以把这些申请整理成适合写入 PPT 的大纲内容。"
-    )
+    session_manager = _SessionManager()
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-must-tool-evidence",
+        "session_manager": session_manager,
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-must-tool-evidence",
+        "user_message": "SmartCMP 是否支持某个云资源？",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=True,
+            needs_grounded_verification=True,
+            reason="knowledge-base answer requires grounded evidence",
+            policy=ToolPolicyMode.MUST_USE_TOOL,
+        ),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "available_tools": [{"name": "markdown_vault_search", "capability_class": "provider:markdown-vault"}],
+        "tool_execution_required": True,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 0,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [{"name": "markdown_vault_search", "args": {"query": "云资源支持"}}],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 2,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_instances=["markdown-vault.knowledgebase"],
+            target_tool_names=["markdown_vault_search"],
+            reason="knowledge-base answer",
+        ),
+        "repeated_tool_no_progress": {"tool_name": "markdown_vault_search", "count": 2},
+    }
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(
+            [
+                {"role": "user", "content": "SmartCMP 是否支持某个云资源？"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "tc-1", "name": "markdown_vault_search", "args": {"query": "云资源支持"}}
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_name": "markdown_vault_search",
+                    "content": {
+                        "result_count": 1,
+                        "results": [
+                            {
+                                "path": "支持边界.md",
+                                "excerpt": "未内置支持的资源类型可以通过 Terraform workflow 扩展。",
+                            }
+                        ],
+                    },
+                },
+            ]
+        ),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+
+    failed_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "failed"
+    ]
+    answered_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "answered"
+    ]
+    assistant_text = "".join(event.content for event in events if event.type == "assistant")
+
+    assert failed_states == []
+    assert answered_states
+    assert "Terraform" in assistant_text
+    await runner._await_background_post_success_tasks()
+    assert session_manager.persisted_messages is not None
+
+
+@pytest.mark.asyncio
+async def test_non_required_turn_with_tool_loop_uses_tool_only_answer_from_evidence() -> None:
+    runner = _PostRunner()
+    session_manager = _SessionManager()
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-optional-tool-loop",
+        "session_manager": session_manager,
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-optional-tool-loop",
+        "user_message": "镜像模板是否可以过滤镜像名称？",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=False,
+            reason="llm-first answer",
+            policy=ToolPolicyMode.ANSWER_DIRECT,
+        ),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "available_tools": [{"name": "markdown_vault_search", "capability_class": "provider:markdown-vault"}],
+        "tool_execution_required": False,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 0,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [{"name": "markdown_vault_search", "args": {"query": "镜像名称过滤"}}],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 2,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.DIRECT_ANSWER,
+            reason="llm-first answer",
+        ),
+        "repeated_tool_loop": {"tool_name": "markdown_vault_search", "count": 2, "limit": 2},
+    }
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(
+            [
+                {"role": "user", "content": "镜像模板是否可以过滤镜像名称？"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "tc-1", "name": "markdown_vault_search", "args": {"query": "镜像名称过滤"}}
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_name": "markdown_vault_search",
+                    "content": {
+                        "result_count": 1,
+                        "results": [
+                            {
+                                "path": "镜像模板.md",
+                                "excerpt": "镜像模板可按镜像名称关键字、正则表达式进行 include/exclude 过滤。",
+                            }
+                        ],
+                    },
+                },
+            ]
+        ),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+
+    failed_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "failed"
+    ]
+    answered_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "answered"
+    ]
+    assistant_text = "".join(event.content for event in events if event.type == "assistant")
+
+    assert failed_states == []
+    assert answered_states
+    assert "镜像模板.md" in assistant_text
+    await runner._await_background_post_success_tasks()
+    assert session_manager.persisted_messages is not None
+
+
+@pytest.mark.asyncio
+async def test_artifact_request_with_only_lookup_results_fails_without_llm_fallback() -> None:
+    runner = _PostRunner()
     session_manager = _SessionManager()
     state = {
         "start_time": 0.0,
@@ -1416,6 +1560,11 @@ async def test_artifact_request_with_only_lookup_results_falls_back_in_same_turn
     ):
         events.append(event)
 
+    failed_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "failed"
+    ]
     answered_states = [
         event
         for event in events
@@ -1423,15 +1572,14 @@ async def test_artifact_request_with_only_lookup_results_falls_back_in_same_turn
     ]
     assistant_chunks = [event.content for event in events if event.type == "assistant"]
 
-    assert answered_states
-    assert runner.fallback_calls
-    assert any("没有真正生成 PPT 文件" in chunk for chunk in assistant_chunks)
+    assert failed_states
+    assert answered_states == []
+    assert assistant_chunks == []
 
 
 @pytest.mark.asyncio
-async def test_artifact_download_evidence_skips_repeat_loop_failure_fallback() -> None:
+async def test_artifact_download_evidence_allows_repeat_loop_tool_only_answer() -> None:
     runner = _PostRunner()
-    runner.fallback_answer = "无法生成文件。"
     session_manager = _SessionManager()
     state = {
         "start_time": 0.0,
@@ -1526,7 +1674,6 @@ async def test_artifact_download_evidence_skips_repeat_loop_failure_fallback() -
 
     assert failed_states == []
     assert answered_states
-    assert runner.fallback_calls == []
     assert any("download_path" in chunk or "skill-only.xlsx" in chunk for chunk in assistant_chunks)
 
 
@@ -1775,6 +1922,89 @@ async def test_tool_required_exception_returns_tool_only_fallback_answer() -> No
     assert failed_states == []
     assert assistant_chunks
     assert "上海" in assistant_chunks[0]
+    assert state["answer_committed"] is True
+    assert session_manager.persisted_messages is not None
+
+
+@pytest.mark.asyncio
+async def test_tool_required_exception_tool_only_fallback_parses_json_search_payload() -> None:
+    runner = _ErrorRunner()
+    session_manager = _SessionManager()
+    raw_payload = json.dumps(
+        {
+            "success": True,
+            "search_backend": "direct",
+            "result_count": 1,
+            "results": [
+                {
+                    "path": "财务系统 - 费用结算对接.md",
+                    "title": "财务系统 / 费用结算对接",
+                    "text": "SmartCMP 可通过定制财务系统对接，在申请、冻结或结算流程中调用外部账户校验接口。",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-json-search-fallback",
+        "session_manager": session_manager,
+        "run_id": "run-json-search-fallback",
+        "user_message": "申请资源时能否先检查财务账户余额？",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_call_summaries": [{"name": "markdown_vault_search", "args": {"query": "财务账户余额"}}],
+        "latest_agent_messages": [
+            {"role": "user", "content": "申请资源时能否先检查财务账户余额？"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "tc-1", "name": "markdown_vault_search", "args": {"query": "财务账户余额"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_name": "markdown_vault_search",
+                "content": {"success": True, "returncode": 0, "output": raw_payload},
+            },
+        ],
+        "message_history": [],
+        "run_output_start_index": 1,
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_instances=["markdown-vault.knowledgebase"],
+            target_tool_names=["markdown_vault_search"],
+            reason="knowledge search required",
+        ),
+        "executed_tool_names": ["markdown_vault_search"],
+        "thinking_emitter": SimpleNamespace(close_if_active=lambda: _empty_async_iter()),
+        "session_title": "",
+        "context_history_for_hooks": [],
+        "final_assistant": "",
+        "answer_committed": False,
+        "assistant_output_streamed": False,
+        "buffered_assistant_events": [],
+    }
+
+    events = []
+    async for event in runner._handle_loop_phase_exception(
+        error=BrokenPipeError("Broken pipe"),
+        state=state,
+    ):
+        events.append(event)
+
+    assistant_text = "".join(event.content for event in events if event.type == "assistant")
+    answered_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "answered"
+    ]
+
+    assert answered_states
+    assert "财务系统对接" in assistant_text
+    assert "search_backend" not in assistant_text
+    assert '"results"' not in assistant_text
     assert state["answer_committed"] is True
     assert session_manager.persisted_messages is not None
 
@@ -2694,6 +2924,107 @@ async def test_tool_required_turn_uses_synthetic_tool_messages_for_tool_only_fal
     )
 
 
+@pytest.mark.asyncio
+async def test_repeated_tool_no_progress_uses_fresh_tool_messages_for_tool_only_answer() -> None:
+    runner = _PostRunner()
+    session_manager = _SessionManager()
+    fresh_messages = [
+        {"role": "user", "content": "SmartCMP 是否支持漏扫展示？"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "search-1",
+                    "name": "markdown_vault_search",
+                    "args": {"query": "漏扫 VM 最近一次展示"},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_name": "markdown_vault_search",
+            "tool_call_id": "search-1",
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "result_count": 1,
+                    "results": [
+                        {
+                            "title": "漏洞扫描结果展示",
+                            "path": "20-功能域/安全与合规/漏洞扫描.md",
+                            "text": "支持从漏扫系统同步 VM 最近一次扫描结果，并在 VM 详情页展示。",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+        },
+    ]
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-fresh-tool",
+        "session_manager": session_manager,
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-fresh-tool",
+        "user_message": "SmartCMP 是否支持漏扫展示？",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            policy=ToolPolicyMode.ANSWER_DIRECT,
+            reason="model chose optional knowledge lookup",
+        ),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "available_tools": [{"name": "markdown_vault_search", "result_mode": "visible"}],
+        "tool_execution_required": False,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 0,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [{"name": "markdown_vault_search"}],
+        "executed_tool_names": ["markdown_vault_search"],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 2,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "synthetic_tool_messages": [],
+        "latest_agent_messages": fresh_messages,
+        "repeated_tool_no_progress": {"tool_name": "markdown_vault_search", "count": 2},
+    }
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(fresh_messages[:2]),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+
+    assistant_text = "".join(event.content for event in events if event.type == "assistant")
+    failed_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "failed"
+    ]
+
+    assert failed_states == []
+    assert "漏洞扫描结果展示" in assistant_text
+    assert "20-功能域/安全与合规/漏洞扫描.md" in assistant_text
+    assert '"results"' not in assistant_text
+    await runner._await_background_post_success_tasks()
+
+
 async def _empty_async_iter():
     if False:
         yield None
@@ -2799,6 +3130,12 @@ def test_looks_like_raw_lookup_dump_accepts_plain_lookup_lists() -> None:
     ) is True
 
 
+def test_looks_like_raw_tool_payload_dump_accepts_provider_search_payload() -> None:
+    assert _PostRunner._looks_like_raw_tool_payload_dump(
+        'Selected markdown-vault instance \'knowledgebase\'\n\n{"success": true, "search_backend": "direct", "results": []}'
+    ) is True
+
+
 @pytest.mark.asyncio
 async def test_lookup_dump_recovery_rewrites_buffered_lookup_output_before_emit() -> None:
     runner = _PostRunner()
@@ -2873,6 +3210,188 @@ async def test_lookup_dump_recovery_rewrites_buffered_lookup_output_before_emit(
     assert state["session_manager"].persisted_messages[-1]["content"] == runner.lookup_dump_recovery_answer
 
 
+@pytest.mark.asyncio
+async def test_visible_raw_provider_payload_is_blocked_before_emit() -> None:
+    runner = _PostRunner()
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-tool-dump",
+        "session_manager": _SessionManager(),
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-tool-dump",
+        "user_message": "SmartCMP 是否支持工单处理由排班人员处理？",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=False,
+            reason="provider search",
+            policy=ToolPolicyMode.PREFER_TOOL,
+        ),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "available_tools": [{"name": "markdown_vault_search"}],
+        "tool_execution_required": False,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 0,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [{"name": "markdown_vault_search"}],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 1,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.DIRECT_ANSWER,
+            target_provider_types=["markdown-vault"],
+            reason="provider search",
+        ),
+        "synthetic_tool_messages": [],
+        "session_message_history": [],
+        "runtime_base_history_len": 0,
+    }
+
+    messages = [
+        {"role": "user", "content": "SmartCMP 是否支持工单处理由排班人员处理？"},
+        {
+            "role": "tool",
+            "tool_name": "markdown_vault_search",
+            "content": {
+                "success": True,
+                "returncode": 0,
+                "output": '{"success": true, "search_backend": "direct", "results": [{"path": "ITSM 与服务管理/排班管理.md", "text": "支持排班和值班相关配置。"}]}',
+            },
+        },
+        {
+            "role": "assistant",
+            "content": "Selected markdown-vault instance 'knowledgebase'\n\n{\"success\": true, \"search_backend\": \"direct\", \"results\": []}",
+        },
+    ]
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(messages),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+    await runner._await_background_post_success_tasks()
+
+    assistant_events = [event.content for event in events if event.type == "assistant"]
+    assistant_text = "".join(assistant_events)
+    answered_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "answered"
+    ]
+
+    assert answered_states
+    assert "支持排班和值班相关配置" in assistant_text
+    assert "search_backend" not in assistant_text
+    assert '"results"' not in assistant_text
+    assert runner.lookup_dump_recovery_calls == []
+
+
+@pytest.mark.asyncio
+async def test_tool_only_fallback_raw_provider_payload_is_blocked() -> None:
+    runner = _PostRunner()
+    raw_output = (
+        '{"success": true, "search_backend": "direct", "result_count": 0, '
+        '"results": [], "status": {"current_documents": 211}}'
+    )
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-tool-only-raw",
+        "session_manager": _SessionManager(),
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-tool-only-raw",
+        "user_message": "SmartCMP VM 部署是否支持基线化？",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=False,
+            reason="provider search",
+            policy=ToolPolicyMode.PREFER_TOOL,
+        ),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "available_tools": [{"name": "markdown_vault_search"}],
+        "tool_execution_required": False,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 0,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 0,
+        "persist_run_output_start_index": 0,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [{"name": "markdown_vault_search"}],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 1,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.DIRECT_ANSWER,
+            target_provider_types=["markdown-vault"],
+            reason="provider search",
+        ),
+        "synthetic_tool_messages": [],
+        "session_message_history": [],
+        "runtime_base_history_len": 0,
+    }
+    messages = [
+        {"role": "user", "content": "SmartCMP VM 部署是否支持基线化？"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "tc-1", "name": "markdown_vault_search", "args": "{}"}],
+        },
+        {
+            "role": "tool",
+            "tool_name": "markdown_vault_search",
+            "tool_call_id": "tc-1",
+            "content": {"success": True, "returncode": 0, "output": raw_output},
+        },
+    ]
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(messages),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+    await runner._await_background_post_success_tasks()
+
+    assistant_events = [event.content for event in events if event.type == "assistant"]
+    failed_states = [
+        event
+        for event in events
+        if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "failed"
+    ]
+    error_events = [event for event in events if event.type == "error"]
+
+    assert assistant_events == []
+    assert failed_states
+    assert error_events
+    assert runner.lookup_dump_recovery_calls == []
+
+
 def test_build_tool_only_markdown_answer_includes_sources_for_structured_tool_result() -> None:
     runner = _PostRunner()
 
@@ -2901,6 +3420,40 @@ def test_build_tool_only_markdown_answer_includes_sources_for_structured_tool_re
     assert "## Result" not in answer
     assert "13.8°C - 18.6°C" in answer
     assert "https://api.open-meteo.com/v1/forecast" in answer
+
+
+def test_build_tool_only_markdown_answer_parses_json_search_payload_without_raw_dump() -> None:
+    runner = _PostRunner()
+    raw_payload = json.dumps(
+        {
+            "success": True,
+            "search_backend": "direct",
+            "result_count": 1,
+            "results": [
+                {
+                    "path": "ITSM 系统对接.md",
+                    "title": "ITSM 系统对接",
+                    "text": "SmartCMP 支持通用工单、请求工单、问题工单、事件工单和变更工单等服务类型。",
+                }
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+    answer = runner._build_tool_only_markdown_answer_from_messages(
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "markdown_vault_search",
+                "content": {"success": True, "returncode": 0, "output": raw_payload},
+            }
+        ],
+        start_index=0,
+    )
+
+    assert "SmartCMP 支持通用工单" in answer
+    assert "search_backend" not in answer
+    assert '"results"' not in answer
 
 
 def test_build_tool_only_markdown_answer_keeps_multi_item_structured_provider_output() -> None:

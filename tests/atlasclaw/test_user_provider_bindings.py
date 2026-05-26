@@ -13,6 +13,7 @@ from app.atlasclaw.api.service_provider_schemas import (
     register_provider_schema_definition,
 )
 from app.atlasclaw.core.user_provider_bindings import (
+    ResolvedProviderInstanceRegistry,
     build_user_provider_instances,
     build_resolved_provider_instances,
     resolve_provider_instance_config,
@@ -206,6 +207,30 @@ def test_build_resolved_provider_instances_resolves_global_instances_with_runtim
     assert resolved["smartcmp"]["default"]["auth_type"] == "user_token"
     assert resolved["smartcmp"]["default"]["user_token"] == "user-token-123"
     assert "cookie" not in resolved["smartcmp"]["default"]
+
+
+def test_build_resolved_provider_instances_preserves_config_order() -> None:
+    resolved = build_resolved_provider_instances(
+        {
+            "markdown-vault": {
+                "knowledgebase": {
+                    "auth_type": "app_credentials",
+                    "vault_path": "/vault/smartcmp",
+                },
+                "atlasclaw-docs": {
+                    "auth_type": "app_credentials",
+                    "vault_path": "/vault/atlasclaw",
+                },
+            }
+        }
+    )
+    registry = ResolvedProviderInstanceRegistry(resolved)
+
+    assert list(resolved["markdown-vault"].keys()) == ["knowledgebase", "atlasclaw-docs"]
+    assert list(registry.get_all_instance_configs()["markdown-vault"].keys()) == [
+        "knowledgebase",
+        "atlasclaw-docs",
+    ]
 
 
 def test_build_user_provider_instances_maps_legacy_default_to_single_configured_instance(tmp_path) -> None:

@@ -330,7 +330,14 @@ class RunnerToolEvidenceMixin:
         if payload is None:
             return ""
         if isinstance(payload, str):
-            return payload
+            text = payload.strip()
+            if text[:1] in {"{", "["}:
+                try:
+                    parsed = json.loads(text)
+                except Exception:
+                    return text
+                return self._coerce_tool_payload_to_text(parsed)
+            return text
         if isinstance(payload, list):
             chunks: list[str] = []
             for item in payload:
@@ -339,10 +346,13 @@ class RunnerToolEvidenceMixin:
                     chunks.append(block)
             return "\n".join(chunks).strip()
         if isinstance(payload, dict):
-            for key in ("output", "text", "summary", "message"):
+            result_text = self._render_result_dict_payload(payload)
+            if result_text:
+                return result_text
+            for key in ("output", "text", "summary", "message", "excerpt", "snippet"):
                 value = payload.get(key)
                 if isinstance(value, str) and value.strip():
-                    return value.strip()
+                    return self._coerce_tool_payload_to_text(value)
             if "content" in payload:
                 return self._coerce_tool_payload_to_text(payload.get("content"))
             if "results" in payload:
@@ -357,6 +367,37 @@ class RunnerToolEvidenceMixin:
             return str(payload)
         except Exception:
             return ""
+
+    def _render_result_dict_payload(self, payload: dict[str, Any]) -> str:
+        """Render a structured result item with source fields into readable Markdown."""
+        body = ""
+        for key in ("text", "excerpt", "snippet", "summary", "message"):
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                body = self._coerce_tool_payload_to_text(value)
+                break
+        if not body:
+            return ""
+
+        title = str(payload.get("title", "") or payload.get("name", "") or "").strip()
+        source = str(
+            payload.get("path", "")
+            or payload.get("url", "")
+            or payload.get("source", "")
+            or payload.get("file", "")
+        ).strip()
+        if not title and not source:
+            return ""
+
+        lines: list[str] = []
+        if title:
+            lines.append(f"### {title}")
+        if source:
+            lines.append(f"- Source: {source}")
+        if lines:
+            lines.append("")
+        lines.append(body)
+        return "\n".join(lines).strip()
 
     def _format_tool_chunks_as_markdown(self, chunks: list[str]) -> str:
         compact_chunks: list[str] = []
@@ -427,10 +468,37 @@ class RunnerToolEvidenceMixin:
             max_items=max_items,
         )
         if structured_answer:
+            if self._looks_like_raw_tool_payload_dump(structured_answer):
+                return ""
             return structured_answer
         if not chunks:
             return ""
-        return self._format_tool_chunks_as_markdown(chunks).strip()
+        formatted = self._format_tool_chunks_as_markdown(chunks).strip()
+        if self._looks_like_raw_tool_payload_dump(formatted):
+            return ""
+        return formatted
+
+    @staticmethod
+    def _looks_like_raw_tool_payload_dump(text: str) -> bool:
+        """Return whether text is a raw provider/tool payload rather than a user answer."""
+        normalized = str(text or "").strip()
+        if not normalized:
+            return False
+        lowered = normalized.lower()
+        if "provider '" in lowered and " instance" in lowered and "select_provider_instance" in lowered:
+            return True
+        if lowered.startswith("selected ") and '"success"' in normalized:
+            return True
+        return any(
+            marker in normalized
+            for marker in (
+                '"returncode"',
+                '"search_backend"',
+                '"results": [',
+                '"tool_call_id"',
+                '"tool_name"',
+            )
+        )
 
     def _extract_tool_result_records_from_messages(
         self,
@@ -438,6 +506,8 @@ class RunnerToolEvidenceMixin:
         messages: list[dict[str, Any]],
         start_index: int = 0,
         max_items: int = 3,
+        max_chars_per_item: int = 5000,
+        max_lines_per_item: int = 80,
     ) -> list[dict[str, Any]]:
         safe_start = max(0, min(int(start_index), len(messages)))
         records: list[dict[str, Any]] = []
@@ -478,8 +548,8 @@ class RunnerToolEvidenceMixin:
                         "tool_name": tool_name,
                         "text": self._compact_tool_fallback_text(
                             text,
-                            max_chars=5000,
-                            max_lines=80,
+                            max_chars=max_chars_per_item,
+                            max_lines=max_lines_per_item,
                         ),
                         "meta_blocks": self._extract_embedded_meta_payloads(text),
                         "sources": self._extract_sources_from_tool_payload(payload),

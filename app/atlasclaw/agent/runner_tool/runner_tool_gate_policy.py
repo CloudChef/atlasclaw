@@ -45,6 +45,7 @@ class RunnerToolGatePolicyMixin:
             "The main model decides this turn after capability pruning and prompt construction."
         )
         target_provider_types: list[str] = []
+        target_provider_instances: list[str] = []
         target_skill_names: list[str] = []
         target_group_ids: list[str] = []
         target_capability_classes: list[str] = []
@@ -56,6 +57,7 @@ class RunnerToolGatePolicyMixin:
             elif intent_plan.action is ToolIntentAction.ASK_CLARIFICATION:
                 policy_mode = intent_plan.action.value
             policy_reason = intent_plan.reason or policy_reason
+            target_provider_instances = list(intent_plan.target_provider_instances)
             target_provider_types = list(intent_plan.target_provider_types)
             target_skill_names = list(intent_plan.target_skill_names)
             target_group_ids = list(intent_plan.target_group_ids)
@@ -64,7 +66,11 @@ class RunnerToolGatePolicyMixin:
             "provider_tool_first"
             if (
                 intent_plan is not None
-                and bool(intent_plan.target_provider_types or intent_plan.target_skill_names)
+                and bool(
+                    intent_plan.target_provider_instances
+                    or intent_plan.target_provider_types
+                    or intent_plan.target_skill_names
+                )
             )
             else "default"
         )
@@ -85,6 +91,7 @@ class RunnerToolGatePolicyMixin:
             "retry_missing_tools": [
                 str(name).strip() for name in retry_missing_tools if str(name).strip()
             ],
+            "target_provider_instances": target_provider_instances,
             "target_provider_types": target_provider_types,
             "target_skill_names": target_skill_names,
             "target_group_ids": target_group_ids,

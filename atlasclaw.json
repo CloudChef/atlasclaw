@@ -103,7 +103,6 @@
     },
     "markdown-vault": {
       "atlasclaw-docs": {
-        "auth_type": "app_credentials",
         "vault_path": "${PWD}/tests/markdown-vault-atlasclaw-docs",
         "usage_hint": "Use for AtlasClaw function introduction, user workflows, conversations, skills, tools, and product usage documentation."
       }

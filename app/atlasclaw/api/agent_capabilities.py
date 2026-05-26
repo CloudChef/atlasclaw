@@ -284,7 +284,6 @@ def _build_provider_skill_items(
                 "qualified_skill_name": qualified_skill_name or skill_name,
                 "description": description,
                 "source": source,
-                "target_provider_types": _unique_text([provider_type]),
                 "target_skill_names": target_skill_names,
                 "target_tool_names": target_tool_names,
                 "target_group_ids": target_group_ids,

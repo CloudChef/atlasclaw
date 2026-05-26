@@ -381,34 +381,6 @@ def create_script_wrapper(
                             "[DEBUG] Set env var: "
                             f"{key.upper()}={formatted_value}"
                         )
-            elif "provider_instances" in extra:
-                provider_instances = extra["provider_instances"]
-                print(f"[DEBUG] Available provider_types: {list(provider_instances.keys())}")
-
-                target_provider = provider_type
-                if target_provider and target_provider in provider_instances:
-                    instances = provider_instances[target_provider]
-                    print(f"[DEBUG] Found instances for {target_provider}: {list(instances.keys())}")
-                    if instances:
-                        default_instance = list(instances.values())[0]
-                        print(f"[DEBUG] Using instance config: {list(default_instance.keys())}")
-                        for key, value in default_instance.items():
-                            if value is not None and key not in ("token", "secret"):
-                                env[key.upper()] = str(value)
-                                print(
-                                    "[DEBUG] Set env var: "
-                                    f"{key.upper()}={_format_log_value(key, value, provider_type=provider_type, config=default_instance)}"
-                                )
-                else:
-                    print("[DEBUG] No specific provider_type, using first available")
-                    for _, instances in provider_instances.items():
-                        if instances:
-                            default_instance = list(instances.values())[0]
-                            for key, value in default_instance.items():
-                                if value is not None and key not in ("token", "secret"):
-                                    env[key.upper()] = str(value)
-                            break
-
         for key, value in runtime_kwargs.items():
             if value is not None:
                 env[key.upper()] = str(value)

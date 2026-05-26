@@ -136,12 +136,10 @@
     
     "markdown-vault": {
       "knowledgebase": {
-        "auth_type": "app_credentials",
         "vault_path": "${MARKDOWN_VAULT_REPO_PATH}",
-        "usage_hint": "Use for SmartCMP knowledge-base questions, including service catalog, requests, deployments, approvals, and operation logs."
+        "usage_hint": "Use for SmartCMP knowledge-base questions about product capabilities, configuration, integrations, deployment, operations, and implementation guidance. If a feature is not supported directly, try to search the related extensibility."
       },
       "atlasclaw-docs": {
-        "auth_type": "app_credentials",
         "vault_path": "${PWD}/tests/markdown-vault-atlasclaw-docs",
         "usage_hint": "Use for AtlasClaw function introduction, user workflows, conversations, skills, tools, and product usage documentation."
       }

@@ -224,7 +224,46 @@ def test_provider_skill_wrapper_uses_request_scoped_filtered_registry() -> None:
     assert "no configured instances" in result["content"][0]["text"]
 
 
-def test_provider_skill_wrapper_requires_selection_for_multiple_instances() -> None:
+def test_provider_skill_wrapper_reads_all_instance_configs_without_legacy_registry_methods() -> None:
+    provider_instances = {
+        "smartcmp": {
+            "prod": _smartcmp_instance_config(),
+        }
+    }
+
+    class _RuntimeRegistry:
+        def get_all_instance_configs(self):
+            return provider_instances
+
+    registry = ServiceProviderRegistry()
+
+    async def handler(ctx, **kwargs):
+        return {
+            "provider_type": ctx.deps.extra.get("provider_type"),
+            "provider_instance_name": ctx.deps.extra.get("provider_instance_name"),
+        }
+
+    wrapped = registry._make_handler_wrapper(handler=handler, provider_type="smartcmp")
+
+    class _Deps:
+        extra = {
+            "provider_instances": provider_instances,
+            "available_providers": {"smartcmp": ["prod"]},
+            "_service_provider_registry": _RuntimeRegistry(),
+        }
+
+    class _Ctx:
+        deps = _Deps()
+
+    result = asyncio.run(wrapped(_Ctx()))
+
+    assert result == {
+        "provider_type": "smartcmp",
+        "provider_instance_name": "prod",
+    }
+
+
+def test_provider_skill_wrapper_defaults_to_first_instance_for_multiple_instances() -> None:
     from app.atlasclaw.core.user_provider_bindings import ResolvedProviderInstanceRegistry
 
     provider_instances = {
@@ -262,12 +301,10 @@ def test_provider_skill_wrapper_requires_selection_for_multiple_instances() -> N
 
     result = asyncio.run(wrapped(_Ctx()))
 
-    assert result["is_error"] is True
-    text = result["content"][0]["text"]
-    assert "Provider 'smartcmp' has 2 instances" in text
-    assert "Use for production CMP approvals." in text
-    assert "Use for development CMP testing." in text
-    assert "select_provider_instance" in text
+    assert result == {
+        "provider_type": "smartcmp",
+        "provider_instance_name": "prod",
+    }
 
 
 def test_provider_skill_wrapper_uses_session_sticky_selection() -> None:

@@ -363,11 +363,23 @@ def test_script_wrapper_logs_tool_name_and_masks_sensitive_env_values(
     assert "fake-provider-user-token" not in captured.out
 
 
-def test_script_wrapper_requires_provider_instance_selection_for_multiple_instances(
+def test_script_wrapper_defaults_to_first_provider_instance_for_multiple_instances(
     tmp_path: Path,
 ) -> None:
-    script = tmp_path / "should_not_run.py"
-    script.write_text("print('unexpected')\n", encoding="utf-8")
+    script = tmp_path / "echo_default_instance.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "print(json.dumps({",
+                "  'provider_type': os.environ.get('ATLASCLAW_PROVIDER_TYPE', ''),",
+                "  'provider_instance': os.environ.get('ATLASCLAW_PROVIDER_INSTANCE', ''),",
+                "  'base_url': os.environ.get('BASE_URL', ''),",
+                "}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
 
     class _Deps:
         cookies = {}
@@ -397,11 +409,50 @@ def test_script_wrapper_requires_provider_instance_selection_for_multiple_instan
 
     result = asyncio.run(wrapper(ctx=_Ctx()))
 
+    assert result["success"] is True
+    payload = json.loads(result["output"].strip())
+    assert payload == {
+        "provider_type": "provider",
+        "provider_instance": "prod",
+        "base_url": "https://provider.example.com/prod",
+    }
+
+
+def test_script_wrapper_blocks_provider_script_without_visible_instance(
+    tmp_path: Path,
+) -> None:
+    marker = tmp_path / "script-ran.txt"
+    script = tmp_path / "requires_instance.py"
+    script.write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
+                "print('ran')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Deps:
+        cookies = {}
+        extra = {"provider_instances": {}}
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(
+        script,
+        provider_type="provider",
+        tool_name="provider_list_flavors",
+    )
+
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
     assert result["success"] is False
     assert result["error"] == "Provider instance selection required"
-    assert "Provider 'provider' has 2 instances" in result["output"]
-    assert "Use for production provider requests." in result["output"]
-    assert "Use for development provider requests." in result["output"]
+    assert "Provider instance selection required for provider 'provider'." in result["output"]
+    assert not marker.exists()
 
 
 def test_script_wrapper_uses_session_sticky_provider_instance(

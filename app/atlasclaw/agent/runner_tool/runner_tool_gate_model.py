@@ -87,6 +87,13 @@ class RunnerToolGateModelMixin:
             deduped.append(normalized)
         return deduped
 
+    @staticmethod
+    def _provider_type_from_instance_ref(value: str) -> str:
+        normalized = str(value or "").strip()
+        if "." not in normalized:
+            return ""
+        return normalized.split(".", 1)[0].strip().lower()
+
     async def _select_capability_intent_plan_with_model(
         self,
         *,
@@ -170,6 +177,9 @@ class RunnerToolGateModelMixin:
             "ordinary natural-language requests.\n\n"
             "Rules:\n"
             "- Choose only capability IDs listed below.\n"
+            "- Natural-language selector targets are limited to tool:, skill:, and provider_instance: IDs.\n"
+            "- Provider targets are instance IDs such as provider_instance:provider.instance; "
+            "do not invent provider:<type> targets.\n"
             "- Use direct_answer when the request does not need an authorized runtime capability.\n"
             "- Use ask_clarification when the user intent or required target is ambiguous.\n"
             "- Use use_tools when the request needs provider data, private context, artifact creation, "
@@ -236,7 +246,7 @@ class RunnerToolGateModelMixin:
             raw_name = raw_name.strip()
             if not raw_name:
                 continue
-            if prefix not in {"tool", "skill", "provider", "capability", "group"}:
+            if prefix not in {"tool", "skill", "provider_instance"}:
                 continue
             allowed_targets[capability_id] = (prefix, raw_name)
 
@@ -256,9 +266,8 @@ class RunnerToolGateModelMixin:
 
         target_skill_names: list[str] = []
         target_tool_names: list[str] = []
+        target_provider_instances: list[str] = []
         target_provider_types: list[str] = []
-        target_capability_classes: list[str] = []
-        target_group_ids: list[str] = []
 
         for raw_target in raw_targets:
             if not isinstance(raw_target, str):
@@ -274,25 +283,22 @@ class RunnerToolGateModelMixin:
                 target_skill_names.append(value)
             elif prefix == "tool":
                 target_tool_names.append(value)
-            elif prefix == "provider":
-                target_provider_types.append(value)
-            elif prefix == "capability":
-                target_capability_classes.append(value)
-            elif prefix == "group":
-                target_group_ids.append(value)
+            elif prefix == "provider_instance":
+                target_provider_instances.append(value)
+                provider_type = self._provider_type_from_instance_ref(value)
+                if provider_type:
+                    target_provider_types.append(provider_type)
 
         target_skill_names = self._dedupe_selector_values(target_skill_names)
         target_tool_names = self._dedupe_selector_values(target_tool_names)
+        target_provider_instances = self._dedupe_selector_values(target_provider_instances)
         target_provider_types = self._dedupe_selector_values(target_provider_types)
-        target_capability_classes = self._dedupe_selector_values(target_capability_classes)
-        target_group_ids = self._dedupe_selector_values(target_group_ids)
         has_targets = any(
             [
                 target_skill_names,
                 target_tool_names,
+                target_provider_instances,
                 target_provider_types,
-                target_capability_classes,
-                target_group_ids,
             ]
         )
         if action is ToolIntentAction.USE_TOOLS and not has_targets:
@@ -306,10 +312,9 @@ class RunnerToolGateModelMixin:
 
         return ToolIntentPlan(
             action=action,
+            target_provider_instances=target_provider_instances,
             target_provider_types=target_provider_types,
             target_skill_names=target_skill_names,
-            target_group_ids=target_group_ids,
-            target_capability_classes=target_capability_classes,
             target_tool_names=target_tool_names,
             reason=reason,
         )
@@ -468,7 +473,8 @@ class RunnerToolGateModelMixin:
             if normalized and normalized not in suggested_classes:
                 suggested_classes.append(normalized)
         needs_external_system = bool(
-            plan.target_provider_types
+            plan.target_provider_instances
+            or plan.target_provider_types
             or any(
                 str(item or "").strip().lower().startswith("provider:")
                 for item in plan.target_capability_classes

@@ -16,7 +16,6 @@ from app.atlasclaw.agent.plaintext_tool_calls import looks_like_plaintext_tool_c
 from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     build_direct_answer_recovery_payload,
     build_lookup_dump_recovery_payload,
-    build_tool_failure_fallback_payload,
     provider_auth_diagnostic_user_message,
     select_provider_auth_diagnostic,
 )
@@ -28,7 +27,6 @@ from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
     turn_action_requires_tool_execution,
 )
 from app.atlasclaw.agent.stream import StreamEvent
-from app.atlasclaw.agent.tool_gate_models import ToolPolicyMode
 
 logger = logging.getLogger(__name__)
 
@@ -243,7 +241,7 @@ class RunnerExecutionFlowPostMixin:
             asyncio.create_task(_run_post_success_side_effects())
         )
 
-    def _build_missing_tool_evidence_fallback_reasons(
+    def _build_missing_tool_evidence_failure_reasons(
         self,
         *,
         state: dict[str, Any],
@@ -328,29 +326,14 @@ class RunnerExecutionFlowPostMixin:
 
         return reasons
 
-    def _should_attempt_missing_tool_evidence_fallback(
-        self,
-        *,
-        state: dict[str, Any],
-        tool_required_has_real_execution: bool,
-        missing_required_tools: list[str],
-    ) -> bool:
-        decision = state.get("tool_gate_decision")
-        if getattr(decision, "policy", ToolPolicyMode.ANSWER_DIRECT) is ToolPolicyMode.MUST_USE_TOOL:
-            return False
-        if tool_required_has_real_execution and missing_required_tools:
-            return True
-        return any(
-            isinstance(state.get(key), dict)
-            for key in ("repeated_tool_failure", "repeated_tool_no_progress", "repeated_tool_loop")
-        )
-
     def _collect_recent_tool_result_records(
         self,
         *,
         final_messages: list[dict[str, Any]],
         start_index: int,
         max_items: int = 3,
+        max_chars_per_item: int = 5000,
+        max_lines_per_item: int = 80,
     ) -> list[dict[str, Any]]:
         tool_results: list[dict[str, Any]] = []
         extract_records = getattr(self, "_extract_tool_result_records_from_messages", None)
@@ -360,6 +343,8 @@ class RunnerExecutionFlowPostMixin:
             messages=final_messages,
             start_index=start_index,
             max_items=max_items,
+            max_chars_per_item=max_chars_per_item,
+            max_lines_per_item=max_lines_per_item,
         ) or []:
             if not isinstance(record, dict):
                 continue
@@ -373,49 +358,6 @@ class RunnerExecutionFlowPostMixin:
                 }
             )
         return tool_results
-
-    async def _generate_missing_tool_evidence_fallback_answer(
-        self,
-        *,
-        user_message: str,
-        deps: Any,
-        final_messages: list[dict[str, Any]],
-        start_index: int,
-        tool_call_summaries: list[dict[str, Any]],
-        failure_reasons: list[str],
-        agent: Any,
-    ) -> str:
-        tool_results = self._collect_recent_tool_result_records(
-            final_messages=final_messages,
-            start_index=start_index,
-            max_items=3,
-        )
-        payload = build_tool_failure_fallback_payload(
-            user_message=user_message,
-            tool_results=tool_results,
-            attempted_tools=tool_call_summaries,
-            failure_reasons=failure_reasons,
-            provider_auth_diagnostic=select_provider_auth_diagnostic(
-                extra=getattr(deps, "extra", {}),
-                attempted_tools=tool_call_summaries,
-                failure_reasons=failure_reasons,
-                tool_results=tool_results,
-            ),
-        )
-        run_single = getattr(self, "run_single", None)
-        if not callable(run_single):
-            return ""
-        raw_output = await run_single(
-            payload["user_prompt"],
-            deps,
-            system_prompt=payload["system_prompt"],
-            agent=agent,
-            allowed_tool_names=[],
-        )
-        normalized = str(raw_output or "").strip()
-        if not normalized or normalized.startswith("[Error:"):
-            return ""
-        return normalized
 
     @staticmethod
     def _looks_like_plaintext_tool_call_attempt(text: str) -> bool:
@@ -566,25 +508,11 @@ class RunnerExecutionFlowPostMixin:
         deps: Any,
         agent: Any,
     ) -> str:
-        tool_results: list[dict[str, Any]] = []
-        extract_records = getattr(self, "_extract_tool_result_records_from_messages", None)
-        if callable(extract_records):
-            for record in extract_records(
-                messages=final_messages,
-                start_index=start_index,
-                max_items=3,
-            ) or []:
-                if not isinstance(record, dict):
-                    continue
-                content = str(record.get("text", "") or "").strip()
-                if not content:
-                    continue
-                tool_results.append(
-                    {
-                        "tool_name": str(record.get("tool_name", "") or "tool").strip() or "tool",
-                        "content": content,
-                    }
-                )
+        tool_results = self._collect_recent_tool_result_records(
+            final_messages=final_messages,
+            start_index=start_index,
+            max_items=3,
+        )
         workflow_notes = self._extract_lookup_workflow_notes(
             final_messages=final_messages,
             start_index=start_index,
@@ -649,11 +577,38 @@ class RunnerExecutionFlowPostMixin:
             runtime_messages=runtime_final_messages,
             runtime_base_history_len=int(state.get("runtime_base_history_len") or 0),
         )
+        tool_result_start_index = int(
+            state.get("persist_run_output_start_index") or state.get("run_output_start_index") or 0
+        )
         final_messages = overlay_synthetic_tool_messages(
             messages=final_messages,
             synthetic_tool_messages=list(state.get("synthetic_tool_messages") or []),
-            start_index=int(state.get("persist_run_output_start_index") or state.get("run_output_start_index") or 0),
+            start_index=tool_result_start_index,
         )
+        fresher_messages = state.get("latest_agent_messages") or state.get("message_history")
+        extract_records = getattr(self, "_extract_tool_result_records_from_messages", None)
+        if isinstance(fresher_messages, list) and callable(extract_records):
+            fresher_messages = overlay_synthetic_tool_messages(
+                messages=list(fresher_messages),
+                synthetic_tool_messages=list(state.get("synthetic_tool_messages") or []),
+                start_index=tool_result_start_index,
+            )
+            final_tool_record_count = len(
+                extract_records(
+                    messages=final_messages,
+                    start_index=tool_result_start_index,
+                    max_items=1000,
+                )
+            )
+            fresher_tool_record_count = len(
+                extract_records(
+                    messages=fresher_messages,
+                    start_index=tool_result_start_index,
+                    max_items=1000,
+                )
+            )
+            if fresher_tool_record_count > final_tool_record_count:
+                final_messages = fresher_messages
         state["latest_agent_messages"] = list(final_messages)
 
         persist_override_messages = state.get("persist_override_messages")
@@ -758,12 +713,23 @@ class RunnerExecutionFlowPostMixin:
             and not artifact_completion_missing
         )
         preferred_tool_only_answer = ""
+        stored_tool_only_answer = str(state.get("tool_only_answer_override") or "").strip()
+        if stored_tool_only_answer and not self._looks_like_raw_tool_payload_dump(
+            stored_tool_only_answer
+        ):
+            preferred_tool_only_answer = stored_tool_only_answer
+            if bool(state.get("force_tool_only_finalize")):
+                final_assistant = preferred_tool_only_answer
         if tool_required_has_real_execution and not artifact_download_ready:
             candidate_tool_only_answer = self._build_tool_only_markdown_answer_from_messages(
                 messages=final_messages,
                 start_index=persist_run_output_start_index,
             )
-            if candidate_tool_only_answer and not artifact_completion_missing:
+            if (
+                candidate_tool_only_answer
+                and not preferred_tool_only_answer
+                and not artifact_completion_missing
+            ):
                 preferred_tool_only_answer = candidate_tool_only_answer
                 if bool(state.get("force_tool_only_finalize")):
                     final_assistant = preferred_tool_only_answer
@@ -781,22 +747,22 @@ class RunnerExecutionFlowPostMixin:
             for item in tool_call_summaries
             if isinstance(item, dict) and str(item.get("name", "") or "").strip()
         ]
-        provider_auth_failure_needs_fallback = False
+        provider_auth_failure_needs_block = False
         if any(
             isinstance(state.get(key), dict)
             for key in ("repeated_tool_failure", "repeated_tool_no_progress", "repeated_tool_loop")
         ):
-            fallback_reasons_for_auth = self._build_missing_tool_evidence_fallback_reasons(
+            failure_reasons_for_auth = self._build_missing_tool_evidence_failure_reasons(
                 state=state,
                 missing_required_tools=missing_required_tools,
                 final_messages=final_messages,
                 start_index=persist_run_output_start_index,
                 planned_tool_names=planned_tool_names,
             )
-            provider_auth_failure_needs_fallback = select_provider_auth_diagnostic(
+            provider_auth_failure_needs_block = select_provider_auth_diagnostic(
                 extra=getattr(deps, "extra", {}),
                 attempted_tools=tool_call_summaries,
-                failure_reasons=fallback_reasons_for_auth,
+                failure_reasons=failure_reasons_for_auth,
                 tool_results=self._collect_recent_tool_result_records(
                     final_messages=final_messages,
                     start_index=persist_run_output_start_index,
@@ -809,16 +775,8 @@ class RunnerExecutionFlowPostMixin:
             and (
                 not tool_required_has_real_execution
                 or bool(missing_required_tools)
-                or (
-                    not has_workspace_download_evidence
-                    and (
-                        isinstance(state.get("repeated_tool_failure"), dict)
-                        or isinstance(state.get("repeated_tool_no_progress"), dict)
-                        or isinstance(state.get("repeated_tool_loop"), dict)
-                    )
-                )
             )
-        ) or provider_auth_failure_needs_fallback
+        ) or provider_auth_failure_needs_block
         should_block_assistant_emit = should_fail_for_missing_evidence
 
         if model_stream_timed_out and not final_assistant.strip():
@@ -991,6 +949,9 @@ class RunnerExecutionFlowPostMixin:
                     "lookup_dump_recovery_done",
                     answered=bool(final_assistant.strip()),
                 )
+        if final_assistant and self._looks_like_raw_tool_payload_dump(final_assistant):
+            _log_step("raw_provider_payload_final_answer_blocked")
+            final_assistant = ""
 
         plaintext_tool_markup_attempt = bool(
             state.get("available_tools")
@@ -1128,22 +1089,8 @@ class RunnerExecutionFlowPostMixin:
                 failure_message = (
                     f"The runtime gathered intermediate data, but it did not actually produce the requested {artifact_label}."
                 )
-            fallback_reasons = self._build_missing_tool_evidence_fallback_reasons(
-                state=state,
-                missing_required_tools=missing_required_tools,
-                final_messages=final_messages,
-                start_index=persist_run_output_start_index,
-                planned_tool_names=planned_tool_names,
-            )
-            if artifact_completion_missing:
-                artifact_label = str(
-                    (artifact_goal or {}).get("label", "") or (artifact_goal or {}).get("kind", "")
-                ).strip() or "requested artifact"
-                fallback_reasons.append(
-                    f"The runtime never produced the requested {artifact_label}; only intermediate lookup results were available."
-                )
             recovery_answer = ""
-            answer_phase = "tool_failure_fallback"
+            answer_phase = "unsupported_tool_request"
             max_tool_policy_retries = int(self.TOOL_POLICY_MAX_RETRIES or 0)
             unsupported_tool_request_exhausted = (
                 tool_execution_required
@@ -1238,52 +1185,6 @@ class RunnerExecutionFlowPostMixin:
                         answered=bool(recovery_answer.strip()),
                     )
                 answer_phase = "unsupported_tool_request"
-            elif self._should_attempt_missing_tool_evidence_fallback(
-                state=state,
-                tool_required_has_real_execution=tool_required_has_real_execution,
-                missing_required_tools=missing_required_tools,
-            ) or artifact_completion_missing:
-                yield StreamEvent.runtime_update(
-                    "warning",
-                    "Tool execution did not yield usable evidence. Falling back to a direct model answer.",
-                    metadata={
-                        "phase": "tool_failure_fallback",
-                        "attempt": current_model_attempt,
-                        "elapsed": round(time.monotonic() - start_time, 1),
-                    },
-                )
-                yield StreamEvent.runtime_update(
-                    "reasoning",
-                    "Generating fallback answer from tool failure context.",
-                    metadata={
-                        "phase": "tool_failure_fallback",
-                        "attempt": current_model_attempt,
-                        "elapsed": round(time.monotonic() - start_time, 1),
-                    },
-                )
-                _log_step(
-                    "tool_failure_fallback_start",
-                    failure_reasons=list(fallback_reasons),
-                )
-                try:
-                    recovery_answer = await self._generate_missing_tool_evidence_fallback_answer(
-                        user_message=user_message,
-                        deps=deps,
-                        final_messages=final_messages,
-                        start_index=persist_run_output_start_index,
-                        tool_call_summaries=tool_call_summaries,
-                        failure_reasons=fallback_reasons,
-                        agent=state.get("runtime_agent") or getattr(self, "agent", None),
-                    )
-                except Exception as exc:  # pragma: no cover - defensive logging
-                    logger.warning("tool_failure_fallback_answer failed: %s", exc)
-                    _log_step("tool_failure_fallback_error", error=str(exc))
-                    recovery_answer = ""
-                else:
-                    _log_step(
-                        "tool_failure_fallback_done",
-                        answered=bool(recovery_answer.strip()),
-                    )
             if recovery_answer.strip():
                 final_assistant = recovery_answer.strip()
                 final_assistant = self._strip_workspace_download_link_paths(
@@ -1445,17 +1346,21 @@ class RunnerExecutionFlowPostMixin:
                             final_assistant,
                             state.get("workspace_download_reference_keys") or [],
                         )
-                        persist_messages = self._sanitize_turn_messages_for_persistence(
-                            messages=final_messages,
-                            start_index=persist_run_output_start_index,
-                            final_assistant=final_assistant,
-                            clear_tool_planning_text=tool_execution_required,
-                            persist_user_message=user_message,
-                        )
-                        if not assistant_output_streamed:
-                            state.get("thinking_emitter").assistant_emitted = True
-                            assistant_output_streamed = True
-                            yield StreamEvent.assistant_delta(final_assistant)
+                        if self._looks_like_raw_tool_payload_dump(final_assistant):
+                            _log_step("raw_provider_payload_tool_only_answer_blocked")
+                            final_assistant = ""
+                        else:
+                            persist_messages = self._sanitize_turn_messages_for_persistence(
+                                messages=final_messages,
+                                start_index=persist_run_output_start_index,
+                                final_assistant=final_assistant,
+                                clear_tool_planning_text=tool_execution_required,
+                                persist_user_message=user_message,
+                            )
+                            if not assistant_output_streamed:
+                                state.get("thinking_emitter").assistant_emitted = True
+                                assistant_output_streamed = True
+                                yield StreamEvent.assistant_delta(final_assistant)
             if not final_assistant.strip():
                 state["run_failed"] = True
                 failure_message = (

@@ -17,6 +17,7 @@ SELECTED_CAPABILITY_KEY = "_selected_capability"
 class SelectedCapabilityTargets:
     """Normalized tool-routing targets derived from one selected capability."""
 
+    provider_instances: list[str] = field(default_factory=list)
     provider_types: list[str] = field(default_factory=list)
     skill_names: list[str] = field(default_factory=list)
     group_ids: list[str] = field(default_factory=list)
@@ -25,7 +26,8 @@ class SelectedCapabilityTargets:
     def has_any(self) -> bool:
         """Return whether the selected capability carries any executable target."""
         return bool(
-            self.provider_types
+            self.provider_instances
+            or self.provider_types
             or self.skill_names
             or self.group_ids
             or self.tool_names
@@ -76,9 +78,12 @@ def selected_capability_targets(selected: Mapping[str, Any] | None) -> SelectedC
     if not isinstance(selected, Mapping):
         return SelectedCapabilityTargets()
 
-    target_provider_types = unique_capability_values(
-        selected.get("target_provider_types") or selected.get("provider_type")
+    provider_type, instance_name = selected_capability_provider_instance_ref(selected)
+    target_provider_instances = unique_capability_values(
+        selected.get("target_provider_instances")
+        or ([f"{provider_type}.{instance_name}"] if provider_type and instance_name else [])
     )
+    target_provider_types = unique_capability_values(selected.get("target_provider_types"))
     target_skill_names = unique_capability_values(
         selected.get("target_skill_names")
         or [
@@ -89,6 +94,7 @@ def selected_capability_targets(selected: Mapping[str, Any] | None) -> SelectedC
     target_tool_names = unique_capability_values(selected.get("target_tool_names"))
     target_group_ids = unique_capability_values(selected.get("target_group_ids"))
     return SelectedCapabilityTargets(
+        provider_instances=target_provider_instances,
         provider_types=target_provider_types,
         skill_names=target_skill_names,
         group_ids=target_group_ids,

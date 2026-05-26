@@ -41,6 +41,7 @@ def project_minimal_toolset(
         "before_count": len(normalized_tools),
         "after_count": len(normalized_tools),
         "action": intent_plan.action.value if intent_plan is not None else "",
+        "target_provider_instances": list(intent_plan.target_provider_instances) if intent_plan is not None else [],
         "target_provider_types": list(intent_plan.target_provider_types) if intent_plan is not None else [],
         "target_skill_names": list(intent_plan.target_skill_names) if intent_plan is not None else [],
         "target_group_ids": list(intent_plan.target_group_ids) if intent_plan is not None else [],
@@ -160,19 +161,6 @@ def project_minimal_toolset(
             ),
         )
 
-    coordination_tools: list[dict[str, Any]] = []
-    if current and intent_plan.action is ToolIntentAction.USE_TOOLS:
-        current_names = {str(tool.get("name", "") or "").strip() for tool in current}
-        for tool in normalized_tools:
-            tool_name = str(tool.get("name", "") or "").strip()
-            if not tool_name or tool_name in current_names:
-                continue
-            if not tool_is_coordination_support(tool):
-                continue
-            coordination_tools.append(tool)
-            current_names.add(tool_name)
-        current.extend(coordination_tools)
-
     trace.update(
         {
             "enabled": True,
@@ -180,9 +168,7 @@ def project_minimal_toolset(
             "after_count": len(current),
             "steps": steps,
             "explicit_target_mode": explicit_target_mode,
-            "coordination_tools": [
-                str(tool.get("name", "") or "").strip() for tool in coordination_tools
-            ],
+            "coordination_tools": [],
         }
     )
     return current, trace

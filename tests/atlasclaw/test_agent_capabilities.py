@@ -258,7 +258,8 @@ def test_selected_capability_targets_normalize_for_reusable_permission_checks():
 
     targets = selected_capability_targets(selected)
 
-    assert targets.provider_types == ["SmartCMP"]
+    assert targets.provider_instances == ["SmartCMP.default"]
+    assert targets.provider_types == []
     assert targets.skill_names == ["smartcmp:linux-vm-request", "Linux-VM-Request"]
     assert targets.tool_names == ["request_vm"]
     assert targets.group_ids == ["group:smartcmp"]

@@ -210,9 +210,9 @@ def selected_capability_ids_from_intent_plan(intent_plan: Optional[ToolIntentPla
             seen.add(capability_id)
             selected_ids.append(capability_id)
 
+    _append("provider_instance", list(intent_plan.target_provider_instances or []))
     _append("tool", list(intent_plan.target_tool_names or []))
     _append("skill", list(intent_plan.target_skill_names or []))
-    _append("provider", list(intent_plan.target_provider_types or []))
     _append("capability", list(intent_plan.target_capability_classes or []))
     _append("group", list(intent_plan.target_group_ids or []))
     return selected_ids
@@ -232,6 +232,7 @@ def build_llm_first_guidance_plan(
     if not any(
         [
             list(metadata_plan.target_provider_types or []),
+            list(metadata_plan.target_provider_instances or []),
             list(metadata_plan.target_skill_names or []),
             list(metadata_plan.target_group_ids or []),
             list(metadata_plan.target_capability_classes or []),
@@ -242,6 +243,7 @@ def build_llm_first_guidance_plan(
 
     return ToolIntentPlan(
         action=ToolIntentAction.DIRECT_ANSWER,
+        target_provider_instances=list(metadata_plan.target_provider_instances or []),
         target_provider_types=list(metadata_plan.target_provider_types or []),
         target_skill_names=list(metadata_plan.target_skill_names or []),
         target_group_ids=list(metadata_plan.target_group_ids or []),

@@ -553,7 +553,8 @@ def _format_detail_summary(content: Any) -> str:
     assert isinstance(parsed, dict) and parsed, f"detail meta missing: {content!r}"
     return (
         f"{parsed.get('workflowId', '')} 的详情：{parsed.get('description', '')}，"
-        f"标题是 {parsed.get('name', '')}，Approval ID 是 {parsed.get('approvalId', '')}。"
+        f"标题是 {parsed.get('name', '')}，"
+        f"审批步骤是 {parsed.get('approvalStep', '')}，当前处理人是 {parsed.get('currentApprover', '')}。"
     )
 
 
@@ -825,7 +826,7 @@ def test_cmp_detail_query_runs_real_agent_loop(agent_harness: AgentHarness) -> N
     assert outcome.tool_starts == ["smartcmp_get_request_detail"]
     assert "TIC20260316000001" in outcome.assistant_text
     assert "Test ticket for build verification" in outcome.assistant_text
-    assert "APR-20260316-0001" in outcome.assistant_text
+    assert "一级审批" in outcome.assistant_text
     assert agent_harness.cmp_state["approvals_requests"] >= 1
 
 

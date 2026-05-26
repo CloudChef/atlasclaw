@@ -277,7 +277,7 @@ def build_tool_policy(
     retry_count = int(tool_policy.get("retry_count", 0) or 0)
     retry_missing_tools = tool_policy.get("retry_missing_tools", [])
     max_same_tool_calls_per_turn = int(tool_policy.get("max_same_tool_calls_per_turn", 0) or 0)
-    target_provider_types = tool_policy.get("target_provider_types", [])
+    target_provider_instances = tool_policy.get("target_provider_instances", [])
     target_skill_names = tool_policy.get("target_skill_names", [])
     target_group_ids = tool_policy.get("target_group_ids", [])
     target_capability_classes = tool_policy.get("target_capability_classes", [])
@@ -291,8 +291,10 @@ def build_tool_policy(
         lines.append(f"Reason: {reason}")
     if isinstance(preferred_tools, list) and preferred_tools:
         lines.append(f"Preferred tools: {', '.join(str(item) for item in preferred_tools)}")
-    if isinstance(target_provider_types, list) and target_provider_types:
-        lines.append(f"Target providers: {', '.join(str(item) for item in target_provider_types)}")
+    if isinstance(target_provider_instances, list) and target_provider_instances:
+        lines.append(
+            f"Target provider instances: {', '.join(str(item) for item in target_provider_instances)}"
+        )
     if isinstance(target_skill_names, list) and target_skill_names:
         lines.append(f"Target skills: {', '.join(str(item) for item in target_skill_names)}")
     if isinstance(target_group_ids, list) and target_group_ids:
@@ -467,10 +469,14 @@ def build_provider_instance_routing(provider_instance_contexts: Optional[list[di
     lines = [
         "## Provider Instance Routing",
         "",
-        "Some provider types have multiple visible instances. Use usage hints to "
-        "choose the right instance before calling provider tools.",
-        "When a usage hint clearly matches the user's target, call `select_provider_instance` "
-        "first. If multiple usage hints match or none are clear, ask the user which instance to use.",
+        "Available provider instances are listed below. Each item includes the provider context "
+        "and optional instance usage hint.",
+        "The runtime selector picks the provider instance before provider-backed tools run. "
+        "Use the selected or first matching instance's usage hint as the routing context.",
+        "For provider-backed final answers, obey the selected instance's usage hint as an "
+        "answer policy as well as a routing hint.",
+        "If the match is unclear, use the first listed instance for that provider. Do not pass "
+        "provider or instance names through unrelated tool arguments such as path filters.",
         "",
     ]
     shown = 0
@@ -483,13 +489,34 @@ def build_provider_instance_routing(provider_instance_contexts: Optional[list[di
             continue
         usage_hint = str(item.get("usage_hint", "") or "").strip()
         selected = bool(item.get("selected"))
-        suffix_parts = []
+        lines.append(f"- `{provider_type}.{instance_name}`")
+        lines.append(f"  provider_type: {provider_type}")
+        provider_display_name = str(item.get("provider_display_name", "") or "").strip()
+        if provider_display_name:
+            lines.append(f"  provider_display_name: {provider_display_name}")
+        provider_description = str(item.get("provider_description", "") or "").strip()
+        if provider_description:
+            lines.append(f"  provider_description: {provider_description}")
+        for source_key, label in (
+            ("provider_keywords", "provider_keywords"),
+            ("provider_capabilities", "provider_capabilities"),
+            ("provider_use_when", "provider_use_when"),
+            ("provider_avoid_when", "provider_avoid_when"),
+        ):
+            values = [
+                str(value).strip()
+                for value in (item.get(source_key, []) or [])
+                if str(value).strip()
+            ]
+            if values:
+                lines.append(f"  {label}: {', '.join(values)}")
+        lines.append(f"  instance_name: {instance_name}")
         if usage_hint:
-            suffix_parts.append(f"usage_hint: {usage_hint}")
+            lines.append(f"  instance_usage_hint: {usage_hint}")
         if selected:
-            suffix_parts.append("current session selection")
-        suffix = " — " + "; ".join(suffix_parts) if suffix_parts else ""
-        lines.append(f"- `{provider_type}.{instance_name}`{suffix}")
+            lines.append("  selected: current session selection")
+            if usage_hint:
+                lines.append("  selected_answer_policy: obey instance_usage_hint in the final answer")
         shown += 1
 
     return "\n".join(lines) if shown else ""
@@ -677,7 +704,7 @@ def build_capability_index(config, capability_index: list[dict]) -> str:
         if not isinstance(raw_entry, dict):
             continue
         kind = str(raw_entry.get("kind", "") or "").strip().lower()
-        if kind not in {"md_skill", "tool", "skill"}:
+        if kind not in {"md_skill", "tool", "skill", "provider_instance"}:
             kind = "capability"
         name = str(raw_entry.get("name") or raw_entry.get("qualified_name") or "unknown").strip()
         capability_id = str(raw_entry.get("capability_id", "") or "").strip()
@@ -716,6 +743,10 @@ def build_capability_index(config, capability_index: list[dict]) -> str:
     selected_entries = normalized_entries[:max_count]
     sections: list[tuple[str, list[dict[str, str]]]] = [
         ("Markdown Skills", [entry for entry in selected_entries if entry["kind"] == "md_skill"]),
+        (
+            "Provider Instances",
+            [entry for entry in selected_entries if entry["kind"] == "provider_instance"],
+        ),
         ("Tools", [entry for entry in selected_entries if entry["kind"] == "tool"]),
         ("Built-in Skills", [entry for entry in selected_entries if entry["kind"] == "skill"]),
     ]

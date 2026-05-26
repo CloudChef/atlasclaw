@@ -16,6 +16,7 @@ from app.atlasclaw.agent.runner_tool.runner_execution_loop import (
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import RunnerExecutionPreparePhaseMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
     _infer_active_skill_from_transcript,
+    apply_provider_instance_selection_policy,
     build_transcript_skill_prompt_intent_plan,
     filter_implicit_memory_tools,
     prune_auto_selected_provider_instance_tools,
@@ -216,12 +217,12 @@ def test_capability_selector_prompt_uses_descriptions_only_for_capabilities() ->
     assert "hidden_export_tool" not in prompt
 
 
-def test_capability_selector_can_select_provider_and_standard_skill_targets() -> None:
+def test_capability_selector_can_select_provider_instance_and_standard_skill_targets() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
             "action": "use_tools",
-            "targets": ["provider:smartcmp", "skill:xlsx"],
+            "targets": ["provider_instance:smartcmp.prod", "skill:xlsx"],
             "reason": "Fetch provider data and export as spreadsheet.",
         }
     )
@@ -241,11 +242,12 @@ def test_capability_selector_can_select_provider_and_standard_skill_targets() ->
                     "declared_tool_names": [],
                 },
                 {
-                    "capability_id": "provider:smartcmp",
-                    "kind": "provider",
-                    "name": "smartcmp",
+                    "capability_id": "provider_instance:smartcmp.prod",
+                    "kind": "provider_instance",
+                    "name": "smartcmp.prod",
                     "description": "Query approval data.",
                     "provider_type": "smartcmp",
+                    "instance_name": "prod",
                     "declared_tool_names": ["smartcmp_query_approvals"],
                 },
                 {
@@ -262,6 +264,7 @@ def test_capability_selector_can_select_provider_and_standard_skill_targets() ->
 
     assert plan is not None
     assert plan.action is ToolIntentAction.USE_TOOLS
+    assert plan.target_provider_instances == ["smartcmp.prod"]
     assert plan.target_provider_types == ["smartcmp"]
     assert plan.target_skill_names == ["xlsx"]
 
@@ -311,7 +314,7 @@ def test_capability_selector_preserves_no_target_direct_answer() -> None:
     assert plan.target_skill_names == []
 
 
-def test_capability_selector_requires_explicit_provider_capability_id() -> None:
+def test_capability_selector_rejects_provider_level_target() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
@@ -329,12 +332,59 @@ def test_capability_selector_requires_explicit_provider_capability_id() -> None:
             recent_history=[],
             capability_index=[
                 {
+                    "capability_id": "provider_instance:smartcmp.prod",
+                    "kind": "provider_instance",
+                    "name": "smartcmp.prod",
+                    "description": "Query approval data.",
+                    "provider_type": "smartcmp",
+                    "instance_name": "prod",
+                    "declared_tool_names": [],
+                },
+                {
                     "capability_id": "tool:smartcmp_query_approvals",
                     "kind": "tool",
                     "name": "smartcmp_query_approvals",
                     "description": "Query approval data.",
                     "provider_type": "smartcmp",
                     "declared_tool_names": ["smartcmp_query_approvals"],
+                },
+            ],
+        )
+    )
+
+    assert plan is None
+
+
+def test_capability_selector_rejects_group_and_capability_targets() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "action": "use_tools",
+            "targets": ["group:atlasclaw", "capability:catalog"],
+            "reason": "Group and capability targets are not valid natural-language targets.",
+        }
+    )
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="查一下平台目录",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "group:atlasclaw",
+                    "kind": "group",
+                    "name": "atlasclaw",
+                    "description": "AtlasClaw coordination tools.",
+                    "declared_tool_names": ["atlasclaw_catalog_query"],
+                },
+                {
+                    "capability_id": "capability:catalog",
+                    "kind": "capability",
+                    "name": "catalog",
+                    "description": "Catalog lookup capability.",
+                    "declared_tool_names": ["atlasclaw_catalog_query"],
                 },
             ],
         )
@@ -374,6 +424,104 @@ def test_capability_selector_drops_unauthorized_targets() -> None:
     assert plan is not None
     assert plan.target_skill_names == ["xlsx"]
     assert plan.target_tool_names == []
+
+
+def test_apply_provider_instance_selection_policy_records_explicit_instance() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "provider_instances": {
+                "smartcmp": {
+                    "prod": {"base_url": "https://prod.example.com"},
+                    "dev": {"base_url": "https://dev.example.com"},
+                }
+            }
+        }
+    )
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_provider_instances=["smartcmp.dev"],
+    )
+
+    updated_plan, trace = apply_provider_instance_selection_policy(
+        deps=deps,
+        intent_plan=plan,
+    )
+
+    assert updated_plan is not None
+    assert updated_plan.target_provider_instances == ["smartcmp.dev"]
+    assert updated_plan.target_provider_types == ["smartcmp"]
+    assert deps.extra["provider_instance_selections"] == {"smartcmp": "dev"}
+    assert deps.extra["provider_type"] == "smartcmp"
+    assert deps.extra["provider_instance_name"] == "dev"
+    assert deps.extra["provider_instance"]["base_url"] == "https://dev.example.com"
+    assert trace["selected_provider_instances"] == ["smartcmp.dev"]
+    assert trace["defaulted_provider_instances"] == []
+
+
+def test_apply_provider_instance_selection_policy_defaults_provider_type_to_first_instance() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "provider_instances": {
+                "smartcmp": {
+                    "prod": {"base_url": "https://prod.example.com"},
+                    "dev": {"base_url": "https://dev.example.com"},
+                }
+            }
+        }
+    )
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_provider_types=["smartcmp"],
+    )
+
+    updated_plan, trace = apply_provider_instance_selection_policy(
+        deps=deps,
+        intent_plan=plan,
+    )
+
+    assert updated_plan is not None
+    assert updated_plan.target_provider_instances == ["smartcmp.prod"]
+    assert updated_plan.target_provider_types == ["smartcmp"]
+    assert deps.extra["provider_instance_selections"] == {"smartcmp": "prod"}
+    assert deps.extra["provider_instance_name"] == "prod"
+    assert trace["selected_provider_instances"] == []
+    assert trace["defaulted_provider_instances"] == ["smartcmp.prod"]
+
+
+def test_apply_provider_instance_selection_policy_defaults_provider_tool_target_to_first_instance() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot": [
+                {
+                    "name": "markdown_vault_search",
+                    "provider_type": "markdown-vault",
+                }
+            ],
+            "provider_instances": {
+                "markdown-vault": {
+                    "knowledgebase": {"vault_path": "/vault/smartcmp"},
+                    "atlasclaw-docs": {"vault_path": "/vault/atlasclaw"},
+                }
+            },
+        }
+    )
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_tool_names=["markdown_vault_search"],
+    )
+
+    updated_plan, trace = apply_provider_instance_selection_policy(
+        deps=deps,
+        intent_plan=plan,
+    )
+
+    assert updated_plan is not None
+    assert updated_plan.target_provider_instances == ["markdown-vault.knowledgebase"]
+    assert updated_plan.target_provider_types == ["markdown-vault"]
+    assert updated_plan.target_tool_names == ["markdown_vault_search"]
+    assert deps.extra["provider_instance_name"] == "knowledgebase"
+    assert deps.extra["provider_instance"]["vault_path"] == "/vault/smartcmp"
+    assert trace["defaulted_provider_instances"] == ["markdown-vault.knowledgebase"]
 
 
 def test_tool_gate_classifier_resolves_async_agent_factory() -> None:
@@ -446,6 +594,86 @@ def test_prune_auto_selected_provider_instance_tools_removes_provider_coordinati
     assert trace["enabled"] is True
     assert trace["removed_tools"] == ["provider_instance_selector"]
     assert trace["auto_selected_provider_types"] == ["smartcmp"]
+
+
+def test_prune_auto_selected_provider_instance_tools_uses_intent_instance_target() -> None:
+    filtered_tools, trace = prune_auto_selected_provider_instance_tools(
+        available_tools=[
+            {
+                "name": "smartcmp_submit_request",
+                "description": "Submit SmartCMP request",
+                "provider_type": "smartcmp",
+                "capability_class": "provider:smartcmp",
+            },
+            {
+                "name": "select_provider_instance",
+                "description": "Select provider instance",
+                "capability_class": "provider:generic",
+                "group_ids": ["group:providers"],
+                "coordination_only": True,
+            },
+        ],
+        deps=SimpleNamespace(
+            extra={
+                "provider_instances": {
+                    "smartcmp": {
+                        "prod": {"provider_type": "smartcmp"},
+                        "dev": {"provider_type": "smartcmp"},
+                    }
+                }
+            }
+        ),
+        intent_plan=ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_instances=["smartcmp.dev"],
+            target_provider_types=["smartcmp"],
+        ),
+    )
+
+    assert {tool["name"] for tool in filtered_tools} == {"smartcmp_submit_request"}
+    assert trace["enabled"] is True
+    assert trace["removed_tools"] == ["select_provider_instance"]
+    assert trace["target_provider_instances"] == ["smartcmp.dev"]
+    assert trace["explicit_selected_provider_types"] == ["smartcmp"]
+    assert trace["explicit_selected_instances"] == ["dev"]
+
+
+def test_prune_provider_instance_tools_keeps_selector_without_provider_target() -> None:
+    filtered_tools, trace = prune_auto_selected_provider_instance_tools(
+        available_tools=[
+            {
+                "name": "markdown_vault_search",
+                "description": "Search markdown vault",
+                "provider_type": "markdown-vault",
+                "capability_class": "provider:markdown-vault",
+            },
+            {
+                "name": "select_provider_instance",
+                "description": "Select provider instance",
+                "capability_class": "provider:generic",
+                "group_ids": ["group:providers"],
+                "coordination_only": True,
+            },
+        ],
+        deps=SimpleNamespace(
+            extra={
+                "provider_instances": {
+                    "markdown-vault": {
+                        "knowledgebase": {"provider_type": "markdown-vault"},
+                        "atlasclaw-docs": {"provider_type": "markdown-vault"},
+                    }
+                }
+            }
+        ),
+        intent_plan=ToolIntentPlan(action=ToolIntentAction.USE_TOOLS),
+    )
+
+    assert {tool["name"] for tool in filtered_tools} == {
+        "markdown_vault_search",
+        "select_provider_instance",
+    }
+    assert trace["enabled"] is False
+    assert trace["removed_tools"] == []
 
 
 def test_hydrate_session_provider_instance_selections_keeps_visible_selection() -> None:
@@ -843,6 +1071,77 @@ def test_resolve_contextual_tool_request_keeps_provider_route_query_self_contain
 
     assert resolved == "SmartCMP 知识库里服务申请和部署日志如何关联？"
     assert used_follow_up_context is False
+
+
+def test_provider_instance_projection_does_not_append_generic_coordination_tools() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "provider_instances": {
+                "markdown-vault": {
+                    "knowledgebase": {
+                        "usage_hint": (
+                            "Use for SmartCMP support-status questions, configuration, "
+                            "integration, 是否支持, and extension-path knowledge-base Q&A."
+                        ),
+                    }
+                }
+            }
+        }
+    )
+    usage_plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_provider_instances=["markdown-vault.knowledgebase"],
+    )
+    updated_plan, selection_trace = apply_provider_instance_selection_policy(
+        deps=deps,
+        intent_plan=usage_plan,
+    )
+    projected, projection_trace = project_minimal_toolset(
+        allowed_tools=[
+            {
+                "name": "markdown_vault_search",
+                "description": "Search a Markdown knowledge vault",
+                "provider_type": "markdown-vault",
+                "capability_class": "provider:markdown-vault",
+            },
+            {
+                "name": "atlasclaw_catalog_query",
+                "description": "Query the runtime catalog",
+                "capability_class": "atlasclaw_catalog",
+                "coordination_only": True,
+            },
+            {
+                "name": "read",
+                "description": "Read a local file",
+                "capability_class": "fs_read",
+                "coordination_only": True,
+            },
+            {
+                "name": "session_status",
+                "description": "Current session status",
+                "capability_class": "session",
+                "coordination_only": True,
+            },
+            {
+                "name": "select_provider_instance",
+                "description": "Select provider instance",
+                "capability_class": "provider:generic",
+                "group_ids": ["group:providers"],
+                "coordination_only": True,
+            },
+        ],
+        intent_plan=updated_plan,
+    )
+    pruned, pruning_trace = prune_auto_selected_provider_instance_tools(
+        available_tools=projected,
+        deps=deps,
+        intent_plan=updated_plan,
+    )
+
+    assert selection_trace["selected_provider_instances"] == ["markdown-vault.knowledgebase"]
+    assert projection_trace["coordination_tools"] == []
+    assert pruning_trace["removed_tools"] == []
+    assert {tool["name"] for tool in pruned} == {"markdown_vault_search"}
 
 
 def test_resolve_contextual_tool_request_reuses_previous_request_for_structured_follow_up_reply() -> None:

@@ -276,94 +276,6 @@ def build_finalize_payload(
     }
 
 
-def build_tool_failure_fallback_payload(
-    *,
-    user_message: str,
-    tool_results: list[dict[str, Any]],
-    attempted_tools: list[dict[str, Any]] | list[str] | None = None,
-    failure_reasons: list[str] | None = None,
-    provider_auth_diagnostic: dict[str, Any] | None = None,
-) -> dict[str, str]:
-    """Build a minimal payload for same-turn fallback after tool execution failed."""
-    evidence_lines: list[str] = []
-    for item in tool_results or []:
-        if not isinstance(item, dict):
-            continue
-        tool_name = str(item.get("tool_name", "") or "").strip() or "tool"
-        content = _sanitize_provider_auth_text(item.get("content", ""), provider_auth_diagnostic)
-        if not content:
-            continue
-        evidence_lines.append(f"- {tool_name}: {content}")
-    if not evidence_lines:
-        evidence_lines.append("- tool: no usable tool output was captured")
-
-    attempted_lines: list[str] = []
-    for item in attempted_tools or []:
-        if isinstance(item, dict):
-            tool_name = str(item.get("name", "") or item.get("tool_name", "")).strip()
-            if not tool_name:
-                continue
-            args = item.get("args")
-            if isinstance(args, dict) and args:
-                attempted_lines.append(
-                    f"- {tool_name}: {json.dumps(args, ensure_ascii=False, sort_keys=True)}"
-                )
-            else:
-                attempted_lines.append(f"- {tool_name}")
-            continue
-        tool_name = str(item or "").strip()
-        if tool_name:
-            attempted_lines.append(f"- {tool_name}")
-    if not attempted_lines:
-        attempted_lines.append("- none recorded")
-
-    diagnostic_message = _provider_auth_diagnostic_message(provider_auth_diagnostic)
-    failure_lines = []
-    if diagnostic_message:
-        failure_lines.append(f"- {diagnostic_message}")
-    for reason in failure_reasons or []:
-        sanitized_reason = _sanitize_provider_auth_text(reason, provider_auth_diagnostic)
-        if not sanitized_reason or sanitized_reason == diagnostic_message:
-            continue
-        failure_lines.append(f"- {sanitized_reason}")
-    if not failure_lines:
-        failure_lines.append("- Tool execution did not yield usable evidence.")
-
-    provider_auth_instruction = _provider_auth_system_instruction(provider_auth_diagnostic)
-    return {
-        "system_prompt": (
-            "You are the assistant. The runtime attempted tools first, but they did not produce a usable final answer. "
-            "Produce a concise markdown answer.\n"
-            "If a Provider authentication diagnostic appears below, follow that diagnostic exactly: "
-            "when it says a personal provider access credential is not configured, rejected, invalid, or expired, "
-            "do not also tell the user to contact an administrator; "
-            "when it says to contact an administrator, do not also mention personal credential setup.\n"
-            "If the request depends on private, enterprise, provider-backed, or otherwise unavailable data that the tools "
-            "did not return, do not invent it. Explain the limitation, missing parameter, or retry path instead.\n"
-            f"{provider_auth_instruction}\n"
-            "If the request is a public recommendation or general knowledge question, you may provide a best-effort answer "
-            "from model knowledge, but clearly say it was not verified by tools.\n"
-            "Never claim a tool ran unless it appears under Attempted tools.\n"
-            "Never infer that a side-effecting action was attempted or succeeded unless the Attempted tools "
-            "list or tool evidence explicitly shows it.\n"
-            "Never infer that an unavailable external or private-system action was attempted or succeeded "
-            "unless the Attempted tools list or tool evidence explicitly shows it.\n"
-            "Do not turn missing capability into an external-system fact: without explicit tool output "
-            "from this turn, do not say records are absent, results are empty, an object does not exist, "
-            "an operation succeeded or failed, or logs, timestamps, statuses, and verification evidence exist.\n"
-            "Do not mention hidden reasoning. Do not call tools. Do not add wrapper headings like 'Answer' or 'Result' "
-            "unless the user explicitly asked for them."
-        ),
-        "user_prompt": (
-            f"User request:\n{str(user_message or '').strip()}\n\n"
-            f"Attempted tools:\n{chr(10).join(attempted_lines)}\n\n"
-            f"Tool failure summary:\n{chr(10).join(failure_lines)}\n\n"
-            f"Tool evidence snapshot:\n{chr(10).join(evidence_lines)}\n\n"
-            "Return concise markdown. Be transparent about missing verification when needed."
-        ),
-    }
-
-
 def build_direct_answer_recovery_payload(
     *,
     user_message: str,
@@ -416,7 +328,7 @@ def build_lookup_dump_recovery_payload(
     tool_results: list[dict[str, Any]],
     workflow_notes: list[str] | None = None,
 ) -> dict[str, str]:
-    """Build a recovery payload for raw workflow-lookup dumps echoed by the model."""
+    """Build a recovery payload for hidden workflow-lookup dumps echoed by the model."""
     evidence_lines: list[str] = []
     for item in tool_results or []:
         if not isinstance(item, dict):
@@ -425,7 +337,11 @@ def build_lookup_dump_recovery_payload(
         content = str(item.get("content", "") or "").strip()
         if not content:
             continue
-        evidence_lines.append(f"- {tool_name}: {content}")
+        compact_content = content[:5000].rstrip()
+        if len(content) > 5000:
+            compact_content = f"{compact_content}\n...[truncated]"
+        indented_content = compact_content.replace("\n", "\n  ")
+        evidence_lines.append(f"- {tool_name}:\n  {indented_content}")
     if not evidence_lines:
         evidence_lines.append("- tool: no usable lookup evidence was captured")
 
@@ -437,13 +353,13 @@ def build_lookup_dump_recovery_payload(
     if not note_lines:
         note_lines.append("- none")
 
-    invalid_preview = str(invalid_output or "").strip() or "(empty draft)"
+    invalid_preview = str(invalid_output or "").strip()[:1200] or "(empty draft)"
     return {
         "system_prompt": (
             "You are the assistant. The previous draft incorrectly echoed raw internal lookup metadata.\n"
-            "Use only the supplied tool evidence to continue the workflow in natural language.\n"
+            "Use only the supplied tool evidence to answer or continue the workflow in natural language.\n"
             "Preserve decisions already made in the workflow notes instead of restarting from an earlier lookup step.\n"
-            "Ask the next concise user-facing question or confirmation when appropriate.\n"
+            "Ask the next concise user-facing question or confirmation only when appropriate.\n"
             "Do not quote JSON, UUIDs, IDs, raw metadata dumps, or scaffolding phrases like 'Found N ...'.\n"
             "Do not call tools. Do not mention hidden reasoning."
         ),

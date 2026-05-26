@@ -64,7 +64,7 @@ def _allowed_tools() -> list[dict]:
     ]
 
 
-def test_project_minimal_toolset_keeps_only_targeted_provider_and_coordination_tools() -> None:
+def test_project_minimal_toolset_keeps_only_targeted_provider_tools() -> None:
     plan = ToolIntentPlan(
         action=ToolIntentAction.USE_TOOLS,
         target_provider_types=["smartcmp"],
@@ -80,8 +80,6 @@ def test_project_minimal_toolset_keeps_only_targeted_provider_and_coordination_t
     assert [tool["name"] for tool in filtered] == [
         "cmp_list_pending",
         "cmp_get_request_detail",
-        "list_provider_instances",
-        "select_provider_instance",
     ]
     assert trace["enabled"] is True
     assert trace["reason"] == "projection_applied"
@@ -101,12 +99,8 @@ def test_project_minimal_toolset_supports_skill_and_explicit_tool_narrowing() ->
         intent_plan=plan,
     )
 
-    assert [tool["name"] for tool in filtered] == [
-        "cmp_get_request_detail",
-        "list_provider_instances",
-        "select_provider_instance",
-    ]
-    assert trace["after_count"] == 3
+    assert [tool["name"] for tool in filtered] == ["cmp_get_request_detail"]
+    assert trace["after_count"] == 1
 
 
 def test_project_minimal_toolset_unions_provider_and_docs_only_skill_targets() -> None:
@@ -124,8 +118,6 @@ def test_project_minimal_toolset_unions_provider_and_docs_only_skill_targets() -
     assert [tool["name"] for tool in filtered] == [
         "cmp_list_pending",
         "cmp_get_request_detail",
-        "list_provider_instances",
-        "select_provider_instance",
     ]
     assert trace["reason"] == "projection_applied"
 

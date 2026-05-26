@@ -432,7 +432,19 @@ class ServiceProviderRegistry:
             # Expose provider instances to skills without widening a request-scoped filter.
             extra.setdefault("provider_instances", runtime_registry.get_all_instance_configs())
 
-            instances = runtime_registry.list_instances(provider_type)
+            all_instance_configs = runtime_registry.get_all_instance_configs()
+            instance_configs = {}
+            if isinstance(all_instance_configs, dict):
+                raw_instance_configs = all_instance_configs.get(provider_type)
+                if isinstance(raw_instance_configs, dict):
+                    instance_configs = {
+                        str(instance_name): dict(instance_config)
+                        for instance_name, instance_config in raw_instance_configs.items()
+                        if str(instance_name or "").strip()
+                        and isinstance(instance_config, dict)
+                    }
+
+            instances = list(instance_configs.keys())
             if len(instances) == 0:
                 return {
                     "is_error": True,
@@ -441,11 +453,6 @@ class ServiceProviderRegistry:
                     ],
                 }
 
-            instance_configs: dict[str, dict[str, Any]] = {}
-            for instance_name in instances:
-                instance_configs[instance_name] = (
-                    runtime_registry.get_instance_config(provider_type, instance_name) or {}
-                )
             resolution = resolve_provider_instance_selection(
                 provider_type=provider_type,
                 instances=instance_configs,

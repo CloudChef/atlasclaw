@@ -97,6 +97,8 @@ class RunnerExecutionFlowErrorMixin:
                 messages=latest_messages,
                 start_index=persist_run_output_start_index,
             )
+            if tool_only_answer and self._looks_like_raw_tool_payload_dump(tool_only_answer):
+                tool_only_answer = ""
             if tool_only_answer:
                 logger.warning(
                     "tool-required turn hit model-finalization exception; returning tool-backed fallback answer"
