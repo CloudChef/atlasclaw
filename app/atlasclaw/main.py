@@ -238,6 +238,7 @@ async def lifespan(app: FastAPI):
                     } if config.database.mysql else {},
                     "pool_size": config.database.pool_size,
                     "max_overflow": config.database.max_overflow,
+                    "pool_pre_ping": config.database.pool_pre_ping,
                     "echo": config.database.echo,
                 }
             })

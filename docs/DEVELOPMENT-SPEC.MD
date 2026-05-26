@@ -1292,10 +1292,15 @@ Configure LLM provider in `atlasclaw.json`:
       "user": "${MYSQL_USER}",
       "password": "${MYSQL_PASSWORD}",
       "charset": "utf8mb4"
-    }
+    },
+    "pool_pre_ping": false
   }
 }
 ```
+
+`database.pool_pre_ping` is MySQL-only and defaults to `false` for aiomysql
+compatibility. Enable it only when the selected driver and deployment support
+SQLAlchemy pre-ping reliably.
 
 | Mode | Type | Initialization |
 |---|---|---|

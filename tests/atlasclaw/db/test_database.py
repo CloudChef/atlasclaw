@@ -16,6 +16,7 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import AsyncGenerator
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 import pytest_asyncio
@@ -92,6 +93,36 @@ class TestDatabaseManager:
             await manager.close()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("pool_pre_ping", [False, True])
+    async def test_initialize_mysql_passes_pool_pre_ping_to_engine(self, pool_pre_ping: bool):
+        """MySQL initialization should pass configured pool pre-ping to SQLAlchemy."""
+        config = DatabaseConfig(
+            db_type="mysql",
+            mysql_host="localhost",
+            mysql_port=3306,
+            mysql_database="testdb",
+            mysql_user="testuser",
+            mysql_password="testpass",
+            mysql_tls=False,
+            pool_pre_ping=pool_pre_ping,
+        )
+        fake_engine = Mock()
+        fake_engine.dispose = AsyncMock()
+        manager = DatabaseManager()
+        manager._engine = None
+        manager._session_factory = None
+
+        with patch(
+            "app.atlasclaw.db.database.create_async_engine",
+            return_value=fake_engine,
+        ) as create_async_engine:
+            await manager.initialize(config)
+
+        assert create_async_engine.call_args.kwargs["pool_pre_ping"] is pool_pre_ping
+
+        await manager.close()
+
+    @pytest.mark.asyncio
     async def test_get_session_before_init_raises(self):
         """Getting session before initialization should raise."""
         manager = DatabaseManager()
@@ -136,6 +167,24 @@ class TestDatabaseConfig:
         )
         assert config.db_type == "mysql"
         assert config.mysql_host == "localhost"
+        assert config.pool_pre_ping is False
+
+    def test_mysql_pool_pre_ping_can_be_configured(self):
+        """Test configuring MySQL pool pre-ping."""
+        config = DatabaseConfig.from_config({
+            "database": {
+                "type": "mysql",
+                "mysql": {
+                    "host": "localhost",
+                    "port": 3306,
+                    "database": "testdb",
+                    "user": "user",
+                    "password": "pass",
+                },
+                "pool_pre_ping": True,
+            }
+        })
+        assert config.pool_pre_ping is True
 
     def test_from_config_dict(self):
         """Test creating config from dict."""

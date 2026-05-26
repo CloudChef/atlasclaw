@@ -80,6 +80,7 @@ class DatabaseConfig:
         mysql_tls: bool = True,
         pool_size: int = 5,
         max_overflow: int = 10,
+        pool_pre_ping: bool = False,
         echo: bool = False,
     ):
         self.db_type = db_type
@@ -93,6 +94,7 @@ class DatabaseConfig:
         self.mysql_tls = mysql_tls
         self.pool_size = pool_size
         self.max_overflow = max_overflow
+        self.pool_pre_ping = pool_pre_ping
         self.echo = echo
 
     @classmethod
@@ -113,6 +115,7 @@ class DatabaseConfig:
             mysql_tls=_resolve_mysql_tls(db_config.get("mysql", {}).get("tls", True)),
             pool_size=db_config.get("pool_size", 5),
             max_overflow=db_config.get("max_overflow", 10),
+            pool_pre_ping=db_config.get("pool_pre_ping", False),
             echo=db_config.get("echo", False),
         )
 
@@ -182,7 +185,7 @@ class DatabaseManager:
                 echo=config.echo,
                 pool_size=config.pool_size,
                 max_overflow=config.max_overflow,
-                pool_pre_ping=True,
+                pool_pre_ping=config.pool_pre_ping,
                 connect_args=build_mysql_connect_args(config.mysql_tls),
             )
             logger.info(f"MySQL TLS enabled: {config.mysql_tls}")

@@ -46,7 +46,8 @@ Create `/opt/atlasclaw/config/atlasclaw.json`:
       "charset": "utf8mb4"
     },
     "pool_size": 20,
-    "max_overflow": 30
+    "max_overflow": 30,
+    "pool_pre_ping": false
   },
   "model": {
     "primary": "deepseek-main",
@@ -183,10 +184,15 @@ curl http://localhost:8000/api/health
       "charset": "utf8mb4"
     },
     "pool_size": 20,
-    "max_overflow": 30
+    "max_overflow": 30,
+    "pool_pre_ping": false
   }
 }
 ```
+
+`pool_pre_ping` controls SQLAlchemy connection checkout pre-ping for MySQL only.
+The default is `false` for aiomysql deployments; enable it only when the selected
+driver and deployment are known to support SQLAlchemy pre-ping reliably.
 
 ### LLM Provider
 
