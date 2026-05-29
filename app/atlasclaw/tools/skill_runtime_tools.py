@@ -20,14 +20,17 @@ from app.atlasclaw.core.security_guard import resolve_path_in_user_work_dir
 from app.atlasclaw.core.workspace_downloads import is_safe_workspace_relative_path
 from app.atlasclaw.tools.base import ToolResult
 from app.atlasclaw.tools.truncation import truncate_output
-from app.atlasclaw.tools.work_dir_guard import get_user_work_dir, resolve_file_path
+from app.atlasclaw.tools.work_dir_guard import (
+    contains_home_relative_path,
+    get_user_work_dir,
+    resolve_file_path,
+)
 
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
     from app.atlasclaw.core.deps import SkillDeps
 
 
-_HOME_RELATIVE_PATH_RE = re.compile(r"(?<![\w.-])~(?:/|$)")
 _ABSOLUTE_PATH_RE = re.compile(r"(?<![:\w])/(?:[^\s'\"`<>|\\]+)")
 
 
@@ -158,7 +161,7 @@ def _validate_runtime_command_paths(
     directory, which keeps model-generated file operations within the selected
     runtime boundary.
     """
-    if _HOME_RELATIVE_PATH_RE.search(str(command or "")):
+    if contains_home_relative_path(str(command or "")):
         raise ValueError("command paths must be relative to work_dir; '~' is not allowed")
 
     allowed_roots = [get_user_work_dir(ctx).resolve(), _skill_dir(ctx).resolve()]
@@ -179,7 +182,7 @@ def _validate_user_requested_runtime_path(ctx: "RunContext[SkillDeps]") -> None:
     """Reject user-requested home-relative output paths before running commands."""
     deps = getattr(ctx, "deps", None)
     user_message = str(getattr(deps, "user_message", "") or "")
-    if _HOME_RELATIVE_PATH_RE.search(user_message):
+    if contains_home_relative_path(user_message):
         raise ValueError("home-relative output paths are not allowed; use a work_dir-relative filename")
 
 

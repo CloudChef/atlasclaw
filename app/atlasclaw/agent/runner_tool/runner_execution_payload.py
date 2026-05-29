@@ -235,6 +235,106 @@ def select_provider_auth_diagnostic(
     return candidates[0]
 
 
+def _provider_auth_diagnostic_candidates(extra: Any) -> list[dict[str, Any]]:
+    if not isinstance(extra, dict):
+        return []
+    diagnostics = extra.get("provider_auth_diagnostics")
+    if not isinstance(diagnostics, dict) or not diagnostics:
+        return []
+
+    candidates: list[dict[str, Any]] = []
+    for provider_type, instances in diagnostics.items():
+        normalized_provider_type = str(provider_type or "").strip().lower()
+        if not normalized_provider_type or not isinstance(instances, dict):
+            continue
+        for instance_name, diagnostic in instances.items():
+            if not isinstance(diagnostic, dict):
+                continue
+            normalized_instance_name = str(
+                diagnostic.get("instance_name") or instance_name or ""
+            ).strip()
+            if not normalized_instance_name:
+                continue
+            candidates.append(
+                {
+                    **diagnostic,
+                    "provider_type": str(
+                        diagnostic.get("provider_type") or normalized_provider_type
+                    ).strip().lower(),
+                    "instance_name": normalized_instance_name,
+                }
+            )
+    return candidates
+
+
+def _provider_auth_diagnostic_matches_plan(
+    diagnostic: dict[str, Any],
+    intent_plan: Any,
+) -> bool:
+    provider_type = str(diagnostic.get("provider_type", "") or "").strip().lower()
+    instance_name = str(diagnostic.get("instance_name", "") or "").strip()
+    if not provider_type or not instance_name:
+        return False
+
+    target_instances = {
+        str(item or "").strip().lower()
+        for item in getattr(intent_plan, "target_provider_instances", []) or []
+        if str(item or "").strip()
+    }
+    target_types = {
+        str(item or "").strip().lower()
+        for item in getattr(intent_plan, "target_provider_types", []) or []
+        if str(item or "").strip()
+    }
+    qualified_instance = f"{provider_type}.{instance_name}".lower()
+    if target_instances:
+        return qualified_instance in target_instances or instance_name.lower() in target_instances
+    if target_types:
+        return provider_type in target_types
+    return False
+
+
+def select_no_runtime_provider_auth_diagnostic(
+    *,
+    extra: Any,
+    intent_plan: Any = None,
+) -> dict[str, Any] | None:
+    """Pick a provider-auth diagnostic when no runtime tool survived projection."""
+    candidates = _provider_auth_diagnostic_candidates(extra)
+    if not candidates:
+        return None
+
+    if intent_plan is not None:
+        scoped = [
+            diagnostic
+            for diagnostic in candidates
+            if _provider_auth_diagnostic_matches_plan(diagnostic, intent_plan)
+        ]
+        if scoped:
+            candidates = scoped
+        elif (
+            getattr(intent_plan, "target_provider_instances", None)
+            or getattr(intent_plan, "target_provider_types", None)
+        ):
+            return None
+    elif len(candidates) != 1:
+        return None
+
+    if len(candidates) != 1:
+        missing_user_token = [
+            diagnostic for diagnostic in candidates if bool(diagnostic.get("missing_user_token"))
+        ]
+        if len(missing_user_token) == 1:
+            return missing_user_token[0]
+        configured_user_token = [
+            diagnostic for diagnostic in candidates if bool(diagnostic.get("user_token_configured"))
+        ]
+        if len(configured_user_token) == 1:
+            return configured_user_token[0]
+        return None
+    return candidates[0]
+
+
 def build_finalize_payload(
     *,
     user_message: str,
@@ -366,11 +466,15 @@ def build_lookup_dump_recovery_payload(
     invalid_preview = str(invalid_output or "").strip()[:1200] or "(empty draft)"
     return {
         "system_prompt": (
-            "You are the assistant. The previous draft incorrectly echoed raw internal lookup metadata.\n"
+            "You are the assistant. The previous draft incorrectly echoed raw internal lookup metadata "
+            "or knowledge-base evidence blocks.\n"
             "Use only the supplied tool evidence to answer or continue the workflow in natural language.\n"
             "Preserve decisions already made in the workflow notes instead of restarting from an earlier lookup step.\n"
             "Ask the next concise user-facing question or confirmation only when appropriate.\n"
             "Do not quote JSON, UUIDs, IDs, raw metadata dumps, or scaffolding phrases like 'Found N ...'.\n"
+            "Do not start with a source heading, do not use the literal label 'Source:', and do not paste "
+            "chunks shaped like '### ...' followed by '- Source: ...'.\n"
+            "Answer the user's question directly first. Cite concise source paths only when they help the user.\n"
             "Do not call tools. Do not mention hidden reasoning."
         ),
         "user_prompt": (
@@ -384,6 +488,8 @@ def build_lookup_dump_recovery_payload(
 
 
 class RunnerExecutionPayloadMixin:
+    """Build prompt payloads and diagnostics for runner execution phases."""
+
     @staticmethod
     def _should_surface_prompt_warning(warning_message: Any) -> bool:
         normalized = str(warning_message or "").strip().lower()

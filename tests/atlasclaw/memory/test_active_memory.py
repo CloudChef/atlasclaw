@@ -161,9 +161,9 @@ def test_capability_selector_prompt_includes_usage_profile_as_low_priority_hint(
     prompt = mixin._build_capability_selector_prompt(
         capability_index=[
             {
-                "capability_id": "provider_instance:smartcmp.prod",
-                "kind": "provider_instance",
-                "name": "smartcmp.prod",
+                "capability_id": "provider_skill:prod.request",
+                "kind": "provider_skill",
+                "name": "prod.request",
                 "description": "Submit service requests.",
             }
         ],
@@ -194,9 +194,9 @@ def test_capability_selector_rejects_usage_profile_unavailable_provider() -> Non
         },
         capability_index=[
             {
-                "capability_id": "provider_instance:jira.prod",
-                "kind": "provider_instance",
-                "name": "jira.prod",
+                "capability_id": "provider_skill:prod.search",
+                "kind": "provider_skill",
+                "name": "prod.search",
                 "description": "Read issues.",
             }
         ],

@@ -13,6 +13,8 @@ from app.atlasclaw.core.deps import SkillDeps
 
 
 class RunnerToolGateRoutingMixin:
+    """Route low-information follow-ups without widening provider capability scope."""
+
     @staticmethod
     def _is_low_information_follow_up_text(text: str) -> bool:
         normalized = " ".join((text or "").split()).strip()
@@ -383,7 +385,9 @@ class RunnerToolGateRoutingMixin:
             return normalized_user_message, False
         compact_current_len = len(re.sub(r"\s+", "", normalized_user_message))
         long_structured_follow_up = compact_current_len > 32 and not identifier_follow_up
-        low_information_follow_up = compact_current_len <= 8
+        low_information_follow_up = self._is_low_information_follow_up_text(
+            normalized_user_message
+        )
 
         previous_user_message = ""
         previous_user_index: Optional[int] = None
@@ -441,6 +445,58 @@ class RunnerToolGateRoutingMixin:
         combined = self._combine_follow_up_request(
             previous_user_message,
             normalized_user_message,
+        )
+        return combined, combined != normalized_user_message
+
+    def _build_active_capability_continuation_request(
+        self,
+        *,
+        user_message: str,
+        recent_history: list[dict[str, Any]],
+    ) -> tuple[str, bool]:
+        normalized_user_message = " ".join((user_message or "").split()).strip()
+        if not normalized_user_message:
+            return user_message, False
+
+        last_assistant_index: Optional[int] = None
+        last_assistant_raw_message = ""
+        for index in range(len(recent_history) - 1, -1, -1):
+            item = recent_history[index]
+            if str(item.get("role", "")).strip() != "assistant":
+                continue
+            content_raw = str(item.get("content", "") or "")
+            if not content_raw.strip():
+                continue
+            last_assistant_index = index
+            last_assistant_raw_message = content_raw
+            break
+
+        if last_assistant_index is None:
+            return normalized_user_message, False
+
+        previous_user_message = ""
+        previous_user_index: Optional[int] = None
+        for index in range(last_assistant_index - 1, -1, -1):
+            item = recent_history[index]
+            if str(item.get("role", "")).strip() != "user":
+                continue
+            content = " ".join(str(item.get("content", "") or "").split()).strip()
+            if not content:
+                continue
+            previous_user_message = content
+            previous_user_index = index
+            break
+
+        recent_context = self._format_recent_follow_up_context(
+            recent_history=recent_history,
+            start_index=(previous_user_index + 1) if previous_user_index is not None else 0,
+            end_index=last_assistant_index,
+        )
+        combined = self._build_contextual_follow_up_request(
+            previous_user_message=previous_user_message,
+            recent_context=recent_context,
+            assistant_prompt=last_assistant_raw_message,
+            current_user_message=normalized_user_message,
         )
         return combined, combined != normalized_user_message
 

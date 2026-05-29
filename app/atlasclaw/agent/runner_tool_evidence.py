@@ -177,6 +177,8 @@ def _narrow_workflow_tool_message(
 
 
 class RunnerToolEvidenceMixin:
+    """Collect and format same-run tool evidence for final-answer grounding."""
+
     _META_LABEL_OVERRIDES = {
         "workflowId": "Workflow ID",
         "requestId": "Request ID",
@@ -492,6 +494,8 @@ class RunnerToolEvidenceMixin:
         return any(
             marker in normalized
             for marker in (
+                '"artifact_path"',
+                '"download_path"',
                 '"returncode"',
                 '"search_backend"',
                 '"results": [',

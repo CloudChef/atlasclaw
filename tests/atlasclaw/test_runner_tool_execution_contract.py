@@ -18,9 +18,11 @@ from app.atlasclaw.agent.runner_tool.runner_execution_flow_post import RunnerExe
 from app.atlasclaw.agent.runner_tool.runner_execution_flow_stream import RunnerExecutionFlowStreamMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     RunnerExecutionPayloadMixin,
+    build_no_runtime_capability_answer,
     build_finalize_payload,
     build_lookup_dump_recovery_payload,
     provider_auth_diagnostic_user_message,
+    select_no_runtime_provider_auth_diagnostic,
     select_provider_auth_diagnostic,
 )
 from app.atlasclaw.agent.runner_tool.runner_execution_retry import RunnerExecutionRetryMixin
@@ -168,6 +170,88 @@ def test_provider_auth_diagnostic_user_message_for_admin_required_failure() -> N
     message = provider_auth_diagnostic_user_message(diagnostic)
     assert "Contact an administrator" in message
     assert "personal provider access credential" not in message
+
+
+def test_no_runtime_capability_uses_unique_missing_user_token_diagnostic() -> None:
+    diagnostic = select_no_runtime_provider_auth_diagnostic(
+        extra={
+            "provider_auth_diagnostics": {
+                "providerx": {
+                    "default": {
+                        "provider_type": "providerx",
+                        "instance_name": "default",
+                        "missing_user_token": True,
+                        "contact_admin": False,
+                    }
+                }
+            }
+        },
+        intent_plan=ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            reason="no_authorized_runtime_capability",
+        ),
+    )
+
+    assert diagnostic and diagnostic["missing_user_token"] is True
+    answer = build_no_runtime_capability_answer(diagnostic)
+    assert "personal provider access credential is not configured" in answer
+    assert "没有可用的 provider" not in answer
+
+
+def test_no_runtime_capability_does_not_guess_between_unscoped_provider_diagnostics() -> None:
+    diagnostic = select_no_runtime_provider_auth_diagnostic(
+        extra={
+            "provider_auth_diagnostics": {
+                "providerx": {
+                    "default": {
+                        "provider_type": "providerx",
+                        "instance_name": "default",
+                        "missing_user_token": True,
+                    }
+                },
+                "providery": {
+                    "default": {
+                        "provider_type": "providery",
+                        "instance_name": "default",
+                        "missing_user_token": True,
+                    }
+                },
+            }
+        },
+        intent_plan=None,
+    )
+
+    assert diagnostic is None
+    answer = build_no_runtime_capability_answer(diagnostic)
+    assert "没有可用的 provider、skill 或工具" in answer
+
+
+def test_no_runtime_capability_can_scope_provider_auth_diagnostic_by_instance() -> None:
+    diagnostic = select_no_runtime_provider_auth_diagnostic(
+        extra={
+            "provider_auth_diagnostics": {
+                "providerx": {
+                    "primary": {
+                        "provider_type": "providerx",
+                        "instance_name": "primary",
+                        "missing_user_token": True,
+                    },
+                    "secondary": {
+                        "provider_type": "providerx",
+                        "instance_name": "secondary",
+                        "missing_user_token": True,
+                    },
+                }
+            }
+        },
+        intent_plan=ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_instances=["providerx.secondary"],
+            reason="no_authorized_runtime_capability",
+        ),
+    )
+
+    assert diagnostic and diagnostic["instance_name"] == "secondary"
 
 
 class _PostRunner(
@@ -2019,6 +2103,17 @@ def test_invalid_chat_completion_validation_error_is_hard_failure() -> None:
     )
 
 
+def test_insufficient_balance_model_error_is_hard_failure() -> None:
+    runner = _ErrorRunner()
+
+    assert runner._is_hard_token_failure(
+        RuntimeError(
+            "status_code: 402, model_name: deepseek-v4-flash, "
+            "body: {'message': 'Insufficient Balance'}"
+        )
+    )
+
+
 def test_detect_repeated_tool_no_progress_for_same_empty_search_results() -> None:
     runner = _StreamRunner()
 
@@ -3074,8 +3169,11 @@ def test_build_lookup_dump_recovery_payload_rewrites_internal_lookup_dump() -> N
     )
 
     assert "incorrectly echoed raw internal lookup metadata" in payload["system_prompt"]
+    assert "knowledge-base evidence blocks" in payload["system_prompt"]
     assert "Preserve decisions already made in the workflow notes" in payload["system_prompt"]
     assert "Do not quote JSON" in payload["system_prompt"]
+    assert "source heading" in payload["system_prompt"]
+    assert "Source:" in payload["system_prompt"]
     assert "Discard this invalid draft" in payload["user_prompt"]
     assert "Workflow notes:" in payload["user_prompt"]
     assert '已为您自动选择"通用工单"服务。' in payload["user_prompt"]
@@ -3130,9 +3228,37 @@ def test_looks_like_raw_lookup_dump_accepts_plain_lookup_lists() -> None:
     ) is True
 
 
+def test_looks_like_raw_lookup_dump_accepts_markdown_vault_source_blocks() -> None:
+    assert _PostRunner._looks_like_raw_lookup_dump(
+        "### 阿里云公有云接入\n"
+        "- Source: 20-功能域/云资源管理/阿里云公有云接入.md\n\n"
+        "SmartCMP 支持通过插件接入云资源。"
+    ) is True
+
+
+def test_has_markdown_vault_tool_results_detects_vault_tool_messages() -> None:
+    assert _PostRunner._has_markdown_vault_tool_results(
+        messages=[
+            {"role": "user", "content": "SmartCMP 支持 MaxCompute 吗？"},
+            {
+                "role": "tool",
+                "tool_name": "markdown_vault_search",
+                "content": "### 阿里云公有云接入\n- Source: docs/cloud.md",
+            },
+        ],
+        start_index=1,
+    ) is True
+
+
 def test_looks_like_raw_tool_payload_dump_accepts_provider_search_payload() -> None:
     assert _PostRunner._looks_like_raw_tool_payload_dump(
         'Selected markdown-vault instance \'knowledgebase\'\n\n{"success": true, "search_backend": "direct", "results": []}'
+    ) is True
+
+
+def test_looks_like_raw_tool_payload_dump_rejects_artifact_path_payload() -> None:
+    assert _PostRunner._looks_like_raw_tool_payload_dump(
+        '{"artifact_path": "/Users/alice/work_dir/report.pptx", "success": true}'
     ) is True
 
 
@@ -3192,6 +3318,88 @@ async def test_lookup_dump_recovery_rewrites_buffered_lookup_output_before_emit(
         {"role": "tool", "tool_name": "smartcmp_list_services", "content": {"_internal": {"catalogs": [{"name": "通用工单"}]}}},
         {"role": "tool", "tool_name": "smartcmp_list_all_business_groups", "content": {"_internal": [{"name": "测试"}, {"name": "开发"}]}},
         {"role": "assistant", "content": '{"success": true, "_internal": {"catalogs": [{"name": "通用工单"}]}}'},
+    ]
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(messages),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+    await runner._await_background_post_success_tasks()
+
+    assistant_events = [event.content for event in events if event.type == "assistant"]
+
+    assert assistant_events == [runner.lookup_dump_recovery_answer]
+    assert runner.lookup_dump_recovery_calls
+    assert state["session_manager"].persisted_messages[-1]["content"] == runner.lookup_dump_recovery_answer
+
+
+@pytest.mark.asyncio
+async def test_lookup_dump_recovery_rewrites_markdown_vault_source_blocks_before_emit() -> None:
+    runner = _PostRunner()
+    runner.lookup_dump_recovery_answer = "SmartCMP 支持 MaxCompute 相关资源接入，可通过云资源接入能力扩展。"
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-markdown-source-dump",
+        "session_manager": _SessionManager(),
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-markdown-source-dump",
+        "user_message": "SmartCMP 支持 MaxCompute 吗？",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=False,
+            reason="knowledge-base lookup",
+            policy=ToolPolicyMode.PREFER_TOOL,
+        ),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "available_tools": [{"name": "markdown_vault_search"}],
+        "tool_execution_required": False,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 0,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [{"name": "markdown_vault_search"}],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 1,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.DIRECT_ANSWER,
+            target_provider_types=["markdown-vault"],
+            reason="knowledge-base lookup",
+        ),
+        "synthetic_tool_messages": [],
+        "session_message_history": [],
+        "runtime_base_history_len": 0,
+    }
+
+    raw_source_block = (
+        "### 阿里云公有云接入\n"
+        "- Source: 20-功能域/云资源管理/阿里云公有云接入.md\n\n"
+        "SmartCMP 支持通过插件接入公有云资源，并可扩展相关资源类型。"
+    )
+    messages = [
+        {"role": "user", "content": "SmartCMP 支持 MaxCompute 吗？"},
+        {
+            "role": "tool",
+            "tool_name": "markdown_vault_search",
+            "content": raw_source_block,
+        },
+        {"role": "assistant", "content": raw_source_block},
     ]
 
     events = []

@@ -254,6 +254,58 @@ def test_artifact_md_tool_defaults_to_tool_only_result_mode(tmp_path: Path) -> N
     assert metadata.result_mode == "tool_only_ok"
 
 
+def test_artifact_md_tool_rejects_home_relative_user_requested_output(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "artifact"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    marker = tmp_path / "handler-ran.txt"
+    (scripts_dir / "handler.py").write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "def create_handler(ctx=None, **kwargs):",
+                f"    Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
+                "    return {'success': True, 'artifact_path': 'safe.pptx'}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("---\nname: artifact\n---\n", encoding="utf-8")
+    entry = MdSkillEntry(
+        name="artifact",
+        description="Create an artifact",
+        file_path=str(skill_file),
+        qualified_name="artifact",
+        metadata={
+            "tool_create_name": "artifact_create",
+            "tool_create_entrypoint": "scripts/handler.py:create_handler",
+            "tool_create_capability_class": "artifact:pptx",
+        },
+    )
+    registry = SkillRegistry()
+
+    register_executable_tools_from_md(
+        registry=registry,
+        skill_metadata_cls=SkillMetadata,
+        entry=entry,
+        logger=logging.getLogger(__name__),
+    )
+    _metadata, handler = registry.get("artifact_create")
+
+    class _Deps:
+        user_message = "Generate a PPTX at ~/bad.pptx"
+
+    class _Ctx:
+        deps = _Deps()
+
+    result = asyncio.run(handler(ctx=_Ctx(), output_filename="safe.pptx", items=[]))
+
+    assert result["success"] is False
+    assert "home-relative output paths are not allowed" in result["error"]
+    assert not marker.exists()
+
+
 def test_script_wrapper_hides_silent_lookup_output_when_internal_metadata_exists(
     tmp_path: Path,
 ) -> None:
@@ -800,7 +852,7 @@ def test_script_wrapper_exports_only_selected_provider_instance_config(
     }
 
 
-def test_script_wrapper_allows_submit_request_with_explicit_confirmation(
+def test_script_wrapper_leaves_submit_confirmation_to_model_routing(
     tmp_path: Path,
 ) -> None:
     marker = tmp_path / "submit-ran.txt"
@@ -817,9 +869,14 @@ def test_script_wrapper_allows_submit_request_with_explicit_confirmation(
     )
 
     class _Deps:
-        user_message = "The parameters are correct. Please submit the request now."
+        user_message = "请确认并提交申请"
         cookies = {}
-        extra = {}
+        extra = {
+            "tool_intent_plan": {
+                "target_provider_skill_names": ["cmp.request"],
+                "target_provider_instances": ["smartcmp.cmp"],
+            }
+        }
 
     class _Ctx:
         deps = _Deps()
@@ -834,39 +891,3 @@ def test_script_wrapper_allows_submit_request_with_explicit_confirmation(
     assert result["success"] is True
     assert result["output"] == "submitted\n"
     assert marker.read_text(encoding="utf-8") == "ran"
-
-
-def test_script_wrapper_blocks_submit_intent_without_explicit_confirmation(
-    tmp_path: Path,
-) -> None:
-    marker = tmp_path / "submit-ran.txt"
-    script = tmp_path / "submit.py"
-    script.write_text(
-        "\n".join(
-            [
-                "from pathlib import Path",
-                f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
-                "print('submitted')",
-            ]
-        ),
-        encoding="utf-8",
-    )
-
-    class _Deps:
-        user_message = "Submit now."
-        cookies = {}
-        extra = {}
-
-    class _Ctx:
-        deps = _Deps()
-
-    wrapper = create_script_wrapper(
-        script,
-        tool_name="provider_submit_request",
-    )
-
-    result = asyncio.run(wrapper(ctx=_Ctx()))
-
-    assert result["success"] is False
-    assert "explicit user confirmation is required" in result["error"].lower()
-    assert not marker.exists()

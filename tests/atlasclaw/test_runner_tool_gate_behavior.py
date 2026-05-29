@@ -15,18 +15,28 @@ from app.atlasclaw.agent.runner_tool.runner_execution_loop import (
 )
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import RunnerExecutionPreparePhaseMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
+    _infer_active_provider_skill_from_transcript,
     _infer_active_skill_from_transcript,
+    _selected_plan_matches_active_capability,
     apply_provider_instance_selection_policy,
     build_transcript_skill_prompt_intent_plan,
     filter_implicit_memory_tools,
+    persist_provider_instance_targets_from_intent_plan,
     prune_auto_selected_provider_instance_tools,
     toolset_has_only_coordination_support_tools,
 )
-from app.atlasclaw.agent.runner_tool.runner_llm_routing import build_llm_first_guidance_plan
+from app.atlasclaw.agent.runner_tool.runner_llm_routing import (
+    build_llm_first_guidance_plan,
+    selected_capability_ids_from_intent_plan,
+)
 from app.atlasclaw.agent.runner_tool.runner_tool_gate_routing import RunnerToolGateRoutingMixin
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import project_minimal_toolset
+from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
+    turn_action_requires_tool_execution,
+)
 from app.atlasclaw.agent.tool_gate import CapabilityMatcher
 from app.atlasclaw.agent.tool_gate_models import (
+    NO_RUNTIME_CAPABILITY_REASON,
     ToolGateDecision,
     ToolIntentAction,
     ToolIntentPlan,
@@ -44,9 +54,14 @@ class _ProviderSelectionSessionManager:
         self._session = SimpleNamespace(
             extra={"provider_instance_selections": selections}
         )
+        self.updates: list[tuple[str, dict]] = []
 
     async def get_session(self, session_key):
         return self._session
+
+    async def update_extra(self, session_key, updates):
+        self.updates.append((session_key, dict(updates)))
+        self._session.extra.update(dict(updates))
 
 
 class _PrepareRunner(RunnerExecutionPreparePhaseMixin):
@@ -191,6 +206,45 @@ def test_capability_selector_uses_authorized_xlsx_skill_without_pptx_substitutio
     assert selector.messages
 
 
+def test_capability_selector_carries_executable_md_skill_targets() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "action": "use_tools",
+            "targets": ["skill:pptx"],
+            "reason": "User requested a PowerPoint artifact.",
+        }
+    )
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="把上面的待审批生成 PPT",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "skill:pptx",
+                    "kind": "md_skill",
+                    "name": "pptx",
+                    "description": "Create PowerPoint decks.",
+                    "target_skill_names": ["pptx"],
+                    "target_tool_names": ["pptx_create_deck"],
+                    "target_capability_classes": ["artifact:pptx"],
+                    "declared_tool_names": ["pptx_create_deck"],
+                    "artifact_types": ["pptx"],
+                },
+            ],
+        )
+    )
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.USE_TOOLS
+    assert plan.target_skill_names == ["pptx"]
+    assert plan.target_tool_names == ["pptx_create_deck"]
+    assert plan.target_capability_classes == ["artifact:pptx"]
+
+
 def test_capability_selector_prompt_uses_descriptions_only_for_capabilities() -> None:
     runner = _GateRunner()
 
@@ -217,12 +271,226 @@ def test_capability_selector_prompt_uses_descriptions_only_for_capabilities() ->
     assert "hidden_export_tool" not in prompt
 
 
-def test_capability_selector_can_select_provider_instance_and_standard_skill_targets() -> None:
+def test_capability_selector_prompt_routes_authorized_knowledge_questions_to_tools() -> None:
+    runner = _GateRunner()
+
+    prompt = runner._build_capability_selector_prompt(
+        capability_index=[
+            {
+                "capability_id": "provider_skill:docs.markdown-vault-query",
+                "kind": "provider_skill",
+                "name": "docs.markdown-vault-query",
+                "description": "Search and retrieve local knowledge-base content.",
+            }
+        ]
+    )
+
+    assert "supported features" in prompt
+    assert "documentation, knowledge-base, retrieval, or search capability" in prompt
+    assert "Do not answer those from general model knowledge" in prompt
+    assert "do not include operational provider capabilities" in prompt
+    assert "Provider or product names in the question do not by themselves" in prompt
+    assert "only because its domain words match" in prompt
+
+
+def test_active_capability_router_prompt_uses_current_capability_only() -> None:
+    runner = _GateRunner()
+
+    prompt = runner._build_active_capability_route_prompt(
+        active_capability="provider_skill:cmp.request"
+    )
+
+    assert "provider_skill:cmp.request" in prompt
+    assert "full authorized capability selector" in prompt
+    assert "Short or fragment-like values should continue_current" in prompt
+    assert "Field-value style messages should continue_current" in prompt
+    assert "Authorized capabilities:" not in prompt
+
+
+def test_active_capability_route_message_preserves_tool_result_tail() -> None:
+    runner = _GateRunner()
+    long_tool_result = (
+        "Found 2 resource pool(s): 1) aliyun资源池 2) vSphere资源池 "
+        + ("x" * 700)
+        + " facets=['FACET_ENV:dev']"
+    )
+
+    message = runner._build_active_capability_route_message(
+        user_message="资源环境：开发",
+        recent_history=[
+            {"role": "user", "content": "我要申请 Linux VM"},
+            {"role": "tool", "content": {"output": long_tool_result}},
+            {"role": "assistant", "content": "请选择资源池：1 aliyun资源池，2 vSphere资源池"},
+        ],
+    )
+
+    assert "资源环境：开发" in message
+    assert "FACET_ENV:dev" in message
+
+
+def test_active_capability_router_can_continue_current_workflow() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "decision": "continue_current",
+            "reason": "The latest message answers the active workflow prompt.",
+        }
+    )
+
+    decision = asyncio.run(
+        runner._select_active_capability_route_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="使用测试部",
+            recent_history=[
+                {"role": "user", "content": "我要申请 Linux VM"},
+                {"role": "assistant", "content": "请选择业务组。"},
+            ],
+            active_provider_skill="cmp.request",
+        )
+    )
+
+    assert decision == "continue_current"
+    assert "使用测试部" in selector.messages[0]
+    assert "请选择业务组" in selector.messages[0]
+
+
+def test_active_capability_router_can_request_full_skill_reselection() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "decision": "select_capability",
+            "reason": "The latest message asks for a different output workflow.",
+        }
+    )
+
+    decision = asyncio.run(
+        runner._select_active_capability_route_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="把刚才的信息生成 PPT",
+            recent_history=[
+                {"role": "user", "content": "我要申请 Linux VM"},
+                {"role": "assistant", "content": "请选择业务组。"},
+            ],
+            active_provider_skill="cmp.request",
+        )
+    )
+
+    assert decision == "select_capability"
+
+
+def test_capability_selector_receives_active_workflow_candidate() -> None:
+    runner = _GateRunner()
+
+    prompt = runner._build_capability_selector_prompt(
+        capability_index=[
+            {
+                "capability_id": "provider_skill:cmp.request",
+                "kind": "provider_skill",
+                "name": "cmp.request",
+                "description": "Submit service catalog requests.",
+            }
+        ],
+        active_capability_context="provider_skill:cmp.request",
+    )
+    message = runner._build_capability_selector_message(
+        user_message="资源环境：开发",
+        recent_history=[
+            {"role": "assistant", "content": "请选择资源池：1 aliyun资源池，2 vSphere资源池"}
+        ],
+        active_capability_context="provider_skill:cmp.request",
+    )
+
+    assert "Current active workflow candidate:" in prompt
+    assert "provider_skill:cmp.request" in prompt
+    assert "current active workflow candidate" in prompt
+    assert "Current active workflow candidate:" in message
+    assert "provider_skill:cmp.request" in message
+
+
+def test_active_capability_continuation_context_does_not_require_prompt_markers() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._build_active_capability_continuation_request(
+        user_message="提交",
+        recent_history=[
+            {"role": "user", "content": "我要申请 Linux VM"},
+            {
+                "role": "assistant",
+                "content": (
+                    "申请草稿：\n"
+                    "- 业务组：开发部\n"
+                    "- 规格：2C4G\n"
+                    "- 系统：Linux\n"
+                    "下一步由你决定。"
+                ),
+            },
+        ],
+    )
+
+    assert used_follow_up_context is True
+    assert "Original user request:\n我要申请 Linux VM" in resolved
+    assert "Latest assistant follow-up prompt:" in resolved
+    assert "申请草稿" in resolved
+    assert "User reply to that prompt:\n提交" in resolved
+
+
+def test_capability_selector_preserves_no_capability_runtime_request() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
             "action": "use_tools",
-            "targets": ["provider_instance:smartcmp.prod", "skill:xlsx"],
+            "targets": [],
+            "reason": "The user asks to create a provider resource, but no capability is visible.",
+        }
+    )
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="申请云资源",
+            recent_history=[],
+            capability_index=[],
+        )
+    )
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.DIRECT_ANSWER
+    assert plan.reason == NO_RUNTIME_CAPABILITY_REASON
+
+
+def test_no_capability_router_classifies_runtime_request() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "decision": "runtime_capability_request",
+            "reason": "The user asks to continue an unavailable external workflow.",
+        }
+    )
+
+    decision = asyncio.run(
+        runner._classify_no_capability_route_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="确定这是新建的 VM",
+            recent_history=[
+                {"role": "user", "content": "申请云资源"},
+                {"role": "assistant", "content": "没有可用能力。"},
+            ],
+        )
+    )
+
+    assert decision == "runtime_capability_request"
+
+
+def test_capability_selector_can_select_provider_skill_and_standard_skill_targets() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "action": "use_tools",
+            "targets": ["provider_skill:prod.request", "skill:xlsx"],
             "reason": "Fetch provider data and export as spreadsheet.",
         }
     )
@@ -242,20 +510,18 @@ def test_capability_selector_can_select_provider_instance_and_standard_skill_tar
                     "declared_tool_names": [],
                 },
                 {
-                    "capability_id": "provider_instance:smartcmp.prod",
-                    "kind": "provider_instance",
-                    "name": "smartcmp.prod",
+                    "capability_id": "provider_skill:prod.request",
+                    "kind": "provider_skill",
+                    "name": "prod.request",
                     "description": "Query approval data.",
+                    "provider_name": "prod",
                     "provider_type": "smartcmp",
                     "instance_name": "prod",
-                    "declared_tool_names": ["smartcmp_query_approvals"],
-                },
-                {
-                    "capability_id": "tool:smartcmp_query_approvals",
-                    "kind": "tool",
-                    "name": "smartcmp_query_approvals",
-                    "description": "Query approval data.",
-                    "provider_type": "smartcmp",
+                    "qualified_skill_name": "smartcmp:request",
+                    "skill_name": "request",
+                    "target_provider_instances": ["smartcmp.prod"],
+                    "target_provider_types": ["smartcmp"],
+                    "target_provider_skill_names": ["prod.request"],
                     "declared_tool_names": ["smartcmp_query_approvals"],
                 },
             ],
@@ -266,6 +532,7 @@ def test_capability_selector_can_select_provider_instance_and_standard_skill_tar
     assert plan.action is ToolIntentAction.USE_TOOLS
     assert plan.target_provider_instances == ["smartcmp.prod"]
     assert plan.target_provider_types == ["smartcmp"]
+    assert plan.target_provider_skill_names == ["prod.request"]
     assert plan.target_skill_names == ["xlsx"]
 
 
@@ -332,27 +599,223 @@ def test_capability_selector_rejects_provider_level_target() -> None:
             recent_history=[],
             capability_index=[
                 {
-                    "capability_id": "provider_instance:smartcmp.prod",
-                    "kind": "provider_instance",
-                    "name": "smartcmp.prod",
+                    "capability_id": "provider_skill:prod.request",
+                    "kind": "provider_skill",
+                    "name": "prod.request",
                     "description": "Query approval data.",
+                    "provider_name": "prod",
                     "provider_type": "smartcmp",
                     "instance_name": "prod",
+                    "qualified_skill_name": "smartcmp:request",
+                    "target_provider_instances": ["smartcmp.prod"],
+                    "target_provider_skill_names": ["prod.request"],
                     "declared_tool_names": [],
-                },
-                {
-                    "capability_id": "tool:smartcmp_query_approvals",
-                    "kind": "tool",
-                    "name": "smartcmp_query_approvals",
-                    "description": "Query approval data.",
-                    "provider_type": "smartcmp",
-                    "declared_tool_names": ["smartcmp_query_approvals"],
                 },
             ],
         )
     )
 
     assert plan is None
+
+
+def test_capability_selector_rejects_bare_provider_instance_target() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "action": "use_tools",
+            "targets": ["provider_instance:smartcmp.prod"],
+            "reason": "Provider instances are not natural-language selector targets.",
+        }
+    )
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="查待审批",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "provider_skill:prod.request",
+                    "kind": "provider_skill",
+                    "name": "prod.request",
+                    "description": "Query approval data.",
+                    "provider_name": "prod",
+                    "provider_type": "smartcmp",
+                    "instance_name": "prod",
+                    "qualified_skill_name": "smartcmp:request",
+                    "target_provider_instances": ["smartcmp.prod"],
+                    "target_provider_skill_names": ["prod.request"],
+                    "declared_tool_names": [],
+                },
+            ],
+        )
+    )
+
+    assert plan is None
+
+
+def test_capability_selector_rejects_provider_bound_bare_skill_target() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "action": "use_tools",
+            "targets": ["skill:smartcmp:request"],
+            "reason": "Provider-bound skills must use provider_skill targets.",
+        }
+    )
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="申请 Linux VM",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "skill:smartcmp:request",
+                    "kind": "md_skill",
+                    "name": "smartcmp:request",
+                    "description": "Provider-bound request skill.",
+                    "provider_type": "smartcmp",
+                    "declared_tool_names": ["smartcmp_submit_request"],
+                },
+            ],
+        )
+    )
+
+    assert plan is None
+
+
+def test_capability_selector_rejects_provider_skill_without_internal_targets() -> None:
+    runner = _GateRunner()
+    selector = _SelectorAgent(
+        {
+            "action": "use_tools",
+            "targets": ["provider_skill:prod.request"],
+            "reason": "Provider skill entry is missing validated execution targets.",
+        }
+    )
+
+    plan = asyncio.run(
+        runner._select_capability_intent_plan_with_model(
+            agent=selector,
+            deps=SimpleNamespace(extra={}),
+            user_message="查待审批",
+            recent_history=[],
+            capability_index=[
+                {
+                    "capability_id": "provider_skill:prod.request",
+                    "kind": "provider_skill",
+                    "name": "prod.request",
+                    "description": "Query approval data.",
+                    "provider_name": "prod",
+                    "provider_type": "smartcmp",
+                    "instance_name": "prod",
+                    "qualified_skill_name": "smartcmp:request",
+                },
+            ],
+        )
+    )
+
+    assert plan is None
+
+
+def test_selected_capability_ids_use_provider_skill_not_provider_instance() -> None:
+    ids = selected_capability_ids_from_intent_plan(
+        ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_instances=["smartcmp.cmp"],
+            target_provider_skill_names=["cmp.request"],
+        )
+    )
+
+    assert ids == ["provider_skill:cmp.request"]
+    assert "provider_instance:smartcmp.cmp" not in ids
+
+
+def test_selected_capability_ids_skip_provider_skill_without_instance_scope() -> None:
+    ids = selected_capability_ids_from_intent_plan(
+        ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_skill_names=["cmp.request"],
+        )
+    )
+
+    assert ids == []
+
+
+def test_selected_capability_ids_keep_standalone_skill_separate_from_provider_skill() -> None:
+    ids = selected_capability_ids_from_intent_plan(
+        ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_instances=["smartcmp.cmp"],
+            target_provider_skill_names=["cmp.request"],
+            target_skill_names=["xlsx"],
+        )
+    )
+
+    assert ids == ["provider_skill:cmp.request", "skill:xlsx"]
+    assert "provider_skill:cmp.xlsx" not in ids
+
+
+def test_repeated_selected_provider_skill_can_scope_active_follow_up_without_forcing_tool() -> None:
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_provider_instances=["smartcmp.cmp"],
+        target_provider_types=["smartcmp"],
+        target_provider_skill_names=["cmp.request"],
+        target_tool_names=[
+            "smartcmp_list_services",
+            "smartcmp_submit_request",
+        ],
+    )
+
+    assert _selected_plan_matches_active_capability(
+        intent_plan=plan,
+        active_provider_skill="cmp.request",
+        active_skill=None,
+    )
+
+    continuation_plan = plan.model_copy(
+        update={
+            "action": ToolIntentAction.DIRECT_ANSWER,
+            "reason": "user_selected_capability_active_continuation",
+        }
+    )
+    projected, trace = project_minimal_toolset(
+        allowed_tools=[
+            {
+                "name": "smartcmp_list_services",
+                "provider_type": "smartcmp",
+                "provider_skill_name": "cmp.request",
+                "qualified_skill_name": "smartcmp:request",
+                "skill_name": "request",
+            },
+            {
+                "name": "smartcmp_submit_request",
+                "provider_type": "smartcmp",
+                "provider_skill_name": "cmp.request",
+                "qualified_skill_name": "smartcmp:request",
+                "skill_name": "request",
+            },
+            {
+                "name": "smartcmp_preapproval_get_catalog_detail",
+                "provider_type": "smartcmp",
+                "provider_skill_name": "cmp.preapproval-agent",
+                "qualified_skill_name": "smartcmp:preapproval-agent",
+                "skill_name": "preapproval-agent",
+            },
+        ],
+        intent_plan=continuation_plan,
+    )
+
+    assert not turn_action_requires_tool_execution(continuation_plan)
+    assert trace["reason"] == "projection_applied"
+    assert {tool["name"] for tool in projected} == {
+        "smartcmp_list_services",
+        "smartcmp_submit_request",
+    }
 
 
 def test_capability_selector_rejects_group_and_capability_targets() -> None:
@@ -455,10 +918,9 @@ def test_apply_provider_instance_selection_policy_records_explicit_instance() ->
     assert deps.extra["provider_instance_name"] == "dev"
     assert deps.extra["provider_instance"]["base_url"] == "https://dev.example.com"
     assert trace["selected_provider_instances"] == ["smartcmp.dev"]
-    assert trace["defaulted_provider_instances"] == []
 
 
-def test_apply_provider_instance_selection_policy_defaults_provider_type_to_first_instance() -> None:
+def test_apply_provider_instance_selection_policy_does_not_default_provider_type_to_instance() -> None:
     deps = SimpleNamespace(
         extra={
             "provider_instances": {
@@ -479,16 +941,15 @@ def test_apply_provider_instance_selection_policy_defaults_provider_type_to_firs
         intent_plan=plan,
     )
 
-    assert updated_plan is not None
-    assert updated_plan.target_provider_instances == ["smartcmp.prod"]
+    assert updated_plan is plan
+    assert updated_plan.target_provider_instances == []
     assert updated_plan.target_provider_types == ["smartcmp"]
-    assert deps.extra["provider_instance_selections"] == {"smartcmp": "prod"}
-    assert deps.extra["provider_instance_name"] == "prod"
+    assert "provider_instance_selections" not in deps.extra
+    assert "provider_instance_name" not in deps.extra
     assert trace["selected_provider_instances"] == []
-    assert trace["defaulted_provider_instances"] == ["smartcmp.prod"]
 
 
-def test_apply_provider_instance_selection_policy_defaults_provider_tool_target_to_first_instance() -> None:
+def test_apply_provider_instance_selection_policy_does_not_default_provider_tool_target_to_instance() -> None:
     deps = SimpleNamespace(
         extra={
             "tools_snapshot": [
@@ -515,13 +976,12 @@ def test_apply_provider_instance_selection_policy_defaults_provider_tool_target_
         intent_plan=plan,
     )
 
-    assert updated_plan is not None
-    assert updated_plan.target_provider_instances == ["markdown-vault.knowledgebase"]
-    assert updated_plan.target_provider_types == ["markdown-vault"]
+    assert updated_plan is plan
+    assert updated_plan.target_provider_instances == []
+    assert updated_plan.target_provider_types == []
     assert updated_plan.target_tool_names == ["markdown_vault_search"]
-    assert deps.extra["provider_instance_name"] == "knowledgebase"
-    assert deps.extra["provider_instance"]["vault_path"] == "/vault/smartcmp"
-    assert trace["defaulted_provider_instances"] == ["markdown-vault.knowledgebase"]
+    assert "provider_instance_name" not in deps.extra
+    assert "provider_instance" not in deps.extra
 
 
 def test_tool_gate_classifier_resolves_async_agent_factory() -> None:
@@ -713,6 +1173,44 @@ def test_hydrate_session_provider_instance_selections_ignores_stale_selection() 
     assert "provider_instance_selections" not in deps.extra
 
 
+def test_provider_skill_plan_persists_selected_provider_instance() -> None:
+    manager = _ProviderSelectionSessionManager({})
+    deps = SimpleNamespace(
+        session_key="agent:main:user:u-1:main",
+        session_manager=manager,
+        extra={
+            "provider_instances": {
+                "markdown-vault": {
+                    "knowledgebase": {"vault_path": "/kb"},
+                    "atlasclaw-docs": {"vault_path": "/docs"},
+                }
+            }
+        },
+    )
+    intent_plan, trace = apply_provider_instance_selection_policy(
+        deps=deps,
+        intent_plan=ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_instances=["markdown-vault.knowledgebase"],
+            target_provider_types=["markdown-vault"],
+            target_provider_skill_names=["knowledgebase.markdown-vault-query"],
+        ),
+    )
+
+    persisted = asyncio.run(
+        persist_provider_instance_targets_from_intent_plan(
+            deps=deps,
+            intent_plan=intent_plan,
+        )
+    )
+
+    assert trace["enabled"] is True
+    assert persisted == ["markdown-vault.knowledgebase"]
+    assert manager._session.extra["provider_instance_selections"] == {
+        "markdown-vault": "knowledgebase"
+    }
+
+
 def test_prune_selected_provider_instance_tools_removes_selector_with_multiple_instances() -> None:
     filtered_tools, trace = prune_auto_selected_provider_instance_tools(
         available_tools=[
@@ -791,8 +1289,9 @@ def test_prune_auto_selected_provider_instance_tools_keeps_non_provider_coordina
         intent_plan=ToolIntentPlan(
             action=ToolIntentAction.DIRECT_ANSWER,
             target_tool_names=["smartcmp_submit_request"],
+            target_provider_instances=["smartcmp.default"],
             target_provider_types=["smartcmp"],
-            target_skill_names=["smartcmp:request"],
+            target_provider_skill_names=["cmp.request"],
         ),
     )
 
@@ -1073,7 +1572,7 @@ def test_resolve_contextual_tool_request_keeps_provider_route_query_self_contain
     assert used_follow_up_context is False
 
 
-def test_provider_instance_projection_does_not_append_generic_coordination_tools() -> None:
+def test_provider_skill_projection_does_not_append_generic_coordination_tools() -> None:
     deps = SimpleNamespace(
         extra={
             "provider_instances": {
@@ -1091,6 +1590,7 @@ def test_provider_instance_projection_does_not_append_generic_coordination_tools
     usage_plan = ToolIntentPlan(
         action=ToolIntentAction.USE_TOOLS,
         target_provider_instances=["markdown-vault.knowledgebase"],
+        target_provider_skill_names=["knowledgebase.search"],
     )
     updated_plan, selection_trace = apply_provider_instance_selection_policy(
         deps=deps,
@@ -1103,6 +1603,8 @@ def test_provider_instance_projection_does_not_append_generic_coordination_tools
                 "description": "Search a Markdown knowledge vault",
                 "provider_type": "markdown-vault",
                 "capability_class": "provider:markdown-vault",
+                "skill_name": "search",
+                "qualified_skill_name": "markdown-vault:search",
             },
             {
                 "name": "atlasclaw_catalog_query",
@@ -1376,24 +1878,31 @@ def test_resolve_contextual_tool_request_preserves_selection_chain_for_third_num
     assert used_follow_up_context is True
 
 
-def test_transcript_skill_prompt_plan_targets_only_skill_instructions() -> None:
-    plan = build_transcript_skill_prompt_intent_plan(active_skill="smartcmp:request")
+def test_transcript_skill_prompt_plan_targets_provider_skill_instructions() -> None:
+    plan = build_transcript_skill_prompt_intent_plan(
+        active_skill=None,
+        active_provider_skill="cmp.request",
+        target_provider_instances=["smartcmp.cmp"],
+        target_provider_types=["smartcmp"],
+    )
 
     assert plan is not None
     assert plan.action is ToolIntentAction.DIRECT_ANSWER
-    assert plan.target_skill_names == ["smartcmp:request"]
-    assert plan.target_provider_types == []
+    assert plan.target_provider_skill_names == ["cmp.request"]
+    assert plan.target_skill_names == []
+    assert plan.target_provider_types == ["smartcmp"]
+    assert plan.target_provider_instances == ["smartcmp.cmp"]
     assert plan.target_group_ids == []
     assert plan.target_tool_names == []
-    assert plan.reason == "transcript_skill_continuation_prompt_only"
+    assert plan.reason == "transcript_provider_skill_continuation_prompt_only"
 
 
 def test_transcript_skill_prompt_plan_ignores_missing_hint() -> None:
     assert build_transcript_skill_prompt_intent_plan(active_skill="") is None
 
 
-def test_transcript_active_skill_infers_from_assistant_tool_calls() -> None:
-    active_skill = _infer_active_skill_from_transcript(
+def test_transcript_active_provider_skill_infers_from_assistant_tool_calls() -> None:
+    active_skill = _infer_active_provider_skill_from_transcript(
         message_history=[
             {"role": "user", "content": "我要申请 Linux VM"},
             {
@@ -1402,22 +1911,98 @@ def test_transcript_active_skill_infers_from_assistant_tool_calls() -> None:
                 "tool_calls": [{"name": "smartcmp_list_business_groups"}],
             },
         ],
-        md_skills_snapshot=[
+        capability_index=[
             {
-                "qualified_name": "smartcmp:request",
+                "kind": "provider_skill",
+                "name": "cmp.request",
+                "target_provider_instances": ["smartcmp.cmp"],
+                "target_provider_types": ["smartcmp"],
+                "target_provider_skill_names": ["cmp.request"],
                 "declared_tool_names": [
                     "smartcmp_list_business_groups",
                     "smartcmp_submit_request",
                 ],
             }
         ],
+        active_provider_name="cmp",
     )
 
-    assert active_skill == "smartcmp:request"
+    assert active_skill == "cmp.request"
 
 
-def test_transcript_active_skill_infers_from_embedded_tool_results() -> None:
+def test_transcript_active_provider_skill_uses_sticky_instance_to_disambiguate() -> None:
+    active_skill = _infer_active_provider_skill_from_transcript(
+        message_history=[
+            {"role": "user", "content": "从知识库回答 AWS Lambda 是否支持"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"name": "markdown_vault_search"}],
+            },
+            {"role": "tool", "tool_name": "markdown_vault_search", "content": {"ok": True}},
+            {"role": "assistant", "content": "知识库中没有原生 AWS Lambda 支持证据。"},
+            {"role": "user", "content": "生成 Excel"},
+            {"role": "assistant", "content": "", "tool_calls": [{"name": "skill_exec"}]},
+            {"role": "tool", "tool_name": "skill_exec", "content": {"ok": True}},
+        ],
+        capability_index=[
+            {
+                "kind": "provider_skill",
+                "name": "knowledgebase.markdown-vault-query",
+                "target_provider_instances": ["markdown-vault.knowledgebase"],
+                "target_provider_types": ["markdown-vault"],
+                "target_provider_skill_names": ["knowledgebase.markdown-vault-query"],
+                "declared_tool_names": ["markdown_vault_search", "markdown_vault_get"],
+            },
+            {
+                "kind": "provider_skill",
+                "name": "atlasclaw-docs.markdown-vault-query",
+                "target_provider_instances": ["markdown-vault.atlasclaw-docs"],
+                "target_provider_types": ["markdown-vault"],
+                "target_provider_skill_names": ["atlasclaw-docs.markdown-vault-query"],
+                "declared_tool_names": ["markdown_vault_search", "markdown_vault_get"],
+            },
+        ],
+        active_provider_names=["knowledgebase"],
+    )
+
+    assert active_skill == "knowledgebase.markdown-vault-query"
+
+
+def test_transcript_plain_skill_inference_ignores_provider_bound_markdown_skill() -> None:
     active_skill = _infer_active_skill_from_transcript(
+        message_history=[
+            {"role": "user", "content": "从知识库回答 AWS Lambda 是否支持"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [{"name": "markdown_vault_search"}],
+            },
+        ],
+        md_skills_snapshot=[
+            {
+                "name": "markdown-vault-query",
+                "qualified_name": "markdown-vault:markdown-vault-query",
+                "description": "Query Markdown vaults",
+                "provider": "markdown-vault",
+                "metadata": {
+                    "provider_type": "markdown-vault",
+                    "tool_search_name": "markdown_vault_search",
+                },
+            },
+        ],
+        provider_instances={
+            "markdown-vault": {
+                "knowledgebase": {"usage_hint": "Use for SmartCMP knowledge-base questions."},
+            }
+        },
+    )
+
+    assert active_skill is None
+
+
+def test_transcript_active_provider_skill_infers_from_embedded_tool_results() -> None:
+    active_skill = _infer_active_provider_skill_from_transcript(
         message_history=[
             {
                 "role": "assistant",
@@ -1430,18 +2015,23 @@ def test_transcript_active_skill_infers_from_embedded_tool_results() -> None:
                 ],
             },
         ],
-        md_skills_snapshot=[
+        capability_index=[
             {
-                "qualified_name": "smartcmp:request",
+                "kind": "provider_skill",
+                "name": "cmp.request",
+                "target_provider_instances": ["smartcmp.cmp"],
+                "target_provider_types": ["smartcmp"],
+                "target_provider_skill_names": ["cmp.request"],
                 "declared_tool_names": [
                     "smartcmp_list_business_groups",
                     "smartcmp_submit_request",
                 ],
             }
         ],
+        active_provider_name="cmp",
     )
 
-    assert active_skill == "smartcmp:request"
+    assert active_skill == "cmp.request"
 
 
 def xtest_build_recent_follow_up_tool_intent_plan_reuses_single_recent_tool() -> None:
@@ -1513,7 +2103,7 @@ def xtest_build_recent_follow_up_tool_intent_plan_recovers_recent_md_skill_scope
 
     assert plan is not None
     assert plan.action is ToolIntentAction.USE_TOOLS
-    assert plan.target_skill_names == ["smartcmp:request"]
+    assert plan.target_provider_skill_names == ["cmp.request"]
     assert plan.target_provider_types == ["smartcmp"]
     assert plan.target_group_ids == ["group:cmp", "group:request"]
     assert plan.target_tool_names == [
@@ -1575,13 +2165,31 @@ def test_llm_first_guidance_plan_does_not_force_artifact_without_matching_capabi
     assert plan is None
 
 
-def test_llm_first_guidance_plan_keeps_explicit_artifact_targets_from_metadata_plan() -> None:
+def test_llm_first_guidance_plan_rejects_provider_skill_without_instance_scope() -> None:
     plan = build_llm_first_guidance_plan(
         user_message="将这些申请写入一个新的PPT",
         metadata_plan=ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
             target_provider_types=["smartcmp"],
-            target_skill_names=["pptx", "smartcmp:request"],
+            target_provider_skill_names=["cmp.request"],
+            target_skill_names=["pptx"],
+            reason="metadata_recall_matched",
+        ),
+        explicit_capability_match=True,
+    )
+
+    assert plan is None
+
+
+def test_llm_first_guidance_plan_keeps_explicit_artifact_targets_from_metadata_plan() -> None:
+    plan = build_llm_first_guidance_plan(
+        user_message="将这些申请写入一个新的PPT",
+        metadata_plan=ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_instances=["smartcmp.cmp"],
+            target_provider_types=["smartcmp"],
+            target_provider_skill_names=["cmp.request"],
+            target_skill_names=["pptx"],
             target_capability_classes=["artifact:pptx", "provider:smartcmp"],
             target_tool_names=["pptx_create_deck", "smartcmp_list_pending"],
             reason="metadata_recall_matched",
@@ -1590,8 +2198,10 @@ def test_llm_first_guidance_plan_keeps_explicit_artifact_targets_from_metadata_p
     )
 
     assert plan.action is ToolIntentAction.DIRECT_ANSWER
+    assert plan.target_provider_instances == ["smartcmp.cmp"]
     assert plan.target_provider_types == ["smartcmp"]
-    assert plan.target_skill_names == ["pptx", "smartcmp:request"]
+    assert plan.target_provider_skill_names == ["cmp.request"]
+    assert plan.target_skill_names == ["pptx"]
     assert plan.target_capability_classes == ["artifact:pptx", "provider:smartcmp"]
     assert plan.target_tool_names == ["pptx_create_deck", "smartcmp_list_pending"]
 
@@ -1601,8 +2211,10 @@ def test_llm_first_guidance_plan_supports_new_artifact_types_without_keyword_rou
         user_message="将这些申请整理成一个新的PDF文件",
         metadata_plan=ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
+            target_provider_instances=["smartcmp.cmp"],
             target_provider_types=["smartcmp"],
-            target_skill_names=["pdf", "smartcmp:request"],
+            target_provider_skill_names=["cmp.request"],
+            target_skill_names=["pdf"],
             target_capability_classes=["artifact:pdf", "provider:smartcmp"],
             target_tool_names=["pdf_create_document", "smartcmp_list_pending"],
             reason="metadata_recall_matched",
@@ -1611,7 +2223,9 @@ def test_llm_first_guidance_plan_supports_new_artifact_types_without_keyword_rou
     )
 
     assert plan.action is ToolIntentAction.DIRECT_ANSWER
+    assert plan.target_provider_instances == ["smartcmp.cmp"]
     assert plan.target_provider_types == ["smartcmp"]
-    assert plan.target_skill_names == ["pdf", "smartcmp:request"]
+    assert plan.target_provider_skill_names == ["cmp.request"]
+    assert plan.target_skill_names == ["pdf"]
     assert plan.target_capability_classes == ["artifact:pdf", "provider:smartcmp"]
     assert plan.target_tool_names == ["pdf_create_document", "smartcmp_list_pending"]

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -16,8 +17,22 @@ if TYPE_CHECKING:
     from pydantic_ai import RunContext
     from app.atlasclaw.core.deps import SkillDeps
 
+_HOME_RELATIVE_PATH_RE = re.compile(r"(?<![\w.-])~(?:/|$)")
+
+
+def contains_home_relative_path(value: str) -> bool:
+    """Return whether user-controlled text asks for a shell-home-relative path.
+
+    This guard is used before artifact or skill execution so ``~/file`` cannot
+    be expanded by shell/Python helpers into the host user's real home
+    directory. It only detects the request shape; path resolution remains owned
+    by the workspace-bound helpers below.
+    """
+    return bool(_HOME_RELATIVE_PATH_RE.search(str(value or "")))
+
 
 def get_user_work_dir(ctx: "RunContext[SkillDeps]") -> Path:
+    """Return the AtlasClaw-managed work directory for the current user run."""
     deps = ctx.deps
     session_manager = getattr(deps, "session_manager", None)
     workspace_path = getattr(session_manager, "workspace_path", Path("."))
@@ -26,6 +41,7 @@ def get_user_work_dir(ctx: "RunContext[SkillDeps]") -> Path:
 
 
 def resolve_file_path(ctx: "RunContext[SkillDeps]", file_path: str) -> Path:
+    """Resolve a writable file path inside the current user's work directory."""
     deps = ctx.deps
     session_manager = getattr(deps, "session_manager", None)
     workspace_path = getattr(session_manager, "workspace_path", Path("."))
@@ -45,6 +61,7 @@ def resolve_read_file_path(ctx: "RunContext[SkillDeps]", file_path: str) -> Path
 
 
 def resolve_cwd(ctx: "RunContext[SkillDeps]", cwd: Optional[str]) -> Path:
+    """Resolve a process working directory within the current user's workspace."""
     deps = ctx.deps
     session_manager = getattr(deps, "session_manager", None)
     workspace_path = getattr(session_manager, "workspace_path", Path("."))

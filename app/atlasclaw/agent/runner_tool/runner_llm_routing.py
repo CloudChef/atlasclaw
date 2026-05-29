@@ -114,6 +114,12 @@ def tool_output_satisfies_artifact_goal(
     workspace_path: str | Path | None = None,
     user_id: str | None = None,
 ) -> bool:
+    """Return whether one tool result proves the requested artifact exists.
+
+    The check accepts only workspace-safe download references or relative paths.
+    It intentionally ignores absolute host paths so a generated file is not
+    treated as downloadable unless it is inside the user's AtlasClaw workspace.
+    """
     if not artifact_goal:
         return True
 
@@ -149,6 +155,11 @@ def messages_satisfy_artifact_goal(
     workspace_path: str | Path | None = None,
     user_id: str | None = None,
 ) -> bool:
+    """Scan model/tool messages for evidence that the artifact goal was met.
+
+    Only tool results from the target tool names are considered, and their paths
+    are validated with the same workspace boundary as direct tool output.
+    """
     if not artifact_goal:
         return True
 
@@ -210,7 +221,8 @@ def selected_capability_ids_from_intent_plan(intent_plan: Optional[ToolIntentPla
             seen.add(capability_id)
             selected_ids.append(capability_id)
 
-    _append("provider_instance", list(intent_plan.target_provider_instances or []))
+    if any(str(item or "").strip() for item in intent_plan.target_provider_instances or []):
+        _append("provider_skill", list(intent_plan.target_provider_skill_names or []))
     _append("tool", list(intent_plan.target_tool_names or []))
     _append("skill", list(intent_plan.target_skill_names or []))
     _append("capability", list(intent_plan.target_capability_classes or []))
@@ -224,6 +236,12 @@ def build_llm_first_guidance_plan(
     metadata_plan: Optional[ToolIntentPlan],
     explicit_capability_match: bool,
 ) -> Optional[ToolIntentPlan]:
+    """Build a prompt-only capability hint for LLM-first routing.
+
+    Metadata-selected capabilities narrow what the model sees, but this plan
+    deliberately keeps ``DIRECT_ANSWER`` so the main model still decides whether
+    the user is continuing the current workflow or starting another skill.
+    """
     _ = user_message
 
     if metadata_plan is None or not explicit_capability_match:
@@ -233,6 +251,7 @@ def build_llm_first_guidance_plan(
         [
             list(metadata_plan.target_provider_types or []),
             list(metadata_plan.target_provider_instances or []),
+            list(metadata_plan.target_provider_skill_names or []),
             list(metadata_plan.target_skill_names or []),
             list(metadata_plan.target_group_ids or []),
             list(metadata_plan.target_capability_classes or []),
@@ -240,11 +259,14 @@ def build_llm_first_guidance_plan(
         ]
     ):
         return None
+    if metadata_plan.target_provider_skill_names and not metadata_plan.target_provider_instances:
+        return None
 
     return ToolIntentPlan(
         action=ToolIntentAction.DIRECT_ANSWER,
         target_provider_instances=list(metadata_plan.target_provider_instances or []),
         target_provider_types=list(metadata_plan.target_provider_types or []),
+        target_provider_skill_names=list(metadata_plan.target_provider_skill_names or []),
         target_skill_names=list(metadata_plan.target_skill_names or []),
         target_group_ids=list(metadata_plan.target_group_ids or []),
         target_capability_classes=list(metadata_plan.target_capability_classes or []),

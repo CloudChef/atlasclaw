@@ -18,10 +18,15 @@ from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
 )
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import normalize_tool_result_mode
 from app.atlasclaw.agent.tool_gate_models import (
+    NO_RUNTIME_CAPABILITY_REASON,
     ToolGateDecision,
     ToolIntentAction,
     ToolIntentPlan,
     ToolPolicyMode,
+)
+from app.atlasclaw.core.provider_skill_capability import (
+    runtime_tool_allowed_by_provider_scope,
+    runtime_tool_skill_names,
 )
 from app.atlasclaw.core.deps import SkillDeps
 
@@ -75,6 +80,13 @@ class _ModelToolGateClassifier:
         )
 
 class RunnerToolGateModelMixin:
+    """Resolve model-assisted capability routing and tool-intent decisions."""
+
+    ACTIVE_CAPABILITY_CONTINUE = "continue_current"
+    ACTIVE_CAPABILITY_SELECT = "select_capability"
+    NO_CAPABILITY_RUNTIME_REQUEST = "runtime_capability_request"
+    NO_CAPABILITY_DIRECT_CONVERSATION = "ordinary_conversation"
+
     @staticmethod
     def _dedupe_selector_values(values: list[str]) -> list[str]:
         deduped: list[str] = []
@@ -88,11 +100,276 @@ class RunnerToolGateModelMixin:
         return deduped
 
     @staticmethod
-    def _provider_type_from_instance_ref(value: str) -> str:
-        normalized = str(value or "").strip()
-        if "." not in normalized:
-            return ""
-        return normalized.split(".", 1)[0].strip().lower()
+    def _entry_is_provider_bound(entry: dict[str, Any]) -> bool:
+        return bool(
+            str(entry.get("provider_name", "") or "").strip()
+            or str(entry.get("provider_type", "") or "").strip()
+            or str(entry.get("instance_name", "") or "").strip()
+            or entry.get("target_provider_instances")
+            or entry.get("target_provider_types")
+            or entry.get("target_provider_skill_names")
+        )
+
+    def _entry_selector_values(
+        self,
+        entry: dict[str, Any],
+        key: str,
+        *,
+        lowercase: bool = False,
+    ) -> list[str]:
+        values: list[str] = []
+        for item in entry.get(key, []) or []:
+            normalized = str(item or "").strip()
+            if lowercase:
+                normalized = normalized.lower()
+            values.append(normalized)
+        return self._dedupe_selector_values(values)
+
+    @staticmethod
+    def _compact_history_content(content: Any, *, max_chars: int) -> str:
+        """Compact transcript content while preserving trailing tool evidence."""
+        text = str(content or "").strip().replace("\n", " ")
+        if len(text) <= max_chars:
+            return text
+        if max_chars <= 12:
+            return text[:max_chars]
+        head_len = max((max_chars - 5) // 2, 1)
+        tail_len = max(max_chars - 5 - head_len, 1)
+        return f"{text[:head_len].rstrip()} ... {text[-tail_len:].lstrip()}"
+
+    def _format_recent_history_lines(
+        self,
+        *,
+        recent_history: list[dict[str, Any]],
+        max_items: int,
+        max_content_chars: int,
+    ) -> str:
+        """Render recent history for routing prompts without losing result tails."""
+        history_lines: list[str] = []
+        for item in recent_history[-max_items:]:
+            role = str(item.get("role", "") or "").strip() or "unknown"
+            content = self._compact_history_content(
+                item.get("content", ""),
+                max_chars=max_content_chars,
+            )
+            history_lines.append(f"- {role}: {content}")
+        return "\n".join(history_lines) if history_lines else "- none"
+
+    async def _select_active_capability_route_with_model(
+        self,
+        *,
+        agent: Any,
+        deps: SkillDeps,
+        user_message: str,
+        recent_history: list[dict[str, Any]],
+        active_provider_skill: str = "",
+        active_skill: str = "",
+    ) -> Optional[str]:
+        """Ask the model whether this turn continues the active capability."""
+        if agent is None:
+            return None
+        active_capability = self._format_active_capability_name(
+            active_provider_skill=active_provider_skill,
+            active_skill=active_skill,
+        )
+        if not active_capability:
+            return None
+
+        selector_prompt = self._build_active_capability_route_prompt(
+            active_capability=active_capability,
+        )
+        selector_message = self._build_active_capability_route_message(
+            user_message=user_message,
+            recent_history=recent_history,
+        )
+        try:
+            raw_output = await self._run_single_with_optional_override(
+                agent=agent,
+                user_message=selector_message,
+                deps=deps,
+                system_prompt=selector_prompt,
+                purpose="active_capability_route_model_pass",
+                allowed_tool_names=[],
+            )
+        except Exception as exc:
+            logger.warning("active_capability_route_failed: %s", exc)
+            return None
+
+        parsed = self._extract_json_object(raw_output)
+        if not parsed:
+            return None
+        try:
+            payload = json.loads(parsed)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        decision = str(payload.get("decision", "") or "").strip().lower()
+        if decision in {
+            self.ACTIVE_CAPABILITY_CONTINUE,
+            self.ACTIVE_CAPABILITY_SELECT,
+        }:
+            return decision
+        return None
+
+    @staticmethod
+    def _format_active_capability_name(
+        *,
+        active_provider_skill: str = "",
+        active_skill: str = "",
+    ) -> str:
+        provider_skill = str(active_provider_skill or "").strip()
+        if provider_skill:
+            return f"provider_skill:{provider_skill}"
+        skill = str(active_skill or "").strip()
+        if skill:
+            return f"skill:{skill}"
+        return ""
+
+    @staticmethod
+    def _build_active_capability_route_prompt(*, active_capability: str) -> str:
+        """Build the small model prompt that gates active workflow continuation."""
+        return (
+            "You are AtlasClaw's internal active-capability router.\n"
+            "Do not answer the user and do not call tools. Return one JSON object only.\n\n"
+            "Task:\n"
+            "Decide whether the latest user turn continues the current active workflow, "
+            "or whether AtlasClaw should run the full capability selector again.\n\n"
+            f"Current active capability: {active_capability}\n\n"
+            "Rules:\n"
+            "- Choose continue_current when the latest turn is an answer, correction, "
+            "confirmation, cancellation, parameter update, status/detail follow-up, or next step "
+            "for the current workflow shown in recent history.\n"
+            "- Short or fragment-like values should continue_current when the recent assistant "
+            "message is asking for workflow input or showing a draft awaiting updates.\n"
+            "- Field-value style messages should continue_current when they can fill, correct, "
+            "or confirm data requested by the current workflow, even if they are not a complete "
+            "standalone request.\n"
+            "- If the latest assistant prompt asked the user to choose from options, choose "
+            "continue_current when the latest turn gives an option label, related attribute, "
+            "field-value update, or other value that may map to one of those options.\n"
+            "- Choose select_capability when the latest turn asks for a different task, a different "
+            "provider or skill, a new artifact/output workflow, or is general chat unrelated to the "
+            "current workflow.\n"
+            "- Choose select_capability only after considering whether the latest turn can be "
+            "interpreted as part of the current workflow from recent history.\n"
+            "- Use the recent conversation semantics, not fixed keywords.\n"
+            "- If unsure and recent history shows an active workflow waiting for user input, choose "
+            "continue_current; otherwise choose select_capability so the full authorized capability "
+            "selector can analyze the turn.\n\n"
+            "Return JSON fields exactly:\n"
+            "{\n"
+            '  "decision": "continue_current" | "select_capability",\n'
+            '  "reason": string\n'
+            "}\n"
+        )
+
+    def _build_active_capability_route_message(
+        self,
+        *,
+        user_message: str,
+        recent_history: list[dict[str, Any]],
+    ) -> str:
+        history_text = self._format_recent_history_lines(
+            recent_history=recent_history,
+            max_items=8,
+            max_content_chars=420,
+        )
+        return (
+            "Classify the latest turn against the current active workflow.\n\n"
+            f"Latest user input:\n{user_message}\n\n"
+            f"Recent conversation:\n{history_text}\n"
+        )
+
+    async def _classify_no_capability_route_with_model(
+        self,
+        *,
+        agent: Any,
+        deps: SkillDeps,
+        user_message: str,
+        recent_history: list[dict[str, Any]],
+    ) -> Optional[str]:
+        """Ask the model whether a no-capability turn needs unavailable runtime ability."""
+        if agent is None:
+            return None
+        try:
+            raw_output = await self._run_single_with_optional_override(
+                agent=agent,
+                user_message=self._build_no_capability_route_message(
+                    user_message=user_message,
+                    recent_history=recent_history,
+                ),
+                deps=deps,
+                system_prompt=self._build_no_capability_route_prompt(),
+                purpose="no_capability_route_model_pass",
+                allowed_tool_names=[],
+            )
+        except Exception as exc:
+            logger.warning("no_capability_route_failed: %s", exc)
+            return None
+
+        parsed = self._extract_json_object(raw_output)
+        if not parsed:
+            return None
+        try:
+            payload = json.loads(parsed)
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        decision = str(payload.get("decision", "") or "").strip().lower()
+        if decision in {
+            self.NO_CAPABILITY_RUNTIME_REQUEST,
+            self.NO_CAPABILITY_DIRECT_CONVERSATION,
+        }:
+            return decision
+        return None
+
+    @staticmethod
+    def _build_no_capability_route_prompt() -> str:
+        """Build the focused no-capability intent classifier prompt."""
+        return (
+            "You are AtlasClaw's internal no-capability router.\n"
+            "No provider, skill, or tool capability is available to the user in this turn.\n"
+            "Do not answer the user and do not call tools. Return one JSON object only.\n\n"
+            "Task:\n"
+            "Decide whether the latest user turn asks AtlasClaw to perform, verify, query, "
+            "continue, confirm, or report state for a provider/private-system/runtime operation, "
+            "or whether it is ordinary conversation that can be answered without runtime ability.\n\n"
+            "Rules:\n"
+            "- Choose runtime_capability_request for external-system operations, private catalog "
+            "workflows, service requests, approvals, resource changes, status/detail checks, or "
+            "follow-ups that ask to confirm or validate such an operation.\n"
+            "- Choose ordinary_conversation for greetings, identity/capability questions, general "
+            "knowledge, writing, explanation, brainstorming, or harmless conversation that does "
+            "not depend on unavailable runtime capability.\n"
+            "- Use the recent conversation semantics. Do not rely on fixed keywords.\n"
+            "- If unsure whether the user is asking AtlasClaw to execute or verify external state, "
+            "choose runtime_capability_request.\n\n"
+            "Return JSON fields exactly:\n"
+            "{\n"
+            '  "decision": "runtime_capability_request" | "ordinary_conversation",\n'
+            '  "reason": string\n'
+            "}\n"
+        )
+
+    def _build_no_capability_route_message(
+        self,
+        *,
+        user_message: str,
+        recent_history: list[dict[str, Any]],
+    ) -> str:
+        history_text = self._format_recent_history_lines(
+            recent_history=recent_history,
+            max_items=8,
+            max_content_chars=420,
+        )
+        return (
+            "Classify the latest turn when no runtime capability is available.\n\n"
+            f"Latest user input:\n{user_message}\n\n"
+            f"Recent conversation:\n{history_text}\n"
+        )
 
     async def _select_capability_intent_plan_with_model(
         self,
@@ -103,6 +380,7 @@ class RunnerToolGateModelMixin:
         recent_history: list[dict[str, Any]],
         capability_index: list[dict[str, Any]],
         usage_profile_context: str = "",
+        active_capability_context: str = "",
     ) -> Optional[ToolIntentPlan]:
         """Ask the model to select authorized capabilities for a natural-language turn."""
         if agent is None:
@@ -111,10 +389,12 @@ class RunnerToolGateModelMixin:
         selector_prompt = self._build_capability_selector_prompt(
             capability_index=capability_index,
             usage_profile_context=usage_profile_context,
+            active_capability_context=active_capability_context,
         )
         selector_message = self._build_capability_selector_message(
             user_message=user_message,
             recent_history=recent_history,
+            active_capability_context=active_capability_context,
         )
         try:
             raw_output = await self._run_single_with_optional_override(
@@ -149,6 +429,7 @@ class RunnerToolGateModelMixin:
         *,
         capability_index: list[dict[str, Any]],
         usage_profile_context: str = "",
+        active_capability_context: str = "",
     ) -> str:
         """Build the LLM selector prompt from authorized capability descriptions only."""
         capability_lines: list[str] = []
@@ -168,6 +449,7 @@ class RunnerToolGateModelMixin:
             )
 
         usage_context = str(usage_profile_context or "").strip() or "- none"
+        active_context = str(active_capability_context or "").strip() or "- none"
         return (
             "You are AtlasClaw's internal capability selector.\n"
             "Do not answer the user and do not call tools. Return one JSON object only.\n\n"
@@ -177,13 +459,35 @@ class RunnerToolGateModelMixin:
             "ordinary natural-language requests.\n\n"
             "Rules:\n"
             "- Choose only capability IDs listed below.\n"
-            "- Natural-language selector targets are limited to tool:, skill:, and provider_instance: IDs.\n"
-            "- Provider targets are instance IDs such as provider_instance:provider.instance; "
-            "do not invent provider:<type> targets.\n"
+            "- Natural-language selector targets are limited to tool:, skill:, "
+            "and provider_skill: IDs.\n"
+            "- Provider-bound skills must use provider_skill:<provider_name>.<skill_name>; "
+            "do not select bare provider:, provider_instance:, or provider-bound skill: IDs.\n"
             "- Use direct_answer when the request does not need an authorized runtime capability.\n"
             "- Use ask_clarification when the user intent or required target is ambiguous.\n"
             "- Use use_tools when the request needs provider data, private context, artifact creation, "
             "or an authorized skill/tool.\n"
+            "- When a current active workflow candidate is shown below, select that capability "
+            "if the latest turn is an answer, correction, confirmation, parameter update, or next "
+            "step for it; select a different listed capability only when the latest turn asks for "
+            "a different task, provider, skill, or artifact workflow.\n"
+            "- If no authorized capabilities are listed and the latest turn asks to perform, "
+            "verify, query, or continue a provider/private-system/runtime operation, return "
+            "use_tools with an empty targets array. This records that the request needs an "
+            "unavailable runtime capability instead of treating it as ordinary chat.\n"
+            "- Use use_tools for questions about a platform/product/system's supported features, "
+            "configuration, usage, integration, runbooks, documentation, or knowledge-base content "
+            "when an authorized documentation, knowledge-base, retrieval, or search capability is "
+            "listed. Do not answer those from general model knowledge.\n"
+            "- For those documentation or knowledge-base questions, do not include operational "
+            "provider capabilities unless the latest turn asks to read live provider data, verify "
+            "current external state, or perform an external operation.\n"
+            "- Questions phrased as whether something is supported, what a feature means, or how to "
+            "configure/use/integrate it are documentation lookups. Provider or product names in the "
+            "question do not by themselves require an operational provider capability.\n"
+            "- Do not select an operational provider capability only because its domain words match "
+            "the topic. Select it only when the latest turn asks for live data, state verification, "
+            "or a real operation in that provider.\n"
             "- Do not substitute artifact formats; preserve the requested file type or choose no "
             "artifact target.\n"
             "- For file deliverables, include a matching file-creation capability. A data/query "
@@ -196,6 +500,8 @@ class RunnerToolGateModelMixin:
             "provider authentication state, or current tool policy.\n"
             "Authorized capabilities:\n"
             f"{chr(10).join(capability_lines) if capability_lines else '- none'}\n\n"
+            "Current active workflow candidate:\n"
+            f"{active_context}\n\n"
             "Past Usage Profile hints:\n"
             f"{usage_context}\n\n"
             "Return JSON fields exactly:\n"
@@ -206,24 +512,29 @@ class RunnerToolGateModelMixin:
             "}\n"
         )
 
-    @staticmethod
     def _build_capability_selector_message(
+        self,
         *,
         user_message: str,
         recent_history: list[dict[str, Any]],
+        active_capability_context: str = "",
     ) -> str:
-        history_lines: list[str] = []
-        for item in recent_history[-6:]:
-            role = str(item.get("role", "") or "").strip() or "unknown"
-            content = str(item.get("content", "") or "").strip().replace("\n", " ")
-            if len(content) > 220:
-                content = content[:217] + "..."
-            history_lines.append(f"- {role}: {content}")
-        history_text = "\n".join(history_lines) if history_lines else "- none"
+        history_text = self._format_recent_history_lines(
+            recent_history=recent_history,
+            max_items=6,
+            max_content_chars=320,
+        )
+        active_context = str(active_capability_context or "").strip()
+        active_section = (
+            f"\n\nCurrent active workflow candidate:\n{active_context}"
+            if active_context
+            else ""
+        )
         return (
             "Select authorized capability targets for this turn.\n\n"
             f"User request:\n{user_message}\n\n"
-            f"Recent history:\n{history_text}\n"
+            f"Recent history:\n{history_text}"
+            f"{active_section}\n"
         )
 
     def _coerce_capability_selector_payload(
@@ -233,7 +544,7 @@ class RunnerToolGateModelMixin:
         capability_index: list[dict[str, Any]],
     ) -> Optional[ToolIntentPlan]:
         """Validate the selector JSON and convert authorized targets into an intent plan."""
-        allowed_targets: dict[str, tuple[str, str]] = {}
+        allowed_targets: dict[str, tuple[str, str, dict[str, Any]]] = {}
 
         for entry in capability_index:
             if not isinstance(entry, dict):
@@ -246,9 +557,9 @@ class RunnerToolGateModelMixin:
             raw_name = raw_name.strip()
             if not raw_name:
                 continue
-            if prefix not in {"tool", "skill", "provider_instance"}:
+            if prefix not in {"tool", "skill", "provider_skill"}:
                 continue
-            allowed_targets[capability_id] = (prefix, raw_name)
+            allowed_targets[capability_id] = (prefix, raw_name, entry)
 
         action_raw = str(payload.get("action", "") or "").strip().lower()
         action_map = {
@@ -265,7 +576,9 @@ class RunnerToolGateModelMixin:
             return None
 
         target_skill_names: list[str] = []
+        target_provider_skill_names: list[str] = []
         target_tool_names: list[str] = []
+        target_capability_classes: list[str] = []
         target_provider_instances: list[str] = []
         target_provider_types: list[str] = []
 
@@ -278,30 +591,69 @@ class RunnerToolGateModelMixin:
             resolved = allowed_targets.get(normalized)
             if resolved is None:
                 continue
-            prefix, value = resolved
+            prefix, value, entry = resolved
             if prefix == "skill":
+                if self._entry_is_provider_bound(entry):
+                    continue
                 target_skill_names.append(value)
+                target_tool_names.extend(self._entry_selector_values(entry, "target_tool_names"))
+                target_capability_classes.extend(
+                    self._entry_selector_values(
+                        entry,
+                        "target_capability_classes",
+                        lowercase=True,
+                    )
+                )
             elif prefix == "tool":
                 target_tool_names.append(value)
-            elif prefix == "provider_instance":
-                target_provider_instances.append(value)
-                provider_type = self._provider_type_from_instance_ref(value)
-                if provider_type:
-                    target_provider_types.append(provider_type)
+            elif prefix == "provider_skill":
+                entry_provider_instances = self._entry_selector_values(
+                    entry,
+                    "target_provider_instances",
+                )
+                entry_provider_types = self._entry_selector_values(
+                    entry,
+                    "target_provider_types",
+                )
+                entry_provider_skill_names = self._entry_selector_values(
+                    entry,
+                    "target_provider_skill_names",
+                )
+                if (
+                    not entry_provider_instances
+                    or not entry_provider_types
+                    or not entry_provider_skill_names
+                ):
+                    continue
+                target_provider_instances.extend(entry_provider_instances)
+                target_provider_types.extend(entry_provider_types)
+                target_provider_skill_names.extend(entry_provider_skill_names)
 
         target_skill_names = self._dedupe_selector_values(target_skill_names)
+        target_provider_skill_names = self._dedupe_selector_values(target_provider_skill_names)
         target_tool_names = self._dedupe_selector_values(target_tool_names)
+        target_capability_classes = self._dedupe_selector_values(target_capability_classes)
         target_provider_instances = self._dedupe_selector_values(target_provider_instances)
         target_provider_types = self._dedupe_selector_values(target_provider_types)
         has_targets = any(
             [
                 target_skill_names,
+                target_provider_skill_names,
                 target_tool_names,
+                target_capability_classes,
                 target_provider_instances,
                 target_provider_types,
             ]
         )
         if action is ToolIntentAction.USE_TOOLS and not has_targets:
+            raw_target_values = [
+                item.strip() for item in raw_targets if isinstance(item, str) and item.strip()
+            ]
+            if not allowed_targets and not raw_target_values:
+                return ToolIntentPlan(
+                    action=ToolIntentAction.DIRECT_ANSWER,
+                    reason=NO_RUNTIME_CAPABILITY_REASON,
+                )
             return None
         if has_targets and action is not ToolIntentAction.USE_TOOLS:
             return None
@@ -314,7 +666,9 @@ class RunnerToolGateModelMixin:
             action=action,
             target_provider_instances=target_provider_instances,
             target_provider_types=target_provider_types,
+            target_provider_skill_names=target_provider_skill_names,
             target_skill_names=target_skill_names,
+            target_capability_classes=target_capability_classes,
             target_tool_names=target_tool_names,
             reason=reason,
         )
@@ -332,6 +686,8 @@ class RunnerToolGateModelMixin:
         ]
         if not normalized_tools:
             return None
+        if any(str(tool.get("provider_type", "") or "").strip() for tool in normalized_tools):
+            return None
 
         def _dedupe(values: list[str]) -> list[str]:
             deduped: list[str] = []
@@ -344,18 +700,13 @@ class RunnerToolGateModelMixin:
                 deduped.append(normalized)
             return deduped
 
-        target_provider_types = _dedupe(
-            [
-                str(tool.get("provider_type", "") or "").strip().lower()
-                for tool in normalized_tools
-            ]
-        )
         target_skill_names = _dedupe(
             [
                 str(
                     tool.get("qualified_skill_name", "") or tool.get("skill_name", "") or ""
                 ).strip()
                 for tool in normalized_tools
+                if not str(tool.get("provider_type", "") or "").strip()
             ]
         )
         target_group_ids = _dedupe(
@@ -376,7 +727,6 @@ class RunnerToolGateModelMixin:
         )
         return ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
-            target_provider_types=target_provider_types,
             target_skill_names=target_skill_names,
             target_group_ids=target_group_ids,
             target_capability_classes=target_capability_classes,
@@ -400,7 +750,9 @@ class RunnerToolGateModelMixin:
         self,
         *,
         available_tools: list[dict[str, Any]],
+        target_provider_instances: list[str],
         target_provider_types: list[str],
+        target_provider_skill_names: list[str],
         target_skill_names: list[str],
         target_capability_classes: list[str],
         target_tool_names: list[str],
@@ -426,6 +778,15 @@ class RunnerToolGateModelMixin:
             if str(item or "").strip()
         }
         selected: list[dict[str, Any]] = []
+
+        def _allowed_by_provider_scope(tool: dict[str, Any]) -> bool:
+            return runtime_tool_allowed_by_provider_scope(
+                tool,
+                provider_types=normalized_provider_types,
+                provider_skill_names=target_provider_skill_names,
+                provider_instance_refs=target_provider_instances,
+            )
+
         for tool in available_tools:
             if not isinstance(tool, dict):
                 continue
@@ -434,19 +795,26 @@ class RunnerToolGateModelMixin:
                 continue
             provider_type = str(tool.get("provider_type", "") or "").strip().lower()
             capability_class = str(tool.get("capability_class", "") or "").strip().lower()
-            qualified_skill_name = str(
-                tool.get("qualified_skill_name", "") or tool.get("skill_name", "") or ""
-            ).strip().lower()
-            if normalized_tool_names and name in normalized_tool_names:
+            tool_skill_names = runtime_tool_skill_names(tool)
+            provider_scope_allowed = _allowed_by_provider_scope(tool)
+            if normalized_tool_names and name in normalized_tool_names and provider_scope_allowed:
                 selected.append(tool)
                 continue
-            if normalized_provider_types and provider_type in normalized_provider_types:
+            if provider_type and provider_scope_allowed:
                 selected.append(tool)
                 continue
-            if normalized_skill_names and qualified_skill_name in normalized_skill_names:
+            if (
+                normalized_skill_names
+                and not provider_type
+                and tool_skill_names.intersection(normalized_skill_names)
+            ):
                 selected.append(tool)
                 continue
-            if normalized_capability_classes and capability_class in normalized_capability_classes:
+            if (
+                normalized_capability_classes
+                and capability_class in normalized_capability_classes
+                and provider_scope_allowed
+            ):
                 selected.append(tool)
                 continue
         return selected
@@ -458,7 +826,9 @@ class RunnerToolGateModelMixin:
     ) -> ToolGateDecision:
         selected_tools = self._resolve_selected_tools(
             available_tools=list(available_tools or []),
+            target_provider_instances=list(plan.target_provider_instances or []),
             target_provider_types=list(plan.target_provider_types or []),
+            target_provider_skill_names=list(plan.target_provider_skill_names or []),
             target_skill_names=list(plan.target_skill_names or []),
             target_capability_classes=list(plan.target_capability_classes or []),
             target_tool_names=list(plan.target_tool_names or []),
@@ -475,6 +845,7 @@ class RunnerToolGateModelMixin:
         needs_external_system = bool(
             plan.target_provider_instances
             or plan.target_provider_types
+            or plan.target_provider_skill_names
             or any(
                 str(item or "").strip().lower().startswith("provider:")
                 for item in plan.target_capability_classes
@@ -487,6 +858,7 @@ class RunnerToolGateModelMixin:
         if plan.action is ToolIntentAction.CREATE_ARTIFACT:
             explicit_artifact_target = bool(
                 plan.target_tool_names
+                or plan.target_provider_skill_names
                 or plan.target_skill_names
                 or any(
                     str(item or "").strip().lower().startswith("artifact:")
@@ -565,6 +937,8 @@ class RunnerToolGateModelMixin:
 
         tool_name = str(tool.get("name", "") or "").strip()
         provider_type = str(tool.get("provider_type", "") or "").strip().lower()
+        if provider_type:
+            return None
         capability_class = str(tool.get("capability_class", "") or "").strip().lower()
         group_ids = [
             str(item).strip()
@@ -573,12 +947,15 @@ class RunnerToolGateModelMixin:
         ]
         qualified_skill_name = str(tool.get("qualified_skill_name", "") or "").strip()
         skill_name = str(tool.get("skill_name", "") or "").strip()
-        target_skill_names = [qualified_skill_name or skill_name] if (qualified_skill_name or skill_name) else []
+        target_skill_names = (
+            [qualified_skill_name or skill_name]
+            if (qualified_skill_name or skill_name) and not provider_type
+            else []
+        )
 
         reason = f"Visible runtime toolset converged to a single tool-only tool: {tool_name}."
         return ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
-            target_provider_types=[provider_type] if provider_type else [],
             target_skill_names=target_skill_names,
             target_group_ids=group_ids,
             target_capability_classes=[capability_class] if capability_class else [],

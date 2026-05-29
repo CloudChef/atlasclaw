@@ -18,7 +18,6 @@ from app.atlasclaw.agent.context_window_guard import evaluate_context_window_gua
 from app.atlasclaw.agent.runner_prompt_context import (
     build_system_prompt,
     collect_capability_index_snapshot,
-    collect_md_skill_capability_entries,
     collect_tool_groups_snapshot,
     collect_tools_snapshot,
 )
@@ -31,6 +30,7 @@ from app.atlasclaw.agent.selected_capability import (
     get_selected_capability_from_deps,
     selected_capability_provider_instance_ref,
     selected_capability_targets,
+    unique_capability_values,
 )
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import normalize_tool_result_mode
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
@@ -42,6 +42,7 @@ from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.agent.thinking_stream import ThinkingStreamEmitter
 from app.atlasclaw.agent.tool_gate import CapabilityMatcher
 from app.atlasclaw.agent.tool_gate_models import (
+    NO_RUNTIME_CAPABILITY_REASON,
     ToolGateDecision,
     ToolIntentAction,
     ToolIntentPlan,
@@ -49,7 +50,10 @@ from app.atlasclaw.agent.tool_gate_models import (
 )
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.memory.access import MEMORY_TOOL_NAMES
-from app.atlasclaw.tools.providers.instance_tools import PROVIDER_INSTANCE_SELECTIONS_KEY
+from app.atlasclaw.tools.providers.instance_tools import (
+    PROVIDER_INSTANCE_SELECTIONS_KEY,
+    persist_provider_instance_selection,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -132,6 +136,8 @@ def should_resolve_target_md_skill(intent_plan: ToolIntentPlan | None) -> bool:
         return False
     if any(str(item).strip() for item in (intent_plan.target_skill_names or [])):
         return True
+    if any(str(item).strip() for item in (intent_plan.target_provider_skill_names or [])):
+        return True
     if any(str(item).strip() for item in (intent_plan.target_tool_names or [])):
         return True
     return turn_action_requires_tool_execution(intent_plan)
@@ -151,11 +157,39 @@ def build_user_selected_tool_intent_plan(deps: SkillDeps) -> ToolIntentPlan | No
         action=ToolIntentAction.USE_TOOLS,
         target_provider_instances=targets.provider_instances,
         target_provider_types=targets.provider_types,
+        target_provider_skill_names=targets.provider_skill_names,
+        target_capability_classes=targets.capability_classes,
         target_skill_names=targets.skill_names,
         target_group_ids=targets.group_ids,
         target_tool_names=targets.tool_names,
         reason="user_selected_capability",
     )
+
+
+def _selected_plan_matches_active_capability(
+    *,
+    intent_plan: ToolIntentPlan | None,
+    active_provider_skill: Optional[str],
+    active_skill: Optional[str],
+) -> bool:
+    """Return whether a repeated selected capability is the current workflow scope."""
+    if intent_plan is None:
+        return False
+    normalized_provider_skill = _normalize_text(active_provider_skill).lower()
+    if normalized_provider_skill:
+        return normalized_provider_skill in {
+            _normalize_text(item).lower()
+            for item in (intent_plan.target_provider_skill_names or [])
+            if _normalize_text(item)
+        }
+    normalized_skill = _normalize_text(active_skill).lower()
+    if normalized_skill:
+        return normalized_skill in {
+            _normalize_text(item).lower()
+            for item in (intent_plan.target_skill_names or [])
+            if _normalize_text(item)
+        }
+    return False
 
 
 def build_preselected_md_skill_intent_plan(deps: SkillDeps) -> ToolIntentPlan | None:
@@ -174,11 +208,28 @@ def build_preselected_md_skill_intent_plan(deps: SkillDeps) -> ToolIntentPlan | 
     if not qualified_name:
         return None
 
-    provider_type = _normalize_text(target_md_skill.get("provider"))
+    provider_type = _normalize_text(
+        target_md_skill.get("provider") or target_md_skill.get("provider_type")
+    )
+    target_provider_instances = unique_capability_values(
+        target_md_skill.get("target_provider_instances")
+    )
+    target_provider_types = unique_capability_values(target_md_skill.get("target_provider_types"))
+    target_provider_skill_names = unique_capability_values(
+        target_md_skill.get("target_provider_skill_names")
+    )
+    if provider_type and (
+        not target_provider_instances
+        or not target_provider_types
+        or not target_provider_skill_names
+    ):
+        return None
     return ToolIntentPlan(
         action=ToolIntentAction.USE_TOOLS,
-        target_provider_types=[provider_type] if provider_type else [],
-        target_skill_names=[qualified_name],
+        target_provider_instances=target_provider_instances,
+        target_provider_types=target_provider_types,
+        target_provider_skill_names=target_provider_skill_names,
+        target_skill_names=[] if provider_type else [qualified_name],
         target_group_ids=[f"group:{provider_type}"] if provider_type else [],
         reason="preselected_target_md_skill",
     )
@@ -230,6 +281,9 @@ def select_explicit_tool_execution_target(
 def build_transcript_skill_prompt_intent_plan(
     *,
     active_skill: Optional[str],
+    active_provider_skill: Optional[str] = None,
+    target_provider_instances: Optional[list[str]] = None,
+    target_provider_types: Optional[list[str]] = None,
 ) -> ToolIntentPlan | None:
     """Build a non-forcing skill continuation plan from transcript tool evidence.
 
@@ -237,6 +291,20 @@ def build_transcript_skill_prompt_intent_plan(
     turns without requiring a tool call. The main model still decides whether
     the next step is a tool call, a preview, or another clarification.
     """
+    normalized_provider_skill = _normalize_text(active_provider_skill)
+    provider_instances = unique_capability_values(target_provider_instances or [])
+    provider_types = unique_capability_values(target_provider_types or [])
+    if normalized_provider_skill:
+        if not provider_instances or not provider_types:
+            return None
+        return ToolIntentPlan(
+            action=ToolIntentAction.DIRECT_ANSWER,
+            target_provider_instances=provider_instances,
+            target_provider_types=provider_types,
+            target_provider_skill_names=[normalized_provider_skill],
+            reason="transcript_provider_skill_continuation_prompt_only",
+        )
+
     normalized = _normalize_text(active_skill)
     if not normalized:
         return None
@@ -244,6 +312,53 @@ def build_transcript_skill_prompt_intent_plan(
         action=ToolIntentAction.DIRECT_ANSWER,
         target_skill_names=[normalized],
         reason="transcript_skill_continuation_prompt_only",
+    )
+
+
+def _provider_targets_for_provider_skill(
+    *,
+    capability_index: list[dict[str, Any]],
+    active_provider_skill: Optional[str],
+) -> tuple[list[str], list[str]]:
+    normalized_provider_skill = _normalize_text(active_provider_skill).lower()
+    if not normalized_provider_skill:
+        return [], []
+    for entry in capability_index or []:
+        if not isinstance(entry, dict):
+            continue
+        if _normalize_text(entry.get("kind", "")).lower() != "provider_skill":
+            continue
+        if _normalize_text(entry.get("name", "")).lower() != normalized_provider_skill:
+            continue
+        return (
+            unique_capability_values(entry.get("target_provider_instances")),
+            unique_capability_values(entry.get("target_provider_types")),
+        )
+    return [], []
+
+
+def _build_transcript_active_skill_intent_plan(
+    *,
+    capability_index: list[dict[str, Any]],
+    transcript_active_skill: Optional[str],
+    transcript_active_provider_skill: Optional[str],
+) -> ToolIntentPlan | None:
+    """Build a transcript-scoped plan after the model chooses to continue it."""
+    transcript_provider_instances: list[str] = []
+    transcript_provider_types: list[str] = []
+    if transcript_active_provider_skill:
+        (
+            transcript_provider_instances,
+            transcript_provider_types,
+        ) = _provider_targets_for_provider_skill(
+            capability_index=capability_index,
+            active_provider_skill=transcript_active_provider_skill,
+        )
+    return build_transcript_skill_prompt_intent_plan(
+        active_skill=transcript_active_skill,
+        active_provider_skill=transcript_active_provider_skill,
+        target_provider_instances=transcript_provider_instances,
+        target_provider_types=transcript_provider_types,
     )
 
 
@@ -380,32 +495,46 @@ def _build_md_skill_tool_index(
     return skill_tool_index
 
 
-def _infer_active_skill_from_transcript(
+def _md_skill_snapshot_has_provider_binding(
+    skill: dict[str, Any],
+    *,
+    provider_instances: Any = None,
+) -> bool:
+    """Return whether a markdown skill must be selected through provider_name.skill."""
+    if not isinstance(skill, dict):
+        return False
+    metadata = skill.get("metadata", {})
+    if not isinstance(metadata, dict):
+        metadata = {}
+    explicit_provider_type = _normalize_text(
+        metadata.get("provider_type")
+        or skill.get("provider_type")
+        or skill.get("provider")
+    )
+    if explicit_provider_type:
+        return True
+
+    qualified_name = _normalize_text(skill.get("qualified_name") or skill.get("name"))
+    if ":" not in qualified_name:
+        return False
+    provider_type = qualified_name.split(":", 1)[0].strip()
+    _, bucket = _provider_instance_bucket(provider_instances or {}, provider_type)
+    return bool(bucket)
+
+
+def _recent_tool_names_from_transcript(
     *,
     message_history: list[dict[str, Any]],
-    md_skills_snapshot: list[dict[str, Any]],
-    max_scan: int = 20,
-) -> Optional[str]:
-    """Scan recent transcript tool calls to infer the currently active md skill.
-
-    Returns the qualified_name of the md_skill whose declared tools appear
-    most recently in the conversation.  This is used ONLY for SKILL.md
-    documentation loading during follow-up turns — it does NOT affect routing
-    or tool visibility.
-    """
-    if not message_history or not md_skills_snapshot:
-        return None
+    max_scan: int,
+) -> list[str]:
+    """Collect recent tool names from transcript evidence, newest first."""
+    recent_tool_names: list[str] = []
 
     def _append_tool_name(raw_name: Any) -> None:
         tool_name = str(raw_name or "").strip().lower()
         if tool_name and tool_name not in recent_tool_names:
             recent_tool_names.append(tool_name)
 
-    # Collect recent tool names from transcript (newest first). Different
-    # persistence and model adapters store tool evidence in different shapes,
-    # so treat assistant tool calls, standalone tool messages, and embedded
-    # tool_results/tool_call_summaries as equivalent transcript evidence.
-    recent_tool_names: list[str] = []
     for msg in reversed(message_history[-max_scan:]):
         if not isinstance(msg, dict):
             continue
@@ -424,11 +553,43 @@ def _infer_active_skill_from_transcript(
             if not isinstance(summary, dict):
                 continue
             _append_tool_name(summary.get("name", "") or summary.get("tool_name", ""))
+    return recent_tool_names
+
+
+def _infer_active_skill_from_transcript(
+    *,
+    message_history: list[dict[str, Any]],
+    md_skills_snapshot: list[dict[str, Any]],
+    provider_instances: Any = None,
+    max_scan: int = 20,
+) -> Optional[str]:
+    """Scan recent transcript tool calls to infer the currently active md skill.
+
+    Returns the qualified_name of the md_skill whose declared tools appear
+    most recently in the conversation.  This is used ONLY for SKILL.md
+    documentation loading during follow-up turns — it does NOT affect routing
+    or tool visibility.
+    """
+    if not message_history or not md_skills_snapshot:
+        return None
+
+    recent_tool_names = _recent_tool_names_from_transcript(
+        message_history=message_history,
+        max_scan=max_scan,
+    )
 
     if not recent_tool_names:
         return None
 
-    skill_tool_index = _build_md_skill_tool_index(md_skills_snapshot=md_skills_snapshot)
+    standalone_md_skills = [
+        skill
+        for skill in md_skills_snapshot
+        if not _md_skill_snapshot_has_provider_binding(
+            skill,
+            provider_instances=provider_instances,
+        )
+    ]
+    skill_tool_index = _build_md_skill_tool_index(md_skills_snapshot=standalone_md_skills)
     if not skill_tool_index:
         return None
 
@@ -441,6 +602,57 @@ def _infer_active_skill_from_transcript(
     return None
 
 
+def _infer_active_provider_skill_from_transcript(
+    *,
+    message_history: list[dict[str, Any]],
+    capability_index: list[dict[str, Any]],
+    active_provider_name: str = "",
+    active_provider_names: Optional[list[str]] = None,
+    max_scan: int = 20,
+) -> Optional[str]:
+    """Infer the active provider-name.skill target from recent provider tool calls."""
+    provider_entries = [
+        entry
+        for entry in capability_index
+        if isinstance(entry, dict)
+        and _normalize_text(entry.get("kind", "")).lower() == "provider_skill"
+    ]
+    if not message_history or not provider_entries:
+        return None
+
+    recent_tool_names = _recent_tool_names_from_transcript(
+        message_history=message_history,
+        max_scan=max_scan,
+    )
+    if not recent_tool_names:
+        return None
+
+    skill_tool_index = _build_md_skill_tool_index(md_skills_snapshot=provider_entries)
+    if not skill_tool_index:
+        return None
+
+    provider_prefixes = []
+    for raw_name in [active_provider_name, *(active_provider_names or [])]:
+        provider_name = _normalize_text(raw_name).lower()
+        if provider_name and provider_name not in provider_prefixes:
+            provider_prefixes.append(provider_name)
+    for tool_name in recent_tool_names:
+        matches = [
+            skill_name
+            for skill_name, declared_tools in skill_tool_index.items()
+            if tool_name in declared_tools
+        ]
+        if not matches:
+            continue
+        for provider_prefix in provider_prefixes:
+            for skill_name in matches:
+                if skill_name.startswith(f"{provider_prefix}."):
+                    return skill_name
+        if len(matches) == 1:
+            return matches[0]
+    return None
+
+
 def _intent_plan_has_explicit_targets(intent_plan: ToolIntentPlan | None) -> bool:
     if intent_plan is None:
         return False
@@ -448,6 +660,7 @@ def _intent_plan_has_explicit_targets(intent_plan: ToolIntentPlan | None) -> boo
         [
             list(intent_plan.target_provider_instances or []),
             list(intent_plan.target_provider_types or []),
+            list(intent_plan.target_provider_skill_names or []),
             list(intent_plan.target_skill_names or []),
             list(intent_plan.target_group_ids or []),
             list(intent_plan.target_capability_classes or []),
@@ -490,41 +703,6 @@ def _provider_instance_bucket(
     return normalized, {}
 
 
-def _provider_types_for_target_tools(
-    *,
-    extra: dict[str, Any],
-    target_tool_names: list[str],
-) -> list[str]:
-    """Infer provider types for provider-backed tool targets from the tool snapshot."""
-    target_names = {
-        _normalize_text(name).lower()
-        for name in target_tool_names
-        if _normalize_text(name)
-    }
-    if not target_names:
-        return []
-
-    tools_snapshot = extra.get("tools_snapshot")
-    if not isinstance(tools_snapshot, list):
-        return []
-
-    provider_types: list[str] = []
-    seen: set[str] = set()
-    for tool in tools_snapshot:
-        if not isinstance(tool, dict):
-            continue
-        tool_name = _normalize_text(tool.get("name")).lower()
-        if tool_name not in target_names:
-            continue
-        provider_type = _normalize_text(tool.get("provider_type"))
-        provider_key = provider_type.lower()
-        if not provider_key or provider_key in seen:
-            continue
-        seen.add(provider_key)
-        provider_types.append(provider_type)
-    return provider_types
-
-
 def _apply_direct_provider_instance(
     *,
     extra: dict[str, Any],
@@ -549,7 +727,6 @@ def apply_provider_instance_selection_policy(
     trace: dict[str, Any] = {
         "enabled": False,
         "selected_provider_instances": [],
-        "defaulted_provider_instances": [],
         "target_provider_types": [],
     }
     if intent_plan is None or not isinstance(getattr(deps, "extra", None), dict):
@@ -560,19 +737,12 @@ def apply_provider_instance_selection_policy(
     if not isinstance(provider_instances, dict) or not provider_instances:
         return intent_plan, trace
 
-    target_refs: list[tuple[str, str, str, dict[str, Any], bool]] = []
+    target_refs: list[tuple[str, str, str, dict[str, Any]]] = []
     provider_types = [
         _normalize_text(item).lower()
         for item in (intent_plan.target_provider_types or [])
         if _normalize_text(item)
     ]
-    for inferred_provider_type in _provider_types_for_target_tools(
-        extra=extra,
-        target_tool_names=list(intent_plan.target_tool_names or []),
-    ):
-        provider_key = inferred_provider_type.lower()
-        if provider_key not in provider_types:
-            provider_types.append(provider_key)
 
     for raw_ref in intent_plan.target_provider_instances or []:
         raw_provider_type, instance_name = _split_provider_instance_ref(raw_ref)
@@ -585,29 +755,10 @@ def apply_provider_instance_selection_policy(
                 instance_name,
                 f"{provider_type}.{instance_name}",
                 bucket[instance_name],
-                False,
             )
         )
         if provider_type.lower() not in provider_types:
             provider_types.append(provider_type.lower())
-
-    if not target_refs:
-        for raw_provider_type in provider_types:
-            provider_type, bucket = _provider_instance_bucket(provider_instances, raw_provider_type)
-            if not provider_type or not bucket:
-                continue
-            instance_name, instance_config = next(iter(bucket.items()))
-            target_refs.append(
-                (
-                    provider_type,
-                    instance_name,
-                    f"{provider_type}.{instance_name}",
-                    instance_config,
-                    True,
-                )
-            )
-            if provider_type.lower() not in provider_types:
-                provider_types.append(provider_type.lower())
 
     if not target_refs:
         return intent_plan, trace
@@ -616,7 +767,7 @@ def apply_provider_instance_selection_policy(
     if not isinstance(selections, dict):
         selections = {}
         extra[PROVIDER_INSTANCE_SELECTIONS_KEY] = selections
-    for provider_type, instance_name, _, instance_config, _ in target_refs:
+    for provider_type, instance_name, _, instance_config in target_refs:
         selections[provider_type] = instance_name
         selections[provider_type.lower()] = instance_name
         if len(target_refs) == 1:
@@ -627,11 +778,10 @@ def apply_provider_instance_selection_policy(
                 instance_config=instance_config,
             )
 
-    selected_refs = [ref for _, _, ref, _, defaulted in target_refs if not defaulted]
-    defaulted_refs = [ref for _, _, ref, _, defaulted in target_refs if defaulted]
+    selected_refs = [ref for _, _, ref, _ in target_refs]
     updated_plan = intent_plan.model_copy(
         update={
-            "target_provider_instances": selected_refs + defaulted_refs,
+            "target_provider_instances": selected_refs,
             "target_provider_types": provider_types,
         }
     )
@@ -639,11 +789,45 @@ def apply_provider_instance_selection_policy(
         {
             "enabled": True,
             "selected_provider_instances": selected_refs,
-            "defaulted_provider_instances": defaulted_refs,
             "target_provider_types": provider_types,
         }
     )
     return updated_plan, trace
+
+
+async def persist_provider_instance_targets_from_intent_plan(
+    *,
+    deps: SkillDeps,
+    intent_plan: ToolIntentPlan | None,
+) -> list[str]:
+    """Persist provider instances fixed by a provider-skill routing plan."""
+    if intent_plan is None:
+        return []
+
+    persisted_refs: list[str] = []
+    for raw_ref in intent_plan.target_provider_instances or []:
+        provider_type, instance_name = _split_provider_instance_ref(raw_ref)
+        if not provider_type or not instance_name:
+            continue
+        await persist_provider_instance_selection(deps, provider_type, instance_name)
+        persisted_refs.append(f"{provider_type}.{instance_name}")
+    return persisted_refs
+
+
+def _active_provider_instance_names_from_extra(extra: dict[str, Any]) -> list[str]:
+    """Return provider instance names already fixed in the current session/run scope."""
+    names: list[str] = []
+    direct_instance_name = _normalize_text(extra.get("provider_instance_name"))
+    if direct_instance_name:
+        names.append(direct_instance_name)
+
+    selections = extra.get(PROVIDER_INSTANCE_SELECTIONS_KEY)
+    if isinstance(selections, dict):
+        for instance_name in selections.values():
+            normalized_instance_name = _normalize_text(instance_name)
+            if normalized_instance_name:
+                names.append(normalized_instance_name)
+    return unique_capability_values(names)
 
 
 def _artifact_classes_for_entry(entry: dict[str, Any]) -> set[str]:
@@ -658,12 +842,32 @@ def _match_selected_md_skill_entry(
     *,
     entry: dict[str, Any],
     selected_capability_ids: set[str],
+    target_provider_instances: set[str],
+    target_provider_skill_names: set[str],
     target_skill_names: set[str],
     target_tool_names: set[str],
     target_capability_classes: set[str],
 ) -> bool:
+    kind = _normalize_text(entry.get("kind", "")).lower()
     capability_id = _normalize_text(entry.get("capability_id", "")).lower()
     name = _normalize_text(entry.get("name", "")).lower()
+    entry_provider_instances = {
+        _normalize_text(item).lower()
+        for item in (entry.get("target_provider_instances", []) or [])
+        if _normalize_text(item)
+    }
+    entry_target_provider_skill_names = {
+        _normalize_text(item).lower()
+        for item in (entry.get("target_provider_skill_names", []) or [])
+        if _normalize_text(item)
+    }
+    qualified_skill_name = _normalize_text(entry.get("qualified_skill_name", "")).lower()
+    skill_name = _normalize_text(entry.get("skill_name", "")).lower()
+    entry_target_skill_names = {
+        _normalize_text(item).lower()
+        for item in (entry.get("target_skill_names", []) or [])
+        if _normalize_text(item)
+    }
     declared_tool_names = {
         _normalize_text(item).lower()
         for item in (entry.get("declared_tool_names", []) or [])
@@ -671,9 +875,27 @@ def _match_selected_md_skill_entry(
     }
     artifact_classes = _artifact_classes_for_entry(entry)
 
+    if kind == "provider_skill":
+        if not entry_provider_instances.intersection(target_provider_instances):
+            return False
+        if capability_id and capability_id in selected_capability_ids:
+            return True
+        if name and name in target_provider_skill_names:
+            return True
+        if entry_target_provider_skill_names and entry_target_provider_skill_names.intersection(
+            target_provider_skill_names
+        ):
+            return True
+        return False
     if capability_id and capability_id in selected_capability_ids:
         return True
     if name and name in target_skill_names:
+        return True
+    if qualified_skill_name and qualified_skill_name in target_skill_names:
+        return True
+    if skill_name and skill_name in target_skill_names:
+        return True
+    if entry_target_skill_names and entry_target_skill_names.intersection(target_skill_names):
         return True
     if declared_tool_names and declared_tool_names.intersection(target_tool_names):
         return True
@@ -687,12 +909,25 @@ def _rank_selected_md_skill_entry(
     entry: dict[str, Any],
     original_index: int,
     selected_capability_ids: set[str],
+    target_provider_skill_order: dict[str, int],
     target_skill_order: dict[str, int],
     target_tool_order: dict[str, int],
     target_capability_classes: set[str],
-) -> tuple[int, int, int, int, int, int]:
+) -> tuple[int, int, int, int, int, int, int]:
     capability_id = _normalize_text(entry.get("capability_id", "")).lower()
     name = _normalize_text(entry.get("name", "")).lower()
+    qualified_skill_name = _normalize_text(entry.get("qualified_skill_name", "")).lower()
+    skill_name = _normalize_text(entry.get("skill_name", "")).lower()
+    entry_target_skill_names = [
+        _normalize_text(item).lower()
+        for item in (entry.get("target_skill_names", []) or [])
+        if _normalize_text(item)
+    ]
+    entry_target_provider_skill_names = [
+        _normalize_text(item).lower()
+        for item in (entry.get("target_provider_skill_names", []) or [])
+        if _normalize_text(item)
+    ]
     declared_tool_names = [
         _normalize_text(item).lower()
         for item in (entry.get("declared_tool_names", []) or [])
@@ -702,15 +937,35 @@ def _rank_selected_md_skill_entry(
 
     capability_rank = 0 if capability_id and capability_id in selected_capability_ids else 1
     standard_skill_rank = 1 if bool(entry.get("declares_executable_tools")) else 0
-    skill_rank = target_skill_order.get(name, len(target_skill_order) + 1)
+    provider_skill_rank = min(
+        (
+            target_provider_skill_order.get(candidate, len(target_provider_skill_order) + 1)
+            for candidate in [name, *entry_target_provider_skill_names]
+            if candidate
+        ),
+        default=len(target_provider_skill_order) + 1,
+    )
+    skill_rank = min(
+        (
+            target_skill_order.get(candidate, len(target_skill_order) + 1)
+            for candidate in [name, qualified_skill_name, skill_name, *entry_target_skill_names]
+            if candidate
+        ),
+        default=len(target_skill_order) + 1,
+    )
     tool_rank = min(
         (target_tool_order.get(item, len(target_tool_order) + 1) for item in declared_tool_names),
         default=len(target_tool_order) + 1,
     )
-    artifact_rank = 0 if artifact_classes and artifact_classes.intersection(target_capability_classes) else 1
+    artifact_rank = (
+        0
+        if artifact_classes and artifact_classes.intersection(target_capability_classes)
+        else 1
+    )
     return (
         capability_rank,
         standard_skill_rank,
+        provider_skill_rank,
         skill_rank,
         tool_rank,
         artifact_rank,
@@ -748,9 +1003,6 @@ def resolve_selected_md_skill_target(
         return None
 
     capability_index = collect_capability_index_snapshot(agent=agent, deps=deps)
-    capability_index.extend(
-        collect_md_skill_capability_entries(deps, include_provider_bound=True)
-    )
     if not capability_index:
         return None
 
@@ -759,6 +1011,17 @@ def resolve_selected_md_skill_target(
         for item in selected_capability_ids_from_intent_plan(intent_plan)
         if _normalize_text(item)
     }
+    target_provider_instances = {
+        _normalize_text(item).lower()
+        for item in (intent_plan.target_provider_instances or [])
+        if _normalize_text(item)
+    }
+    target_provider_skill_names_ordered = [
+        _normalize_text(item).lower()
+        for item in (intent_plan.target_provider_skill_names or [])
+        if _normalize_text(item)
+    ]
+    target_provider_skill_names = set(target_provider_skill_names_ordered)
     target_skill_names_ordered = [
         _normalize_text(item).lower()
         for item in (intent_plan.target_skill_names or [])
@@ -780,16 +1043,20 @@ def resolve_selected_md_skill_target(
         name: index
         for index, name in enumerate(target_skill_names_ordered)
     }
+    target_provider_skill_order = {
+        name: index
+        for index, name in enumerate(target_provider_skill_names_ordered)
+    }
     target_tool_order = {
         name: index
         for index, name in enumerate(target_tool_names_ordered)
     }
 
-    matching_entries: list[tuple[tuple[int, int, int, int, int], dict[str, Any]]] = []
+    matching_entries: list[tuple[tuple[int, int, int, int, int, int, int], dict[str, Any]]] = []
     for original_index, entry in enumerate(capability_index):
         if not isinstance(entry, dict):
             continue
-        if _normalize_text(entry.get("kind", "")).lower() != "md_skill":
+        if _normalize_text(entry.get("kind", "")).lower() not in {"md_skill", "provider_skill"}:
             continue
         file_path = _normalize_text(entry.get("locator", ""))
         if not file_path:
@@ -797,6 +1064,8 @@ def resolve_selected_md_skill_target(
         if not _match_selected_md_skill_entry(
             entry=entry,
             selected_capability_ids=selected_capability_ids,
+            target_provider_instances=target_provider_instances,
+            target_provider_skill_names=target_provider_skill_names,
             target_skill_names=target_skill_names,
             target_tool_names=target_tool_names,
             target_capability_classes=target_capability_classes,
@@ -808,6 +1077,7 @@ def resolve_selected_md_skill_target(
                     entry=entry,
                     original_index=original_index,
                     selected_capability_ids=selected_capability_ids,
+                    target_provider_skill_order=target_provider_skill_order,
                     target_skill_order=target_skill_order,
                     target_tool_order=target_tool_order,
                     target_capability_classes=target_capability_classes,
@@ -827,7 +1097,12 @@ def resolve_selected_md_skill_target(
     )
     return {
         "provider": provider,
-        "qualified_name": _normalize_text(selected_entry.get("name", "")),
+        "provider_name": _normalize_text(selected_entry.get("provider_name", "")),
+        "instance_name": _normalize_text(selected_entry.get("instance_name", "")),
+        "provider_skill_name": _normalize_text(selected_entry.get("provider_skill_name", "")),
+        "qualified_name": _normalize_text(
+            selected_entry.get("qualified_skill_name") or selected_entry.get("name", "")
+        ),
         "description": _normalize_text(selected_entry.get("description", "")),
         "artifact_types": list(selected_entry.get("artifact_types", []) or []),
         "file_path": file_path,
@@ -1485,6 +1760,8 @@ def inject_standard_skill_runtime_tools(
 
 
 class RunnerExecutionPreparePhaseMixin:
+    """Prepare routing, prompt context, and projected tools before model execution."""
+
     async def _run_prepare_phase(self, *, state: dict[str, Any], _log_step: Any) -> AsyncIterator[StreamEvent]:
         """Prepare runtime/session/prompt/tool-gate phase before model loop."""
         session_key = state.get("session_key")
@@ -1715,54 +1992,89 @@ class RunnerExecutionPreparePhaseMixin:
                     tool_groups_snapshot,
                     available_tools,
                 )
-            tool_request_message, used_follow_up_context = self._resolve_contextual_tool_request(
-                user_message=user_message,
-                recent_history=message_history,
-                deps=deps,
-            )
+            tool_request_message = " ".join(str(user_message or "").split()).strip()
+            if not tool_request_message:
+                tool_request_message = user_message
+            used_follow_up_context = False
+            model_user_message = user_message
             if isinstance(deps.extra, dict):
-                if used_follow_up_context and tool_request_message != user_message:
-                    deps.extra["current_follow_up_context"] = tool_request_message
-                else:
-                    deps.extra.pop("current_follow_up_context", None)
-            model_user_message = (
-                tool_request_message
-                if used_follow_up_context and tool_request_message != user_message
-                else user_message
-            )
-            _log_step(
-                "tool_request_resolved",
-                used_follow_up_context=used_follow_up_context,
-                raw_user_message=user_message,
-                resolved_tool_request=tool_request_message,
-            )
+                deps.extra.pop("current_follow_up_context", None)
             target_md_skill_workflow_context = build_target_md_skill_workflow_context(
                 recent_history=message_history,
             )
             transcript_active_skill = None
+            transcript_active_provider_skill = None
+            capability_index: list[dict[str, Any]] | None = collect_capability_index_snapshot(
+                agent=runtime_agent or self.agent,
+                deps=deps,
+            )
             md_skills_snapshot = (
                 list(deps.extra.get("md_skills_snapshot") or [])
                 if isinstance(deps.extra, dict)
                 else []
             )
-            if used_follow_up_context:
+            transcript_active_provider_skill = _infer_active_provider_skill_from_transcript(
+                message_history=message_history,
+                capability_index=capability_index,
+                active_provider_name=(
+                    str(deps.extra.get("provider_instance_name", "") or "")
+                    if isinstance(deps.extra, dict)
+                    else ""
+                ),
+                active_provider_names=(
+                    _active_provider_instance_names_from_extra(deps.extra)
+                    if isinstance(deps.extra, dict)
+                    else []
+                ),
+            )
+            if not transcript_active_provider_skill:
                 transcript_active_skill = _infer_active_skill_from_transcript(
                     message_history=message_history,
                     md_skills_snapshot=md_skills_snapshot,
+                    provider_instances=(
+                        deps.extra.get("provider_instances")
+                        if isinstance(deps.extra, dict)
+                        else None
+                    ),
                 )
-                if transcript_active_skill:
-                    if isinstance(deps.extra, dict):
-                        deps.extra["transcript_skill_continuation_hint"] = (
-                            transcript_active_skill
-                        )
-                    _log_step(
-                        "transcript_skill_continuation_hint_computed",
-                        reason="transcript_tool_calls_suggest_active_skill",
-                        hint_skill=transcript_active_skill,
-                    )
+            if isinstance(deps.extra, dict):
+                deps.extra.pop("transcript_skill_continuation_hint", None)
             selected_tool_intent_plan = build_user_selected_tool_intent_plan(deps)
             capability_selector_intent_plan: ToolIntentPlan | None = None
+            active_capability_route: str | None = None
             if selected_tool_intent_plan is not None:
+                if _selected_plan_matches_active_capability(
+                    intent_plan=selected_tool_intent_plan,
+                    active_provider_skill=transcript_active_provider_skill,
+                    active_skill=transcript_active_skill,
+                ):
+                    resolved_tool_request, resolved_follow_up_context = (
+                        self._build_active_capability_continuation_request(
+                            user_message=user_message,
+                            recent_history=message_history,
+                        )
+                    )
+                    tool_request_message = resolved_tool_request
+                    used_follow_up_context = resolved_follow_up_context
+                    model_user_message = (
+                        tool_request_message
+                        if resolved_follow_up_context and tool_request_message != user_message
+                        else user_message
+                    )
+                    selected_tool_intent_plan = selected_tool_intent_plan.model_copy(
+                        update={
+                            "action": ToolIntentAction.DIRECT_ANSWER,
+                            "reason": "user_selected_capability_active_continuation",
+                        }
+                    )
+                    _log_step(
+                        "user_selected_capability_active_continuation",
+                        target_provider_skill_names=list(
+                            selected_tool_intent_plan.target_provider_skill_names
+                        ),
+                        target_skill_names=list(selected_tool_intent_plan.target_skill_names),
+                        used_follow_up_context=used_follow_up_context,
+                    )
                 metadata_candidates = {
                     "reason": "user_selected_capability",
                     "confidence": 1.0,
@@ -1770,6 +2082,9 @@ class RunnerExecutionPreparePhaseMixin:
                         selected_tool_intent_plan.target_provider_instances
                     ),
                     "preferred_provider_types": list(selected_tool_intent_plan.target_provider_types),
+                    "preferred_provider_skill_names": list(
+                        selected_tool_intent_plan.target_provider_skill_names
+                    ),
                     "preferred_group_ids": list(selected_tool_intent_plan.target_group_ids),
                     "preferred_capability_classes": list(
                         selected_tool_intent_plan.target_capability_classes
@@ -1783,6 +2098,9 @@ class RunnerExecutionPreparePhaseMixin:
                         selected_tool_intent_plan.target_provider_instances
                     ),
                     target_provider_types=list(selected_tool_intent_plan.target_provider_types),
+                    target_provider_skill_names=list(
+                        selected_tool_intent_plan.target_provider_skill_names
+                    ),
                     target_skill_names=list(selected_tool_intent_plan.target_skill_names),
                     target_tool_names=list(selected_tool_intent_plan.target_tool_names),
                 )
@@ -1808,44 +2126,169 @@ class RunnerExecutionPreparePhaseMixin:
                         reason="memory_read_tools_require_explicit_slash_or_internal_services",
                         removed_tools=hidden_memory_tools,
                     )
-                capability_index = collect_capability_index_snapshot(
-                    agent=runtime_agent or self.agent,
-                    deps=deps,
+                has_transcript_active_capability = bool(
+                    transcript_active_provider_skill or transcript_active_skill
                 )
-                usage_profile_context = ""
-                usage_profile_result = await self.active_memory.recall_usage_profile_for_routing(
-                    deps=deps,
-                    session_key=session_key,
-                )
-                if isinstance(deps.extra, dict):
-                    deps.extra["usage_profile_routing"] = {
-                        "status": str(getattr(usage_profile_result, "status", "") or ""),
-                        "elapsed_ms": int(getattr(usage_profile_result, "elapsed_ms", 0) or 0),
-                        "result_count": int(
-                            getattr(usage_profile_result, "result_count", 0) or 0
-                        ),
-                    }
-                usage_profile_context = str(
-                    getattr(usage_profile_result, "context", "") or ""
-                ).strip()
-                if usage_profile_context:
-                    _log_step(
-                        "usage_profile_routing_hints_injected",
-                        status=str(getattr(usage_profile_result, "status", "") or ""),
-                        result_count=int(getattr(usage_profile_result, "result_count", 0) or 0),
-                        elapsed_ms=int(getattr(usage_profile_result, "elapsed_ms", 0) or 0),
+                if has_transcript_active_capability:
+                    active_capability_route = await self._select_active_capability_route_with_model(
+                        agent=runtime_agent or self.agent,
+                        deps=deps,
+                        user_message=user_message,
+                        recent_history=message_history,
+                        active_provider_skill=transcript_active_provider_skill or "",
+                        active_skill=transcript_active_skill or "",
                     )
-                capability_selector_intent_plan = await self._select_capability_intent_plan_with_model(
-                    agent=runtime_agent or self.agent,
-                    deps=deps,
-                    user_message=tool_request_message,
-                    recent_history=message_history,
-                    capability_index=capability_index,
-                    usage_profile_context=usage_profile_context,
+                    if not active_capability_route:
+                        active_capability_route = self.ACTIVE_CAPABILITY_SELECT
+                    _log_step(
+                        "active_capability_route_resolved",
+                        enabled=bool(active_capability_route),
+                        decision=active_capability_route or "",
+                        active_provider_skill=transcript_active_provider_skill or "",
+                        active_skill=transcript_active_skill or "",
+                    )
+                if active_capability_route == self.ACTIVE_CAPABILITY_CONTINUE:
+                    resolved_tool_request, resolved_follow_up_context = (
+                        self._build_active_capability_continuation_request(
+                            user_message=user_message,
+                            recent_history=message_history,
+                        )
+                    )
+                    tool_request_message = resolved_tool_request
+                    used_follow_up_context = resolved_follow_up_context
+                    model_user_message = (
+                        tool_request_message
+                        if resolved_follow_up_context and tool_request_message != user_message
+                        else user_message
+                    )
+                    transcript_skill_intent_plan = _build_transcript_active_skill_intent_plan(
+                        capability_index=capability_index,
+                        transcript_active_skill=transcript_active_skill,
+                        transcript_active_provider_skill=transcript_active_provider_skill,
+                    )
+                    if transcript_skill_intent_plan is not None:
+                        capability_selector_intent_plan = transcript_skill_intent_plan
+                        transcript_hint = (
+                            transcript_active_provider_skill or transcript_active_skill
+                        )
+                        if isinstance(deps.extra, dict) and transcript_hint:
+                            deps.extra["transcript_skill_continuation_hint"] = transcript_hint
+                        _log_step(
+                            "active_capability_continuation_applied",
+                            reason=transcript_skill_intent_plan.reason,
+                            target_provider_instances=list(
+                                transcript_skill_intent_plan.target_provider_instances
+                            ),
+                            target_provider_types=list(
+                                transcript_skill_intent_plan.target_provider_types
+                            ),
+                            target_provider_skill_names=list(
+                                transcript_skill_intent_plan.target_provider_skill_names
+                            ),
+                            target_skill_names=list(
+                                transcript_skill_intent_plan.target_skill_names
+                            ),
+                        )
+                elif has_transcript_active_capability:
+                    tool_request_message = user_message
+                    model_user_message = user_message
+                    used_follow_up_context = False
+                    _log_step(
+                        "follow_up_context_released_for_capability_reselection",
+                        reason="active_capability_router_selected_full_capability_analysis",
+                    )
+                else:
+                    tool_request_message, used_follow_up_context = (
+                        self._resolve_contextual_tool_request(
+                            user_message=user_message,
+                            recent_history=message_history,
+                            deps=deps,
+                        )
+                    )
+                    model_user_message = (
+                        tool_request_message
+                        if used_follow_up_context and tool_request_message != user_message
+                        else user_message
+                    )
+
+                if isinstance(deps.extra, dict):
+                    if used_follow_up_context and tool_request_message != user_message:
+                        deps.extra["current_follow_up_context"] = tool_request_message
+                    else:
+                        deps.extra.pop("current_follow_up_context", None)
+                _log_step(
+                    "tool_request_resolved",
+                    used_follow_up_context=used_follow_up_context,
+                    raw_user_message=user_message,
+                    resolved_tool_request=tool_request_message,
                 )
+                if capability_selector_intent_plan is None:
+                    usage_profile_context = ""
+                    usage_profile_result = await self.active_memory.recall_usage_profile_for_routing(
+                        deps=deps,
+                        session_key=session_key,
+                    )
+                    if isinstance(deps.extra, dict):
+                        deps.extra["usage_profile_routing"] = {
+                            "status": str(getattr(usage_profile_result, "status", "") or ""),
+                            "elapsed_ms": int(
+                                getattr(usage_profile_result, "elapsed_ms", 0) or 0
+                            ),
+                            "result_count": int(
+                                getattr(usage_profile_result, "result_count", 0) or 0
+                            ),
+                        }
+                    usage_profile_context = str(
+                        getattr(usage_profile_result, "context", "") or ""
+                    ).strip()
+                    if usage_profile_context:
+                        _log_step(
+                            "usage_profile_routing_hints_injected",
+                            status=str(getattr(usage_profile_result, "status", "") or ""),
+                            result_count=int(
+                                getattr(usage_profile_result, "result_count", 0) or 0
+                            ),
+                            elapsed_ms=int(getattr(usage_profile_result, "elapsed_ms", 0) or 0),
+                        )
+                    selector_user_message = (
+                        user_message
+                        if active_capability_route == self.ACTIVE_CAPABILITY_SELECT
+                        else tool_request_message
+                    )
+                    active_capability_context = (
+                        self._format_active_capability_name(
+                            active_provider_skill=transcript_active_provider_skill or "",
+                            active_skill=transcript_active_skill or "",
+                        )
+                        if has_transcript_active_capability
+                        else ""
+                    )
+                    capability_selector_intent_plan = await self._select_capability_intent_plan_with_model(
+                        agent=runtime_agent or self.agent,
+                        deps=deps,
+                        user_message=selector_user_message,
+                        recent_history=message_history,
+                        capability_index=capability_index,
+                        usage_profile_context=usage_profile_context,
+                        active_capability_context=active_capability_context,
+                    )
+                    if capability_selector_intent_plan is None:
+                        capability_selector_intent_plan = ToolIntentPlan(
+                            action=ToolIntentAction.DIRECT_ANSWER,
+                            reason="capability_selector_returned_no_valid_target",
+                        )
                 metadata_candidates = {
-                    "reason": "llm_capability_selector",
-                    "confidence": 1.0 if capability_selector_intent_plan is not None else 0.0,
+                    "reason": (
+                        "active_capability_continuation"
+                        if active_capability_route == self.ACTIVE_CAPABILITY_CONTINUE
+                        else "llm_capability_selector"
+                    ),
+                    "confidence": (
+                        1.0
+                        if capability_selector_intent_plan.reason
+                        != "capability_selector_returned_no_valid_target"
+                        else 0.0
+                    ),
                     "preferred_provider_instances": (
                         list(capability_selector_intent_plan.target_provider_instances)
                         if capability_selector_intent_plan is not None
@@ -1853,6 +2296,11 @@ class RunnerExecutionPreparePhaseMixin:
                     ),
                     "preferred_provider_types": (
                         list(capability_selector_intent_plan.target_provider_types)
+                        if capability_selector_intent_plan is not None
+                        else []
+                    ),
+                    "preferred_provider_skill_names": (
+                        list(capability_selector_intent_plan.target_provider_skill_names)
                         if capability_selector_intent_plan is not None
                         else []
                     ),
@@ -1895,6 +2343,11 @@ class RunnerExecutionPreparePhaseMixin:
                         if capability_selector_intent_plan is not None
                         else []
                     ),
+                    target_provider_skill_names=(
+                        list(capability_selector_intent_plan.target_provider_skill_names)
+                        if capability_selector_intent_plan is not None
+                        else []
+                    ),
                     target_skill_names=(
                         list(capability_selector_intent_plan.target_skill_names)
                         if capability_selector_intent_plan is not None
@@ -1915,6 +2368,9 @@ class RunnerExecutionPreparePhaseMixin:
                 ),
                 "preferred_provider_types": list(
                     metadata_candidates.get("preferred_provider_types", []) or []
+                ),
+                "preferred_provider_skill_names": list(
+                    metadata_candidates.get("preferred_provider_skill_names", []) or []
                 ),
                 "preferred_group_ids": list(
                     metadata_candidates.get("preferred_group_ids", []) or []
@@ -1938,6 +2394,9 @@ class RunnerExecutionPreparePhaseMixin:
                 preferred_provider_types=list(
                     metadata_candidates.get("preferred_provider_types", []) or []
                 ),
+                preferred_provider_skill_names=list(
+                    metadata_candidates.get("preferred_provider_skill_names", []) or []
+                ),
                 preferred_group_ids=list(
                     metadata_candidates.get("preferred_group_ids", []) or []
                 ),
@@ -1952,22 +2411,6 @@ class RunnerExecutionPreparePhaseMixin:
                 metadata_tool_intent_plan = selected_tool_intent_plan
             else:
                 metadata_tool_intent_plan = capability_selector_intent_plan
-            transcript_skill_intent_plan = None
-            if (
-                selected_tool_intent_plan is None
-                and used_follow_up_context
-                and not _intent_plan_has_explicit_targets(metadata_tool_intent_plan)
-            ):
-                transcript_skill_intent_plan = build_transcript_skill_prompt_intent_plan(
-                    active_skill=transcript_active_skill,
-                )
-                if transcript_skill_intent_plan is not None:
-                    metadata_tool_intent_plan = transcript_skill_intent_plan
-                    _log_step(
-                        "transcript_skill_continuation_plan_applied",
-                        reason=transcript_skill_intent_plan.reason,
-                        target_skill_names=list(transcript_skill_intent_plan.target_skill_names),
-                    )
             metadata_tool_intent_plan, provider_instance_selection_trace = (
                 apply_provider_instance_selection_policy(
                     deps=deps,
@@ -1993,17 +2436,22 @@ class RunnerExecutionPreparePhaseMixin:
                         )
                         or []
                     ),
-                    defaulted_provider_instances=list(
-                        provider_instance_selection_trace.get(
-                            "defaulted_provider_instances", []
-                        )
-                        or []
-                    ),
                     target_provider_types=list(
                         provider_instance_selection_trace.get("target_provider_types", [])
                         or []
                     ),
                 )
+                persisted_provider_instances = (
+                    await persist_provider_instance_targets_from_intent_plan(
+                        deps=deps,
+                        intent_plan=metadata_tool_intent_plan,
+                    )
+                )
+                if persisted_provider_instances:
+                    _log_step(
+                        "provider_instance_selection_persisted",
+                        selected_provider_instances=persisted_provider_instances,
+                    )
             if metadata_tool_intent_plan is not None:
                 _log_step(
                     "capability_selector_plan_resolved",
@@ -2012,6 +2460,9 @@ class RunnerExecutionPreparePhaseMixin:
                         metadata_tool_intent_plan.target_provider_instances
                     ),
                     target_provider_types=list(metadata_tool_intent_plan.target_provider_types),
+                    target_provider_skill_names=list(
+                        metadata_tool_intent_plan.target_provider_skill_names
+                    ),
                     target_skill_names=list(metadata_tool_intent_plan.target_skill_names),
                     target_capability_classes=list(metadata_tool_intent_plan.target_capability_classes),
                     target_tool_names=list(metadata_tool_intent_plan.target_tool_names),
@@ -2027,6 +2478,7 @@ class RunnerExecutionPreparePhaseMixin:
                         [
                             list(tool_intent_plan.target_provider_instances or []),
                             list(tool_intent_plan.target_provider_types or []),
+                            list(tool_intent_plan.target_provider_skill_names or []),
                             list(tool_intent_plan.target_skill_names or []),
                             list(tool_intent_plan.target_group_ids or []),
                             list(tool_intent_plan.target_capability_classes or []),
@@ -2063,6 +2515,11 @@ class RunnerExecutionPreparePhaseMixin:
                 if tool_intent_plan is not None
                 else [],
                 target_provider_types=list(tool_intent_plan.target_provider_types or [])
+                if tool_intent_plan is not None
+                else [],
+                target_provider_skill_names=list(
+                    tool_intent_plan.target_provider_skill_names or []
+                )
                 if tool_intent_plan is not None
                 else [],
                 target_skill_names=list(tool_intent_plan.target_skill_names or [])
@@ -2177,6 +2634,13 @@ class RunnerExecutionPreparePhaseMixin:
                 _log_step(
                     "target_md_skill_preselected",
                     reason=preselected_md_skill_plan.reason,
+                    target_provider_instances=list(
+                        preselected_md_skill_plan.target_provider_instances
+                    ),
+                    target_provider_types=list(preselected_md_skill_plan.target_provider_types),
+                    target_provider_skill_names=list(
+                        preselected_md_skill_plan.target_provider_skill_names
+                    ),
                     target_skill_names=list(preselected_md_skill_plan.target_skill_names),
                 )
             routed_skill_resolution_plan = (
@@ -2184,17 +2648,28 @@ class RunnerExecutionPreparePhaseMixin:
             )
             transcript_skill_resolution_plan = None
             if (
-                used_follow_up_context
+                active_capability_route == self.ACTIVE_CAPABILITY_CONTINUE
                 and preselected_md_skill_plan is None
                 and routed_skill_resolution_plan is None
             ):
-                transcript_skill_resolution_plan = build_transcript_skill_prompt_intent_plan(
-                    active_skill=transcript_active_skill,
+                transcript_skill_resolution_plan = _build_transcript_active_skill_intent_plan(
+                    capability_index=capability_index,
+                    transcript_active_skill=transcript_active_skill,
+                    transcript_active_provider_skill=transcript_active_provider_skill,
                 )
                 if transcript_skill_resolution_plan is not None:
                     _log_step(
                         "target_md_skill_from_transcript",
                         reason=transcript_skill_resolution_plan.reason,
+                        target_provider_instances=list(
+                            transcript_skill_resolution_plan.target_provider_instances
+                        ),
+                        target_provider_types=list(
+                            transcript_skill_resolution_plan.target_provider_types
+                        ),
+                        target_provider_skill_names=list(
+                            transcript_skill_resolution_plan.target_provider_skill_names
+                        ),
                         target_skill_names=list(
                             transcript_skill_resolution_plan.target_skill_names
                         ),
@@ -2267,10 +2742,20 @@ class RunnerExecutionPreparePhaseMixin:
             _log_step(
                 "target_md_skill_resolved",
                 enabled=bool(target_md_skill),
-                qualified_name=(
-                    str(target_md_skill.get("qualified_name", "") or "")
+                provider_skill_name=(
+                    str(target_md_skill.get("provider_skill_name", "") or "")
                     if isinstance(target_md_skill, dict)
                     else ""
+                ),
+                qualified_name=(
+                    ""
+                    if isinstance(target_md_skill, dict)
+                    and str(target_md_skill.get("provider_skill_name", "") or "").strip()
+                    else (
+                        str(target_md_skill.get("qualified_name", "") or "")
+                        if isinstance(target_md_skill, dict)
+                        else ""
+                    )
                 ),
                 loaded_instructions=bool(
                     isinstance(target_md_skill, dict)
@@ -2312,6 +2797,38 @@ class RunnerExecutionPreparePhaseMixin:
                 _log_step(
                     "coordination_only_toolset_dropped",
                     reason="no_executable_runtime_capability",
+                )
+            if (
+                not available_tools
+                and tool_intent_plan is not None
+                and tool_intent_plan.action
+                in {ToolIntentAction.DIRECT_ANSWER, ToolIntentAction.ASK_CLARIFICATION}
+                and not _intent_plan_has_explicit_targets(tool_intent_plan)
+                and str(getattr(tool_intent_plan, "reason", "") or "").strip()
+                != NO_RUNTIME_CAPABILITY_REASON
+            ):
+                no_capability_route = await self._classify_no_capability_route_with_model(
+                    agent=runtime_agent or self.agent,
+                    deps=deps,
+                    user_message=user_message,
+                    recent_history=message_history,
+                )
+                if no_capability_route == self.NO_CAPABILITY_RUNTIME_REQUEST:
+                    tool_intent_plan = ToolIntentPlan(
+                        action=ToolIntentAction.DIRECT_ANSWER,
+                        reason=NO_RUNTIME_CAPABILITY_REASON,
+                    )
+                    tool_gate_decision = self._build_tool_gate_decision_from_intent_plan(
+                        tool_intent_plan,
+                        available_tools=available_tools,
+                    )
+                _log_step(
+                    "no_capability_route_resolved",
+                    decision=no_capability_route or "",
+                    applied=(
+                        str(getattr(tool_intent_plan, "reason", "") or "").strip()
+                        == NO_RUNTIME_CAPABILITY_REASON
+                    ),
                 )
             tool_match_result = CapabilityMatcher(available_tools=available_tools).match(
                 tool_gate_decision.suggested_tool_classes

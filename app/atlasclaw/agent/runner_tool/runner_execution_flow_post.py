@@ -16,10 +16,13 @@ from app.atlasclaw.agent.plaintext_tool_calls import looks_like_plaintext_tool_c
 from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     build_direct_answer_recovery_payload,
     build_lookup_dump_recovery_payload,
+    build_no_runtime_capability_answer,
     provider_auth_diagnostic_user_message,
+    select_no_runtime_provider_auth_diagnostic,
     select_provider_auth_diagnostic,
 )
 from app.atlasclaw.agent.runner_tool.runner_llm_routing import messages_satisfy_artifact_goal
+from app.atlasclaw.agent.tool_gate_models import NO_RUNTIME_CAPABILITY_REASON
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import has_hidden_lookup_result_content
 from app.atlasclaw.agent.runner_tool.runner_tool_messages import overlay_synthetic_tool_messages
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
@@ -34,6 +37,8 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 
 
 class RunnerExecutionFlowPostMixin:
+    """Finalize runner output, evidence checks, and recovery responses."""
+
     @staticmethod
     def _strip_workspace_download_link_paths(answer: str, download_keys: list[str] | set[str]) -> str:
         """Replace generated-file markdown links with filename-only text."""
@@ -398,6 +403,10 @@ class RunnerExecutionFlowPostMixin:
         if not normalized:
             return False
         lowered = normalized.lower()
+        if re.search(r"(?im)^-\s*source:\s*\S+", normalized) and re.search(
+            r"(?m)^###\s+\S+", normalized
+        ):
+            return True
         if '"_internal"' in normalized or '"returncode"' in normalized or '"success"' in normalized:
             return True
         if lowered.startswith("found ") and ("catalog" in lowered or "business group" in lowered):
@@ -461,6 +470,33 @@ class RunnerExecutionFlowPostMixin:
                 if not isinstance(result, dict):
                     continue
                 if has_hidden_lookup_result_content(result.get("content", result)):
+                    return True
+        return False
+
+    @staticmethod
+    def _has_markdown_vault_tool_results(
+        *,
+        messages: list[dict[str, Any]],
+        start_index: int,
+    ) -> bool:
+        safe_start = max(0, min(int(start_index), len(messages)))
+        for message in messages[safe_start:]:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role", "") or "").strip().lower()
+            if role in {"tool", "toolresult", "tool_result"}:
+                tool_name = str(
+                    message.get("tool_name", "") or message.get("name", "") or ""
+                ).strip()
+                if tool_name.startswith("markdown_vault_"):
+                    return True
+            for result in message.get("tool_results", []) or []:
+                if not isinstance(result, dict):
+                    continue
+                tool_name = str(
+                    result.get("tool_name", "") or result.get("name", "") or ""
+                ).strip()
+                if tool_name.startswith("markdown_vault_"):
                     return True
         return False
 
@@ -861,6 +897,19 @@ class RunnerExecutionFlowPostMixin:
                 )
 
         if (
+            tool_intent_plan is not None
+            and str(getattr(tool_intent_plan, "reason", "") or "").strip()
+            == NO_RUNTIME_CAPABILITY_REASON
+            and not state.get("available_tools")
+        ):
+            provider_auth_diagnostic = select_no_runtime_provider_auth_diagnostic(
+                extra=getattr(deps, "extra", {}),
+                intent_plan=tool_intent_plan,
+            )
+            final_assistant = build_no_runtime_capability_answer(provider_auth_diagnostic)
+            _log_step("no_runtime_capability_answer_applied")
+
+        if (
             not tool_execution_required
             and not state.get("available_tools")
             and final_assistant
@@ -906,9 +955,16 @@ class RunnerExecutionFlowPostMixin:
         if (
             final_assistant
             and self._looks_like_raw_lookup_dump(final_assistant)
-            and self._has_silent_lookup_results(
-                messages=final_messages,
-                start_index=persist_run_output_start_index,
+            and not self._looks_like_raw_tool_payload_dump(final_assistant)
+            and (
+                self._has_silent_lookup_results(
+                    messages=final_messages,
+                    start_index=persist_run_output_start_index,
+                )
+                or self._has_markdown_vault_tool_results(
+                    messages=final_messages,
+                    start_index=persist_run_output_start_index,
+                )
             )
         ):
             yield StreamEvent.runtime_update(
@@ -1086,9 +1142,30 @@ class RunnerExecutionFlowPostMixin:
                 artifact_label = str(
                     (artifact_goal or {}).get("label", "") or (artifact_goal or {}).get("kind", "")
                 ).strip() or "requested artifact"
-                failure_message = (
-                    f"The runtime gathered intermediate data, but it did not actually produce the requested {artifact_label}."
+                artifact_failure_reasons = self._build_missing_tool_evidence_failure_reasons(
+                    state=state,
+                    missing_required_tools=[],
+                    final_messages=final_messages,
+                    start_index=persist_run_output_start_index,
+                    planned_tool_names=planned_tool_names,
                 )
+                artifact_failure_reason = ""
+                for reason in artifact_failure_reasons:
+                    artifact_failure_reason = str(reason or "").strip()
+                    if not artifact_failure_reason:
+                        continue
+                    if ": " in artifact_failure_reason:
+                        artifact_failure_reason = artifact_failure_reason.split(": ", 1)[1].strip()
+                    break
+                if artifact_failure_reason:
+                    failure_message = (
+                        f"The requested {artifact_label} was not created: {artifact_failure_reason}"
+                    )
+                else:
+                    failure_message = (
+                        "The runtime gathered intermediate data, but it did not actually "
+                        f"produce the requested {artifact_label}."
+                    )
             recovery_answer = ""
             answer_phase = "unsupported_tool_request"
             max_tool_policy_retries = int(self.TOOL_POLICY_MAX_RETRIES or 0)

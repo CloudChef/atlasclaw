@@ -11,7 +11,6 @@ import importlib.util
 import json
 import subprocess
 import sys
-import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -21,6 +20,7 @@ from app.atlasclaw.core.trace import sanitize_log_value
 from app.atlasclaw.tools.providers.instance_tools import (
     resolve_provider_instance_selection,
 )
+from app.atlasclaw.tools.work_dir_guard import contains_home_relative_path
 
 
 @dataclass(frozen=True)
@@ -62,81 +62,6 @@ def _format_log_value(
     if isinstance(sanitized, dict) and sanitized.get(str(key)) == "***...":
         return "***..."
     return f"{str(value)[:50]}..."
-
-
-_SUBMIT_CONFIRM_TOOL_SUFFIXES = ("submit_request",)
-_EXPLICIT_SUBMIT_CONFIRMATIONS = frozenset(
-    {
-        "y",
-        "yes",
-        "ok",
-        "okay",
-        "confirm",
-        "confirmed",
-        "proceed",
-        "approve",
-        "approved",
-        "是",
-        "确认",
-    }
-)
-_EXPLICIT_SUBMIT_REJECTIONS = frozenset(
-    {
-        "n",
-        "no",
-        "cancel",
-        "否",
-    }
-)
-_SUBMIT_CONFIRMATION_PHRASES = (
-    "confirm submit",
-    "confirm submission",
-    "parameters are correct",
-    "the parameters are correct",
-    "content is correct",
-    "looks correct",
-    "use defaults",
-    "use default values",
-    "确认提交",
-)
-_SUBMIT_REJECTION_PHRASES = (
-    "do not submit",
-    "don't submit",
-    "dont submit",
-    "do not proceed",
-    "cancel submission",
-    "cancel request",
-    "hold off",
-    "not submit",
-    "不要提交",
-    "不提交",
-    "取消提交",
-)
-
-
-def _tool_requires_explicit_submit_confirmation(tool_name: str) -> bool:
-    # submit_request tools can create external side effects, so the latest user
-    # message must be a clear confirmation before the script is allowed to run.
-    normalized = str(tool_name or "").strip().lower()
-    return normalized.endswith(_SUBMIT_CONFIRM_TOOL_SUFFIXES)
-
-
-def _is_explicit_submit_confirmation(message: Any) -> bool:
-    normalized = " ".join(str(message or "").split()).strip()
-    if not normalized:
-        return False
-
-    lowered = unicodedata.normalize("NFKC", normalized).lower()
-    compact = lowered.strip(" \t\r\n.,!?;:，。！？；：（）()[]{}<>\"'")
-    if not compact:
-        return False
-    if compact in _EXPLICIT_SUBMIT_REJECTIONS:
-        return False
-    if any(phrase in lowered for phrase in _SUBMIT_REJECTION_PHRASES):
-        return False
-    if compact in _EXPLICIT_SUBMIT_CONFIRMATIONS:
-        return True
-    return any(phrase in lowered for phrase in _SUBMIT_CONFIRMATION_PHRASES)
 
 
 def load_handler_from_file(
@@ -255,23 +180,6 @@ def create_script_wrapper(
         env.setdefault("PYTHONUTF8", "1")
         deps = getattr(ctx, "deps", None) if ctx is not None else None
         normalized_tool_name = str(tool_name or py_file.stem).strip()
-        user_message = getattr(deps, "user_message", "") if deps is not None else ""
-
-        if (
-            deps is not None
-            and _tool_requires_explicit_submit_confirmation(normalized_tool_name)
-            and not _is_explicit_submit_confirmation(user_message)
-        ):
-            return {
-                "success": False,
-                "error": "Explicit user confirmation is required before submitting the request.",
-                "output": (
-                    "Submission blocked: explicit user confirmation is required before "
-                    "running this request. Ask the user to reply with a clear confirmation "
-                    "such as 'yes', 'confirm submit', or 'parameters are correct'."
-                ),
-            }
-
         user_info = getattr(deps, "user_info", None)
         user_id = str(getattr(user_info, "user_id", "") or "").strip()
         if user_id:
@@ -707,6 +615,11 @@ def _wrap_artifact_handler(handler: Callable, *, capability_class: str) -> Calla
         return handler
 
     async def artifact_handler(ctx=None, **kwargs) -> dict[str, Any]:
+        if _artifact_user_requested_home_relative_output(ctx):
+            return {
+                "success": False,
+                "error": "home-relative output paths are not allowed; use a work_dir-relative filename",
+            }
         if "output_filename" in kwargs and kwargs.get("output_filename") is not None:
             try:
                 kwargs["output_filename"] = _sanitize_artifact_output_filename(
@@ -729,6 +642,11 @@ def _wrap_artifact_handler(handler: Callable, *, capability_class: str) -> Calla
     artifact_handler.__qualname__ = getattr(handler, "__qualname__", artifact_handler.__name__)
     artifact_handler.__doc__ = getattr(handler, "__doc__", None)
     return artifact_handler
+
+
+def _artifact_user_requested_home_relative_output(ctx: Any) -> bool:
+    deps = getattr(ctx, "deps", None) if ctx is not None else None
+    return contains_home_relative_path(str(getattr(deps, "user_message", "") or ""))
 
 
 def _sanitize_artifact_output_filename(output_filename: Any) -> str:

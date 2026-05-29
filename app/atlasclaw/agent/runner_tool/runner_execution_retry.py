@@ -16,6 +16,8 @@ logger = logging.getLogger(__name__)
 
 
 class RunnerExecutionRetryMixin:
+    """Handle bounded retry behavior for hard model-token failures."""
+
     async def _retry_after_hard_token_failure(
         self,
         *,
@@ -220,11 +222,13 @@ class RunnerExecutionRetryMixin:
         hard_markers = (
             "status_code: 401",
             "status_code: 403",
+            "status_code: 402",
             "status_code: 429",
             "authenticationerror",
             "accountoverdueerror",
             "forbidden",
             "invalid api key",
+            "insufficient balance",
             "insufficient_quota",
             "api key format is incorrect",
             "provider returned error', 'code': 429",
