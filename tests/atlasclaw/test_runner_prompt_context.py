@@ -15,7 +15,6 @@ from app.atlasclaw.agent.runner_prompt_context import (
     build_system_prompt,
     collect_memory_available,
     collect_capability_index_snapshot,
-    collect_provider_instance_contexts,
     collect_tools_snapshot,
 )
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
@@ -44,145 +43,6 @@ def test_collect_tools_snapshot_prefers_deps_extra_snapshot() -> None:
     assert snapshot == [
         {"name": "web_search", "description": "search web", "capability_class": "web_search"}
     ]
-
-
-def test_collect_provider_instance_contexts_exposes_multi_instance_provider_context() -> None:
-    registry = SimpleNamespace(
-        get_all_provider_contexts=lambda: {
-            "smartcmp": SimpleNamespace(
-                display_name="SmartCMP",
-                description="Operate CloudChef SmartCMP resources and workflows.",
-                keywords=["cmp", "cloud management"],
-                capabilities=["request resources", "inspect approvals"],
-                use_when=["Use for SmartCMP runtime operations."],
-                avoid_when=["Avoid for static product documentation."],
-            ),
-        }
-    )
-    deps = SimpleNamespace(
-        extra={
-            "_service_provider_registry": registry,
-            "provider_instance_selections": {"smartcmp": "dev"},
-            "provider_instances": {
-                "smartcmp": {
-                    "dev": {"usage_hint": "Use for development CMP testing."},
-                    "prod": {"usage_hint": "Use for production CMP requests."},
-                },
-                "github": {
-                    "default": {"usage_hint": "Use for GitHub."},
-                },
-            },
-        }
-    )
-
-    contexts = collect_provider_instance_contexts(deps)
-
-    assert contexts == [
-        {
-            "provider_type": "smartcmp",
-            "provider_display_name": "SmartCMP",
-            "provider_description": "Operate CloudChef SmartCMP resources and workflows.",
-            "provider_keywords": ["cmp", "cloud management"],
-            "provider_capabilities": ["request resources", "inspect approvals"],
-            "provider_use_when": ["Use for SmartCMP runtime operations."],
-            "provider_avoid_when": ["Avoid for static product documentation."],
-            "instance_name": "dev",
-            "usage_hint": "Use for development CMP testing.",
-            "selected": True,
-        },
-        {
-            "provider_type": "smartcmp",
-            "provider_display_name": "SmartCMP",
-            "provider_description": "Operate CloudChef SmartCMP resources and workflows.",
-            "provider_keywords": ["cmp", "cloud management"],
-            "provider_capabilities": ["request resources", "inspect approvals"],
-            "provider_use_when": ["Use for SmartCMP runtime operations."],
-            "provider_avoid_when": ["Avoid for static product documentation."],
-            "instance_name": "prod",
-            "usage_hint": "Use for production CMP requests.",
-            "selected": False,
-        },
-        {
-            "provider_type": "github",
-            "provider_display_name": "",
-            "provider_description": "",
-            "provider_keywords": [],
-            "provider_capabilities": [],
-            "provider_use_when": [],
-            "provider_avoid_when": [],
-            "instance_name": "default",
-            "usage_hint": "Use for GitHub.",
-            "selected": False,
-        },
-    ]
-
-
-def test_provider_instance_routing_prompt_lists_hints_and_active_selection() -> None:
-    section = prompt_sections.build_provider_instance_routing(
-        [
-            {
-                "provider_type": "smartcmp",
-                "provider_display_name": "SmartCMP",
-                "provider_description": "Operate CloudChef SmartCMP resources and workflows.",
-                "provider_capabilities": ["request resources"],
-                "instance_name": "dev",
-                "usage_hint": "Use for development CMP testing.",
-                "selected": True,
-            },
-            {
-                "provider_type": "smartcmp",
-                "provider_display_name": "SmartCMP",
-                "provider_description": "Operate CloudChef SmartCMP resources and workflows.",
-                "provider_capabilities": ["request resources"],
-                "instance_name": "prod",
-                "usage_hint": "Use for production CMP requests.",
-                "selected": False,
-            },
-        ]
-    )
-
-    assert "## Provider Instance Routing" in section
-    assert "`smartcmp.dev`" in section
-    assert "provider_description: Operate CloudChef SmartCMP resources" in section
-    assert "provider_capabilities: request resources" in section
-    assert "Use for development CMP testing." in section
-    assert "answer policy" in section
-    assert "current session selection" in section
-    assert "selected_answer_policy: obey instance_usage_hint in the final answer" in section
-    assert "select_provider_instance" not in section
-
-
-def test_prompt_builder_includes_provider_instance_routing_in_minimal_mode(tmp_path) -> None:
-    builder = PromptBuilder(PromptBuilderConfig(workspace_path=str(tmp_path)))
-
-    prompt = builder.build(
-        tools=[],
-        provider_instance_contexts=[
-            {
-                "provider_type": "markdown-vault",
-                "provider_display_name": "Markdown Vault",
-                "provider_description": "Search read-only Markdown knowledge-base content.",
-                "instance_name": "knowledgebase",
-                "usage_hint": "Use for SmartCMP knowledge-base questions.",
-                "selected": False,
-            },
-            {
-                "provider_type": "markdown-vault",
-                "provider_display_name": "Markdown Vault",
-                "provider_description": "Search read-only Markdown knowledge-base content.",
-                "instance_name": "atlasclaw-docs",
-                "usage_hint": "Use for AtlasClaw product documentation.",
-                "selected": False,
-            },
-        ],
-        mode_override=PromptMode.MINIMAL,
-    )
-
-    assert "## Provider Instance Routing" in prompt
-    assert "`markdown-vault.knowledgebase`" in prompt
-    assert "provider_display_name: Markdown Vault" in prompt
-    assert "Use for SmartCMP knowledge-base questions." in prompt
-    assert "select_provider_instance" not in prompt
 
 
 def test_collect_tools_snapshot_keeps_authoritative_snapshot_without_remerge() -> None:
@@ -732,15 +592,23 @@ def test_collect_capability_index_snapshot_uses_provider_instances_not_provider_
 
     capability_ids = [item["capability_id"] for item in snapshot]
     assert capability_ids == [
-        "provider_instance:markdown-vault.knowledgebase",
-        "provider_instance:markdown-vault.atlasclaw-docs",
+        "provider_skill:knowledgebase.markdown-vault-query",
+        "provider_skill:atlasclaw-docs.markdown-vault-query",
     ]
     assert "provider:markdown-vault" not in capability_ids
     assert "skill:markdown-vault:markdown-vault-query" not in capability_ids
+    assert "provider_instance:markdown-vault.knowledgebase" not in capability_ids
     assert "tool:markdown_vault_search" not in capability_ids
-    assert [item["kind"] for item in snapshot] == ["provider_instance", "provider_instance"]
+    assert [item["kind"] for item in snapshot] == ["provider_skill", "provider_skill"]
+    assert snapshot[0]["provider_name"] == "knowledgebase"
     assert snapshot[0]["provider_type"] == "markdown-vault"
     assert snapshot[0]["instance_name"] == "knowledgebase"
+    assert snapshot[0]["qualified_skill_name"] == "markdown-vault:markdown-vault-query"
+    assert snapshot[0]["target_provider_instances"] == ["markdown-vault.knowledgebase"]
+    assert snapshot[0]["target_provider_skill_names"] == [
+        "knowledgebase.markdown-vault-query",
+    ]
+    assert "target_skill_names" not in snapshot[0]
     assert "Search read-only Markdown vault content." in snapshot[0]["description"]
     assert "Use for SmartCMP knowledge-base Q&A." in snapshot[0]["description"]
 
@@ -801,9 +669,10 @@ def test_collect_capability_index_snapshot_omits_provider_skill_when_instance_ex
     snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
 
     capability_ids = [item["capability_id"] for item in snapshot]
-    assert capability_ids == ["provider_instance:smartcmp.prod"]
+    assert capability_ids == []
     assert "skill:smartcmp_requests" not in capability_ids
     assert "skill:smartcmp_approvals" not in capability_ids
+    assert "provider_instance:smartcmp.prod" not in capability_ids
 
 
 def test_collect_capability_index_snapshot_omits_provider_skill_without_visible_instance() -> None:
@@ -826,6 +695,62 @@ def test_collect_capability_index_snapshot_omits_provider_skill_without_visible_
     snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
 
     assert snapshot == []
+
+
+def test_collect_capability_index_snapshot_omits_provider_tool_without_visible_instance() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [
+                {
+                    "name": "smartcmp_list_services",
+                    "description": "List SmartCMP catalogs.",
+                    "provider_type": "smartcmp",
+                    "qualified_skill_name": "smartcmp:request",
+                    "skill_name": "request",
+                }
+            ],
+            "md_skills_snapshot": [],
+            "skills_snapshot": [],
+            "provider_instances": {},
+        }
+    )
+
+    snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
+
+    assert snapshot == []
+
+
+def test_collect_capability_index_snapshot_exposes_provider_tool_as_provider_skill() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [
+                {
+                    "name": "smartcmp_list_services",
+                    "description": "List SmartCMP catalogs.",
+                    "provider_type": "smartcmp",
+                    "qualified_skill_name": "smartcmp:request",
+                    "skill_name": "request",
+                }
+            ],
+            "md_skills_snapshot": [],
+            "skills_snapshot": [],
+            "provider_instances": {
+                "smartcmp": {
+                    "cmp": {"usage_hint": "Use the CMP test instance."},
+                }
+            },
+        }
+    )
+
+    snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
+
+    assert [item["capability_id"] for item in snapshot] == ["provider_skill:cmp.request"]
+    assert snapshot[0]["target_provider_instances"] == ["smartcmp.cmp"]
+    assert snapshot[0]["target_provider_skill_names"] == ["cmp.request"]
+    assert "target_skill_names" not in snapshot[0]
+    assert snapshot[0]["declared_tool_names"] == ["smartcmp_list_services"]
 
 
 def test_collect_capability_index_snapshot_uses_explicit_md_tool_artifact_capability() -> None:
@@ -854,6 +779,36 @@ def test_collect_capability_index_snapshot_uses_explicit_md_tool_artifact_capabi
 
     assert snapshot[0]["capability_id"] == "skill:files:exporter"
     assert snapshot[0]["artifact_types"] == ["pdf"]
+
+
+def test_collect_capability_index_snapshot_carries_executable_md_skill_targets() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [],
+            "md_skills_snapshot": [
+                {
+                    "name": "pptx",
+                    "qualified_name": "pptx",
+                    "description": "Create PowerPoint decks.",
+                    "file_path": "/skills/pptx/SKILL.md",
+                    "provider": "",
+                    "metadata": {
+                        "tool_create_name": "pptx_create_deck",
+                        "tool_create_entrypoint": "scripts/handler.py:create_deck_handler",
+                        "tool_create_capability_class": "artifact:pptx",
+                    },
+                }
+            ],
+            "skills_snapshot": [],
+        }
+    )
+
+    snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
+
+    assert snapshot[0]["capability_id"] == "skill:pptx"
+    assert snapshot[0]["target_tool_names"] == ["pptx_create_deck"]
+    assert snapshot[0]["target_capability_classes"] == ["artifact:pptx"]
 
 
 def test_collect_capability_index_snapshot_does_not_infer_artifacts_from_plain_text_tokens() -> None:
@@ -892,6 +847,33 @@ def test_collect_capability_index_snapshot_omits_internal_tools() -> None:
                     "name": "atlasclaw_catalog_query",
                     "description": "Query runtime catalogs",
                     "routing_visibility": "internal",
+                },
+                {
+                    "name": "public_lookup",
+                    "description": "Visible lookup tool",
+                    "routing_visibility": "general",
+                },
+            ],
+            "md_skills_snapshot": [],
+            "skills_snapshot": [],
+        }
+    )
+
+    snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
+
+    assert [item["capability_id"] for item in snapshot] == ["tool:public_lookup"]
+
+
+def test_collect_capability_index_snapshot_omits_coordination_tools() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [
+                {
+                    "name": "atlasclaw_catalog_query",
+                    "description": "Query runtime catalogs",
+                    "routing_visibility": "contextual",
+                    "coordination_only": True,
                 },
                 {
                     "name": "public_lookup",
@@ -987,7 +969,7 @@ def test_build_system_prompt_uses_unified_capability_index_surface(tmp_path) -> 
 
     assert "## Capabilities" in prompt
     assert "skill:jira:search" in prompt
-    assert "provider:jira" in prompt
+    assert "provider_type=jira" in prompt
     assert "## Built-in Tools (Use ONLY if no MD Skill matches)" not in prompt
     assert "<available_skills>" not in prompt
     assert "FULL BODY SHOULD NOT APPEAR" not in prompt
@@ -1311,7 +1293,12 @@ def test_resolve_selected_md_skill_target_loads_full_provider_skill_instructions
                         "tool_submit_entrypoint": "scripts/submit.py",
                     },
                 }
-            ]
+            ],
+            "provider_instances": {
+                "acme": {
+                    "prod": {"usage_hint": "Use for Acme production requests."},
+                }
+            },
         }
     )
 
@@ -1320,7 +1307,8 @@ def test_resolve_selected_md_skill_target_loads_full_provider_skill_instructions
         deps=deps,
         intent_plan=ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
-            target_skill_names=["acme:request"],
+            target_provider_instances=["acme.prod"],
+            target_provider_skill_names=["prod.request"],
             target_provider_types=["acme"],
             target_tool_names=["acme_submit_request"],
         ),
@@ -1329,8 +1317,51 @@ def test_resolve_selected_md_skill_target_loads_full_provider_skill_instructions
 
     assert target is not None
     assert target["qualified_name"] == "acme:request"
+    assert target["provider_name"] == "prod"
+    assert target["instance_name"] == "prod"
     assert "instructions_mode" not in target
     assert "CRITICAL TAIL RULE" in target["instructions"]
+
+
+def test_resolve_selected_md_skill_target_rejects_provider_skill_without_instance_target(
+    tmp_path,
+) -> None:
+    skill_dir = tmp_path / "acme-request"
+    skill_dir.mkdir()
+    skill_path = skill_dir / "SKILL.md"
+    skill_path.write_text("# Request Skill\n\nSubmit provider requests.", encoding="utf-8")
+    deps = SimpleNamespace(
+        extra={
+            "md_skills_snapshot": [
+                {
+                    "name": "acme:request",
+                    "qualified_name": "acme:request",
+                    "description": "Submit provider requests",
+                    "file_path": str(skill_path),
+                    "provider": "acme",
+                    "metadata": {"provider_type": "acme"},
+                }
+            ],
+            "provider_instances": {
+                "acme": {
+                    "prod": {"usage_hint": "Use for Acme production requests."},
+                }
+            },
+        }
+    )
+
+    target = resolve_selected_md_skill_target(
+        agent=SimpleNamespace(tools=[]),
+        deps=deps,
+        intent_plan=ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_skill_names=["prod.request"],
+            target_provider_types=["acme"],
+        ),
+        max_file_bytes=10_000,
+    )
+
+    assert target is None
 
 
 def test_resolve_selected_md_skill_target_loads_full_docs_only_skill(tmp_path) -> None:
@@ -1439,6 +1470,9 @@ def test_preselected_md_skill_plan_overrides_routing_skill_for_webhook() -> None
                 "provider": "acme",
                 "qualified_name": "acme:preapproval-agent",
                 "file_path": "/tmp/preapproval-agent/SKILL.md",
+                "target_provider_instances": ["acme.prod"],
+                "target_provider_types": ["acme"],
+                "target_provider_skill_names": ["prod.preapproval-agent"],
             },
         }
     )
@@ -1447,10 +1481,28 @@ def test_preselected_md_skill_plan_overrides_routing_skill_for_webhook() -> None
 
     assert plan is not None
     assert plan.action == ToolIntentAction.USE_TOOLS
+    assert plan.target_provider_instances == ["acme.prod"]
     assert plan.target_provider_types == ["acme"]
-    assert plan.target_skill_names == ["acme:preapproval-agent"]
+    assert plan.target_provider_skill_names == ["prod.preapproval-agent"]
+    assert plan.target_skill_names == []
     assert plan.target_group_ids == ["group:acme"]
     assert plan.reason == "preselected_target_md_skill"
+
+
+def test_preselected_provider_md_skill_plan_requires_explicit_provider_instance() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "target_md_skill": {
+                "provider": "acme",
+                "qualified_name": "acme:preapproval-agent",
+                "file_path": "/tmp/preapproval-agent/SKILL.md",
+            },
+        }
+    )
+
+    plan = build_preselected_md_skill_intent_plan(deps)
+
+    assert plan is None
 
 
 def test_enrich_target_md_skill_with_workflow_context_attaches_structured_context() -> None:

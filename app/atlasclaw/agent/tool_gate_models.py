@@ -9,6 +9,9 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
+NO_RUNTIME_CAPABILITY_REASON = "no_authorized_runtime_capability"
+
+
 class ToolPolicyMode(str, Enum):
     """Policy mode returned by the runtime tool gate."""
 
@@ -56,6 +59,7 @@ class ToolIntentPlan(BaseModel):
     action: ToolIntentAction = ToolIntentAction.DIRECT_ANSWER
     target_provider_instances: list[str] = Field(default_factory=list)
     target_provider_types: list[str] = Field(default_factory=list)
+    target_provider_skill_names: list[str] = Field(default_factory=list)
     target_skill_names: list[str] = Field(default_factory=list)
     target_group_ids: list[str] = Field(default_factory=list)
     target_capability_classes: list[str] = Field(default_factory=list)

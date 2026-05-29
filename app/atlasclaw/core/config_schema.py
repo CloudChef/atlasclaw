@@ -299,7 +299,10 @@ class WebhookSystemConfig(BaseModel):
         )
     )
     default_agent_id: str = "main"
-    allowed_skills: list[str] = Field(default_factory=list)
+    allowed_skills: list[str] = Field(
+        default_factory=list,
+        description="Allowed provider-instance skill ids in provider_name.skill form",
+    )
 
 
 class WebhookConfig(BaseModel):

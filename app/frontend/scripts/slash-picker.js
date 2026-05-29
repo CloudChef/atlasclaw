@@ -117,13 +117,17 @@ function sanitizeCapability(capability) {
     'kind',
     'command',
     'label',
+    'provider_name',
     'provider_type',
     'provider_display_name',
     'instance_name',
     'skill_name',
     'qualified_skill_name',
+    'target_provider_instances',
     'target_provider_types',
+    'target_provider_skill_names',
     'target_skill_names',
+    'target_capability_classes',
     'target_tool_names',
     'target_group_ids'
   ]

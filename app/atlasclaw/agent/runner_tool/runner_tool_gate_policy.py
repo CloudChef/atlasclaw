@@ -19,6 +19,8 @@ from app.atlasclaw.core.deps import SkillDeps
 
 
 class RunnerToolGatePolicyMixin:
+    """Translate intent plans into per-run tool policy injected into deps."""
+
     def _inject_tool_policy(
         self,
         *,
@@ -46,6 +48,7 @@ class RunnerToolGatePolicyMixin:
         )
         target_provider_types: list[str] = []
         target_provider_instances: list[str] = []
+        target_provider_skill_names: list[str] = []
         target_skill_names: list[str] = []
         target_group_ids: list[str] = []
         target_capability_classes: list[str] = []
@@ -59,6 +62,7 @@ class RunnerToolGatePolicyMixin:
             policy_reason = intent_plan.reason or policy_reason
             target_provider_instances = list(intent_plan.target_provider_instances)
             target_provider_types = list(intent_plan.target_provider_types)
+            target_provider_skill_names = list(intent_plan.target_provider_skill_names)
             target_skill_names = list(intent_plan.target_skill_names)
             target_group_ids = list(intent_plan.target_group_ids)
             target_capability_classes = list(intent_plan.target_capability_classes)
@@ -69,6 +73,7 @@ class RunnerToolGatePolicyMixin:
                 and bool(
                     intent_plan.target_provider_instances
                     or intent_plan.target_provider_types
+                    or intent_plan.target_provider_skill_names
                     or intent_plan.target_skill_names
                 )
             )
@@ -93,6 +98,7 @@ class RunnerToolGatePolicyMixin:
             ],
             "target_provider_instances": target_provider_instances,
             "target_provider_types": target_provider_types,
+            "target_provider_skill_names": target_provider_skill_names,
             "target_skill_names": target_skill_names,
             "target_group_ids": target_group_ids,
             "target_capability_classes": target_capability_classes,

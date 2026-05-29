@@ -35,12 +35,17 @@ from app.atlasclaw.api.service_provider_schemas import (
     get_provider_schema_definition,
 )
 from app.atlasclaw.core.config_schema import WebhookConfig, WebhookSystemConfig
+from app.atlasclaw.core.provider_skill_capability import (
+    build_provider_skill_target_fields,
+    provider_skill_capability_name,
+    provider_skill_display_name,
+)
 from app.atlasclaw.core.trace import sanitize_log_value
 from app.atlasclaw.skills.registry import MdSkillEntry, SkillRegistry
 
 
-_QUALIFIED_SKILL_RE = re.compile(
-    r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?:[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
+_PROVIDER_SKILL_RE = re.compile(
+    r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?\.[a-z0-9]([a-z0-9-]*[a-z0-9])?$"
 )
 _ROBOT_AUTH_KEY = "robot_auth"
 _ROBOT_PROFILE_KEY = "robot_profile"
@@ -76,6 +81,26 @@ class WebhookSystemIdentity:
 
 
 @dataclass(frozen=True)
+class WebhookSkillSelection:
+    """Provider-instance-qualified markdown skill selected for one webhook run."""
+
+    provider_skill_name: str
+    provider_type: str
+    provider_instance: str
+    provider_instance_config: dict[str, Any]
+    skill_entry: MdSkillEntry
+
+    def target_fields(self) -> dict[str, Any]:
+        """Return execution target fields consumed by the agent runtime."""
+        return build_provider_skill_target_fields(
+            provider_type=self.provider_type,
+            instance_name=self.provider_instance,
+            qualified_skill_name=self.skill_entry.qualified_name,
+            skill_name=self.skill_entry.name,
+        )
+
+
+@dataclass(frozen=True)
 class WebhookRobotProfileSelection:
     """Runtime-only provider selection derived from webhook robot profile args.
 
@@ -92,18 +117,28 @@ class WebhookRobotProfileSelection:
 
 
 class WebhookDispatchManager:
-    """Authenticate webhook calls and resolve provider-qualified markdown skills."""
+    """Authenticate webhook calls and resolve provider-instance-qualified skills."""
 
-    def __init__(self, config: WebhookConfig, skill_registry: SkillRegistry) -> None:
+    def __init__(
+        self,
+        config: WebhookConfig,
+        skill_registry: SkillRegistry,
+        *,
+        provider_instances: dict[str, dict[str, dict[str, Any]]] | None = None,
+    ) -> None:
+        """Initialize webhook dispatch validation with visible provider instances."""
         self._config = config
         self._skill_registry = skill_registry
+        self._provider_instances = _normalize_provider_instances(provider_instances)
 
     @property
     def enabled(self) -> bool:
+        """Return whether webhook dispatch is enabled in runtime config."""
         return self._config.enabled
 
     @property
     def header_name(self) -> str:
+        """Return the HTTP header used to authenticate webhook callers."""
         return self._config.header_name
 
     def validate_startup(self) -> None:
@@ -122,7 +157,6 @@ class WebhookDispatchManager:
                 raise RuntimeError(f"Duplicate webhook markdown skill: {qualified_name}")
             seen_qualified.add(qualified_name)
 
-        executable_names = set(self._skill_registry.list_skills())
         for system in self._config.systems:
             if not system.enabled:
                 continue
@@ -131,16 +165,7 @@ class WebhookDispatchManager:
                     f"Missing webhook secret for system {system.system_id!r} from sk_env"
                 )
             for skill_id in system.allowed_skills:
-                self._validate_skill_identifier(skill_id)
-                if skill_id in executable_names:
-                    raise RuntimeError(
-                        f"Webhook skill {skill_id!r} resolves to an executable tool; only markdown skills are allowed"
-                    )
-                skill_entry = self._skill_registry.get_md_skill(skill_id)
-                if skill_entry is None or skill_entry.qualified_name != skill_id:
-                    raise RuntimeError(
-                        f"Webhook allowed skill {skill_id!r} not found as a unique markdown skill"
-                    )
+                self._resolve_provider_skill_selection(skill_id)
 
     def authenticate(self, secret: str) -> Optional[WebhookSystemIdentity]:
         """Resolve the calling system from the shared secret."""
@@ -164,23 +189,52 @@ class WebhookDispatchManager:
         self,
         identity: WebhookSystemIdentity,
         skill_id: str,
-    ) -> Optional[MdSkillEntry]:
-        """Resolve a provider-qualified markdown skill that the system may invoke."""
+    ) -> Optional[WebhookSkillSelection]:
+        """Resolve a provider-name.skill markdown skill that the system may invoke."""
         normalized = (skill_id or "").strip()
-        self._validate_skill_identifier(normalized)
+        self._validate_provider_skill_identifier(normalized)
         if normalized not in identity.allowed_skills:
             return None
 
-        skill_entry = self._skill_registry.get_md_skill(normalized)
-        if skill_entry is None or skill_entry.qualified_name != normalized:
-            return None
-        return skill_entry
+        return self._resolve_provider_skill_selection(normalized)
 
     @staticmethod
-    def _validate_skill_identifier(skill_id: str) -> None:
-        if not _QUALIFIED_SKILL_RE.match(skill_id):
+    def _validate_provider_skill_identifier(skill_id: str) -> None:
+        """Validate the external webhook skill id syntax."""
+        if not _PROVIDER_SKILL_RE.match(skill_id):
             raise RuntimeError(
-                f"Invalid webhook skill identifier {skill_id!r}; expected provider:skill"
+                f"Invalid webhook skill identifier {skill_id!r}; expected provider name.skill"
+            )
+
+    def _resolve_provider_skill_selection(self, skill_id: str) -> WebhookSkillSelection:
+        """Resolve one provider-name.skill id into a concrete markdown skill target."""
+        self._validate_provider_skill_identifier(skill_id)
+        provider_name, display_skill_name = skill_id.split(".", 1)
+        provider_type, instance_config = _resolve_provider_instance_by_name(
+            provider_instances=self._provider_instances,
+            provider_name=provider_name,
+        )
+        skill_entry = _resolve_md_skill_by_provider_display_name(
+            skill_registry=self._skill_registry,
+            provider_type=provider_type,
+            display_skill_name=display_skill_name,
+        )
+        resolved_name = provider_skill_capability_name(
+            provider_name=provider_name,
+            provider_type=provider_type,
+            qualified_skill_name=skill_entry.qualified_name,
+            skill_name=skill_entry.name,
+        )
+        if resolved_name != skill_id:
+            raise RuntimeError(
+                f"Webhook skill {skill_id!r} does not match resolved provider skill {resolved_name!r}"
+            )
+        return WebhookSkillSelection(
+            provider_skill_name=resolved_name,
+            provider_type=provider_type,
+            provider_instance=provider_name,
+            provider_instance_config=instance_config,
+            skill_entry=skill_entry,
         )
 
 
@@ -209,7 +263,7 @@ def redact_webhook_payload(payload: dict[str, Any], *, provider_type: str = "") 
 
 def resolve_webhook_robot_profile_selection(
     *,
-    skill_entry: MdSkillEntry,
+    skill_selection: WebhookSkillSelection,
     args: dict[str, Any],
     service_provider_registry: Any,
 ) -> Optional[WebhookRobotProfileSelection]:
@@ -219,49 +273,54 @@ def resolve_webhook_robot_profile_selection(
     if not robot_profile:
         return None
 
-    provider_type = str(skill_entry.provider or "").strip().lower()
-    if not provider_type:
-        raise WebhookRobotProfileError(
-            f"Webhook skill {skill_entry.qualified_name!r} is not provider-qualified",
-            status_code=400,
-        )
-
-    provider_instance = str(webhook_args.get(_PROVIDER_INSTANCE_KEY, "") or "").strip()
-    if not provider_instance:
+    provider_type = skill_selection.provider_type
+    selected_provider_instance = skill_selection.provider_instance
+    requested_provider_instance = str(
+        webhook_args.get(_PROVIDER_INSTANCE_KEY, "") or ""
+    ).strip()
+    if not requested_provider_instance:
         raise WebhookRobotProfileError(
             "webhook args.provider_instance is required when robot_profile is set",
+            status_code=400,
+        )
+    if requested_provider_instance != selected_provider_instance:
+        raise WebhookRobotProfileError(
+            (
+                "webhook args.provider_instance must match selected provider skill "
+                f"instance {selected_provider_instance!r}"
+            ),
             status_code=400,
         )
 
     if service_provider_registry is None:
         raise WebhookRobotProfileError(
-            f"Provider instance not found: {provider_type}.{provider_instance}",
+            f"Provider instance not found: {provider_type}.{selected_provider_instance}",
             status_code=400,
         )
 
     instance_config = service_provider_registry.get_instance_config(
         provider_type,
-        provider_instance,
+        selected_provider_instance,
     )
     if not isinstance(instance_config, dict):
         raise WebhookRobotProfileError(
-            f"Provider instance not found: {provider_type}.{provider_instance}",
+            f"Provider instance not found: {provider_type}.{selected_provider_instance}",
             status_code=400,
         )
 
     profile_config = _get_robot_profile_config(instance_config, robot_profile)
     if profile_config is None:
         raise WebhookRobotProfileError(
-            f"Robot profile not found: {provider_type}.{provider_instance}.{robot_profile}",
+            f"Robot profile not found: {provider_type}.{selected_provider_instance}.{robot_profile}",
             status_code=400,
         )
 
     allowed_skills = _parse_allowed_skill_ids(robot_profile, profile_config.get("allowed_skills"))
-    if skill_entry.qualified_name not in allowed_skills:
+    if skill_selection.provider_skill_name not in allowed_skills:
         raise WebhookRobotProfileError(
             (
                 f"Robot profile {robot_profile!r} is not allowed to invoke "
-                f"webhook skill {skill_entry.qualified_name!r}"
+                f"webhook skill {skill_selection.provider_skill_name!r}"
             ),
             status_code=403,
         )
@@ -276,18 +335,18 @@ def resolve_webhook_robot_profile_selection(
     )
     runtime_instance_config = _build_robot_profile_runtime_instance_config(
         provider_type=provider_type,
-        instance_name=provider_instance,
+        instance_name=selected_provider_instance,
         instance_config=instance_config,
         profile_auth_fields=profile_auth_fields,
         selected_auth_type=selected_auth_type,
     )
     return WebhookRobotProfileSelection(
         provider_type=provider_type,
-        provider_instance=provider_instance,
+        provider_instance=selected_provider_instance,
         robot_profile=robot_profile,
         provider_config={
             provider_type: {
-                provider_instance: runtime_instance_config,
+                selected_provider_instance: runtime_instance_config,
             }
         },
         provider_instance_config=runtime_instance_config,
@@ -299,12 +358,17 @@ def build_webhook_user_message(
     skill_entry: MdSkillEntry,
     payload: dict[str, Any],
     system_id: str,
+    provider_skill_name: str = "",
 ) -> str:
     """Build a deterministic prompt that targets a single markdown skill."""
     safe_payload = redact_webhook_payload(payload, provider_type=skill_entry.provider)
     payload_json = json.dumps(safe_payload, ensure_ascii=False, sort_keys=True)
+    provider_skill_line = (
+        f"Target provider skill: {provider_skill_name}\n" if provider_skill_name else ""
+    )
     return (
         "You are handling a backend webhook task.\n"
+        f"{provider_skill_line}"
         f"Target markdown skill: {skill_entry.qualified_name}\n"
         f"Skill file path: {skill_entry.file_path}\n"
         f"Calling system: {system_id}\n"
@@ -346,11 +410,107 @@ def _parse_allowed_skill_ids(robot_profile: str, value: Any) -> tuple[str, ...]:
                 status_code=400,
             )
         skill_id = item.strip()
+        if not _PROVIDER_SKILL_RE.match(skill_id):
+            raise WebhookRobotProfileError(
+                (
+                    f"Robot profile {robot_profile!r} has invalid allowed_skills entry "
+                    f"{skill_id!r}; expected provider name.skill"
+                ),
+                status_code=400,
+            )
         if skill_id in seen:
             continue
         normalized.append(skill_id)
         seen.add(skill_id)
     return tuple(normalized)
+
+
+def _normalize_provider_instances(
+    provider_instances: dict[str, dict[str, dict[str, Any]]] | None,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Normalize provider instance config buckets for webhook target resolution."""
+    normalized: dict[str, dict[str, dict[str, Any]]] = {}
+    if not isinstance(provider_instances, dict):
+        return normalized
+    for provider_type, instances in provider_instances.items():
+        provider_key = str(provider_type or "").strip()
+        if not provider_key or not isinstance(instances, dict):
+            continue
+        bucket: dict[str, dict[str, Any]] = {}
+        for instance_name, instance_config in instances.items():
+            instance_key = str(instance_name or "").strip()
+            if not instance_key or not isinstance(instance_config, dict):
+                continue
+            bucket[instance_key] = dict(instance_config)
+        if bucket:
+            normalized[provider_key] = bucket
+    return normalized
+
+
+def _resolve_provider_instance_by_name(
+    *,
+    provider_instances: dict[str, dict[str, dict[str, Any]]],
+    provider_name: str,
+) -> tuple[str, dict[str, Any]]:
+    """Resolve a globally unique provider instance name to provider type and config."""
+    matches: list[tuple[str, dict[str, Any]]] = []
+    for provider_type, instances in provider_instances.items():
+        if provider_name in instances:
+            matches.append((provider_type, instances[provider_name]))
+    if not matches:
+        raise RuntimeError(
+            f"Webhook provider skill references unknown provider instance {provider_name!r}"
+        )
+    if len(matches) > 1:
+        provider_types = ", ".join(provider_type for provider_type, _ in matches)
+        raise RuntimeError(
+            (
+                f"Webhook provider skill references ambiguous provider instance "
+                f"{provider_name!r}: {provider_types}"
+            )
+        )
+    provider_type, instance_config = matches[0]
+    return provider_type, dict(instance_config)
+
+
+def _resolve_md_skill_by_provider_display_name(
+    *,
+    skill_registry: SkillRegistry,
+    provider_type: str,
+    display_skill_name: str,
+) -> MdSkillEntry:
+    """Resolve provider-name.skill display text to one provider markdown skill."""
+    matches: list[MdSkillEntry] = []
+    for snapshot_entry in skill_registry.md_snapshot():
+        qualified_name = str(snapshot_entry.get("qualified_name", "") or "").strip()
+        if not qualified_name:
+            continue
+        entry = skill_registry.get_md_skill(qualified_name)
+        if entry is None:
+            continue
+        if str(entry.provider or "").strip().lower() != provider_type.lower():
+            continue
+        entry_display_name = provider_skill_display_name(
+            entry.qualified_name or entry.name,
+            provider_type,
+        )
+        if entry_display_name == display_skill_name:
+            matches.append(entry)
+    if not matches:
+        raise RuntimeError(
+            (
+                f"Webhook allowed skill {provider_type}.{display_skill_name!r} "
+                "not found as a provider markdown skill"
+            )
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            (
+                f"Webhook allowed skill {provider_type}.{display_skill_name!r} "
+                "matches multiple markdown skills"
+            )
+        )
+    return matches[0]
 
 
 def _build_robot_profile_runtime_instance_config(

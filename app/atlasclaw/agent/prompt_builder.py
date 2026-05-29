@@ -129,7 +129,6 @@ class PromptBuilder:
         tool_policy: Optional[dict] = None,
         user_info: Optional["UserInfo"] = None,
         provider_contexts: Optional[dict[str, dict]] = None,
-        provider_instance_contexts: Optional[list[dict]] = None,
         provider_auth_diagnostics: Optional[dict[str, dict]] = None,
         context_window_tokens: Optional[int] = None,
         mode_override: Optional[PromptMode] = None,
@@ -146,8 +145,6 @@ class PromptBuilder:
             tools: Tool metadata exposed to the current agent.
             md_skills: Optional Markdown skill snapshot for prompt injection.
             provider_contexts: Optional provider LLM context for skill discovery.
-            provider_instance_contexts: Optional safe usage hints for visible
-                provider instances.
 
         Returns:
             The assembled system prompt text.
@@ -197,12 +194,6 @@ class PromptBuilder:
 
         if current_follow_up_context:
             parts.append(self._build_current_follow_up_context(current_follow_up_context))
-
-        provider_instance_section = prompt_sections.build_provider_instance_routing(
-            provider_instance_contexts
-        )
-        if provider_instance_section:
-            parts.append(provider_instance_section)
 
         if effective_mode == PromptMode.FULL:
             # 4. Markdown skill index (HIGHEST PRIORITY - check these first!)

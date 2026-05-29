@@ -86,6 +86,18 @@ def _write_skill_md(
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _smartcmp_provider_instances() -> dict:
+    return {
+        "smartcmp": {
+            "cmp": {
+                "base_url": "https://cmp.example.com",
+                "auth_type": "user_token",
+                "user_token": "base-user-token",
+            }
+        }
+    }
+
+
 def _build_client(
     tmp_path: Path,
     monkeypatch,
@@ -94,6 +106,7 @@ def _build_client(
     provider_instances: dict | None = None,
 ) -> tuple[TestClient, _RecordingAgentRunner]:
     monkeypatch.setenv("ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL", "secret-1")
+    provider_instances = provider_instances or _smartcmp_provider_instances()
     registry = SkillRegistry()
     _write_skill_md(
         tmp_path / "skills" / "preapproval-agent" / "SKILL.md",
@@ -120,17 +133,19 @@ def _build_client(
             )
         ],
     )
-    webhook_manager = WebhookDispatchManager(webhook_config, registry)
+    webhook_manager = WebhookDispatchManager(
+        webhook_config,
+        registry,
+        provider_instances=provider_instances,
+    )
     webhook_manager.validate_startup()
 
     runner = _RecordingAgentRunner()
-    service_provider_registry = None
-    if provider_instances is not None:
-        service_provider_registry = ServiceProviderRegistry()
-        service_provider_registry._schema_definitions["smartcmp"] = (  # noqa: SLF001
-            managed_provider_definition(provider_type="smartcmp")
-        )
-        service_provider_registry.load_instances_from_config(provider_instances)
+    service_provider_registry = ServiceProviderRegistry()
+    service_provider_registry._schema_definitions["smartcmp"] = (  # noqa: SLF001
+        managed_provider_definition(provider_type="smartcmp")
+    )
+    service_provider_registry.load_instances_from_config(provider_instances)
 
     ctx = APIContext(
         session_manager=SessionManager(agents_dir=str(tmp_path / "agents")),
@@ -169,11 +184,12 @@ class TestWebhookDispatchManager:
                     WebhookSystemConfig(
                         system_id="smartcmp-preapproval",
                         sk_env="sk-direct-secret",
-                        allowed_skills=["smartcmp:preapproval-agent"],
+                        allowed_skills=["cmp.preapproval-agent"],
                     )
                 ],
             ),
             registry,
+            provider_instances=_smartcmp_provider_instances(),
         )
 
         manager.validate_startup()
@@ -181,6 +197,37 @@ class TestWebhookDispatchManager:
 
         assert identity is not None
         assert identity.system_id == "smartcmp-preapproval"
+
+    def test_validate_startup_rejects_legacy_provider_skill_id(self, tmp_path):
+        registry = SkillRegistry()
+        _write_skill_md(
+            tmp_path / "skills" / "preapproval-agent" / "SKILL.md",
+            name="preapproval-agent",
+            description="smartcmp preapproval",
+        )
+        registry.load_from_directory(
+            str(tmp_path / "skills"),
+            location="external",
+            provider="smartcmp",
+        )
+
+        manager = WebhookDispatchManager(
+            WebhookConfig(
+                enabled=True,
+                systems=[
+                    WebhookSystemConfig(
+                        system_id="smartcmp-preapproval",
+                        sk_env="sk-direct-secret",
+                        allowed_skills=["smartcmp:preapproval-agent"],
+                    )
+                ],
+            ),
+            registry,
+            provider_instances=_smartcmp_provider_instances(),
+        )
+
+        with pytest.raises(RuntimeError, match="expected provider name.skill"):
+            manager.validate_startup()
 
     def test_validate_startup_accepts_direct_sk_env_secret(
         self,
@@ -207,11 +254,12 @@ class TestWebhookDispatchManager:
                     WebhookSystemConfig(
                         system_id="smartcmp-preapproval",
                         sk_env="SK_AtlasClawDirect",
-                        allowed_skills=["smartcmp:preapproval-agent"],
+                        allowed_skills=["cmp.preapproval-agent"],
                     )
                 ],
             ),
             registry,
+            provider_instances=_smartcmp_provider_instances(),
         )
 
         manager.validate_startup()
@@ -238,11 +286,12 @@ class TestWebhookDispatchManager:
                     WebhookSystemConfig(
                         system_id="smartcmp-preapproval",
                         sk_env="SECRET",
-                        allowed_skills=["smartcmp:preapproval-agent"],
+                        allowed_skills=["cmp.preapproval-agent"],
                     )
                 ],
             ),
             registry,
+            provider_instances=_smartcmp_provider_instances(),
         )
 
         manager.validate_startup()
@@ -269,11 +318,12 @@ class TestWebhookDispatchManager:
                     WebhookSystemConfig(
                         system_id="smartcmp-preapproval",
                         sk_env="",
-                        allowed_skills=["smartcmp:preapproval-agent"],
+                        allowed_skills=["cmp.preapproval-agent"],
                     )
                 ],
             ),
             registry,
+            provider_instances=_smartcmp_provider_instances(),
         )
 
         try:
@@ -308,11 +358,12 @@ class TestWebhookDispatchManager:
                     WebhookSystemConfig(
                         system_id="smartcmp-preapproval",
                         sk_env="SECRET",
-                        allowed_skills=["smartcmp:preapproval-agent"],
+                        allowed_skills=["cmp.preapproval-agent"],
                     )
                 ],
             ),
             registry,
+            provider_instances=_smartcmp_provider_instances(),
         )
 
         try:
@@ -336,16 +387,16 @@ class TestWebhookDispatchAPI:
                         "preapproval_bot": {
                             "auth_type": "provider_token",
                             "provider_token": "cmp_tk_robot_secret",
-                            "allowed_skills": ["smartcmp:preapproval-agent"],
+                            "allowed_skills": ["cmp.preapproval-agent"],
                         },
                         "decomposition_bot": {
                             "auth_type": "provider_token",
                             "provider_token": "cmp_tk_decompose_secret",
-                            "allowed_skills": ["smartcmp:request-decomposition-agent"],
+                            "allowed_skills": ["cmp.request-decomposition-agent"],
                         },
                         "broken_bot": {
                             "auth_type": "provider_token",
-                            "allowed_skills": ["smartcmp:preapproval-agent"],
+                            "allowed_skills": ["cmp.preapproval-agent"],
                         },
                     },
                 }
@@ -356,14 +407,14 @@ class TestWebhookDispatchAPI:
         client, runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
         )
 
         resp = client.post(
             "/api/webhook/dispatch",
             headers={"X-AtlasClaw-SK": "secret-1"},
             json={
-                "skill": "smartcmp:preapproval-agent",
+                "skill": "cmp.preapproval-agent",
                 "args": {"approval_id": "A-10001", "agent_identity": "agent-approver"},
             },
         )
@@ -371,9 +422,20 @@ class TestWebhookDispatchAPI:
         assert resp.status_code == 202
         assert resp.json() == {"status": "accepted"}
         assert len(runner.calls) == 1
-        assert "smartcmp:preapproval-agent" in runner.calls[0]["user_message"]
+        assert "cmp.preapproval-agent" in runner.calls[0]["user_message"]
         assert "approval_id" in runner.calls[0]["user_message"]
-        assert runner.calls[0]["deps"].extra["webhook_skill"] == "smartcmp:preapproval-agent"
+        deps_extra = runner.calls[0]["deps"].extra
+        assert deps_extra["webhook_skill"] == "cmp.preapproval-agent"
+        assert deps_extra["webhook_qualified_skill"] == "smartcmp:preapproval-agent"
+        assert deps_extra["target_md_skill"]["qualified_name"] == "smartcmp:preapproval-agent"
+        assert deps_extra["target_md_skill"]["target_provider_instances"] == ["smartcmp.cmp"]
+        assert deps_extra["target_md_skill"]["target_provider_skill_names"] == [
+            "cmp.preapproval-agent"
+        ]
+        assert "target_skill_names" not in deps_extra["target_md_skill"]
+        assert deps_extra["provider_config"]["smartcmp"]["cmp"]["base_url"] == (
+            "https://cmp.example.com"
+        )
 
     def test_dispatch_uses_dispatch_scoped_session_keys_without_reset(
         self,
@@ -393,7 +455,7 @@ class TestWebhookDispatchAPI:
         client, runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
         )
 
         for approval_id in ["A-10001", "A-10002"]:
@@ -401,7 +463,7 @@ class TestWebhookDispatchAPI:
                 "/api/webhook/dispatch",
                 headers={"X-AtlasClaw-SK": "secret-1"},
                 json={
-                    "skill": "smartcmp:preapproval-agent",
+                    "skill": "cmp.preapproval-agent",
                     "args": {"approval_id": approval_id},
                 },
             )
@@ -423,7 +485,7 @@ class TestWebhookDispatchAPI:
         client, runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
             provider_instances=self._smartcmp_robot_provider_instances(),
         )
 
@@ -431,7 +493,7 @@ class TestWebhookDispatchAPI:
             "/api/webhook/dispatch",
             headers={"X-AtlasClaw-SK": "secret-1"},
             json={
-                "skill": "smartcmp:preapproval-agent",
+                "skill": "cmp.preapproval-agent",
                 "args": {
                     "request_id": "RES20260427000004",
                     "provider_instance": "cmp",
@@ -453,6 +515,12 @@ class TestWebhookDispatchAPI:
         assert deps_extra["provider_type"] == "smartcmp"
         assert deps_extra["provider_instance_name"] == "cmp"
         assert deps_extra["robot_profile"] == "preapproval_bot"
+        assert deps_extra["webhook_skill"] == "cmp.preapproval-agent"
+        assert deps_extra["webhook_qualified_skill"] == "smartcmp:preapproval-agent"
+        assert deps_extra["target_md_skill"]["target_provider_instances"] == ["smartcmp.cmp"]
+        assert deps_extra["target_md_skill"]["target_provider_skill_names"] == [
+            "cmp.preapproval-agent"
+        ]
         assert deps_extra["webhook_args"]["provider_instance"] == "cmp"
         assert deps_extra["webhook_args"]["provider_token"] == "[REDACTED]"
 
@@ -471,7 +539,7 @@ class TestWebhookDispatchAPI:
         client, runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
             provider_instances=self._smartcmp_robot_provider_instances(),
         )
 
@@ -479,7 +547,7 @@ class TestWebhookDispatchAPI:
             "/api/webhook/dispatch",
             headers={"X-AtlasClaw-SK": "secret-1"},
             json={
-                "skill": "smartcmp:preapproval-agent",
+                "skill": "cmp.preapproval-agent",
                 "args": {
                     "provider_instance": "cmp",
                     "robot_profile": "missing_bot",
@@ -495,7 +563,7 @@ class TestWebhookDispatchAPI:
         client, runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
             provider_instances=self._smartcmp_robot_provider_instances(),
         )
 
@@ -503,7 +571,7 @@ class TestWebhookDispatchAPI:
             "/api/webhook/dispatch",
             headers={"X-AtlasClaw-SK": "secret-1"},
             json={
-                "skill": "smartcmp:preapproval-agent",
+                "skill": "cmp.preapproval-agent",
                 "args": {
                     "instance": "cmp",
                     "robot_profile": "preapproval_bot",
@@ -523,7 +591,7 @@ class TestWebhookDispatchAPI:
         client, runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
             provider_instances=provider_instances,
         )
 
@@ -531,7 +599,7 @@ class TestWebhookDispatchAPI:
             "/api/webhook/dispatch",
             headers={"X-AtlasClaw-SK": "secret-1"},
             json={
-                "skill": "smartcmp:preapproval-agent",
+                "skill": "cmp.preapproval-agent",
                 "args": {
                     "provider_instance": "cmp",
                     "robot_profile": "preapproval_bot",
@@ -550,12 +618,12 @@ class TestWebhookDispatchAPI:
                 "auth_type": "provider_token",
                 "provider_token": "cmp_tk_robot_secret",
             },
-            "allowed_skills": ["smartcmp:preapproval-agent"],
+            "allowed_skills": ["cmp.preapproval-agent"],
         }
         client, runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
             provider_instances=provider_instances,
         )
 
@@ -563,7 +631,7 @@ class TestWebhookDispatchAPI:
             "/api/webhook/dispatch",
             headers={"X-AtlasClaw-SK": "secret-1"},
             json={
-                "skill": "smartcmp:preapproval-agent",
+                "skill": "cmp.preapproval-agent",
                 "args": {
                     "provider_instance": "cmp",
                     "robot_profile": "preapproval_bot",
@@ -583,11 +651,11 @@ class TestWebhookDispatchAPI:
         provider_instances = self._smartcmp_robot_provider_instances()
         provider_instances["smartcmp"]["cmp"]["robot_auth"]["preapproval_bot"][
             "allowed_skills"
-        ] = "smartcmp:preapproval-agent"
+        ] = "cmp.preapproval-agent"
         client, runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
             provider_instances=provider_instances,
         )
 
@@ -595,7 +663,7 @@ class TestWebhookDispatchAPI:
             "/api/webhook/dispatch",
             headers={"X-AtlasClaw-SK": "secret-1"},
             json={
-                "skill": "smartcmp:preapproval-agent",
+                "skill": "cmp.preapproval-agent",
                 "args": {
                     "provider_instance": "cmp",
                     "robot_profile": "preapproval_bot",
@@ -615,7 +683,7 @@ class TestWebhookDispatchAPI:
         client, runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
             provider_instances=provider_instances,
         )
 
@@ -623,7 +691,7 @@ class TestWebhookDispatchAPI:
             "/api/webhook/dispatch",
             headers={"X-AtlasClaw-SK": "secret-1"},
             json={
-                "skill": "smartcmp:preapproval-agent",
+                "skill": "cmp.preapproval-agent",
                 "args": {
                     "provider_instance": "cmp",
                     "robot_profile": "preapproval_bot",
@@ -639,7 +707,7 @@ class TestWebhookDispatchAPI:
         client, runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
             provider_instances=self._smartcmp_robot_provider_instances(),
         )
 
@@ -647,7 +715,7 @@ class TestWebhookDispatchAPI:
             "/api/webhook/dispatch",
             headers={"X-AtlasClaw-SK": "secret-1"},
             json={
-                "skill": "smartcmp:preapproval-agent",
+                "skill": "cmp.preapproval-agent",
                 "args": {
                     "provider_instance": "cmp",
                     "robot_profile": "decomposition_bot",
@@ -659,11 +727,43 @@ class TestWebhookDispatchAPI:
         assert "is not allowed to invoke" in resp.json()["detail"]
         assert runner.calls == []
 
+    def test_dispatch_robot_profile_rejects_legacy_allowed_skill_id(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        provider_instances = self._smartcmp_robot_provider_instances()
+        provider_instances["smartcmp"]["cmp"]["robot_auth"]["preapproval_bot"][
+            "allowed_skills"
+        ] = ["smartcmp:preapproval-agent"]
+        client, runner = _build_client(
+            tmp_path,
+            monkeypatch,
+            allowed_skills=["cmp.preapproval-agent"],
+            provider_instances=provider_instances,
+        )
+
+        resp = client.post(
+            "/api/webhook/dispatch",
+            headers={"X-AtlasClaw-SK": "secret-1"},
+            json={
+                "skill": "cmp.preapproval-agent",
+                "args": {
+                    "provider_instance": "cmp",
+                    "robot_profile": "preapproval_bot",
+                },
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "expected provider name.skill" in resp.json()["detail"]
+        assert runner.calls == []
+
     def test_dispatch_robot_profile_missing_credential_returns_400(self, tmp_path, monkeypatch):
         client, runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
             provider_instances=self._smartcmp_robot_provider_instances(),
         )
 
@@ -671,7 +771,7 @@ class TestWebhookDispatchAPI:
             "/api/webhook/dispatch",
             headers={"X-AtlasClaw-SK": "secret-1"},
             json={
-                "skill": "smartcmp:preapproval-agent",
+                "skill": "cmp.preapproval-agent",
                 "args": {
                     "provider_instance": "cmp",
                     "robot_profile": "broken_bot",
@@ -687,13 +787,13 @@ class TestWebhookDispatchAPI:
         client, _runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
         )
 
         resp = client.post(
             "/api/webhook/dispatch",
             headers={"X-AtlasClaw-SK": "bad-secret"},
-            json={"skill": "smartcmp:preapproval-agent", "args": {}},
+            json={"skill": "cmp.preapproval-agent", "args": {}},
         )
 
         assert resp.status_code == 401
@@ -702,13 +802,13 @@ class TestWebhookDispatchAPI:
         client, _runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
         )
 
         resp = client.post(
             "/api/webhook/dispatch",
             headers={"X-AtlasClaw-SK": "secret-1"},
-            json={"skill": "smartcmp:request", "args": {}},
+            json={"skill": "cmp.request", "args": {}},
         )
 
         assert resp.status_code == 403
@@ -717,7 +817,7 @@ class TestWebhookDispatchAPI:
         client, _runner = _build_client(
             tmp_path,
             monkeypatch,
-            allowed_skills=["smartcmp:preapproval-agent"],
+            allowed_skills=["cmp.preapproval-agent"],
         )
 
         resp = client.post(

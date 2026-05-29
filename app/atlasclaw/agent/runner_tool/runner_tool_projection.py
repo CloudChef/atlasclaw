@@ -6,6 +6,13 @@ from __future__ import annotations
 from typing import Any
 
 from app.atlasclaw.agent.tool_gate_models import ToolIntentAction, ToolIntentPlan
+from app.atlasclaw.core.provider_skill_capability import (
+    provider_names_from_instance_refs,
+    provider_skill_target_match_keys,
+    runtime_tool_allowed_by_provider_scope,
+    runtime_tool_provider_skill_names,
+    runtime_tool_skill_names,
+)
 
 
 def tool_is_coordination_support(tool: dict[str, Any]) -> bool:
@@ -17,6 +24,8 @@ def _artifact_turn_has_explicit_targets(intent_plan: ToolIntentPlan) -> bool:
     if intent_plan.action is not ToolIntentAction.CREATE_ARTIFACT:
         return False
     if any(str(item).strip() for item in intent_plan.target_tool_names):
+        return True
+    if any(str(item).strip() for item in intent_plan.target_provider_skill_names):
         return True
     return any(
         str(item).strip().lower().startswith("artifact:")
@@ -43,6 +52,7 @@ def project_minimal_toolset(
         "action": intent_plan.action.value if intent_plan is not None else "",
         "target_provider_instances": list(intent_plan.target_provider_instances) if intent_plan is not None else [],
         "target_provider_types": list(intent_plan.target_provider_types) if intent_plan is not None else [],
+        "target_provider_skill_names": list(intent_plan.target_provider_skill_names) if intent_plan is not None else [],
         "target_skill_names": list(intent_plan.target_skill_names) if intent_plan is not None else [],
         "target_group_ids": list(intent_plan.target_group_ids) if intent_plan is not None else [],
         "target_capability_classes": list(intent_plan.target_capability_classes) if intent_plan is not None else [],
@@ -51,8 +61,40 @@ def project_minimal_toolset(
     }
     if intent_plan is None:
         return normalized_tools, trace
-    if intent_plan.action is not ToolIntentAction.USE_TOOLS and not _artifact_turn_has_explicit_targets(
-        intent_plan
+    if (
+        intent_plan.action in {
+            ToolIntentAction.DIRECT_ANSWER,
+            ToolIntentAction.ASK_CLARIFICATION,
+        }
+        and not any(
+            [
+                list(intent_plan.target_provider_instances or []),
+                list(intent_plan.target_provider_types or []),
+                list(intent_plan.target_provider_skill_names or []),
+                list(intent_plan.target_skill_names or []),
+                list(intent_plan.target_group_ids or []),
+                list(intent_plan.target_capability_classes or []),
+                list(intent_plan.target_tool_names or []),
+            ]
+        )
+    ):
+        trace.update(
+            {
+                "enabled": True,
+                "reason": "projection_empty",
+                "after_count": 0,
+                "steps": [],
+                "explicit_target_mode": False,
+            }
+        )
+        return [], trace
+    has_provider_skill_targets = any(
+        str(item).strip() for item in intent_plan.target_provider_skill_names
+    )
+    if (
+        intent_plan.action is not ToolIntentAction.USE_TOOLS
+        and not _artifact_turn_has_explicit_targets(intent_plan)
+        and not has_provider_skill_targets
     ):
         return normalized_tools, trace
 
@@ -78,6 +120,12 @@ def project_minimal_toolset(
         for item in intent_plan.target_skill_names
         if str(item).strip()
     }
+    target_provider_skill_names = provider_skill_target_match_keys(
+        list(intent_plan.target_provider_skill_names or [])
+    )
+    target_provider_names = provider_names_from_instance_refs(
+        list(intent_plan.target_provider_instances or [])
+    )
     target_group_ids = {
         _normalize_group_id(item)
         for item in intent_plan.target_group_ids
@@ -94,39 +142,82 @@ def project_minimal_toolset(
         if str(item).strip()
     }
 
-    explicit_target_mode = bool(target_tool_names)
-    if explicit_target_mode:
-        current = [
-            tool
-            for tool in normalized_tools
-            if str(tool.get("name", "") or "").strip() in target_tool_names
-        ]
-        _record_step("tool_name", True, len(current))
-        target_provider_types = set()
-        target_skill_names = set()
-        target_group_ids = set()
-        target_capability_classes = set()
-    else:
-        current = []
-        current_names: set[str] = set()
-
-        def _append_matches(label: str, active: bool, predicate: Any) -> None:
-            if active:
-                for tool in normalized_tools:
-                    tool_name = str(tool.get("name", "") or "").strip()
-                    if not tool_name or tool_name in current_names:
-                        continue
-                    if predicate(tool):
-                        current.append(tool)
-                        current_names.add(tool_name)
-            _record_step(label, active, len(current))
-
-        _append_matches(
-            "provider_type",
-            bool(target_provider_types),
-            lambda tool: str(tool.get("provider_type", "") or "").strip().lower()
-            in target_provider_types,
+    def _allowed_by_provider_scope(tool: dict[str, Any]) -> bool:
+        return runtime_tool_allowed_by_provider_scope(
+            tool,
+            provider_types=target_provider_types,
+            provider_skill_names=target_provider_skill_names,
+            provider_instance_refs=list(intent_plan.target_provider_instances or []),
         )
+
+    explicit_target_mode = bool(target_tool_names)
+    current = []
+    current_names: set[str] = set()
+
+    def _append_matches(label: str, active: bool, predicate: Any) -> None:
+        if active:
+            for tool in normalized_tools:
+                tool_name = str(tool.get("name", "") or "").strip()
+                if not tool_name or tool_name in current_names:
+                    continue
+                if predicate(tool):
+                    current.append(tool)
+                    current_names.add(tool_name)
+        _record_step(label, active, len(current))
+
+    _append_matches(
+        "tool_name",
+        explicit_target_mode,
+        lambda tool: (
+            str(tool.get("name", "") or "").strip() in target_tool_names
+            and _allowed_by_provider_scope(tool)
+        ),
+    )
+
+    provider_skill_intersection = bool(
+        target_provider_types and target_provider_skill_names and target_provider_names
+    )
+    if provider_skill_intersection:
+        _append_matches(
+            "provider_skill",
+            True,
+            lambda tool: (
+                str(tool.get("provider_type", "") or "").strip().lower()
+                in target_provider_types
+                and bool(
+                    runtime_tool_provider_skill_names(
+                        tool,
+                        provider_names=target_provider_names,
+                    ).intersection(target_provider_skill_names)
+                )
+            ),
+        )
+        _append_matches(
+            "standalone_skill_name",
+            True,
+            lambda tool: (
+                not str(tool.get("provider_type", "") or "").strip()
+                and bool(runtime_tool_skill_names(tool).intersection(target_skill_names))
+            ),
+        )
+        _record_step("provider_type", False, len(current))
+        _record_step("group_ids", False, len(current))
+        _record_step("capability_class", False, len(current))
+        _record_step("skill_name", False, len(current))
+    elif explicit_target_mode:
+        _append_matches(
+            "skill_name",
+            bool(target_skill_names),
+            lambda tool: (
+                not str(tool.get("provider_type", "") or "").strip()
+                and bool(runtime_tool_skill_names(tool).intersection(target_skill_names))
+            ),
+        )
+        _record_step("provider_type", False, len(current))
+        _record_step("group_ids", False, len(current))
+        _record_step("capability_class", False, len(current))
+    else:
+        _record_step("provider_type", False, len(current))
         _append_matches(
             "group_ids",
             bool(target_group_ids),
@@ -138,26 +229,24 @@ def project_minimal_toolset(
                         if str(group_id).strip()
                     }
                 )
+                and _allowed_by_provider_scope(tool)
             ),
         )
         _append_matches(
             "capability_class",
             bool(target_capability_classes),
-            lambda tool: str(tool.get("capability_class", "") or "").strip().lower()
-            in target_capability_classes,
-        )
-        _append_matches(
-            "tool_name",
-            bool(target_tool_names),
-            lambda tool: str(tool.get("name", "") or "").strip() in target_tool_names,
+            lambda tool: (
+                str(tool.get("capability_class", "") or "").strip().lower()
+                in target_capability_classes
+                and _allowed_by_provider_scope(tool)
+            ),
         )
         _append_matches(
             "skill_name",
             bool(target_skill_names),
             lambda tool: (
-                str(tool.get("skill_name", "") or "").strip().lower() in target_skill_names
-                or str(tool.get("qualified_skill_name", "") or "").strip().lower()
-                in target_skill_names
+                not str(tool.get("provider_type", "") or "").strip()
+                and bool(runtime_tool_skill_names(tool).intersection(target_skill_names))
             ),
         )
 

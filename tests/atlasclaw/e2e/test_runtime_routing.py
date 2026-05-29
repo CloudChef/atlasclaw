@@ -354,6 +354,28 @@ def _assert_completed(outcome: AgentRunOutcome) -> None:
     assert outcome.assistant_text.strip(), f"assistant text missing for {outcome.run_id}"
 
 
+def _assert_workspace_pptx_created(
+    harness: AgentHarness,
+    outcome: AgentRunOutcome,
+    *,
+    filename: str,
+):
+    """Assert a PPTX was created while the assistant exposed only the download filename."""
+    assert filename in outcome.assistant_text
+    assert not re.search(r"(?:[A-Za-z]:\\|/)\S+\.pptx", outcome.assistant_text), (
+        outcome.assistant_text
+    )
+
+    matches = sorted(harness.workspace_path.rglob(filename))
+    assert matches, f"PPTX file not created in workspace: {filename}"
+    assert len(matches) == 1, f"Expected one PPTX artifact, found: {matches}"
+    pptx_path = matches[0]
+    assert pptx_path.is_file(), f"PPTX file not created: {pptx_path}"
+    assert pptx_path.suffix.lower() == ".pptx"
+
+    return Presentation(str(pptx_path))
+
+
 def _extract_json_block(text: str, start_marker: str, end_marker: str) -> Any:
     """Extract JSON payload between tool output markers."""
     pattern = re.escape(start_marker) + r"\s*(.*?)\s*" + re.escape(end_marker)
@@ -486,7 +508,7 @@ def _extract_latest_tool_return(messages: list[ModelMessage]) -> Optional[ToolRe
     return None
 
 
-def _extract_pending_items(messages: list[ModelMessage]) -> list[dict[str, Any]]:
+def _extract_pending_items(messages: list[ModelMessage], extra_prompt_text: str = "") -> list[dict[str, Any]]:
     """Recover pending request items from prior tool results or assistant history."""
     for part in reversed(_iter_message_parts(messages)):
         if isinstance(part, ToolReturnPart) and part.tool_name == "smartcmp_list_pending":
@@ -494,6 +516,27 @@ def _extract_pending_items(messages: list[ModelMessage]) -> list[dict[str, Any]]
             parsed = _extract_json_block(output, "##APPROVAL_META_START##", "##APPROVAL_META_END##")
             if isinstance(parsed, list):
                 return [item for item in parsed if isinstance(item, dict)]
+
+    prompt_text = "\n\n".join(
+        chunk
+        for chunk in (_extract_all_text(messages), extra_prompt_text)
+        if chunk.strip()
+    )
+    for block in re.findall(r"```json\s*(.*?)\s*```", prompt_text, flags=re.DOTALL):
+        try:
+            context = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(context, dict):
+            continue
+        for entry in context.get("recent_tool_metadata") or []:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("tool_name") != "smartcmp_list_pending":
+                continue
+            metadata = entry.get("metadata")
+            if isinstance(metadata, list):
+                return [item for item in metadata if isinstance(item, dict)]
 
     assistant_text = _extract_previous_assistant_text(messages)
     raw_history_chunks = [assistant_text] if assistant_text else []
@@ -528,6 +571,166 @@ def _require_tool(available_tools: set[str], tool_name: str, user_text: str) -> 
     assert tool_name in available_tools, (
         f"Expected tool {tool_name!r} to be available for {user_text!r}, "
         f"got {sorted(available_tools)!r}"
+    )
+
+
+def _extract_all_text(messages: list[ModelMessage]) -> str:
+    """Collect prompt text visible to the deterministic model."""
+    chunks: list[str] = []
+    for part in _iter_message_parts(messages):
+        content = getattr(part, "content", None)
+        if isinstance(content, str) and content.strip():
+            chunks.append(content.strip())
+    return "\n\n".join(chunks)
+
+
+def _extract_latest_request_text(messages: list[ModelMessage]) -> str:
+    """Collect text from only the latest model request."""
+    latest_request = _latest_model_request(messages)
+    if latest_request is None:
+        return ""
+    chunks: list[str] = []
+    for part in latest_request.parts:
+        content = getattr(part, "content", None)
+        if isinstance(content, str) and content.strip():
+            chunks.append(content.strip())
+    return "\n\n".join(chunks)
+
+
+def _extract_selector_user_request(prompt_text: str) -> str:
+    """Extract the original user request embedded in an internal selector prompt."""
+    match = re.search(
+        r"User request:\s*(.*?)\s*Recent history:",
+        prompt_text,
+        flags=re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _extract_active_route_user_request(prompt_text: str) -> str:
+    """Extract the latest turn from an internal active-capability router prompt."""
+    match = re.search(
+        r"Latest user input:\s*(.*?)\s*Recent conversation:",
+        prompt_text,
+        flags=re.DOTALL,
+    )
+    return match.group(1).strip() if match else ""
+
+
+def _active_route_response_for_prompt(messages: list[ModelMessage]) -> Optional[str]:
+    """Answer active workflow routing prompts without requiring runtime tools."""
+    prompt_text = _extract_latest_request_text(messages)
+    if "Classify the latest turn against the current active workflow." not in prompt_text:
+        return None
+
+    user_text = _extract_active_route_user_request(prompt_text)
+    decision = "select_capability" if "PPT" in user_text.upper() else "continue_current"
+    return json.dumps(
+        {
+            "decision": decision,
+            "reason": "deterministic e2e active workflow route",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _extract_authorized_capabilities(prompt_text: str) -> list[tuple[str, str]]:
+    """Return selector capability ids paired with their lower-cased prompt line."""
+    capabilities: list[tuple[str, str]] = []
+    for line in prompt_text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("- ") or ":" not in stripped:
+            continue
+        capability_id = stripped[2:].split("|", 1)[0].strip()
+        if capability_id.startswith(("provider_skill:", "skill:", "tool:")):
+            capabilities.append((capability_id, stripped.lower()))
+    return capabilities
+
+
+def _find_capability(
+    capabilities: list[tuple[str, str]],
+    *needles: str,
+    prefix: str = "",
+) -> str:
+    """Find a capability id containing all requested lower-case fragments."""
+    normalized_needles = [needle.lower() for needle in needles if needle]
+    for capability_id, line in capabilities:
+        if prefix and not capability_id.startswith(prefix):
+            continue
+        if all(needle in line for needle in normalized_needles):
+            return capability_id
+    return ""
+
+
+def _selector_response_for_prompt(messages: list[ModelMessage], instructions: str = "") -> Optional[str]:
+    """Answer AtlasClaw's internal capability selector prompts deterministically."""
+    prompt_text = _extract_latest_request_text(messages)
+    if "Select authorized capability targets for this turn." not in prompt_text:
+        return None
+
+    user_text = _extract_selector_user_request(prompt_text)
+    lowered_user_text = user_text.lower()
+    capabilities = _extract_authorized_capabilities(instructions or prompt_text)
+    target = ""
+
+    if "云主机" in user_text or "linux vm" in lowered_user_text:
+        target = _find_capability(capabilities, ".request", prefix="provider_skill:")
+    elif "待审批" in user_text or "审批数据" in user_text:
+        target = _find_capability(capabilities, ".approval", prefix="provider_skill:")
+    elif "详情" in user_text and "TIC20260316000001" in user_text:
+        target = _find_capability(capabilities, ".approval", prefix="provider_skill:")
+    elif "服务目录" in user_text:
+        target = _find_capability(capabilities, ".request", prefix="provider_skill:")
+    elif "天气" in user_text or (
+        user_text == "上海呢" and _history_contains_weather_context(messages)
+    ):
+        target = (
+            _find_capability(capabilities, "openmeteo_weather", prefix="tool:")
+            or "tool:openmeteo_weather"
+        )
+    elif "PPT" in user_text.upper():
+        target = _find_capability(capabilities, "pptx", prefix="skill:") or "skill:pptx"
+
+    if target:
+        return json.dumps(
+            {
+                "action": "use_tools",
+                "targets": [target],
+                "reason": "deterministic e2e selector target",
+            },
+            ensure_ascii=False,
+        )
+    return json.dumps(
+        {
+            "action": "direct_answer",
+            "targets": [],
+            "reason": "deterministic e2e direct answer",
+        },
+        ensure_ascii=False,
+    )
+
+
+def _no_capability_route_response_for_prompt(messages: list[ModelMessage]) -> Optional[str]:
+    """Answer internal no-capability classifier prompts without requiring tools."""
+    prompt_text = _extract_latest_request_text(messages)
+    if "Classify the latest turn when no runtime capability is available." not in prompt_text:
+        return None
+
+    user_text = _extract_active_route_user_request(prompt_text)
+    lowered_user_text = user_text.lower()
+    runtime_request = any(
+        fragment in user_text
+        for fragment in ("云主机", "待审批", "详情", "服务目录", "申请")
+    ) or any(
+        fragment in lowered_user_text
+        for fragment in ("linux vm", "cmp", "ppt", "pptx", "request data")
+    )
+    return json.dumps(
+        {
+            "decision": "runtime_capability_request" if runtime_request else "ordinary_conversation",
+            "reason": "deterministic e2e no-capability route",
+        },
+        ensure_ascii=False,
     )
 
 
@@ -594,6 +797,18 @@ def _direct_park_answer() -> str:
 
 def _decide_model_action(messages: list[ModelMessage], agent_info: AgentInfo) -> tuple[str, Any]:
     """Return either ('text', text) or ('tool', name, args, call_id)."""
+    active_route_response = _active_route_response_for_prompt(messages)
+    if active_route_response is not None:
+        return "text", active_route_response
+
+    selector_response = _selector_response_for_prompt(messages, agent_info.instructions or "")
+    if selector_response is not None:
+        return "text", selector_response
+
+    no_capability_route_response = _no_capability_route_response_for_prompt(messages)
+    if no_capability_route_response is not None:
+        return "text", no_capability_route_response
+
     available_tools = {tool.name for tool in agent_info.function_tools}
     last_tool_return = _extract_latest_tool_return(messages)
     if last_tool_return is not None:
@@ -633,7 +848,7 @@ def _decide_model_action(messages: list[ModelMessage], agent_info: AgentInfo) ->
         return "text", _direct_park_answer()
     if "PPT" in user_text.upper():
         _require_tool(available_tools, "pptx_create_deck", user_text)
-        items = _extract_pending_items(messages)
+        items = _extract_pending_items(messages, agent_info.instructions or "")
         assert items, "Follow-up PPT request did not retain prior pending request context."
         return (
             "tool",
@@ -893,16 +1108,12 @@ def test_pending_then_ppt_follow_up_creates_real_pptx(agent_harness: AgentHarnes
 
     assert second.tool_starts == ["pptx_create_deck"]
     assert agent_harness.cmp_state["approvals_requests"] == approvals_before_follow_up
-    assert "pending-approvals-e2e.pptx" in second.assistant_text
 
-    pptx_match = re.search(r"([A-Za-z]:\\\S+\.pptx|/\S+\.pptx)", second.assistant_text)
-    assert pptx_match, second.assistant_text
-    pptx_path = Path(pptx_match.group(1))
-    assert pptx_path.is_file(), f"PPTX file not created: {pptx_path}"
-    assert pptx_path.suffix.lower() == ".pptx"
-    assert str(agent_harness.workspace_path) in str(pptx_path)
-
-    presentation = Presentation(str(pptx_path))
+    presentation = _assert_workspace_pptx_created(
+        agent_harness,
+        second,
+        filename="pending-approvals-e2e.pptx",
+    )
     assert len(presentation.slides) == 5
     title_shapes = [shape.text for shape in presentation.slides[0].shapes if hasattr(shape, "text")]
     assert any("CMP 待审批申请汇总" in text for text in title_shapes)
@@ -926,12 +1137,11 @@ def test_pending_then_english_ppt_follow_up_creates_real_pptx(agent_harness: Age
     assert ".pptx" in second.assistant_text.lower()
     assert ".txt" not in second.assistant_text.lower()
 
-    pptx_match = re.search(r"([A-Za-z]:\\\S+\.pptx|/\S+\.pptx)", second.assistant_text)
-    assert pptx_match, second.assistant_text
-    pptx_path = Path(pptx_match.group(1))
-    assert pptx_path.is_file(), f"PPTX file not created: {pptx_path}"
-
-    presentation = Presentation(str(pptx_path))
+    presentation = _assert_workspace_pptx_created(
+        agent_harness,
+        second,
+        filename="pending-approvals-e2e.pptx",
+    )
     assert len(presentation.slides) == 5
 
 

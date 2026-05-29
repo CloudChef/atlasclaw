@@ -321,6 +321,16 @@ def build_direct_answer_recovery_payload(
     }
 
 
+def build_no_runtime_capability_answer(
+    provider_auth_diagnostic: dict[str, Any] | None = None,
+) -> str:
+    """Return the canonical fail-closed answer for unavailable runtime capability."""
+    provider_auth_message = provider_auth_diagnostic_user_message(provider_auth_diagnostic)
+    if provider_auth_message:
+        return provider_auth_message
+    return "当前没有可用的 provider、skill 或工具，AtlasClaw 不能执行或验证该操作。"
+
+
 def build_lookup_dump_recovery_payload(
     *,
     user_message: str,

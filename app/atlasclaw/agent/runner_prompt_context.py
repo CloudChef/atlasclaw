@@ -14,9 +14,13 @@ from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import (
     normalize_tool_description,
     normalize_tool_result_mode,
 )
+from app.atlasclaw.core.provider_skill_capability import (
+    build_provider_skill_target_fields,
+    provider_skill_capability_id,
+    provider_skill_display_name,
+)
 from app.atlasclaw.memory.access import memory_available_for_deps
 from app.atlasclaw.tools.providers.instance_tools import (
-    PROVIDER_INSTANCE_SELECTIONS_KEY,
     provider_instance_usage_hint,
 )
 from app.atlasclaw.tools.catalog import STANDARD_SKILL_RUNTIME_TOOL_NAMES
@@ -42,7 +46,6 @@ def build_system_prompt(
         "tool_policy": collect_tool_policy(deps),
         "user_info": deps.user_info,
         "provider_contexts": collect_provider_contexts(deps),
-        "provider_instance_contexts": collect_provider_instance_contexts(deps),
         "provider_auth_diagnostics": collect_provider_auth_diagnostics(deps),
         "context_window_tokens": context_window_tokens,
         "mode_override": prompt_mode,
@@ -96,11 +99,13 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
     capability_index: list[dict] = []
     tool_names: set[str] = set()
     extra = deps.extra if isinstance(getattr(deps, "extra", None), dict) else {}
-    provider_contexts = collect_provider_contexts(deps)
     provider_instances = extra.get("provider_instances")
 
     capability_index.extend(
         collect_md_skill_capability_entries(deps, include_provider_bound=False)
+    )
+    capability_index.extend(
+        collect_md_skill_capability_entries(deps, include_provider_bound=True)
     )
 
     for item in collect_tools_snapshot(agent=agent, deps=deps):
@@ -109,9 +114,28 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
         )
         if routing_visibility in {"hidden", "internal"}:
             continue
+        if bool(item.get("coordination_only")):
+            continue
         tool_name = str(item.get("name") or "unknown").strip() or "unknown"
         provider_type = _normalize_optional_text(item.get("provider_type", ""))
-        if _has_provider_instance_bucket(provider_instances, provider_type):
+        if provider_type:
+            if not _has_provider_instance_bucket(provider_instances, provider_type):
+                continue
+            existing_ids = {
+                str(entry.get("capability_id", "") or "").strip()
+                for entry in capability_index
+                if isinstance(entry, dict)
+            }
+            for provider_tool_entry in _provider_tool_capability_entries(
+                deps=deps,
+                item=item,
+                provider_type=provider_type,
+                provider_instances=provider_instances,
+            ):
+                if provider_tool_entry["capability_id"] in existing_ids:
+                    continue
+                existing_ids.add(provider_tool_entry["capability_id"])
+                capability_index.append(provider_tool_entry)
             continue
         tool_names.add(tool_name)
         capability_index.append(
@@ -131,41 +155,6 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
                 "declared_tool_names": [tool_name],
             }
         )
-
-    if isinstance(provider_instances, dict):
-        for provider_type in (str(key) for key in provider_instances.keys()):
-            instances = provider_instances.get(provider_type)
-            if not isinstance(instances, dict):
-                continue
-            provider_context = provider_contexts.get(provider_type) or provider_contexts.get(
-                provider_type.lower(), {}
-            )
-            if not isinstance(provider_context, dict):
-                provider_context = {}
-            for instance_name in (str(key) for key in instances.keys()):
-                instance_config = instances.get(instance_name)
-                if not isinstance(instance_config, dict):
-                    continue
-                capability_name = f"{provider_type}.{instance_name}"
-                capability_index.append(
-                    {
-                        "capability_id": _build_capability_id(
-                            "provider_instance",
-                            capability_name,
-                        ),
-                        "kind": "provider_instance",
-                        "name": capability_name,
-                        "description": _provider_instance_capability_description(
-                            provider_context=provider_context,
-                            instance_config=instance_config,
-                        ),
-                        "locator": capability_name,
-                        "provider_type": provider_type,
-                        "instance_name": instance_name,
-                        "artifact_types": [],
-                        "declared_tool_names": [],
-                    }
-                )
 
     for item in collect_skills_snapshot(deps):
         routing_visibility = _normalize_optional_text(
@@ -224,8 +213,8 @@ def _build_capability_id(kind: str, name: str) -> str:
     normalized_name = str(name or "").strip()
     if normalized_kind == "tool":
         prefix = "tool"
-    elif normalized_kind == "provider_instance":
-        prefix = "provider_instance"
+    elif normalized_kind == "provider_skill":
+        prefix = "provider_skill"
     else:
         prefix = "skill"
     return f"{prefix}:{normalized_name or 'unknown'}"
@@ -262,6 +251,23 @@ def collect_md_skill_capability_entries(
         )
         if provider_bound != include_provider_bound:
             continue
+        if provider_bound:
+            provider_skill_entries = _provider_md_skill_capability_entries(
+                deps=deps,
+                item=item,
+                name=name,
+                metadata=metadata,
+                provider_type=provider_type,
+                provider_instances=provider_instances,
+            )
+            entries.extend(provider_skill_entries)
+            continue
+        artifact_types = _infer_artifact_types(
+            name=name,
+            description=str(item.get("description", "") or "").strip(),
+            capability_class=_normalize_optional_text(metadata.get("capability_class", "")),
+            metadata=metadata,
+        )
         entries.append(
             {
                 "capability_id": _build_capability_id("md_skill", name or "unknown"),
@@ -270,25 +276,29 @@ def collect_md_skill_capability_entries(
                 "description": str(item.get("description", "") or "").strip(),
                 "locator": str(item.get("file_path", "")).strip() or name or "unknown",
                 "provider_type": provider_type,
-                "artifact_types": _infer_artifact_types(
-                    name=name,
-                    description=str(item.get("description", "") or "").strip(),
-                    capability_class=_normalize_optional_text(metadata.get("capability_class", "")),
-                    metadata=metadata,
-                ),
+                "artifact_types": artifact_types,
                 "declared_tool_names": _extract_md_tool_names(item),
                 "declares_executable_tools": _metadata_declares_executable_tool(metadata),
+                "qualified_skill_name": name or "unknown",
+                "skill_name": str(item.get("name") or "").strip(),
+                "target_skill_names": _normalize_string_list(
+                    [name, item.get("name", "")]
+                ),
+                "target_capability_classes": _artifact_capability_classes(artifact_types),
+                "target_tool_names": _extract_md_executable_tool_names(item),
             }
         )
     return entries
 
 
-def _provider_instance_capability_description(
+def _provider_skill_capability_description(
     *,
+    description: str,
     provider_context: dict[str, Any],
     instance_config: dict[str, Any],
 ) -> str:
     parts: list[str] = []
+    parts.extend(_normalize_string_list(description))
     for value in (
         provider_context.get("display_name", ""),
         provider_context.get("description", ""),
@@ -298,6 +308,171 @@ def _provider_instance_capability_description(
     ):
         parts.extend(_normalize_string_list(value))
     return " ".join(parts).strip() or "Authorized provider instance capability."
+
+
+def _provider_md_skill_capability_entries(
+    *,
+    deps,
+    item: dict[str, Any],
+    name: str,
+    metadata: dict[str, Any],
+    provider_type: str,
+    provider_instances: Any,
+) -> list[dict[str, Any]]:
+    """Expand one provider-bound markdown skill into instance-qualified capabilities."""
+    instances = _provider_instance_entries(provider_instances, provider_type)
+    if not instances:
+        return []
+
+    provider_contexts = collect_provider_contexts(deps)
+    provider_context = provider_contexts.get(provider_type) or provider_contexts.get(
+        provider_type.lower(), {}
+    )
+    if not isinstance(provider_context, dict):
+        provider_context = {}
+
+    description = str(item.get("description", "") or "").strip()
+    declared_tool_names = _extract_md_tool_names(item)
+    display_skill_name = provider_skill_display_name(
+        item.get("name") or name,
+        provider_type,
+    )
+    skill_name = str(item.get("name") or display_skill_name).strip()
+    entries: list[dict[str, Any]] = []
+    for resolved_provider_type, instance_name, instance_config in instances:
+        target_fields = build_provider_skill_target_fields(
+            provider_type=resolved_provider_type,
+            instance_name=instance_name,
+            qualified_skill_name=name or "unknown",
+            skill_name=skill_name,
+            display_skill_name=display_skill_name,
+        )
+        provider_skill_name = str(target_fields.get("provider_skill_name", "") or "")
+        entries.append(
+            {
+                "capability_id": provider_skill_capability_id(
+                    provider_name=instance_name,
+                    provider_type=resolved_provider_type,
+                    qualified_skill_name=name or "unknown",
+                    skill_name=skill_name,
+                    display_skill_name=display_skill_name,
+                ),
+                "kind": "provider_skill",
+                "name": provider_skill_name,
+                "description": _provider_skill_capability_description(
+                    description=description,
+                    provider_context=provider_context,
+                    instance_config=instance_config,
+                ),
+                "locator": str(item.get("file_path", "")).strip() or name or "unknown",
+                **target_fields,
+                "artifact_types": _infer_artifact_types(
+                    name=name,
+                    description=description,
+                    capability_class=_normalize_optional_text(
+                        metadata.get("capability_class", "")
+                    ),
+                    metadata=metadata,
+                ),
+                "declared_tool_names": declared_tool_names,
+                "declares_executable_tools": _metadata_declares_executable_tool(metadata),
+            }
+        )
+    return entries
+
+
+def _provider_tool_capability_entries(
+    *,
+    deps,
+    item: dict[str, Any],
+    provider_type: str,
+    provider_instances: Any,
+) -> list[dict[str, Any]]:
+    """Expand one provider-bound executable tool into instance-qualified capabilities."""
+    instances = _provider_instance_entries(provider_instances, provider_type)
+    if not instances:
+        return []
+
+    tool_name = str(item.get("name") or "unknown").strip() or "unknown"
+    qualified_skill_name = _normalize_optional_text(item.get("qualified_skill_name", ""))
+    if not qualified_skill_name:
+        return []
+    skill_name = _normalize_optional_text(item.get("skill_name", ""), tool_name)
+    display_skill_name = provider_skill_display_name(
+        qualified_skill_name or skill_name,
+        provider_type,
+    )
+    description = str(item.get("description", "") or "").strip()
+    provider_contexts = collect_provider_contexts(deps)
+    provider_context = provider_contexts.get(provider_type) or provider_contexts.get(
+        provider_type.lower(), {}
+    )
+    if not isinstance(provider_context, dict):
+        provider_context = {}
+
+    entries: list[dict[str, Any]] = []
+    for resolved_provider_type, instance_name, instance_config in instances:
+        target_fields = build_provider_skill_target_fields(
+            provider_type=resolved_provider_type,
+            instance_name=instance_name,
+            qualified_skill_name=qualified_skill_name,
+            skill_name=skill_name,
+            display_skill_name=display_skill_name,
+        )
+        provider_skill_name = str(target_fields.get("provider_skill_name", "") or "")
+        entries.append(
+            {
+                "capability_id": provider_skill_capability_id(
+                    provider_name=instance_name,
+                    provider_type=resolved_provider_type,
+                    qualified_skill_name=qualified_skill_name,
+                    skill_name=skill_name,
+                    display_skill_name=display_skill_name,
+                ),
+                "kind": "provider_skill",
+                "name": provider_skill_name,
+                "description": _provider_skill_capability_description(
+                    description=description,
+                    provider_context=provider_context,
+                    instance_config=instance_config,
+                ),
+                "locator": _format_tool_locator(item),
+                **target_fields,
+                "artifact_types": _infer_artifact_types(
+                    name=tool_name,
+                    description=description,
+                    capability_class=_normalize_optional_text(
+                        item.get("capability_class", "")
+                    ),
+                    metadata=item,
+                ),
+                "declared_tool_names": [tool_name],
+                "declares_executable_tools": True,
+            }
+        )
+    return entries
+
+
+def _provider_instance_entries(
+    provider_instances: Any,
+    provider_type: str,
+) -> list[tuple[str, str, dict[str, Any]]]:
+    """Return visible instance configs for a provider type using canonical config casing."""
+    normalized_provider = _normalize_optional_text(provider_type).lower()
+    if not normalized_provider or not isinstance(provider_instances, dict):
+        return []
+    for raw_provider_type, instances in provider_instances.items():
+        if str(raw_provider_type or "").strip().lower() != normalized_provider:
+            continue
+        if not isinstance(instances, dict):
+            return []
+        resolved_provider_type = str(raw_provider_type or provider_type).strip() or provider_type
+        return [
+            (resolved_provider_type, str(instance_name), dict(instance_config))
+            for instance_name, instance_config in instances.items()
+            if str(instance_name or "").strip() and isinstance(instance_config, dict)
+        ]
+    return []
 
 
 def _has_provider_instance_bucket(provider_instances: Any, provider_type: str) -> bool:
@@ -417,68 +592,6 @@ def collect_provider_contexts(deps) -> dict[str, dict]:
         return result
     except Exception:
         return {}
-
-
-def collect_provider_instance_contexts(deps) -> list[dict[str, Any]]:
-    """Collect safe provider and instance hints for prompt-time instance selection."""
-    extra = deps.extra if isinstance(deps.extra, dict) else {}
-    provider_instances = extra.get("provider_instances")
-    if not isinstance(provider_instances, dict):
-        return []
-    provider_contexts = collect_provider_contexts(deps)
-
-    selected = extra.get(PROVIDER_INSTANCE_SELECTIONS_KEY)
-    selected_map = dict(selected) if isinstance(selected, dict) else {}
-    direct_provider_type = _normalize_optional_text(extra.get("provider_type", ""))
-    direct_instance_name = _normalize_optional_text(extra.get("provider_instance_name", ""))
-    if direct_provider_type and direct_instance_name:
-        selected_map[direct_provider_type] = direct_instance_name
-
-    contexts: list[dict[str, Any]] = []
-    for provider_type in (str(key) for key in provider_instances.keys()):
-        instances = provider_instances.get(provider_type)
-        if not isinstance(instances, dict):
-            continue
-        active_instance = _normalize_optional_text(
-            selected_map.get(provider_type),
-            selected_map.get(provider_type.lower()),
-        )
-        provider_context = provider_contexts.get(provider_type) or provider_contexts.get(
-            provider_type.lower(), {}
-        )
-        if not isinstance(provider_context, dict):
-            provider_context = {}
-        for instance_name in (str(key) for key in instances.keys()):
-            instance_config = instances.get(instance_name)
-            if not isinstance(instance_config, dict):
-                continue
-            contexts.append(
-                {
-                    "provider_type": provider_type,
-                    "provider_display_name": _normalize_optional_text(
-                        provider_context.get("display_name", "")
-                    ),
-                    "provider_description": _normalize_optional_text(
-                        provider_context.get("description", "")
-                    ),
-                    "provider_keywords": _normalize_string_list(
-                        provider_context.get("keywords", [])
-                    ),
-                    "provider_capabilities": _normalize_string_list(
-                        provider_context.get("capabilities", [])
-                    ),
-                    "provider_use_when": _normalize_string_list(
-                        provider_context.get("use_when", [])
-                    ),
-                    "provider_avoid_when": _normalize_string_list(
-                        provider_context.get("avoid_when", [])
-                    ),
-                    "instance_name": instance_name,
-                    "usage_hint": provider_instance_usage_hint(instance_config),
-                    "selected": bool(active_instance and active_instance == instance_name),
-                }
-            )
-    return contexts
 
 
 def collect_tool_policy(deps) -> Optional[dict]:
@@ -1068,14 +1181,26 @@ def _extract_md_tool_names(entry: dict) -> list[str]:
     return _normalize_string_list(names)
 
 
-def _metadata_declares_executable_tool(metadata: dict[str, Any]) -> bool:
+def _extract_md_executable_tool_names(entry: dict) -> list[str]:
+    """Return only markdown skill tools backed by an executable entrypoint."""
+    metadata = entry.get("metadata", {})
     if not isinstance(metadata, dict):
-        return False
-    if str(metadata.get("tool_name", "") or "").strip() and str(
-        metadata.get("entrypoint", "") or ""
-    ).strip():
-        return True
+        return []
+    return _extract_metadata_executable_tool_names(metadata)
 
+
+def _metadata_declares_executable_tool(metadata: dict[str, Any]) -> bool:
+    return bool(_extract_metadata_executable_tool_names(metadata))
+
+
+def _extract_metadata_executable_tool_names(metadata: dict[str, Any]) -> list[str]:
+    """Return tool names whose metadata includes both a name and executable entrypoint."""
+    if not isinstance(metadata, dict):
+        return []
+
+    names: list[str] = []
+    if str(metadata.get("entrypoint", "") or "").strip():
+        names.append(str(metadata.get("tool_name", "") or "").strip())
     ids: set[str] = set()
     for key in metadata.keys():
         key_text = str(key or "")
@@ -1085,11 +1210,18 @@ def _metadata_declares_executable_tool(metadata: dict[str, Any]) -> bool:
             ids.add(key_text[len("tool_") : -len("_entrypoint")])
 
     for tool_id in ids:
-        if str(metadata.get(f"tool_{tool_id}_name", "") or "").strip() and str(
-            metadata.get(f"tool_{tool_id}_entrypoint", "") or ""
-        ).strip():
-            return True
-    return False
+        if not str(metadata.get(f"tool_{tool_id}_entrypoint", "") or "").strip():
+            continue
+        names.append(str(metadata.get(f"tool_{tool_id}_name", "") or "").strip())
+    return _normalize_string_list(names)
+
+
+def _artifact_capability_classes(artifact_types: list[str]) -> list[str]:
+    """Convert artifact type names into capability classes used by execution plans."""
+    return _normalize_string_list(
+        [f"artifact:{item}" for item in artifact_types if str(item or "").strip()]
+    )
+
 
 
 def _extract_md_tool_metadata_dict(

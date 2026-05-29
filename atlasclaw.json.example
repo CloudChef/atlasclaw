@@ -115,8 +115,8 @@
             "auth_type": "provider_token",
             "provider_token": "${CMP_ROBOT_APPROVER_TOKEN}",
             "allowed_skills": [
-              "smartcmp:preapproval-agent",
-              "smartcmp:request-decomposition-agent"
+              "cmp.preapproval-agent",
+              "cmp.request-decomposition-agent"
             ]
           }
         }
@@ -166,8 +166,8 @@
         "sk_env": "${ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL}",
         "default_agent_id": "main",
         "allowed_skills": [
-          "smartcmp:preapproval-agent",
-          "smartcmp:request-decomposition-agent"
+          "cmp.preapproval-agent",
+          "cmp.request-decomposition-agent"
         ]
       }
     ]

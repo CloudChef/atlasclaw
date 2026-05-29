@@ -22,18 +22,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from app.atlasclaw.agent.selected_capability import SELECTED_CAPABILITY_KEY
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
-from app.atlasclaw.skills.registry import SkillRegistry
+from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
 
 
 class _StreamingRunner:
@@ -55,9 +57,11 @@ class _FailingRunner:
 class _RecordingRunner(_StreamingRunner):
     def __init__(self):
         self.called = False
+        self.last_deps = None
 
     async def run(self, *args, **kwargs):
         self.called = True
+        self.last_deps = args[2] if len(args) > 2 else kwargs.get("deps")
         async for event in super().run(*args, **kwargs):
             yield event
 
@@ -112,6 +116,21 @@ def _parse_sse_events(body: str) -> list[tuple[str, dict]]:
     if current_event and current_data:
         events.append((current_event, json.loads(current_data)))
     return events
+
+
+def _assert_static_slash_denial(client, ctx, runner, session_key: str, run) -> None:
+    assert run.status_code == 200
+    assert run.json()["status"] == "completed"
+    assert runner.called is False
+    run_id = run.json()["run_id"]
+    status_response = client.get(f"/api/agent/runs/{run_id}")
+    assert status_response.status_code == 200
+    assert status_response.json()["status"] == "completed"
+    entries = asyncio.run(
+        ctx.session_manager_router.for_session_key(session_key).load_transcript(session_key)
+    )
+    assert [entry.role for entry in entries] == ["user", "assistant"]
+    assert "没有可用的 provider、skill 或工具" in entries[-1].content
 
 
 def test_agent_run_stream_does_not_duplicate_lifecycle_or_assistant_events(tmp_path):
@@ -212,6 +231,112 @@ def test_agent_run_accepts_current_users_existing_session_key(tmp_path):
     assert response.status_code == 200
     assert response.json()["session_key"] == session_key
     assert runner.called is True
+
+
+def test_agent_run_denies_unavailable_slash_command_without_runner(tmp_path):
+    runner = _RecordingRunner()
+    client, ctx = _build_client_and_context(tmp_path, runner, user_id="alice")
+    session = client.post("/api/sessions", json={})
+    assert session.status_code == 200
+    session_key = session.json()["session_key"]
+
+    run = client.post(
+        "/api/agent/run",
+        json={
+            "session_key": session_key,
+            "message": "/pptx 生成一个 PPTX 文件",
+            "timeout_seconds": 30,
+        },
+    )
+
+    _assert_static_slash_denial(client, ctx, runner, session_key, run)
+
+
+def test_agent_run_denies_unavailable_slash_with_stale_selected_capability(tmp_path):
+    runner = _RecordingRunner()
+    client, ctx = _build_client_and_context(tmp_path, runner, user_id="alice")
+    ctx.skill_registry.register(
+        SkillMetadata(name="safe-tool", description="A selectable test skill."),
+        lambda: "ok",
+    )
+    session = client.post("/api/sessions", json={})
+    assert session.status_code == 200
+    session_key = session.json()["session_key"]
+
+    run = client.post(
+        "/api/agent/run",
+        json={
+            "session_key": session_key,
+            "message": "/forbidden run with stale context",
+            "timeout_seconds": 30,
+            "context": {
+                "selected_capability": {
+                    "kind": "skill",
+                    "command": "/safe-tool",
+                },
+            },
+        },
+    )
+
+    _assert_static_slash_denial(client, ctx, runner, session_key, run)
+
+
+def test_agent_run_denies_mismatched_slash_and_selected_capability(tmp_path):
+    runner = _RecordingRunner()
+    client, ctx = _build_client_and_context(tmp_path, runner, user_id="alice")
+    for skill_name in ("safe-tool", "other-tool"):
+        ctx.skill_registry.register(
+            SkillMetadata(name=skill_name, description=f"Selectable {skill_name}."),
+            lambda: "ok",
+        )
+    session = client.post("/api/sessions", json={})
+    assert session.status_code == 200
+    session_key = session.json()["session_key"]
+
+    run = client.post(
+        "/api/agent/run",
+        json={
+            "session_key": session_key,
+            "message": "/other-tool run with stale context",
+            "timeout_seconds": 30,
+            "context": {
+                "selected_capability": {
+                    "kind": "skill",
+                    "command": "/safe-tool",
+                },
+            },
+        },
+    )
+
+    _assert_static_slash_denial(client, ctx, runner, session_key, run)
+
+
+def test_agent_run_binds_available_slash_without_client_selected_capability(tmp_path):
+    runner = _RecordingRunner()
+    client, ctx = _build_client_and_context(tmp_path, runner, user_id="alice")
+    ctx.skill_registry.register(
+        SkillMetadata(name="safe-tool", description="A selectable test skill."),
+        lambda: "ok",
+    )
+    session = client.post("/api/sessions", json={})
+    assert session.status_code == 200
+    session_key = session.json()["session_key"]
+
+    run = client.post(
+        "/api/agent/run",
+        json={
+            "session_key": session_key,
+            "message": "/safe-tool run from text slash",
+            "timeout_seconds": 30,
+        },
+    )
+
+    assert run.status_code == 200
+    assert run.json()["status"] == "running"
+    assert runner.called is True
+    selected = runner.last_deps.extra[SELECTED_CAPABILITY_KEY]
+    assert selected["kind"] == "skill"
+    assert selected["command"] == "/safe-tool"
 
 
 def test_agent_run_status_rejects_other_users_run_id(tmp_path):

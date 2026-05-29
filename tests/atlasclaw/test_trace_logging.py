@@ -236,7 +236,7 @@ def test_sanitize_log_value_redacts_nested_robot_auth_secrets() -> None:
                         "provider_token": "cmp_tk_robot_secret",
                         "password": "robot-password",
                         "auth": {"cookie": "robot-cookie"},
-                        "allowed_skills": ["smartcmp:preapproval-agent"],
+                        "allowed_skills": ["cmp.preapproval-agent"],
                     }
                 },
             }
@@ -254,7 +254,7 @@ def test_sanitize_log_value_redacts_nested_robot_auth_secrets() -> None:
     assert profile["provider_token"] == "[REDACTED]"
     assert profile["password"] == "[REDACTED]"
     assert profile["auth"]["cookie"] == "[REDACTED]"
-    assert profile["allowed_skills"] == ["smartcmp:preapproval-agent"]
+    assert profile["allowed_skills"] == ["cmp.preapproval-agent"]
 
 
 def test_http_response_log_payload_marks_streaming_without_consuming_body() -> None:

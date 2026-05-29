@@ -64,7 +64,7 @@ def _allowed_tools() -> list[dict]:
     ]
 
 
-def test_project_minimal_toolset_keeps_only_targeted_provider_tools() -> None:
+def test_project_minimal_toolset_does_not_project_provider_tools_without_instance_skill_scope() -> None:
     plan = ToolIntentPlan(
         action=ToolIntentAction.USE_TOOLS,
         target_provider_types=["smartcmp"],
@@ -77,20 +77,18 @@ def test_project_minimal_toolset_keeps_only_targeted_provider_tools() -> None:
         intent_plan=plan,
     )
 
-    assert [tool["name"] for tool in filtered] == [
-        "cmp_list_pending",
-        "cmp_get_request_detail",
-    ]
+    assert filtered == []
     assert trace["enabled"] is True
-    assert trace["reason"] == "projection_applied"
+    assert trace["reason"] == "projection_empty"
 
 
 def test_project_minimal_toolset_supports_skill_and_explicit_tool_narrowing() -> None:
     plan = ToolIntentPlan(
         action=ToolIntentAction.USE_TOOLS,
+        target_provider_instances=["smartcmp.cmp"],
         target_provider_types=["smartcmp"],
         target_capability_classes=["provider:smartcmp"],
-        target_skill_names=["smartcmp:request"],
+        target_provider_skill_names=["cmp.request"],
         target_tool_names=["cmp_get_request_detail"],
     )
 
@@ -103,11 +101,12 @@ def test_project_minimal_toolset_supports_skill_and_explicit_tool_narrowing() ->
     assert trace["after_count"] == 1
 
 
-def test_project_minimal_toolset_unions_provider_and_docs_only_skill_targets() -> None:
+def test_project_minimal_toolset_intersects_provider_and_skill_targets() -> None:
     plan = ToolIntentPlan(
         action=ToolIntentAction.USE_TOOLS,
+        target_provider_instances=["smartcmp.cmp"],
         target_provider_types=["smartcmp"],
-        target_skill_names=["xlsx"],
+        target_provider_skill_names=["cmp.request"],
     )
 
     filtered, trace = project_minimal_toolset(
@@ -115,10 +114,156 @@ def test_project_minimal_toolset_unions_provider_and_docs_only_skill_targets() -
         intent_plan=plan,
     )
 
+    assert [tool["name"] for tool in filtered] == ["cmp_get_request_detail"]
+    assert trace["reason"] == "projection_applied"
+
+
+def test_project_minimal_toolset_does_not_treat_provider_qualified_skill_as_provider_target() -> None:
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_provider_types=["smartcmp"],
+        target_skill_names=["smartcmp:request"],
+    )
+
+    filtered, trace = project_minimal_toolset(
+        allowed_tools=_allowed_tools(),
+        intent_plan=plan,
+    )
+
+    assert filtered == []
+    assert trace["reason"] == "projection_empty"
+
+
+def test_project_minimal_toolset_requires_provider_instance_for_provider_skill() -> None:
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_provider_types=["smartcmp"],
+        target_provider_skill_names=["cmp.request"],
+    )
+
+    filtered, trace = project_minimal_toolset(
+        allowed_tools=_allowed_tools(),
+        intent_plan=plan,
+    )
+
+    assert filtered == []
+    assert trace["reason"] == "projection_empty"
+
+
+def test_project_minimal_toolset_does_not_widen_provider_type_without_skill_target() -> None:
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_provider_types=["smartcmp"],
+    )
+
+    filtered, trace = project_minimal_toolset(
+        allowed_tools=_allowed_tools(),
+        intent_plan=plan,
+    )
+
+    assert filtered == []
+    assert trace["reason"] == "projection_empty"
+    assert trace["steps"][0]["step"] == "tool_name"
+    assert {"step": "provider_type", "active": False, "before_count": 6, "after_count": 0} in trace["steps"]
+
+
+def test_project_minimal_toolset_hides_tools_for_direct_answer_without_targets() -> None:
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.DIRECT_ANSWER,
+        reason="capability selector found no runtime target",
+    )
+
+    filtered, trace = project_minimal_toolset(
+        allowed_tools=_allowed_tools(),
+        intent_plan=plan,
+    )
+
+    assert filtered == []
+    assert trace["enabled"] is True
+    assert trace["reason"] == "projection_empty"
+
+
+def test_project_minimal_toolset_does_not_add_same_named_standalone_skill_for_provider_skill() -> None:
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_provider_instances=["smartcmp.cmp"],
+        target_provider_types=["smartcmp"],
+        target_provider_skill_names=["cmp.request"],
+    )
+
+    filtered, trace = project_minimal_toolset(
+        allowed_tools=[
+            *_allowed_tools(),
+            {
+                "name": "plain_request_helper",
+                "description": "Standalone request helper",
+                "skill_name": "request",
+                "qualified_skill_name": "request",
+            },
+        ],
+        intent_plan=plan,
+    )
+
+    assert [tool["name"] for tool in filtered] == ["cmp_get_request_detail"]
+    assert trace["reason"] == "projection_applied"
+
+
+def test_project_minimal_toolset_keeps_standalone_skill_with_provider_skill_target() -> None:
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_provider_instances=["smartcmp.cmp"],
+        target_provider_types=["smartcmp"],
+        target_provider_skill_names=["cmp.request"],
+        target_skill_names=["xlsx"],
+    )
+
+    filtered, trace = project_minimal_toolset(
+        allowed_tools=[
+            *_allowed_tools(),
+            {
+                "name": "xlsx_create_workbook",
+                "description": "Create XLSX files",
+                "skill_name": "xlsx",
+                "qualified_skill_name": "xlsx",
+            },
+        ],
+        intent_plan=plan,
+    )
+
     assert [tool["name"] for tool in filtered] == [
-        "cmp_list_pending",
+        "cmp_get_request_detail",
+        "xlsx_create_workbook",
+    ]
+    assert trace["reason"] == "projection_applied"
+
+
+def test_project_minimal_toolset_keeps_explicit_tool_and_provider_skill_target() -> None:
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_provider_instances=["smartcmp.cmp"],
+        target_provider_types=["smartcmp"],
+        target_provider_skill_names=["cmp.request"],
+        target_tool_names=["xlsx_create_workbook"],
+    )
+
+    filtered, trace = project_minimal_toolset(
+        allowed_tools=[
+            *_allowed_tools(),
+            {
+                "name": "xlsx_create_workbook",
+                "description": "Create XLSX files",
+                "skill_name": "xlsx",
+                "qualified_skill_name": "xlsx",
+            },
+        ],
+        intent_plan=plan,
+    )
+
+    assert [tool["name"] for tool in filtered] == [
+        "xlsx_create_workbook",
         "cmp_get_request_detail",
     ]
+    assert trace["explicit_target_mode"] is True
     assert trace["reason"] == "projection_applied"
 
 

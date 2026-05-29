@@ -12,6 +12,11 @@ from app.atlasclaw.auth.guards import (
     AuthorizationContext,
     filter_provider_instances_for_authz,
 )
+from app.atlasclaw.core.provider_skill_capability import (
+    build_provider_skill_target_fields,
+    provider_skill_capability_id,
+    provider_skill_display_name,
+)
 from app.atlasclaw.skills.permission_service import skill_permission_service
 
 from .deps_context import (
@@ -52,22 +57,14 @@ def _command_part(value: Any) -> str:
     return normalized or "item"
 
 
-def _bare_skill_name(value: Any) -> str:
-    normalized = _normalize_text(value)
-    if not normalized:
-        return ""
-    return normalized.split(":")[-1]
-
-
-def _display_skill_name(value: Any, provider_type: Any = "") -> str:
-    bare = _bare_skill_name(value)
-    provider_prefix = f"{_normalize_text(provider_type)}__"
-    if provider_prefix and bare.startswith(provider_prefix):
-        bare = bare[len(provider_prefix):]
-    return bare
-
-
 def _build_capability_id(item: dict[str, Any]) -> str:
+    if _normalize_text(item.get("kind")) == "provider_skill":
+        return provider_skill_capability_id(
+            provider_name=item.get("provider_name") or item.get("instance_name"),
+            provider_type=item.get("provider_type"),
+            qualified_skill_name=item.get("qualified_skill_name"),
+            skill_name=item.get("skill_name"),
+        )
     parts = [
         _normalize_text(item.get("kind")),
         _normalize_text(item.get("provider_type")),
@@ -209,6 +206,22 @@ def _group_ids_from_metadata(metadata: dict[str, Any], provider_type: str) -> li
     return _unique_text(flattened)
 
 
+def _capability_classes_for_tools(
+    tools_snapshot: list[dict[str, Any]],
+    tool_names: list[str] | None,
+) -> list[str]:
+    requested = {_normalize_lower(name) for name in (tool_names or []) if _normalize_text(name)}
+    if not requested:
+        return []
+    return _unique_text(
+        [
+            tool.get("capability_class")
+            for tool in tools_snapshot
+            if _normalize_lower(tool.get("name")) in requested
+        ]
+    )
+
+
 def _append_capability(
     items: list[dict[str, Any]],
     seen: set[str],
@@ -216,6 +229,8 @@ def _append_capability(
 ) -> None:
     item["id"] = _build_capability_id(item)
     key = item["id"]
+    if not key:
+        return
     if key in seen:
         return
     seen.add(key)
@@ -229,9 +244,10 @@ def _build_standalone_skill_item(
     description: str,
     source: str,
     tool_names: list[str] | None = None,
+    capability_classes: list[str] | None = None,
     group_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    display_name = _display_skill_name(qualified_skill_name or skill_name)
+    display_name = provider_skill_display_name(qualified_skill_name or skill_name)
     command = f"/{_command_part(display_name)}"
     target_skill_names = _unique_text([qualified_skill_name, skill_name])
     return {
@@ -243,6 +259,7 @@ def _build_standalone_skill_item(
         "description": description,
         "source": source,
         "target_skill_names": target_skill_names,
+        "target_capability_classes": _unique_text(capability_classes or []),
         "target_tool_names": _unique_text(tool_names or []),
         "target_group_ids": _unique_text(group_ids or []),
     }
@@ -258,33 +275,43 @@ def _build_provider_skill_items(
     description: str,
     source: str,
     tool_names: list[str] | None = None,
+    capability_classes: list[str] | None = None,
     group_ids: list[str] | None = None,
 ) -> list[dict[str, Any]]:
+    if not _normalize_text(qualified_skill_name):
+        return []
     instances = _provider_instances_for(provider_instances, provider_type)
     if not instances:
         return []
 
-    display_skill_name = _display_skill_name(qualified_skill_name or skill_name, provider_type)
+    display_skill_name = provider_skill_display_name(
+        qualified_skill_name or skill_name,
+        provider_type,
+    )
     provider_display_name = _get_provider_display_name(ctx, provider_type)
-    target_skill_names = _unique_text([qualified_skill_name, skill_name])
     target_tool_names = _unique_text(tool_names or [])
+    target_capability_classes = _unique_text(capability_classes or [])
     target_group_ids = _unique_text(group_ids or [])
     items: list[dict[str, Any]] = []
     for instance_name in sorted(instances.keys()):
         command = f"/{_command_part(instance_name)}.{_command_part(display_skill_name)}"
+        target_fields = build_provider_skill_target_fields(
+            provider_type=provider_type,
+            instance_name=instance_name,
+            qualified_skill_name=qualified_skill_name,
+            skill_name=skill_name,
+            display_skill_name=display_skill_name,
+        )
         items.append(
             {
                 "kind": "provider_skill",
                 "command": command,
                 "label": f"{instance_name}.{display_skill_name}",
-                "provider_type": provider_type,
                 "provider_display_name": provider_display_name,
-                "instance_name": instance_name,
-                "skill_name": skill_name,
-                "qualified_skill_name": qualified_skill_name or skill_name,
                 "description": description,
                 "source": source,
-                "target_skill_names": target_skill_names,
+                **target_fields,
+                "target_capability_classes": target_capability_classes,
                 "target_tool_names": target_tool_names,
                 "target_group_ids": target_group_ids,
             }
@@ -321,6 +348,7 @@ def build_agent_capabilities(
         description = _normalize_text(md_skill.get("description"))
         tool_names = _md_tool_names(ctx, qualified_skill_name, metadata)
         md_tool_names_seen.update(_normalize_lower(name) for name in tool_names)
+        capability_classes = _capability_classes_for_tools(tools_snapshot, tool_names)
         group_ids = _group_ids_from_metadata(metadata, provider_type)
         if provider_type:
             for item in _build_provider_skill_items(
@@ -332,6 +360,7 @@ def build_agent_capabilities(
                 description=description,
                 source="markdown",
                 tool_names=tool_names,
+                capability_classes=capability_classes,
                 group_ids=group_ids,
             ):
                 _append_capability(items, seen, item)
@@ -346,6 +375,7 @@ def build_agent_capabilities(
                 description=description,
                 source="markdown",
                 tool_names=tool_names,
+                capability_classes=capability_classes,
                 group_ids=group_ids,
             ),
         )
@@ -363,6 +393,7 @@ def build_agent_capabilities(
         skill_name = _normalize_text(tool.get("skill_name")) or tool_name
         qualified_skill_name = _normalize_text(tool.get("qualified_skill_name")) or skill_name
         description = _normalize_text(tool.get("description"))
+        capability_classes = _unique_text([tool.get("capability_class")])
         group_ids = _unique_text(tool.get("group_ids", []) or [])
         if provider_type:
             for item in _build_provider_skill_items(
@@ -374,6 +405,7 @@ def build_agent_capabilities(
                 description=description,
                 source=_normalize_text(tool.get("source")) or "executable",
                 tool_names=[tool_name],
+                capability_classes=capability_classes,
                 group_ids=group_ids,
             ):
                 _append_capability(items, seen, item)
@@ -388,6 +420,7 @@ def build_agent_capabilities(
                 description=description,
                 source=_normalize_text(tool.get("source")) or "executable",
                 tool_names=[tool_name],
+                capability_classes=capability_classes,
                 group_ids=group_ids,
             ),
         )
@@ -433,11 +466,8 @@ def resolve_selected_capability(
 
     requested_kind = _normalize_text(selected.get("kind"))
     requested_command = _normalize_text(selected.get("command"))
-    requested_provider_type = _normalize_text(selected.get("provider_type"))
-    requested_instance_name = _normalize_text(selected.get("instance_name"))
-    requested_skill = _normalize_text(
-        selected.get("qualified_skill_name") or selected.get("skill_name")
-    )
+    if not requested_command:
+        return None
 
     matches: list[dict[str, Any]] = []
     for item in capabilities:
@@ -445,28 +475,6 @@ def resolve_selected_capability(
             continue
         if requested_command and _normalize_text(item.get("command")) != requested_command:
             continue
-        if (
-            requested_provider_type
-            and _normalize_text(item.get("provider_type")) != requested_provider_type
-        ):
-            continue
-        if (
-            requested_instance_name
-            and _normalize_text(item.get("instance_name")) != requested_instance_name
-        ):
-            continue
-        if requested_skill:
-            item_skill_names = {
-                _normalize_lower(item.get("qualified_skill_name")),
-                _normalize_lower(item.get("skill_name")),
-                *{
-                    _normalize_lower(name)
-                    for name in item.get("target_skill_names", [])
-                    if _normalize_text(name)
-                },
-            }
-            if _normalize_lower(requested_skill) not in item_skill_names:
-                continue
         matches.append(item)
 
     if len(matches) != 1:

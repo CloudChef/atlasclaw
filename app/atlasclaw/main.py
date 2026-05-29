@@ -795,7 +795,11 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(start_enabled_connections(db_initialized))
 
 
-    webhook_manager = WebhookDispatchManager(config.webhook, _skill_registry)
+    webhook_manager = WebhookDispatchManager(
+        config.webhook,
+        _skill_registry,
+        provider_instances=provider_instances,
+    )
     webhook_manager.validate_startup()
     
     print(f"[AtlasClaw] Agent created with model: {seed_token.provider}/{seed_token.model}")

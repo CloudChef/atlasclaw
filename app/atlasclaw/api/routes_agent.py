@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from typing import Any, Optional
 
@@ -10,6 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, 
 
 from ..auth.models import ANONYMOUS_USER, UserInfo
 from ..auth.guards import AuthorizationContext, get_optional_authorization_context
+from ..agent.runner_tool.runner_execution_payload import build_no_runtime_capability_answer
 from ..agent.selected_capability import SELECTED_CAPABILITY_KEY
 from ..session.context import SessionKey
 from .agent_capabilities import build_agent_capabilities, resolve_selected_capability
@@ -18,11 +20,36 @@ from .schemas import AgentRunRequest, AgentRunResponse, AgentStatusResponse
 from .services.run_service import (
     abort_run,
     build_provider_config,
+    complete_run_with_static_answer,
     execute_agent_run,
     get_run_or_404,
     init_run,
     normalize_user_message,
 )
+
+_LEADING_SLASH_COMMAND_RE = re.compile(r"^/[A-Za-z0-9][A-Za-z0-9_.-]*(?=$|\s)")
+
+
+def _leading_slash_command(message: str) -> str:
+    """Return the explicit leading slash command token from a user message."""
+    match = _LEADING_SLASH_COMMAND_RE.match(str(message or "").lstrip())
+    return match.group(0).lower() if match else ""
+
+
+def _resolve_slash_capability(
+    *,
+    ctx: APIContext,
+    authz: AuthorizationContext | None,
+    provider_instances: dict[str, Any],
+    slash_command: str,
+) -> dict[str, Any] | None:
+    """Resolve an explicit slash command through the request-visible catalog."""
+    return resolve_selected_capability(
+        ctx=ctx,
+        selected={"command": slash_command},
+        authz=authz,
+        provider_instances=provider_instances,
+    )
 
 
 async def _ensure_runnable_session(ctx: APIContext, auth_user: UserInfo, session_key: str) -> None:
@@ -54,6 +81,8 @@ def _get_owned_run_or_404(ctx: APIContext, run_id: str, auth_user: UserInfo) -> 
 
 
 def register_agent_routes(router: APIRouter) -> None:
+    """Register chat-agent run and run-status routes on the shared API router."""
+
     @router.get("/agent/capabilities")
     async def list_agent_capabilities(
         request_obj: Request,
@@ -88,6 +117,7 @@ def register_agent_routes(router: APIRouter) -> None:
         await _ensure_runnable_session(ctx, user_info, request.session_key)
         request_cookies = dict(request_obj.cookies)
         provider_config = build_provider_config(ctx)
+        provider_instances_for_request = provider_config or (ctx.provider_instances or {})
         safe_message = normalize_user_message(request.message)
 
         # Resolve user skill permissions for agent context filtering.
@@ -146,18 +176,52 @@ def register_agent_routes(router: APIRouter) -> None:
         request_context = dict(request.context or {})
         request_context.pop(SELECTED_CAPABILITY_KEY, None)
         selected_capability = request_context.pop("selected_capability", None)
+        canonical_capability: dict[str, Any] | None = None
         if selected_capability is not None:
             canonical_capability = resolve_selected_capability(
                 ctx=ctx,
                 selected=selected_capability,
                 authz=resolved_authz,
-                provider_instances=provider_config or (ctx.provider_instances or {}),
+                provider_instances=provider_instances_for_request,
             )
             if canonical_capability is None:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="Selected skill or provider capability is not available.",
             )
+            request_context[SELECTED_CAPABILITY_KEY] = canonical_capability
+
+        slash_command = _leading_slash_command(safe_message)
+        if slash_command:
+            slash_capability = _resolve_slash_capability(
+                ctx=ctx,
+                authz=resolved_authz,
+                provider_instances=provider_instances_for_request,
+                slash_command=slash_command,
+            )
+            selected_command = str(
+                (canonical_capability or {}).get("command") or ""
+            ).strip().lower()
+            selected_command_mismatch = (
+                canonical_capability is not None
+                and selected_command != slash_command
+            )
+            if slash_capability is None or selected_command_mismatch:
+                init_run(ctx, run_id, request.session_key, safe_message, request.timeout_seconds)
+                await complete_run_with_static_answer(
+                    ctx,
+                    run_id=run_id,
+                    session_key=request.session_key,
+                    user_message=safe_message,
+                    answer=build_no_runtime_capability_answer(),
+                    reason="unavailable_slash_capability",
+                )
+                return AgentRunResponse(
+                    run_id=run_id,
+                    status="completed",
+                    session_key=request.session_key,
+                )
+            canonical_capability = slash_capability
             request_context[SELECTED_CAPABILITY_KEY] = canonical_capability
 
         # Always pass RBAC result to runtime when DB is available (including

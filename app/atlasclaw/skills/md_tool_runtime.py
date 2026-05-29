@@ -225,6 +225,27 @@ def create_script_wrapper(
             if str(instance_name or "").strip() and isinstance(instance_config, dict)
         }
 
+    def _selected_provider_config(
+        extra: dict[str, Any],
+        provider_resolution: Any,
+    ) -> dict[str, dict[str, dict[str, Any]]]:
+        provider_type_name = str(
+            getattr(provider_resolution, "provider_type", "") or ""
+        ).strip()
+        instance_name = str(getattr(provider_resolution, "instance_name", "") or "").strip()
+        provider_instance = extra.get("provider_instance")
+        if (
+            not provider_type_name
+            or not instance_name
+            or not isinstance(provider_instance, dict)
+        ):
+            return {}
+        return {
+            provider_type_name: {
+                instance_name: dict(provider_instance),
+            }
+        }
+
     async def script_handler(ctx=None, **kwargs) -> dict:
         import os
 
@@ -294,16 +315,7 @@ def create_script_wrapper(
                     "error": "Provider instance selection required",
                     "output": provider_resolution.error_text,
                 }
-            provider_config = extra.get("provider_config", {}) if extra else {}
-            # Fallback: build provider_config from provider_instances (channel path)
-            if not provider_config and extra:
-                provider_instances = extra.get("provider_instances", {})
-                if provider_instances:
-                    provider_config = provider_instances
-                    print(
-                        "[DEBUG] Built provider_config from provider_instances: "
-                        f"{list(provider_instances.keys())}"
-                    )
+            provider_config = _selected_provider_config(extra, provider_resolution)
             if provider_config:
                 try:
                     env["ATLASCLAW_PROVIDER_CONFIG"] = json.dumps(provider_config)

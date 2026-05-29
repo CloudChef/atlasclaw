@@ -17,6 +17,7 @@ from .schemas import WebhookDispatchRequest, WebhookDispatchResponse
 from .webhook_dispatch import (
     WebhookRobotProfileError,
     WebhookRobotProfileSelection,
+    WebhookSkillSelection,
     WebhookSystemIdentity,
     build_webhook_user_message,
     redact_webhook_payload,
@@ -30,13 +31,19 @@ async def execute_webhook_dispatch(
     ctx: APIContext,
     dispatch_id: str,
     system: WebhookSystemIdentity,
-    skill_entry: Any,
+    skill_selection: WebhookSkillSelection,
     session_key: str,
     agent_id: str,
     args: dict[str, Any],
     timeout_seconds: int,
     robot_profile_selection: WebhookRobotProfileSelection | None = None,
 ) -> None:
+    """Run an authenticated webhook request against its selected provider skill.
+
+    The dispatch path pins both the markdown skill and provider instance in
+    ``SkillDeps`` so natural-language routing cannot switch to a different
+    provider capability while handling the webhook payload.
+    """
     if not ctx.agent_runner:
         logger.error("Webhook dispatch %s failed: AgentRunner not configured", dispatch_id)
         return
@@ -47,19 +54,33 @@ async def execute_webhook_dispatch(
         roles=["webhook"],
         extra={"system_id": system.system_id},
     )
-    user_message = build_webhook_user_message(skill_entry, args, system.system_id)
+    skill_entry = skill_selection.skill_entry
+    user_message = build_webhook_user_message(
+        skill_entry,
+        args,
+        system.system_id,
+        provider_skill_name=skill_selection.provider_skill_name,
+    )
 
     provider_config: dict[str, Any] = {}
     if robot_profile_selection is not None:
         # Robot dispatch gets a narrowed, runtime-only provider config. It
         # must not expose unrelated provider instances or normal user creds.
         provider_config = robot_profile_selection.provider_config
-    elif ctx.service_provider_registry:
-        provider_config = ctx.service_provider_registry.get_all_instance_configs()
+    else:
+        provider_config = {
+            skill_selection.provider_type: {
+                skill_selection.provider_instance: dict(
+                    skill_selection.provider_instance_config
+                )
+            }
+        }
 
+    target_fields = skill_selection.target_fields()
     extra: dict[str, Any] = {
         "webhook_system_id": system.system_id,
-        "webhook_skill": skill_entry.qualified_name,
+        "webhook_skill": skill_selection.provider_skill_name,
+        "webhook_qualified_skill": skill_entry.qualified_name,
         "webhook_args": redact_webhook_payload(args, provider_type=skill_entry.provider),
         # Pin the markdown skill selected by the authenticated webhook so the
         # runner does not re-infer a different skill from the payload text.
@@ -68,7 +89,11 @@ async def execute_webhook_dispatch(
             "provider": skill_entry.provider,
             "qualified_name": skill_entry.qualified_name,
             "file_path": skill_entry.file_path,
+            **target_fields,
         },
+        "provider_type": skill_selection.provider_type,
+        "provider_instance_name": skill_selection.provider_instance,
+        "provider_instance": dict(skill_selection.provider_instance_config),
     }
     if robot_profile_selection is not None:
         extra.update(
@@ -120,6 +145,8 @@ async def execute_webhook_dispatch(
 
 
 def register_webhook_routes(router: APIRouter) -> None:
+    """Register webhook dispatch routes and their authentication checks."""
+
     @router.post(
         "/webhook/dispatch",
         response_model=WebhookDispatchResponse,
@@ -147,14 +174,14 @@ def register_webhook_routes(router: APIRouter) -> None:
             )
 
         try:
-            skill_entry = manager.resolve_allowed_skill(system, request.skill)
+            skill_selection = manager.resolve_allowed_skill(system, request.skill)
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=str(exc),
             )
 
-        if skill_entry is None:
+        if skill_selection is None:
             if request.skill in ctx.skill_registry.list_skills():
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -173,7 +200,7 @@ def register_webhook_routes(router: APIRouter) -> None:
         args = dict(request.args or {})
         try:
             robot_profile_selection = resolve_webhook_robot_profile_selection(
-                skill_entry=skill_entry,
+                skill_selection=skill_selection,
                 args=args,
                 service_provider_registry=ctx.service_provider_registry,
             )
@@ -199,7 +226,7 @@ def register_webhook_routes(router: APIRouter) -> None:
             ctx,
             dispatch_id,
             system,
-            skill_entry,
+            skill_selection,
             session_key,
             agent_id,
             robot_profile_selection.args if robot_profile_selection is not None else args,

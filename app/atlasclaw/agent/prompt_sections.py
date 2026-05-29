@@ -43,6 +43,7 @@ def build_standard_skill_runtime_policy(target_md_skill: dict[str, Any]) -> list
 def build_target_md_skill(target_md_skill: dict[str, Any]) -> str:
     """Build a focused section for stage-two markdown skill execution."""
     qualified_name = target_md_skill.get("qualified_name", "")
+    provider_skill_name = str(target_md_skill.get("provider_skill_name", "") or "").strip()
     file_path = target_md_skill.get("file_path", "")
     provider = target_md_skill.get("provider", "")
     workflow_context = target_md_skill.get("workflow_context")
@@ -51,7 +52,9 @@ def build_target_md_skill(target_md_skill: dict[str, Any]) -> str:
         collapse_whitespace=False,
     )
     lines = ["## Target Markdown Skill", ""]
-    if qualified_name:
+    if provider_skill_name:
+        lines.append(f"Provider skill: {provider_skill_name}")
+    elif qualified_name:
         lines.append(f"Qualified name: {qualified_name}")
     if provider:
         lines.append(f"Provider: {provider}")
@@ -278,6 +281,7 @@ def build_tool_policy(
     retry_missing_tools = tool_policy.get("retry_missing_tools", [])
     max_same_tool_calls_per_turn = int(tool_policy.get("max_same_tool_calls_per_turn", 0) or 0)
     target_provider_instances = tool_policy.get("target_provider_instances", [])
+    target_provider_skill_names = tool_policy.get("target_provider_skill_names", [])
     target_skill_names = tool_policy.get("target_skill_names", [])
     target_group_ids = tool_policy.get("target_group_ids", [])
     target_capability_classes = tool_policy.get("target_capability_classes", [])
@@ -294,6 +298,10 @@ def build_tool_policy(
     if isinstance(target_provider_instances, list) and target_provider_instances:
         lines.append(
             f"Target provider instances: {', '.join(str(item) for item in target_provider_instances)}"
+        )
+    if isinstance(target_provider_skill_names, list) and target_provider_skill_names:
+        lines.append(
+            f"Target provider skills: {', '.join(str(item) for item in target_provider_skill_names)}"
         )
     if isinstance(target_skill_names, list) and target_skill_names:
         lines.append(f"Target skills: {', '.join(str(item) for item in target_skill_names)}")
@@ -459,67 +467,6 @@ def build_tool_policy(
                 "`<tool_call>` or `<web_search>`."
             )
     return "\n".join(lines)
-
-
-def build_provider_instance_routing(provider_instance_contexts: Optional[list[dict]]) -> str:
-    """Build provider instance routing guidance from safe public hints."""
-    if not isinstance(provider_instance_contexts, list) or not provider_instance_contexts:
-        return ""
-
-    lines = [
-        "## Provider Instance Routing",
-        "",
-        "Available provider instances are listed below. Each item includes the provider context "
-        "and optional instance usage hint.",
-        "The runtime selector picks the provider instance before provider-backed tools run. "
-        "Use the selected or first matching instance's usage hint as the routing context.",
-        "For provider-backed final answers, obey the selected instance's usage hint as an "
-        "answer policy as well as a routing hint.",
-        "If the match is unclear, use the first listed instance for that provider. Do not pass "
-        "provider or instance names through unrelated tool arguments such as path filters.",
-        "",
-    ]
-    shown = 0
-    for item in provider_instance_contexts:
-        if not isinstance(item, dict):
-            continue
-        provider_type = str(item.get("provider_type", "") or "").strip()
-        instance_name = str(item.get("instance_name", "") or "").strip()
-        if not provider_type or not instance_name:
-            continue
-        usage_hint = str(item.get("usage_hint", "") or "").strip()
-        selected = bool(item.get("selected"))
-        lines.append(f"- `{provider_type}.{instance_name}`")
-        lines.append(f"  provider_type: {provider_type}")
-        provider_display_name = str(item.get("provider_display_name", "") or "").strip()
-        if provider_display_name:
-            lines.append(f"  provider_display_name: {provider_display_name}")
-        provider_description = str(item.get("provider_description", "") or "").strip()
-        if provider_description:
-            lines.append(f"  provider_description: {provider_description}")
-        for source_key, label in (
-            ("provider_keywords", "provider_keywords"),
-            ("provider_capabilities", "provider_capabilities"),
-            ("provider_use_when", "provider_use_when"),
-            ("provider_avoid_when", "provider_avoid_when"),
-        ):
-            values = [
-                str(value).strip()
-                for value in (item.get(source_key, []) or [])
-                if str(value).strip()
-            ]
-            if values:
-                lines.append(f"  {label}: {', '.join(values)}")
-        lines.append(f"  instance_name: {instance_name}")
-        if usage_hint:
-            lines.append(f"  instance_usage_hint: {usage_hint}")
-        if selected:
-            lines.append("  selected: current session selection")
-            if usage_hint:
-                lines.append("  selected_answer_policy: obey instance_usage_hint in the final answer")
-        shown += 1
-
-    return "\n".join(lines) if shown else ""
 
 
 def build_provider_auth_diagnostics(diagnostics: Optional[dict[str, dict]]) -> str:
@@ -704,7 +651,7 @@ def build_capability_index(config, capability_index: list[dict]) -> str:
         if not isinstance(raw_entry, dict):
             continue
         kind = str(raw_entry.get("kind", "") or "").strip().lower()
-        if kind not in {"md_skill", "tool", "skill", "provider_instance"}:
+        if kind not in {"md_skill", "tool", "skill", "provider_skill"}:
             kind = "capability"
         name = str(raw_entry.get("name") or raw_entry.get("qualified_name") or "unknown").strip()
         capability_id = str(raw_entry.get("capability_id", "") or "").strip()
@@ -744,8 +691,8 @@ def build_capability_index(config, capability_index: list[dict]) -> str:
     sections: list[tuple[str, list[dict[str, str]]]] = [
         ("Markdown Skills", [entry for entry in selected_entries if entry["kind"] == "md_skill"]),
         (
-            "Provider Instances",
-            [entry for entry in selected_entries if entry["kind"] == "provider_instance"],
+            "Provider Skills",
+            [entry for entry in selected_entries if entry["kind"] == "provider_skill"],
         ),
         ("Tools", [entry for entry in selected_entries if entry["kind"] == "tool"]),
         ("Built-in Skills", [entry for entry in selected_entries if entry["kind"] == "skill"]),
@@ -786,7 +733,7 @@ def build_capability_index(config, capability_index: list[dict]) -> str:
             detail_parts: list[str] = []
             provider_type = str(entry.get("provider_type", "") or "").strip()
             if provider_type:
-                detail_parts.append(f"provider:{provider_type}")
+                detail_parts.append(f"provider_type={provider_type}")
             artifact_types = [str(item).strip() for item in entry.get("artifact_types", []) or [] if str(item).strip()]
             if artifact_types:
                 detail_parts.append("artifacts:" + ",".join(artifact_types[:2]))

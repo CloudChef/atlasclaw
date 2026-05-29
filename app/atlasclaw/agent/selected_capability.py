@@ -19,7 +19,9 @@ class SelectedCapabilityTargets:
 
     provider_instances: list[str] = field(default_factory=list)
     provider_types: list[str] = field(default_factory=list)
+    provider_skill_names: list[str] = field(default_factory=list)
     skill_names: list[str] = field(default_factory=list)
+    capability_classes: list[str] = field(default_factory=list)
     group_ids: list[str] = field(default_factory=list)
     tool_names: list[str] = field(default_factory=list)
 
@@ -28,7 +30,9 @@ class SelectedCapabilityTargets:
         return bool(
             self.provider_instances
             or self.provider_types
+            or self.provider_skill_names
             or self.skill_names
+            or self.capability_classes
             or self.group_ids
             or self.tool_names
         )
@@ -78,25 +82,43 @@ def selected_capability_targets(selected: Mapping[str, Any] | None) -> SelectedC
     if not isinstance(selected, Mapping):
         return SelectedCapabilityTargets()
 
-    provider_type, instance_name = selected_capability_provider_instance_ref(selected)
     target_provider_instances = unique_capability_values(
         selected.get("target_provider_instances")
-        or ([f"{provider_type}.{instance_name}"] if provider_type and instance_name else [])
     )
     target_provider_types = unique_capability_values(selected.get("target_provider_types"))
-    target_skill_names = unique_capability_values(
-        selected.get("target_skill_names")
-        or [
-            selected.get("qualified_skill_name"),
-            selected.get("skill_name"),
-        ]
+    target_provider_skill_names = unique_capability_values(
+        selected.get("target_provider_skill_names")
     )
     target_tool_names = unique_capability_values(selected.get("target_tool_names"))
+    target_capability_classes = unique_capability_values(
+        selected.get("target_capability_classes")
+    )
+    has_provider_binding = bool(
+        _normalize_text(selected.get("provider_name"))
+        or _normalize_text(selected.get("provider_type"))
+        or _normalize_text(selected.get("instance_name"))
+        or target_provider_instances
+        or target_provider_types
+    )
+    if has_provider_binding and not target_provider_skill_names:
+        return SelectedCapabilityTargets()
+    if target_provider_skill_names:
+        target_skill_names = []
+    else:
+        target_skill_names = unique_capability_values(
+            selected.get("target_skill_names")
+            or [
+                selected.get("qualified_skill_name"),
+                selected.get("skill_name"),
+            ]
+        )
     target_group_ids = unique_capability_values(selected.get("target_group_ids"))
     return SelectedCapabilityTargets(
         provider_instances=target_provider_instances,
         provider_types=target_provider_types,
+        provider_skill_names=target_provider_skill_names,
         skill_names=target_skill_names,
+        capability_classes=target_capability_classes,
         group_ids=target_group_ids,
         tool_names=target_tool_names,
     )

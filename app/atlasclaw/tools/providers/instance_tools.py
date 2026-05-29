@@ -136,11 +136,11 @@ def resolve_provider_instance_selection(
 ) -> ProviderInstanceSelectionResolution:
     """Resolve and apply the provider instance selection for one provider type.
 
-    The policy is shared by provider skill wrappers and Markdown provider tools:
-    use an explicit selected instance first, then a session-sticky selection, then
-    a same-run recorded selection, then the first configured visible instance.
-    The prompt still asks the LLM to pick by instance usage hints; the runtime
-    policy guarantees provider tools receive a concrete instance before execution.
+    The policy is shared by provider skill wrappers and Markdown provider tools.
+    It only accepts an instance that was already fixed by a provider-skill
+    capability, a session-sticky selection, or a same-run recorded selection.
+    It deliberately does not default to the first visible instance because
+    provider-bound skills must execute inside an explicit instance scope.
     """
     target_provider = str(provider_type or "").strip()
     visible_instances = _normalize_instance_configs(instances)
@@ -208,12 +208,13 @@ def resolve_provider_instance_selection(
             selections[target_provider] = recorded_name
         return selection
 
-    instance_name, instance_config = next(iter(visible_instances.items()))
-    return _apply_provider_instance_selection(
-        extra=extra,
+    return ProviderInstanceSelectionResolution(
+        resolved=False,
         provider_type=target_provider,
-        instance_name=instance_name,
-        instance_config=instance_config,
+        error_text=(
+            format_provider_instance_choices(target_provider, visible_instances)
+            + "\nSelect a provider name.skill capability before invoking this provider tool."
+        ),
     )
 
 

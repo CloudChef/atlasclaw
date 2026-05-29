@@ -174,7 +174,7 @@ class TestConfigWorkspaceLoading:
                             {
                                 "system_id": "smartcmp-preapproval",
                                 "sk_env": "${ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL}",
-                                "allowed_skills": ["smartcmp:preapproval-agent"],
+                                "allowed_skills": ["cmp.preapproval-agent"],
                             }
                         ],
                     }
@@ -198,7 +198,7 @@ class TestConfigWorkspaceLoading:
                             {
                                 "system_id": "smartcmp-preapproval",
                                 "sk_env": "ATLASCLAW_WEBHOOK_SK_SMARTCMP_PREAPPROVAL",
-                                "allowed_skills": ["smartcmp:preapproval-agent"],
+                                "allowed_skills": ["cmp.preapproval-agent"],
                             }
                         ],
                     }
@@ -222,7 +222,7 @@ class TestConfigWorkspaceLoading:
                             {
                                 "system_id": "smartcmp-preapproval",
                                 "sk_env": "SK_AtlasClawDirect",
-                                "allowed_skills": ["smartcmp:preapproval-agent"],
+                                "allowed_skills": ["cmp.preapproval-agent"],
                             }
                         ],
                     }

@@ -338,7 +338,9 @@ def test_script_wrapper_logs_tool_name_and_masks_sensitive_env_values(
                         "user_token": "fake-provider-user-token",
                     }
                 }
-            }
+            },
+            "provider_type": "provider",
+            "provider_instance_name": "default",
         }
 
     class _Ctx:
@@ -363,14 +365,17 @@ def test_script_wrapper_logs_tool_name_and_masks_sensitive_env_values(
     assert "fake-provider-user-token" not in captured.out
 
 
-def test_script_wrapper_defaults_to_first_provider_instance_for_multiple_instances(
+def test_script_wrapper_blocks_provider_script_without_selected_instance(
     tmp_path: Path,
 ) -> None:
+    marker = tmp_path / "script-ran.txt"
     script = tmp_path / "echo_default_instance.py"
     script.write_text(
         "\n".join(
             [
                 "import json, os",
+                "from pathlib import Path",
+                f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
                 "print(json.dumps({",
                 "  'provider_type': os.environ.get('ATLASCLAW_PROVIDER_TYPE', ''),",
                 "  'provider_instance': os.environ.get('ATLASCLAW_PROVIDER_INSTANCE', ''),",
@@ -409,13 +414,14 @@ def test_script_wrapper_defaults_to_first_provider_instance_for_multiple_instanc
 
     result = asyncio.run(wrapper(ctx=_Ctx()))
 
-    assert result["success"] is True
-    payload = json.loads(result["output"].strip())
-    assert payload == {
-        "provider_type": "provider",
-        "provider_instance": "prod",
-        "base_url": "https://provider.example.com/prod",
-    }
+    assert result["success"] is False
+    assert result["error"] == "Provider instance selection required"
+    assert "Provider 'provider' has 2 instances:" in result["output"]
+    assert "prod" in result["output"]
+    assert "Use for production provider requests." in result["output"]
+    assert "dev" in result["output"]
+    assert "Use for development provider requests." in result["output"]
+    assert not marker.exists()
 
 
 def test_script_wrapper_blocks_provider_script_without_visible_instance(
@@ -737,40 +743,61 @@ def test_script_wrapper_exposes_robot_provider_metadata_to_script_environment(
     assert payload["provider_config"] == runtime_provider_config
 
 
-def test_script_wrapper_blocks_submit_request_without_explicit_confirmation(
+def test_script_wrapper_exports_only_selected_provider_instance_config(
     tmp_path: Path,
 ) -> None:
-    marker = tmp_path / "submit-ran.txt"
-    script = tmp_path / "submit.py"
+    script = tmp_path / "echo_scoped_provider_config.py"
     script.write_text(
         "\n".join(
             [
-                "from pathlib import Path",
-                f"Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
-                "print('submitted')",
+                "import json, os",
+                "print(json.dumps(json.loads(os.environ.get('ATLASCLAW_PROVIDER_CONFIG', '{}'))))",
             ]
         ),
         encoding="utf-8",
     )
+    provider_config = {
+        "smartcmp": {
+            "cmp": {
+                "provider_type": "smartcmp",
+                "instance_name": "cmp",
+                "base_url": "https://cmp.example.com/platform-api",
+            },
+            "other": {
+                "provider_type": "smartcmp",
+                "instance_name": "other",
+                "base_url": "https://other.example.com/platform-api",
+            },
+        }
+    }
 
     class _Deps:
-        user_message = "This is a UI automation check for provider user_token access."
         cookies = {}
-        extra = {}
+        extra = {
+            "provider_config": provider_config,
+            "provider_instances": provider_config,
+            "provider_type": "smartcmp",
+            "provider_instance_name": "cmp",
+            "provider_instance": provider_config["smartcmp"]["cmp"],
+        }
 
     class _Ctx:
         deps = _Deps()
 
     wrapper = create_script_wrapper(
         script,
-        tool_name="provider_submit_request",
+        provider_type="smartcmp",
+        tool_name="smartcmp_list_services",
     )
 
     result = asyncio.run(wrapper(ctx=_Ctx()))
 
-    assert result["success"] is False
-    assert "explicit user confirmation is required" in result["error"].lower()
-    assert not marker.exists()
+    assert result["success"] is True
+    assert json.loads(result["output"].strip()) == {
+        "smartcmp": {
+            "cmp": provider_config["smartcmp"]["cmp"],
+        }
+    }
 
 
 def test_script_wrapper_allows_submit_request_with_explicit_confirmation(

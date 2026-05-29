@@ -12,13 +12,14 @@ from fastapi import HTTPException, status
 
 from ...auth.models import ANONYMOUS_USER, UserInfo
 from ...core.security_guard import encode_if_untrusted
-from ...session.context import SessionKey
+from ...session.context import SessionKey, TranscriptEntry
 from ..deps_context import APIContext, build_scoped_deps
 
 logger = logging.getLogger(__name__)
 
 
 def build_provider_config(ctx: APIContext) -> dict[str, Any]:
+    """Return provider instance config visible to a run from the active registry."""
     if ctx.service_provider_registry:
         return ctx.service_provider_registry.get_all_instance_configs()
     return {}
@@ -31,6 +32,7 @@ def init_run(
     message: str,
     timeout_seconds: int,
 ) -> None:
+    """Create active-run state and its SSE stream before execution starts."""
     ctx.active_runs[run_id] = {
         "status": "running",
         "session_key": session_key,
@@ -42,11 +44,13 @@ def init_run(
 
 
 def normalize_user_message(message: str) -> str:
+    """Encode untrusted user input before it enters transcripts or model prompts."""
     normalized, _ = encode_if_untrusted(message)
     return normalized
 
 
 def get_run_or_404(ctx: APIContext, run_id: str) -> dict[str, Any]:
+    """Return active-run metadata or raise the API-level not-found error."""
     run_info = ctx.active_runs.get(run_id)
     if not run_info:
         raise HTTPException(
@@ -57,8 +61,59 @@ def get_run_or_404(ctx: APIContext, run_id: str) -> dict[str, Any]:
 
 
 def abort_run(ctx: APIContext, run_id: str) -> None:
+    """Mark a run as aborted after ownership checks have resolved the run id."""
     run_info = get_run_or_404(ctx, run_id)
     run_info["status"] = "aborted"
+
+
+async def complete_run_with_static_answer(
+    ctx: APIContext,
+    *,
+    run_id: str,
+    session_key: str,
+    user_message: str,
+    answer: str,
+    reason: str,
+) -> None:
+    """Persist and complete a run whose answer is decided by API-side policy.
+
+    This is used for request-bound validation outcomes that should not call the
+    LLM, such as an explicit slash command that is not visible to the current
+    user. The function mirrors the observable run contract: transcript entries,
+    SSE events, and final run status are all produced.
+    """
+    session_manager = ctx.session_manager_router.for_session_key(session_key)
+    await session_manager.append_transcript(
+        session_key,
+        TranscriptEntry(
+            role="user",
+            content=user_message,
+            metadata={"static_answer_reason": reason},
+        ),
+    )
+    await session_manager.append_transcript(
+        session_key,
+        TranscriptEntry(
+            role="assistant",
+            content=answer,
+            metadata={"static_answer_reason": reason},
+        ),
+    )
+    ctx.sse_manager.push_lifecycle(run_id, "start")
+    ctx.sse_manager.push_assistant(run_id, answer, is_delta=False)
+    ctx.sse_manager.push_runtime(
+        run_id,
+        "answered",
+        "Final answer ready.",
+        metadata={"static_answer_reason": reason},
+    )
+    ctx.sse_manager.push_lifecycle(run_id, "end")
+    if run_id in ctx.active_runs:
+        ctx.active_runs[run_id]["status"] = "completed"
+        ctx.active_runs[run_id]["completed_at"] = datetime.now(timezone.utc)
+        ctx.active_runs[run_id]["tokens_used"] = 0
+        ctx.active_runs[run_id].pop("error", None)
+    ctx.sse_manager.close_stream(run_id)
 
 
 async def execute_agent_run(
@@ -72,6 +127,12 @@ async def execute_agent_run(
     provider_config: Optional[dict[str, Any]] = None,
     request_context: Optional[dict[str, Any]] = None,
 ) -> None:
+    """Execute one agent run and bridge runner events into SSE/status state.
+
+    The caller is responsible for creating the run with ``init_run`` and for
+    passing already validated request context, including selected capabilities
+    and authorization-scoped provider config.
+    """
     _user_info = user_info or ANONYMOUS_USER
     encountered_error = False
     final_error_message = ""

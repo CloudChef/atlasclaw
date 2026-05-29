@@ -40,7 +40,7 @@ def _smartcmp_instance_config() -> dict[str, str]:
             "preapproval_bot": {
                 "auth_type": "provider_token",
                 "provider_token": "cmp_tk_robot_secret",
-                "allowed_skills": ["smartcmp:preapproval-agent"],
+                "allowed_skills": ["cmp.preapproval-agent"],
             }
         },
     }
@@ -60,7 +60,7 @@ def test_service_provider_registry_redacts_schema_sensitive_fields() -> None:
     assert redacted["user_token"] == "***"
     assert redacted["robot_auth"]["preapproval_bot"]["provider_token"] == "***"
     assert redacted["robot_auth"]["preapproval_bot"]["allowed_skills"] == [
-        "smartcmp:preapproval-agent"
+        "cmp.preapproval-agent"
     ]
 
 
@@ -250,6 +250,8 @@ def test_provider_skill_wrapper_reads_all_instance_configs_without_legacy_regist
             "provider_instances": provider_instances,
             "available_providers": {"smartcmp": ["prod"]},
             "_service_provider_registry": _RuntimeRegistry(),
+            "provider_type": "smartcmp",
+            "provider_instance_name": "prod",
         }
 
     class _Ctx:
@@ -263,7 +265,7 @@ def test_provider_skill_wrapper_reads_all_instance_configs_without_legacy_regist
     }
 
 
-def test_provider_skill_wrapper_defaults_to_first_instance_for_multiple_instances() -> None:
+def test_provider_skill_wrapper_blocks_without_selected_instance_for_multiple_instances() -> None:
     from app.atlasclaw.core.user_provider_bindings import ResolvedProviderInstanceRegistry
 
     provider_instances = {
@@ -280,8 +282,11 @@ def test_provider_skill_wrapper_defaults_to_first_instance_for_multiple_instance
         }
     }
     registry = ServiceProviderRegistry()
+    handler_called = False
 
     async def handler(ctx, **kwargs):
+        nonlocal handler_called
+        handler_called = True
         return {
             "provider_type": ctx.deps.extra.get("provider_type"),
             "provider_instance_name": ctx.deps.extra.get("provider_instance_name"),
@@ -301,10 +306,14 @@ def test_provider_skill_wrapper_defaults_to_first_instance_for_multiple_instance
 
     result = asyncio.run(wrapped(_Ctx()))
 
-    assert result == {
-        "provider_type": "smartcmp",
-        "provider_instance_name": "prod",
-    }
+    assert handler_called is False
+    assert result["is_error"] is True
+    content = result["content"][0]["text"]
+    assert "Provider 'smartcmp' has 2 instances:" in content
+    assert "prod" in content
+    assert "Use for production CMP approvals." in content
+    assert "dev" in content
+    assert "Use for development CMP testing." in content
 
 
 def test_provider_skill_wrapper_uses_session_sticky_selection() -> None:
