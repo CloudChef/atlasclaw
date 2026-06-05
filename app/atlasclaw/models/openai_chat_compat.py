@@ -24,6 +24,8 @@ def requires_single_leading_system_message(
     model_name = str(model or "").strip().lower()
     if provider_name == "vllm" or provider_name.startswith("vllm-"):
         return "qwen" in model_name
+    if "minimax" in model_name:
+        return True
     return False
 
 
