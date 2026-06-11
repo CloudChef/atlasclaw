@@ -7,12 +7,12 @@
  * Configure DeepChat component integration with AtlasClaw API
  */
 
-import { getSessionKey, initSession, setSessionKey, setSessionHasMessages } from './session-manager.js?v=19'
-import { buildWorkspaceFileDownloadUrl, getAgentInfo, getSessionHistory } from './api-client.js?v=19'
-import { createStreamHandler } from './stream-handler.js?v=19'
-import { buildApiUrl } from './config.js?v=19'
+import { getSessionKey, initSession, setSessionKey, setSessionHasMessages } from './session-manager.js?v=21'
+import { buildWorkspaceFileDownloadUrl, getAgentInfo, getSessionHistory } from './api-client.js?v=21'
+import { createStreamHandler } from './stream-handler.js?v=21'
+import { buildApiUrl } from './config.js?v=21'
 import { translateIfExists, getCurrentLocale } from './i18n.js'
-import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=19'
+import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=21'
 
 let chatElement = null
 let currentStreamHandler = null
@@ -35,6 +35,7 @@ const CHAT_INPUT_FOCUS_RETRY_ATTEMPTS = 100
 const CHAT_INPUT_FOCUS_RETRY_DELAY_MS = 100
 const USER_MESSAGE_COPY_RETRY_DELAY_MS = 250
 const USER_MESSAGE_COPY_RESET_MS = 1200
+const OBJECT_ACTION_BIND_RETRY_DELAY_MS = 250
 
 const COPY_MESSAGE_ICON = `
 <svg class="atlas-user-message-copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -53,6 +54,30 @@ const WORKSPACE_DOWNLOAD_ICON = `
   <path d="m7 10 5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
   <path d="M5 20h14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
 </svg>`
+
+const OBJECT_ACTION_ICON = `
+<svg class="object-action-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+  <path d="M7 17 17 7" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"></path>
+  <path d="M9 7h8v8" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+  <path d="M19 19H5V5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"></path>
+</svg>`
+
+const OBJECT_ACTION_CONTEXT_FIELDS = [
+  'index',
+  'object_type',
+  'object_id',
+  'object_name'
+]
+
+const OBJECT_ACTION_INDEX_HEADER_KEYS = new Set(['#', 'index', '序号', '编号'])
+const OBJECT_ACTION_ID_HEADER_KEYS = new Set([
+  'objectid',
+  '对象id'
+])
+const OBJECT_ACTION_NAME_HEADER_KEYS = new Set([
+  'objectname',
+  '对象名称'
+])
 
 function clearImeEnterGuard() {
   blockNextEnterAfterComposition = false
@@ -316,6 +341,23 @@ function setupUserMessageCopyRootObserver(element) {
   element._userMessageCopyRootObserver = observer
 }
 
+function scheduleObjectActionHandlers(element = chatElement) {
+  if (!element || element.nodeType !== 1 || element._objectActionBindTimer) return
+  element._objectActionBindTimer = setTimeout(() => {
+    element._objectActionBindTimer = null
+    bindObjectActionHandlers(element)
+  }, OBJECT_ACTION_BIND_RETRY_DELAY_MS)
+}
+
+function setupObjectActionRootObserver(element) {
+  if (typeof MutationObserver === 'undefined' || element._objectActionRootObserver) return
+  const observer = new MutationObserver(() => {
+    bindObjectActionHandlers(element)
+  })
+  observer.observe(element.shadowRoot, { childList: true, subtree: true })
+  element._objectActionRootObserver = observer
+}
+
 function decorateUserMessagesWithCopy(container) {
   if (!container) return
   const userBubbles = container.querySelectorAll('.message-bubble.user-message-text, .user-message-text')
@@ -483,7 +525,7 @@ const THINKING_STYLES = `
 .thinking-body{padding:8px 0 0 0;font-size:14px;line-height:1.7;color:#8b8b8b;max-height:none;overflow:visible}
 .thinking-caption{font-size:12px;font-weight:600;letter-spacing:.02em;color:#64748b;margin-bottom:6px;text-transform:uppercase}
 .thinking-content-text{white-space:pre-wrap;word-break:break-word}
-details.runtime-panel{margin-bottom:16px;padding:14px 16px;border:1px solid rgba(148,163,184,.20);border-radius:18px;background:rgba(248,250,252,.92)}
+details.runtime-panel{box-sizing:border-box;width:fit-content;min-width:min(260px,100%);max-width:100%;margin-bottom:16px;padding:14px 16px;border:1px solid rgba(148,163,184,.20);border-radius:18px;background:rgba(248,250,252,.92)}
 details.runtime-panel>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;user-select:none;list-style:none}
 details.runtime-panel>summary::-webkit-details-marker{display:none}
 details.runtime-panel>summary::marker{display:none}
@@ -520,12 +562,17 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-content ul,.response-content ol{margin:0 0 12px 20px;padding:0}
 .response-content li{margin:4px 0;line-height:1.7}
 .response-content h1,.response-content h2,.response-content h3{margin:0 0 10px 0;line-height:1.4}
-.outer-message-container:has(.response-table-wrap){padding-left:8%!important;padding-right:8%!important}
-.outer-message-container:has(.response-table-wrap) .inner-message-container{width:100%!important;max-width:100%!important}
-.message-bubble.ai-message:has(.response-table-wrap){width:100%!important;max-width:100%!important}
-.response-table-wrap{width:100%;overflow-x:auto;margin:4px 0 14px 0;border:1px solid #e2e8f0;border-radius:10px;background:#fff}
-.response-table{width:100%;min-width:860px;border-collapse:separate;border-spacing:0;font-size:13px;line-height:1.45;color:#1f2937}
+.outer-message-container:has(.response-table-wrap-wide){padding-left:8%!important;padding-right:8%!important}
+.outer-message-container:has(.response-table-wrap-wide) .inner-message-container{width:100%!important;max-width:100%!important}
+.message-bubble.ai-message:has(.response-table-wrap-wide){width:100%!important;max-width:100%!important}
+.response-table-wrap{max-width:100%;overflow-x:auto;margin:4px 0 14px 0;border:1px solid #e2e8f0;border-radius:10px;background:#fff}
+.response-table-wrap-wide{display:inline-block;width:auto;max-height:min(60vh,640px);overflow:auto}
+.response-table-wrap-compact{display:inline-block;width:auto}
+.response-table{width:auto;border-collapse:separate;border-spacing:0;font-size:13px;line-height:1.45;color:#1f2937}
+.response-table-wrap-wide .response-table{width:max-content;min-width:860px}
+.response-table-wrap-compact .response-table{min-width:0}
 .response-table th,.response-table td{padding:9px 10px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top;white-space:nowrap}
+.response-table-wrap-compact .response-table th,.response-table-wrap-compact .response-table td{padding:8px 14px}
 .response-table th{position:sticky;top:0;background:#f8fafc;color:#475569;font-size:12px;font-weight:700}
 .response-table td{font-variant-numeric:tabular-nums}
 .response-table td.response-table-number{text-align:right}
@@ -540,6 +587,30 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-content a.workspace-download-link:hover{border-color:rgba(37,99,235,.36);background:#dbeafe;text-decoration:none}
 .response-content .workspace-generated-downloads{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
 .workspace-download-icon{width:14px;height:14px;flex:0 0 14px}
+.response-table th.response-table-action-header,.response-table td.response-table-action{position:sticky;right:0;min-width:146px;text-align:right;background:#fff;box-shadow:-8px 0 12px rgba(255,255,255,.82)}
+.response-table th.response-table-action-header{background:#f8fafc}
+.response-table tbody tr:nth-child(even) td.response-table-action{background:#fbfdff}
+.response-content .object-actions{display:inline-flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px;max-width:100%;vertical-align:baseline}
+.response-content>.object-actions{display:flex;justify-content:flex-start;gap:8px;width:fit-content;max-width:100%;margin-top:12px;padding:7px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc}
+.response-table td.response-table-action .object-actions{flex-wrap:nowrap;gap:5px;justify-content:flex-end}
+.response-content a.object-action-link,.response-content button.object-action-button{position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;gap:5px;max-width:100%;height:28px;min-height:28px;padding:0 8px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#334155;box-shadow:0 1px 1px rgba(15,23,42,.04);font:inherit;font-size:13px;font-weight:650;line-height:1;vertical-align:baseline;white-space:nowrap;cursor:pointer;transition:background .14s ease,border-color .14s ease,box-shadow .14s ease,color .14s ease,transform .14s ease}
+.response-content a.object-action-link:hover,.response-content button.object-action-button:hover{border-color:#94a3b8;background:#f8fafc;box-shadow:0 3px 8px rgba(15,23,42,.08);text-decoration:none;transform:translateY(-1px)}
+.response-content a.object-action-link:active,.response-content button.object-action-button:active{box-shadow:0 1px 2px rgba(15,23,42,.08);transform:translateY(0)}
+.response-content a.object-action-link:focus-visible,.response-content button.object-action-button:focus-visible{outline:2px solid rgba(37,99,235,.38);outline-offset:2px}
+.response-content button.object-action-button::before{content:"";width:6px;height:6px;flex:0 0 6px;border-radius:999px;background:#64748b;box-shadow:0 0 0 3px rgba(100,116,139,.12)}
+.response-content a.object-action-link{border-color:rgba(20,184,166,.28);background:#f0fdfa;color:#0f766e}
+.response-content a.object-action-link:hover{border-color:rgba(13,148,136,.46);background:#ccfbf1;color:#0f766e}
+.response-content button.object-action-button.tone-success{border-color:rgba(22,163,74,.28);background:#f0fdf4;color:#15803d}
+.response-content button.object-action-button.tone-success::before{background:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.13)}
+.response-content button.object-action-button.tone-success:hover{border-color:rgba(22,163,74,.46);background:#dcfce7;color:#166534}
+.response-content button.object-action-button.tone-warning{border-color:rgba(217,119,6,.32);background:#fffbeb;color:#b45309}
+.response-content button.object-action-button.tone-warning::before{background:#d97706;box-shadow:0 0 0 3px rgba(217,119,6,.14)}
+.response-content button.object-action-button.tone-warning:hover{border-color:rgba(217,119,6,.50);background:#fef3c7;color:#92400e}
+.response-content button.object-action-button.tone-danger{border-color:rgba(220,38,38,.28);background:#fef2f2;color:#b91c1c}
+.response-content button.object-action-button.tone-danger::before{background:#dc2626;box-shadow:0 0 0 3px rgba(220,38,38,.13)}
+.response-content button.object-action-button.tone-danger:hover{border-color:rgba(220,38,38,.48);background:#fee2e2;color:#991b1b}
+.object-action-icon{width:11px;height:11px;flex:0 0 11px}
+.object-action-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .message-wrapper{display:flex;flex-direction:column;gap:12px}
 .atlas-user-message-copy-btn{width:30px;height:30px;margin-top:12px;margin-left:8px;border:1px solid rgba(148,163,184,.34);border-radius:999px;background:rgba(255,255,255,.92);color:#64748b;box-shadow:0 10px 24px rgba(15,23,42,.10);display:inline-flex;align-items:center;justify-content:center;flex:0 0 30px;cursor:pointer;opacity:0;pointer-events:none;transform:translateY(2px) scale(.96);transition:opacity .16s ease,transform .16s ease,color .16s ease,border-color .16s ease,background .16s ease}
 .atlas-user-message-copy-btn:hover{color:#1f2937;border-color:rgba(124,131,253,.46);background:#ffffff}
@@ -566,6 +637,7 @@ export async function initChat(element, callbacks = {}) {
   
   // Set up IME composition handling for macOS/Asian input
   setupCompositionListeners()
+  bindObjectActionHandlers()
   setupSlashCapabilityPicker(element)
   setupUserMessageCopyActions(element)
   
@@ -646,6 +718,7 @@ async function restoreSessionHistory(element, sessionKey, activationGeneration) 
       return null
     }
     applyHistoryToElement(element, history)
+    bindObjectActionHandlers()
     return history.length > 0
   } catch (error) {
     if (!isCurrentSessionActivation(sessionKey, activationGeneration)) {
@@ -691,6 +764,7 @@ function mapTranscriptMessageToHistory(message) {
   }
   if (message.role === 'assistant') {
     const workspaceDownloads = normalizeWorkspaceDownloadArtifacts(message.workspace_downloads)
+    const objectActions = normalizeObjectActionReferences(message.object_actions)
     const rendered = buildMessageContent(
       [],
       '',
@@ -700,7 +774,8 @@ function mapTranscriptMessageToHistory(message) {
       false,
       true,
       0,
-      workspaceDownloads
+      workspaceDownloads,
+      objectActions
     )
     return { role: 'ai', html: rendered.html }
   }
@@ -718,82 +793,91 @@ function configureHandler(element) {
       return
     }
 
-    let sessionKey = getSessionKey()
-    if (!sessionKey) {
-      sessionKey = await initSession()
-      currentSessionKey = sessionKey
-    }
-
-    notifyUserTurnStarted(sessionKey, messageText)
-
-    let runId
-    try {
-      const requestContext = {
-        ui_locale: getCurrentLocale(),
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || ''
-      }
-      if (selectedCapability) {
-        requestContext.selected_capability = selectedCapability
-      }
-      const response = await fetch(buildApiUrl('/api/agent/run'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          session_key: sessionKey || '',
-          message: messageText || '',
-          timeout_seconds: 600,
-          context: requestContext
-        })
-      })
-
-      if (!response.ok) {
-        let errorMessage = `Error: ${response.status} ${response.statusText}`
-        try {
-          const errorData = await response.json()
-          if (errorData?.detail) {
-            errorMessage = errorData.detail
-          }
-        } catch (_) {
-          // Keep the HTTP status fallback when the response body is not JSON.
-        }
-        signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(errorMessage)}</p>` })
-        signals.onClose()
-        return
-      }
-
-      const data = await response.json()
-      runId = data.run_id || data.runId || data.id
-      if (!runId) {
-        signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(data.detail || 'Error: No run_id')}</p>` })
-        signals.onClose()
-        return
-      }
-    } catch (err) {
-      console.error('[ChatUI] API call failed:', err)
-      signals.onResponse({ html: `<p style="color: #d32f2f;">Error: ${escapeHtml(err.message)}</p>` })
-      signals.onClose()
-      return
-    }
-
-    const initialPayload = buildMessageContent(
-      [{ state: 'reasoning', message: 'Starting response analysis.' }],
-      '',
-      '',
-      0,
-      true
-    )
-    if (initialPayload.html) {
-      signals.onResponse({
-        html: initialPayload.html,
-        overwrite: true
-      })
-    }
-
-    await handleStreamWithSignals(runId, signals, { sessionKey, messageText })
+    await runAgentMessage(messageText, selectedCapability, signals)
   }
 
   element.handler = handlerFn
   element.connect = { handler: handlerFn, stream: true }
+}
+
+async function runAgentMessage(messageText, selectedCapability, signals, options = {}) {
+  let sessionKey = getSessionKey()
+  if (!sessionKey) {
+    sessionKey = await initSession()
+    currentSessionKey = sessionKey
+  }
+
+  if (options.visibleUserTurn !== false) {
+    notifyUserTurnStarted(sessionKey, messageText)
+  }
+
+  let runId
+  try {
+    const requestContext = {
+      ui_locale: getCurrentLocale(),
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || ''
+    }
+    if (selectedCapability) {
+      requestContext.selected_capability = selectedCapability
+    }
+    if (options.visibleUserTurn === false) {
+      requestContext.visible_user_turn = false
+    }
+    const response = await fetch(buildApiUrl('/api/agent/run'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_key: sessionKey || '',
+        message: messageText || '',
+        timeout_seconds: 600,
+        context: requestContext
+      })
+    })
+
+    if (!response.ok) {
+      let errorMessage = `Error: ${response.status} ${response.statusText}`
+      try {
+        const errorData = await response.json()
+        if (errorData?.detail) {
+          errorMessage = errorData.detail
+        }
+      } catch (_) {
+        // Keep the HTTP status fallback when the response body is not JSON.
+      }
+      signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(errorMessage)}</p>` })
+      signals.onClose()
+      return
+    }
+
+    const data = await response.json()
+    runId = data.run_id || data.runId || data.id
+    if (!runId) {
+      signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(data.detail || 'Error: No run_id')}</p>` })
+      signals.onClose()
+      return
+    }
+  } catch (err) {
+    console.error('[ChatUI] API call failed:', err)
+    signals.onResponse({ html: `<p style="color: #d32f2f;">Error: ${escapeHtml(err.message)}</p>` })
+    signals.onClose()
+    return
+  }
+
+  const initialPayload = buildMessageContent(
+    [{ state: 'reasoning', message: 'Starting response analysis.' }],
+    '',
+    '',
+    0,
+    true
+  )
+  if (initialPayload.html) {
+    signals.onResponse({
+      html: initialPayload.html,
+      overwrite: true
+    })
+  }
+
+  await handleStreamWithSignals(runId, signals, { sessionKey, messageText })
 }
 
 function extractMessageFromBody(body) {
@@ -856,6 +940,7 @@ function configureI18nAttributes(element) {
   element.auxiliaryStyle = `
     :host { border: none !important; background: transparent !important; box-shadow: none !important; }
     #container, #chat-view, #messages, .messages, .messages-container { border: none !important; background: transparent !important; box-shadow: none !important; }
+    #messages, .messages, .messages-container { box-sizing: border-box !important; padding-bottom: 112px !important; scroll-padding-bottom: 112px !important; }
     ${THINKING_STYLES}
   `
 
@@ -1025,11 +1110,15 @@ function buildMessageContent(
   panelOpen = null,
   isComplete = false,
   renderRevision = 0,
-  workspaceDownloadReferences = []
+  workspaceDownloadReferences = [],
+  objectActionReferences = []
 ) {
   const runtimeHtml = buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs, isThinking, panelOpen, isComplete)
   const downloadHtml = buildGeneratedWorkspaceDownloadsHtml(workspaceDownloadReferences, responseContent)
-  const responseBodyHtml = `${responseContent ? renderAssistantMarkdown(responseContent) : ''}${downloadHtml}`
+  const objectActionContext = createObjectActionRenderContext(objectActionReferences)
+  const markdownHtml = responseContent ? renderAssistantMarkdown(responseContent, objectActionContext) : ''
+  const objectActionActionsHtml = buildGeneratedObjectActionActionsHtml(objectActionContext)
+  const responseBodyHtml = `${markdownHtml}${downloadHtml}${objectActionActionsHtml}`
   const responseHtml = responseBodyHtml
     ? `<div class="response-content">${responseBodyHtml}</div>`
     : ''
@@ -1222,6 +1311,476 @@ function buildGeneratedWorkspaceDownloadsHtml(references, responseContent) {
   return anchors ? `<div class="workspace-generated-downloads">${anchors}</div>` : ''
 }
 
+function normalizeObjectActionUrl(rawHref) {
+  const candidate = String(rawHref || '').trim()
+  if (!candidate) return null
+  if (!/^https?:\/\//i.test(candidate)) return null
+  try {
+    const url = new URL(candidate)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return null
+    if (!url.hostname) return null
+    return url.href
+  } catch (_error) {
+    return null
+  }
+}
+
+function normalizeLocalizedText(rawValue) {
+  if (!rawValue || typeof rawValue !== 'object') return null
+  const defaultValue = String(rawValue.default || '').trim()
+  if (!defaultValue) return null
+
+  const normalized = { default: defaultValue }
+  if (rawValue.translations && typeof rawValue.translations === 'object') {
+    const translations = {}
+    for (const [locale, text] of Object.entries(rawValue.translations)) {
+      const localeKey = String(locale || '').trim()
+      const localizedText = String(text || '').trim()
+      if (localeKey && localizedText) {
+        translations[localeKey] = localizedText
+      }
+    }
+    if (Object.keys(translations).length) {
+      normalized.translations = translations
+    }
+  }
+  return normalized
+}
+
+function objectActionLocaleCandidates() {
+  const rawLocale = String(getCurrentLocale?.() || '').trim()
+  if (!rawLocale) return []
+
+  const normalizedLocale = rawLocale.replace(/_/g, '-')
+  const candidates = [rawLocale, normalizedLocale]
+  const baseLocale = normalizedLocale.split('-')[0]
+  if (baseLocale && baseLocale !== normalizedLocale) {
+    candidates.push(baseLocale)
+  }
+  return Array.from(new Set(candidates))
+}
+
+function resolveLocalizedText(value) {
+  const localized = normalizeLocalizedText(value)
+  if (!localized) return ''
+
+  const translations = localized.translations || {}
+  for (const candidate of objectActionLocaleCandidates()) {
+    if (Object.prototype.hasOwnProperty.call(translations, candidate)) {
+      return translations[candidate]
+    }
+    const underscoreCandidate = candidate.replace(/-/g, '_')
+    if (Object.prototype.hasOwnProperty.call(translations, underscoreCandidate)) {
+      return translations[underscoreCandidate]
+    }
+  }
+  return localized.default
+}
+
+function escapeRegExp(text) {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function hasOwnObjectField(value, fieldName) {
+  return !!value &&
+    typeof value === 'object' &&
+    Object.prototype.hasOwnProperty.call(value, fieldName)
+}
+
+function normalizeObjectAction(rawAction) {
+  if (!rawAction || typeof rawAction !== 'object') return null
+  const actionId = String(rawAction.action_id || '').trim()
+  const kind = String(rawAction.kind || '').trim()
+  if (!actionId || !['open_url', 'agent_prompt'].includes(kind)) {
+    return null
+  }
+
+  const action = { action_id: actionId, kind }
+  const stringFields = [
+    'href',
+    'effect',
+    'tone'
+  ]
+  for (const field of stringFields) {
+    const value = rawAction[field]
+    if (value === undefined || value === null) continue
+    const normalized = String(value).trim()
+    if (normalized) action[field] = normalized
+  }
+  const localizedFields = [
+    'display_label',
+    'agent_prompt',
+    'agent_prompt_template',
+    'confirmation_message'
+  ]
+  for (const field of localizedFields) {
+    const localized = normalizeLocalizedText(rawAction[field])
+    if (localized) {
+      action[field] = localized
+    }
+  }
+
+  if (kind === 'open_url') {
+    const href = normalizeObjectActionUrl(rawAction.href)
+    if (!href) return null
+    action.href = href
+  } else if (kind === 'agent_prompt') {
+    const prompt = resolveLocalizedText(action.agent_prompt) ||
+      resolveLocalizedText(action.agent_prompt_template)
+    if (!prompt) return null
+  }
+
+  if (typeof rawAction.requires_confirmation === 'boolean') {
+    action.requires_confirmation = rawAction.requires_confirmation
+  }
+  if (Array.isArray(rawAction.inputs)) {
+    action.inputs = rawAction.inputs
+      .filter((input) => input && typeof input === 'object' && String(input.name || '').trim())
+      .map((input) => {
+        const normalized = { name: String(input.name || '').trim() }
+        for (const field of ['type']) {
+          const value = input[field]
+          if (value === undefined || value === null) continue
+          const text = String(value).trim()
+          if (text) normalized[field] = text
+        }
+        for (const field of ['display_label', 'placeholder']) {
+          const localized = normalizeLocalizedText(input[field])
+          if (localized) {
+            normalized[field] = localized
+          }
+        }
+        if (typeof input.required === 'boolean') {
+          normalized.required = input.required
+        }
+        return normalized
+      })
+  }
+  return action
+}
+
+function normalizeObjectActionReference(context = {}) {
+  const rawActions = Array.isArray(context.object_actions) ? context.object_actions : []
+  const actions = []
+  const seen = new Set()
+  for (const rawAction of rawActions) {
+    const action = normalizeObjectAction(rawAction)
+    if (!action) continue
+    const key = objectActionKey(action)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    actions.push(action)
+  }
+  if (!actions.length) return null
+
+  const reference = { object_actions: actions }
+  for (const field of OBJECT_ACTION_CONTEXT_FIELDS) {
+    if (!hasOwnObjectField(context, field)) continue
+    const value = context[field]
+    if (value === undefined || value === null) continue
+    if (!String(value).trim()) continue
+    reference[field] = value
+  }
+  return reference
+}
+
+function objectActionReferenceKey(reference) {
+  if (!reference) return ''
+  const objectId = reference.object_id
+  const identity = [
+    reference.object_type,
+    objectId,
+    objectId ? '' : reference.object_name,
+    reference.index
+  ].map((value) => value === undefined || value === null ? '' : String(value).trim())
+  const actionKeys = (reference.object_actions || []).map((action) => objectActionKey(action))
+  return JSON.stringify([identity, actionKeys])
+}
+
+function objectActionKey(action) {
+  if (!action) return ''
+  return JSON.stringify({
+    action_id: action.action_id || '',
+    kind: action.kind || '',
+    href: action.href || '',
+    agent_prompt: action.agent_prompt || '',
+    agent_prompt_template: action.agent_prompt_template || ''
+  })
+}
+
+function normalizeObjectActionReferences(references) {
+  if (!Array.isArray(references)) return []
+  const normalizedReferences = []
+  const seen = new Set()
+  for (const item of references) {
+    const reference = item && typeof item === 'object'
+      ? normalizeObjectActionReference(item)
+      : null
+    const key = objectActionReferenceKey(reference)
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    normalizedReferences.push(reference)
+  }
+  return normalizedReferences
+}
+
+function coerceObjectActionPayload(value) {
+  if (typeof value !== 'string') return value
+  const trimmed = value.trim()
+  if (!trimmed || !/^[{[]/.test(trimmed)) return value
+  try {
+    return JSON.parse(trimmed)
+  } catch (_error) {
+    return value
+  }
+}
+
+function collectObjectActionReferences(value, references) {
+  const payload = coerceObjectActionPayload(value)
+  if (!payload) return
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      collectObjectActionReferences(item, references)
+    }
+    return
+  }
+  if (typeof payload !== 'object') return
+
+  if (Array.isArray(payload.object_actions)) {
+    const reference = normalizeObjectActionReference(payload)
+    if (reference) {
+      references.push(reference)
+    } else {
+      for (const item of payload.object_actions) {
+        collectObjectActionReferences(item, references)
+      }
+    }
+  }
+
+  for (const [key, childValue] of Object.entries(payload)) {
+    if (key === 'object_actions' && normalizeObjectActionReference(payload)) continue
+    collectObjectActionReferences(childValue, references)
+  }
+}
+
+function extractObjectActionReferences(rawPayload) {
+  const payload = parseWorkspaceDownloadPayload(rawPayload)
+  if (!payload || typeof payload !== 'object') return []
+  const references = []
+  collectObjectActionReferences(payload, references)
+  return normalizeObjectActionReferences(references)
+}
+
+function getObjectActionDisplayLabel(reference) {
+  if (!reference) return ''
+  const label = reference.object_name ||
+    reference.object_id
+  if (label !== undefined && label !== null && String(label).trim()) {
+    return String(label).trim()
+  }
+  if (reference.index !== undefined && reference.index !== null && String(reference.index).trim()) {
+    return `#${String(reference.index).trim()}`
+  }
+  return ''
+}
+
+function getObjectActionAriaLabel(reference) {
+  const actionLabel = getTranslatedChatLabel('chat.objectActions', 'Actions')
+  const displayLabel = getObjectActionDisplayLabel(reference) || actionLabel
+  const template = getTranslatedChatLabel('chat.objectActionsAria', 'Actions for {{label}}')
+  return template.replace('{{label}}', displayLabel)
+}
+
+function getObjectActionLabel(action) {
+  const label = resolveLocalizedText(action?.display_label)
+  if (label) {
+    return label
+  }
+  if (action?.kind === 'open_url') {
+    return getTranslatedChatLabel('chat.openObject', 'Open')
+  }
+  return String(action?.action_id || '').trim() || getTranslatedChatLabel('chat.objectAction', 'Action')
+}
+
+function getObjectActionPrompt(action) {
+  return resolveLocalizedText(action?.agent_prompt) ||
+    resolveLocalizedText(action?.agent_prompt_template)
+}
+
+function objectActionButtonClass(action) {
+  const tone = String(action?.tone || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
+  return `object-action-button${tone ? ` tone-${tone}` : ''}`
+}
+
+function buildObjectActionAnchor(action, reference) {
+  const href = normalizeObjectActionUrl(action?.href)
+  if (!href) return ''
+  const text = getObjectActionLabel(action)
+  return `<a href="${escapeHtml(href)}" class="object-action-link" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(`${text} ${getObjectActionDisplayLabel(reference)}`.trim())}">${OBJECT_ACTION_ICON}<span class="object-action-text">${escapeHtml(text)}</span></a>`
+}
+
+function buildObjectActionButton(action, reference) {
+  const prompt = getObjectActionPrompt(action)
+  if (!prompt) return ''
+  const payload = encodeURIComponent(JSON.stringify({ action, object: actionReferencePublicContext(reference) }))
+  const text = getObjectActionLabel(action)
+  return `<button type="button" class="${objectActionButtonClass(action)}" data-object-action-payload="${escapeHtml(payload)}" aria-label="${escapeHtml(`${text} ${getObjectActionDisplayLabel(reference)}`.trim())}"><span class="object-action-text">${escapeHtml(text)}</span></button>`
+}
+
+function actionReferencePublicContext(reference) {
+  const context = {}
+  for (const field of OBJECT_ACTION_CONTEXT_FIELDS) {
+    const value = reference?.[field]
+    if (value === undefined || value === null || !String(value).trim()) continue
+    context[field] = value
+  }
+  return context
+}
+
+function buildObjectActionControls(reference) {
+  const actions = Array.isArray(reference?.object_actions) ? reference.object_actions : []
+  const controls = actions.map((action) => {
+    if (action.kind === 'open_url') {
+      return buildObjectActionAnchor(action, reference)
+    }
+    return buildObjectActionButton(action, reference)
+  }).filter(Boolean).join('')
+  if (!controls) return ''
+  return `<div class="object-actions" aria-label="${escapeHtml(getObjectActionAriaLabel(reference))}">${controls}</div>`
+}
+
+function resolveObjectActionPrompt(action) {
+  let prompt = getObjectActionPrompt(action)
+  if (!prompt) return ''
+
+  for (const input of action.inputs || []) {
+    const name = String(input?.name || '').trim()
+    if (!name) continue
+    const label = resolveLocalizedText(input.display_label) || name
+    const placeholder = resolveLocalizedText(input.placeholder)
+    const value = window.prompt(label, placeholder)
+    if (value === null) return ''
+    if (input.required && !String(value).trim()) {
+      window.alert?.(getTranslatedChatLabel('chat.objectActionRequiredInput', 'This action requires input.'))
+      return ''
+    }
+    prompt = prompt.replace(new RegExp(`{{\\s*${escapeRegExp(name)}\\s*}}`, 'g'), String(value).trim())
+  }
+
+  if (action.requires_confirmation) {
+    const label = getObjectActionLabel(action)
+    const confirmationMessage = resolveLocalizedText(action.confirmation_message)
+    const template = confirmationMessage ||
+      getTranslatedChatLabel('chat.objectActionConfirm', 'Confirm {{label}}?')
+    if (!window.confirm(template.replace('{{label}}', label))) {
+      return ''
+    }
+  }
+  return prompt
+}
+
+function canSubmitObjectActionDirectly(element) {
+  return !!element &&
+    typeof element.addMessage === 'function' &&
+    typeof element.handler === 'function' &&
+    !!element.shadowRoot?.querySelector('#container')
+}
+
+function createObjectActionSignals(element) {
+  let aiMessageStarted = false
+  return {
+    onResponse: (payload = {}) => {
+      const html = payload.html || ''
+      if (!html) return
+      element.addMessage({
+        role: 'ai',
+        html,
+        overwrite: aiMessageStarted
+      })
+      aiMessageStarted = true
+    },
+    onClose: () => {},
+    stopClicked: { listener: null }
+  }
+}
+
+function submitObjectActionDirectly(message) {
+  const element = chatElement || document.querySelector('deep-chat')
+  if (!canSubmitObjectActionDirectly(element)) return false
+  window.setTimeout(() => {
+    void runAgentMessage(message, null, createObjectActionSignals(element), {
+      visibleUserTurn: false
+    })
+  }, 0)
+  return true
+}
+
+function submitObjectActionPrompt(prompt) {
+  const message = String(prompt || '').trim()
+  if (!message) return false
+  return submitObjectActionDirectly(message)
+}
+
+function bindObjectActionHandlers(element = chatElement) {
+  if (!element?.shadowRoot) {
+    scheduleObjectActionHandlers(element)
+    return false
+  }
+
+  setupObjectActionRootObserver(element)
+  const container = getMessageContainerForElement(element)
+  if (!container) {
+    scheduleObjectActionHandlers(element)
+    return false
+  }
+  if (container._objectActionClickBound) {
+    element._objectActionContainer = container
+    return true
+  }
+  container._objectActionClickBound = true
+  container.addEventListener('click', (event) => {
+    const target = event.target instanceof Element
+      ? event.target.closest('button[data-object-action-payload]')
+      : null
+    if (!(target instanceof HTMLButtonElement)) return
+    event.preventDefault()
+    const encoded = target.getAttribute('data-object-action-payload') || ''
+    try {
+      const payload = JSON.parse(decodeURIComponent(encoded))
+      const prompt = resolveObjectActionPrompt(payload.action || {})
+      if (!prompt) return
+      if (!submitObjectActionPrompt(prompt)) {
+        console.warn('[ChatUI] Failed to submit object action prompt')
+      }
+    } catch (error) {
+      console.warn('[ChatUI] Invalid object action payload:', error)
+    }
+  }, true)
+  element._objectActionContainer = container
+  return true
+}
+
+function createObjectActionRenderContext(references) {
+  return {
+    references: normalizeObjectActionReferences(references),
+    usedObjectActions: new Set()
+  }
+}
+
+function markObjectActionUsed(context, reference) {
+  const key = objectActionReferenceKey(reference)
+  if (!context || !key) return
+  context.usedObjectActions.add(key)
+}
+
+function buildGeneratedObjectActionActionsHtml(context) {
+  if (!context?.references?.length) return ''
+  const unmatchedReferences = context.references
+    .filter((reference) => !context.usedObjectActions.has(objectActionReferenceKey(reference)))
+  if (unmatchedReferences.length !== 1) return ''
+  return buildObjectActionControls(unmatchedReferences[0])
+}
+
 function linkifyBareWorkspaceReferences(html) {
   return html.replace(/(^|[\s(])workspace:\/\/[^\s<>)`]+/gi, (match, prefix, offset) => {
     if (prefix === '(' && offset > 0 && html[offset - 1] === ']') {
@@ -1333,27 +1892,257 @@ function isMarkdownTableSeparator(cells) {
     cells.every((cell) => /^:?-{3,}:?$/.test(String(cell || '').trim()))
 }
 
-function renderMarkdownTable(headerCells, bodyRows) {
-  const headerHtml = headerCells
-    .map((cell) => `<th>${renderInlineMarkdown(cell)}</th>`)
-    .join('')
-  const rowsHtml = bodyRows.map((row) => {
-    const cells = headerCells.map((_header, index) => {
-      const cell = row[index] || ''
+function normalizeObjectActionHeaderKey(value) {
+  return decodeHtmlEntities(value)
+    .replace(/[*_`]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '')
+}
+
+function normalizeObjectActionMatchValue(value) {
+  return decodeHtmlEntities(value)
+    .replace(/<[^>]*>/g, '')
+    .trim()
+    .toLowerCase()
+}
+
+function parseObjectActionIndexValue(value) {
+  const normalized = normalizeObjectActionMatchValue(value)
+  if (!/^-?\d+$/.test(normalized)) return null
+  return Number.parseInt(normalized, 10)
+}
+
+function isObjectActionHeader(header) {
+  return normalizeObjectActionHeaderKey(header) === 'objectactions'
+}
+
+function isObjectActionDetailField(fieldName) {
+  return isObjectActionHeader(fieldName)
+}
+
+function shouldSuppressRawObjectActionFields(objectActionContext) {
+  return !!objectActionContext?.references?.length
+}
+
+function getObjectActionTableColumns(headerCells, suppressRawObjectActions = false) {
+  return headerCells.map((header, index) => {
+    const key = normalizeObjectActionHeaderKey(header)
+    return {
+      index,
+      hidden: suppressRawObjectActions && key === 'objectactions',
+      isIndex: OBJECT_ACTION_INDEX_HEADER_KEYS.has(key),
+      isId: OBJECT_ACTION_ID_HEADER_KEYS.has(key),
+      isName: OBJECT_ACTION_NAME_HEADER_KEYS.has(key)
+    }
+  })
+}
+
+function isObjectActionListTable(bodyRows, columns) {
+  if (bodyRows.length > 1) return true
+  return columns.some((column) => column.isIndex && !column.hidden)
+}
+
+function getObjectActionReferenceIndexValues(reference) {
+  const indexValue = parseObjectActionIndexValue(reference?.index)
+  return indexValue === null ? [] : [indexValue]
+}
+
+function getObjectActionReferenceIdValues(reference) {
+  return [reference?.object_id]
+    .filter((value) => value !== undefined && value !== null && String(value).trim())
+    .map((value) => normalizeObjectActionMatchValue(value))
+}
+
+function getObjectActionReferenceNameValues(reference) {
+  return [reference?.object_name]
+    .filter((value) => value !== undefined && value !== null && String(value).trim())
+    .map((value) => normalizeObjectActionMatchValue(value))
+}
+
+function countObjectActionValues(values) {
+  return values.reduce((counts, value) => {
+    if (!value) return counts
+    counts.set(value, (counts.get(value) || 0) + 1)
+    return counts
+  }, new Map())
+}
+
+function buildObjectActionNameMatchContext(bodyRows, columns, references) {
+  const nameColumns = columns.filter((column) => column.isName && !column.hidden)
+  const rowNameValues = []
+  for (const row of bodyRows) {
+    for (const column of nameColumns) {
+      const value = normalizeObjectActionMatchValue(row[column.index] || '')
+      if (value) rowNameValues.push(value)
+    }
+  }
+  const referenceNameValues = references.flatMap((reference) => getObjectActionReferenceNameValues(reference))
+  return {
+    rowCounts: countObjectActionValues(rowNameValues),
+    referenceCounts: countObjectActionValues(referenceNameValues)
+  }
+}
+
+function findObjectActionByIndexColumn(row, columns, context) {
+  const indexColumns = columns.filter((column) => column.isIndex && !column.hidden)
+  for (const column of indexColumns) {
+    const rowIndex = parseObjectActionIndexValue(row[column.index] || '')
+    if (rowIndex === null) continue
+    const reference = context.references.find((candidate) => {
+      const key = objectActionReferenceKey(candidate)
+      return key &&
+        !context.usedObjectActions.has(key) &&
+        getObjectActionReferenceIndexValues(candidate).includes(rowIndex)
+    })
+    if (reference) return reference
+  }
+  return null
+}
+
+function findObjectActionByIdColumn(row, columns, context) {
+  const idColumns = columns.filter((column) => column.isId && !column.hidden)
+  for (const column of idColumns) {
+    const rowId = normalizeObjectActionMatchValue(row[column.index] || '')
+    if (!rowId) continue
+    const reference = context.references.find((candidate) => {
+      const key = objectActionReferenceKey(candidate)
+      return key &&
+        !context.usedObjectActions.has(key) &&
+        getObjectActionReferenceIdValues(candidate).includes(rowId)
+    })
+    if (reference) return reference
+  }
+  return null
+}
+
+function findObjectActionByUniqueNameColumn(row, columns, context, nameMatchContext) {
+  const nameColumns = columns.filter((column) => column.isName && !column.hidden)
+  for (const column of nameColumns) {
+    const rowName = normalizeObjectActionMatchValue(row[column.index] || '')
+    if (!rowName || nameMatchContext.rowCounts.get(rowName) !== 1) continue
+    if (nameMatchContext.referenceCounts.get(rowName) !== 1) continue
+    const reference = context.references.find((candidate) => {
+      const key = objectActionReferenceKey(candidate)
+      return key &&
+        !context.usedObjectActions.has(key) &&
+        getObjectActionReferenceNameValues(candidate).includes(rowName)
+    })
+    if (reference) return reference
+  }
+  return null
+}
+
+function findObjectActionForTableRow(row, columns, context, nameMatchContext) {
+  if (!context?.references?.length) return null
+  return findObjectActionByIndexColumn(row, columns, context) ||
+    findObjectActionByIdColumn(row, columns, context) ||
+    findObjectActionByUniqueNameColumn(row, columns, context, nameMatchContext)
+}
+
+function getMarkdownTableCellLength(value) {
+  return String(value || '')
+    .replace(/[*_`~]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .length
+}
+
+function shouldRenderCompactMarkdownTable(headerCells, bodyRows, visibleColumns, shouldRenderObjectActions) {
+  if (shouldRenderObjectActions) return false
+  if (!bodyRows.length || !visibleColumns.length) return false
+  if (visibleColumns.length > 3) return false
+  if (bodyRows.length > 8) return false
+
+  const rowsToMeasure = [headerCells, ...bodyRows]
+  let totalLength = 0
+  let maxCellLength = 0
+  let maxRowLength = 0
+  for (const row of rowsToMeasure) {
+    let rowLength = 0
+    for (const column of visibleColumns) {
+      const cellLength = getMarkdownTableCellLength(row[column.index] || '')
+      rowLength += cellLength
+      maxCellLength = Math.max(maxCellLength, cellLength)
+    }
+    totalLength += rowLength
+    maxRowLength = Math.max(maxRowLength, rowLength)
+  }
+
+  return maxCellLength <= 32 && maxRowLength <= 72 && totalLength <= 220
+}
+
+function renderMarkdownTable(headerCells, bodyRows, objectActionContext = null) {
+  const columns = getObjectActionTableColumns(
+    headerCells,
+    shouldSuppressRawObjectActionFields(objectActionContext)
+  )
+  const visibleColumns = columns.filter((column) => !column.hidden)
+  const canMatchObjectActions = !!objectActionContext?.references?.length &&
+    isObjectActionListTable(bodyRows, columns)
+  const matchingContext = canMatchObjectActions
+    ? {
+      references: objectActionContext.references,
+      usedObjectActions: new Set(objectActionContext.usedObjectActions)
+    }
+    : null
+  const nameMatchContext = canMatchObjectActions
+    ? buildObjectActionNameMatchContext(bodyRows, columns, objectActionContext.references)
+    : { rowCounts: new Map(), referenceCounts: new Map() }
+  const rowObjectActions = canMatchObjectActions
+    ? bodyRows.map((row) => {
+      const matchedObjectAction = findObjectActionForTableRow(
+        row,
+        columns,
+        matchingContext,
+        nameMatchContext
+      )
+      if (matchedObjectAction) {
+        markObjectActionUsed(matchingContext, matchedObjectAction)
+      }
+      return matchedObjectAction
+    })
+    : []
+  const shouldRenderObjectActions = rowObjectActions.some(Boolean)
+  const tableSizeClass = shouldRenderCompactMarkdownTable(
+    headerCells,
+    bodyRows,
+    visibleColumns,
+    shouldRenderObjectActions
+  )
+    ? 'response-table-wrap-compact'
+    : 'response-table-wrap-wide'
+  const actionHeader = shouldRenderObjectActions
+    ? `<th class="response-table-action-header">${escapeHtml(getTranslatedChatLabel('chat.objectActions', 'Actions'))}</th>`
+    : ''
+  const headerHtml = visibleColumns
+    .map((column) => `<th>${renderInlineMarkdown(headerCells[column.index] || '')}</th>`)
+    .join('') + actionHeader
+  const rowsHtml = bodyRows.map((row, rowIndex) => {
+    const matchedObjectAction = rowObjectActions[rowIndex] || null
+    if (matchedObjectAction) {
+      markObjectActionUsed(objectActionContext, matchedObjectAction)
+    }
+    const cells = visibleColumns.map((column) => {
+      const cell = row[column.index] || ''
       const numberClass = /^-?\d+(?:\.\d+)?$/.test(cell) ? ' class="response-table-number"' : ''
       return `<td${numberClass}>${renderInlineMarkdown(cell)}</td>`
     }).join('')
-    return `<tr>${cells}</tr>`
+    const actionCell = shouldRenderObjectActions
+      ? `<td class="response-table-action">${matchedObjectAction ? buildObjectActionControls(matchedObjectAction) : ''}</td>`
+      : ''
+    return `<tr>${cells}${actionCell}</tr>`
   }).join('')
 
-  return `<div class="response-table-wrap"><table class="response-table"><thead><tr>${headerHtml}</tr></thead><tbody>${rowsHtml}</tbody></table></div>`
+  return `<div class="response-table-wrap ${tableSizeClass}"><table class="response-table"><thead><tr>${headerHtml}</tr></thead><tbody>${rowsHtml}</tbody></table></div>`
 }
 
-function renderAssistantMarkdown(text) {
+function renderAssistantMarkdown(text, objectActionContext = null) {
   const cleaned = stripWrapperHeading(text || '')
   const escaped = escapeHtml(cleaned).replace(/\r\n/g, '\n')
   if (!escaped.trim()) return ''
 
+  const suppressRawObjectActions = shouldSuppressRawObjectActionFields(objectActionContext)
   const lines = escaped.split('\n')
   const htmlParts = []
   let paragraph = []
@@ -1431,7 +2220,7 @@ function renderAssistantMarkdown(text) {
         rowIndex += 1
       }
       if (bodyRows.length) {
-        htmlParts.push(renderMarkdownTable(headerCells, bodyRows))
+        htmlParts.push(renderMarkdownTable(headerCells, bodyRows, objectActionContext))
         index = rowIndex - 1
         continue
       }
@@ -1499,6 +2288,9 @@ function renderAssistantMarkdown(text) {
 
     const pipeFieldMatch = /^\|\s*(.+?)\s*[:：]\s*(.+)$/.exec(line)
     if (pipeFieldMatch) {
+      if (suppressRawObjectActions && isObjectActionDetailField(pipeFieldMatch[1])) {
+        continue
+      }
       flushParagraph()
       if (listType !== 'ul') {
         flushList()
@@ -1508,6 +2300,17 @@ function renderAssistantMarkdown(text) {
       htmlParts.push(
         `<li>${renderInlineMarkdown(`${pipeFieldMatch[1]}: ${pipeFieldMatch[2]}`)}</li>`
       )
+      continue
+    }
+
+    const objectActionFieldMatch = /^([^:：|]+?)\s*[:：]\s*(.+)$/.exec(line)
+    if (
+      suppressRawObjectActions &&
+      objectActionFieldMatch &&
+      isObjectActionDetailField(objectActionFieldMatch[1])
+    ) {
+      flushParagraph()
+      flushList()
       continue
     }
 
@@ -1555,6 +2358,8 @@ async function handleStreamWithSignals(runId, signals, context) {
   let lastRenderedMessageSignature = null
   let workspaceDownloadReferences = []
   let workspaceDownloadReferenceKeys = new Set()
+  let objectActionReferences = []
+  let objectActionReferenceKeys = new Set()
 
   function currentElapsedMs() {
     if (runStartTime) {
@@ -1661,6 +2466,27 @@ async function handleStreamWithSignals(runId, signals, context) {
     return changed
   }
 
+  function recordObjectActionReferences(rawPayload, { replace = false } = {}) {
+    const references = extractObjectActionReferences(rawPayload)
+    if (replace) {
+      const changed = serializeVisibleMessageSnapshot({ objectActions: objectActionReferences }) !==
+        serializeVisibleMessageSnapshot({ objectActions: references })
+      objectActionReferences = references
+      objectActionReferenceKeys = new Set(references.map(objectActionReferenceKey).filter(Boolean))
+      return changed
+    }
+    if (!references.length) return false
+    let changed = false
+    for (const reference of references) {
+      const key = objectActionReferenceKey(reference)
+      if (!key || objectActionReferenceKeys.has(key)) continue
+      objectActionReferenceKeys.add(key)
+      objectActionReferences = [...objectActionReferences, reference]
+      changed = true
+    }
+    return changed
+  }
+
   function refreshActiveRuntimeEntry() {
     const lastEntry = runtimeEntries[runtimeEntries.length - 1]
     if (!lastEntry) return
@@ -1713,6 +2539,13 @@ async function handleStreamWithSignals(runId, signals, context) {
       workspaceDownloads: workspaceDownloadReferences.map((reference) => ({
         path: reference.path || '',
         label: reference.label || ''
+      })),
+      objectActions: objectActionReferences.map((reference) => ({
+        object_type: reference.object_type || '',
+        object_id: reference.object_id || '',
+        object_name: reference.object_name || '',
+        index: reference.index ?? '',
+        object_actions: reference.object_actions || []
       }))
     }
   }
@@ -1776,6 +2609,8 @@ async function handleStreamWithSignals(runId, signals, context) {
     if (!container) return
     const panel = getLatestRuntimePanel(container)
     if (!panel) return
+    const wrapper = panel.closest('.message-wrapper')
+    if (!wrapper || wrapper.getAttribute('data-render-revision') !== String(renderRevision)) return
 
     const titleElapsed = panel.querySelector('.runtime-title-elapsed')
     const nextTitleElapsed = formatRuntimeHeaderElapsed(elapsedMs)
@@ -1860,7 +2695,8 @@ async function handleStreamWithSignals(runId, signals, context) {
         panelShouldOpen,
         finalAnswerReady,
         renderRevision,
-        workspaceDownloadReferences
+        workspaceDownloadReferences,
+        objectActionReferences
       )
       if (content.html) {
         lastRenderedMessageSnapshot = nextMessageSnapshot
@@ -1868,6 +2704,7 @@ async function handleStreamWithSignals(runId, signals, context) {
         signals.onResponse({ html: content.html, overwrite: true })
         scheduleRuntimePanelStateSync(panelShouldOpen)
         bindRuntimePanelToggle()
+        bindObjectActionHandlers()
       }
       setupScrollListener()
       scrollToBottom()
@@ -1973,6 +2810,7 @@ async function handleStreamWithSignals(runId, signals, context) {
       onToolEnd: (data) => {
         if (streamSettled) return
         recordWorkspaceDownloadArtifacts(data?.result)
+        recordObjectActionReferences(data?.result)
         pushRuntimeEntry('waiting_for_tool', `Tool completed: ${data?.tool_name || 'tool'}`, { phase: 'tool_completed' })
         updateUI()
       },
@@ -2020,12 +2858,17 @@ async function handleStreamWithSignals(runId, signals, context) {
         serverRuntimeSeen = true
         clearLocalRuntimeSeedTimers()
         const hasWorkspaceDownloads = recordWorkspaceDownloadArtifacts(data?.metadata || data)
+        const objectActionPayload = data?.metadata || data
+        const hasObjectActions = recordObjectActionReferences(
+          objectActionPayload,
+          { replace: objectActionPayload?.phase === 'object_actions' }
+        )
         if (data?.metadata?.phase === 'workspace_downloads') {
           updateUI()
           return
         }
         pushRuntimeEntry(data.state, data.message, data.metadata || {})
-        if (hasWorkspaceDownloads) {
+        if (hasWorkspaceDownloads || hasObjectActions) {
           updateUI()
           return
         }
@@ -2043,7 +2886,7 @@ async function handleStreamWithSignals(runId, signals, context) {
           thinkingFinalized = true
           cleanupStreamTimers()
           if (!runtimeEntries.some((entry) => entry.state === 'failed')) {
-            if (aiMessageContent.trim() || workspaceDownloadReferences.length) {
+            if (aiMessageContent.trim() || workspaceDownloadReferences.length || objectActionReferences.length) {
               finalAnswerReady = true
             } else {
               pushRuntimeEntry('failed', 'Run ended without a usable answer.', { phase: 'completed' })

@@ -22,6 +22,7 @@ from app.atlasclaw.agent.runner_tool.runner_tool_messages import (
 )
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import turn_action_requires_tool_execution
 from app.atlasclaw.agent.stream import StreamEvent
+from app.atlasclaw.core.object_actions import collect_latest_object_action_reference_update
 from app.atlasclaw.core.workspace_downloads import (
     collect_workspace_download_references_from_payloads,
 )
@@ -82,6 +83,52 @@ def collect_workspace_download_references_from_tool_results(
         workspace_path=workspace_path,
         user_id=user_id,
     )
+
+
+def collect_object_action_references_from_tool_results(
+    *,
+    messages: list[dict[str, Any]],
+    start_index: int,
+    target_tool_names: list[str],
+) -> list[dict[str, Any]]:
+    """Return provider-declared object actions from matching tool result payloads.
+
+    Only exact ``object_actions`` metadata is collected. Generic URL-like fields are
+    intentionally ignored so providers must opt in to object-specific actions. When
+    a turn uses a lookup tool before a detail tool, the final answer should be
+    anchored to the latest matching tool result. A later result without actions
+    clears prior scratchpad actions instead of carrying stale controls forward.
+    """
+    latest_references, _should_publish = collect_object_action_reference_update_from_tool_results(
+        messages=messages,
+        start_index=start_index,
+        target_tool_names=target_tool_names,
+    )
+    return latest_references
+
+
+def collect_object_action_reference_update_from_tool_results(
+    *,
+    messages: list[dict[str, Any]],
+    start_index: int,
+    target_tool_names: list[str],
+) -> tuple[list[dict[str, Any]], bool]:
+    """Return latest object actions and whether stream metadata should be published.
+
+    The boolean becomes true when the latest matching tool result contains actions,
+    or when an earlier matching result contained actions and a later matching result
+    clears them. Providers that never emit ``object_actions`` do not trigger an
+    empty protocol update.
+    """
+    payloads = [
+        payload
+        for _tool_name, payload in _iter_tool_result_payloads(
+            messages=messages,
+            start_index=start_index,
+            target_tool_names=target_tool_names,
+        )
+    ]
+    return collect_latest_object_action_reference_update(payloads)
 
 
 class RunnerExecutionFlowStreamMixin:
@@ -579,6 +626,25 @@ class RunnerExecutionFlowStreamMixin:
                                 "workspace_downloads": new_download_references,
                             },
                         )
+                (
+                    object_action_references,
+                    should_publish_object_actions,
+                ) = collect_object_action_reference_update_from_tool_results(
+                    messages=latest_messages,
+                    start_index=persist_run_output_start_index,
+                    target_tool_names=current_node_tool_names,
+                )
+                if should_publish_object_actions:
+                    yield StreamEvent.runtime_update(
+                        "artifact",
+                        "Object actions ready.",
+                        metadata={
+                            "phase": "object_actions",
+                            "attempt": state.get("current_model_attempt"),
+                            "elapsed": round(time.monotonic() - start_time, 1),
+                            "object_actions": object_action_references,
+                        },
+                    )
                 if self._should_finalize_from_tool_results(
                     messages=latest_messages,
                     start_index=persist_run_output_start_index,

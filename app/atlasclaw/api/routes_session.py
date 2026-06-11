@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..auth.models import ANONYMOUS_USER, UserInfo
+from ..core.object_actions import collect_latest_object_action_references_from_payloads
 from ..core.workspace_downloads import collect_workspace_download_references_from_payloads
 from ..session.context import ChatType as SessionChatType
 from ..session.context import SessionKey, SessionScope
@@ -159,6 +160,28 @@ def _collect_workspace_download_references(
     )
 
 
+def _collect_object_action_references(
+    *,
+    entry: Any,
+) -> list[dict[str, Any]]:
+    payloads: list[Any] = []
+    content = getattr(entry, "content", None)
+    if content:
+        payloads.append(content)
+    tool_results = getattr(entry, "tool_results", [])
+    if isinstance(tool_results, list):
+        for result in tool_results:
+            if isinstance(result, dict):
+                payloads.append(result)
+    return collect_latest_object_action_references_from_payloads(payloads)
+
+
+def _entry_hides_user_turn(entry: Any) -> bool:
+    """Return whether a transcript user entry is intentionally hidden from UI history."""
+    metadata = getattr(entry, "metadata", {})
+    return isinstance(metadata, dict) and metadata.get("visible_user_turn") is False
+
+
 def _build_session_history_response(
     transcript: list[Any],
     *,
@@ -168,12 +191,16 @@ def _build_session_history_response(
     messages: list[SessionHistoryMessage] = []
     pending_workspace_downloads: list[dict[str, str]] = []
     pending_download_paths: set[str] = set()
+    pending_object_actions: list[dict[str, Any]] = []
     for entry in transcript:
         role = str(getattr(entry, "role", "") or "").strip().lower()
         content = getattr(entry, "content", "")
         if role == "user":
             pending_workspace_downloads = []
             pending_download_paths = set()
+            pending_object_actions = []
+            if _entry_hides_user_turn(entry):
+                continue
         if role == "tool" or getattr(entry, "tool_results", []):
             pending_workspace_downloads.extend(
                 _collect_workspace_download_references(
@@ -183,6 +210,8 @@ def _build_session_history_response(
                     seen_paths=pending_download_paths,
                 )
             )
+            object_action_references = _collect_object_action_references(entry=entry)
+            pending_object_actions = object_action_references
         if role == "tool":
             continue
 
@@ -190,10 +219,13 @@ def _build_session_history_response(
             continue
 
         workspace_downloads = []
+        object_actions = []
         if role == "assistant" and not getattr(entry, "tool_calls", []):
             workspace_downloads = list(pending_workspace_downloads)
             pending_workspace_downloads = []
             pending_download_paths = set()
+            object_actions = list(pending_object_actions)
+            pending_object_actions = []
 
         messages.append(
             SessionHistoryMessage(
@@ -201,6 +233,7 @@ def _build_session_history_response(
                 content=content,
                 timestamp=entry.timestamp,
                 workspace_downloads=workspace_downloads,
+                object_actions=object_actions,
             )
         )
     return SessionHistoryResponse(messages=messages)

@@ -130,6 +130,8 @@ class RunnerExecutionFlowPostMixin:
         system_prompt: str,
         tool_call_summaries: list[dict[str, Any]],
     ) -> None:
+        persist_user_metadata = self._persist_user_message_metadata_from_deps(state.get("deps"))
+
         async def _run_post_success_side_effects() -> None:
             _log_step("post_success_background_side_effects_start")
             llm_completed_task = asyncio.create_task(
@@ -158,20 +160,23 @@ class RunnerExecutionFlowPostMixin:
             else:
                 _log_step("post_success_persist_transcript_done")
 
-            _log_step("post_success_finalize_title_start")
-            try:
-                await self._maybe_finalize_title(
-                    session_manager=session_manager,
-                    session_key=session_key,
-                    session=session,
-                    final_messages=final_messages,
-                    user_message=user_message,
-                )
-                _log_step("post_success_finalize_title_done")
-                state["session_title"] = str(getattr(session, "title", "") or "")
-            except Exception as exc:
-                logger.exception("post_success_finalize_title failed")
-                _log_step("post_success_finalize_title_error", error=str(exc))
+            if persist_user_metadata.get("visible_user_turn") is False:
+                _log_step("post_success_finalize_title_skipped", reason="hidden_user_turn")
+            else:
+                _log_step("post_success_finalize_title_start")
+                try:
+                    await self._maybe_finalize_title(
+                        session_manager=session_manager,
+                        session_key=session_key,
+                        session=session,
+                        final_messages=final_messages,
+                        user_message=user_message,
+                    )
+                    _log_step("post_success_finalize_title_done")
+                    state["session_title"] = str(getattr(session, "title", "") or "")
+                except Exception as exc:
+                    logger.exception("post_success_finalize_title failed")
+                    _log_step("post_success_finalize_title_error", error=str(exc))
 
             _log_step("post_success_run_context_ready_start")
             try:
@@ -593,6 +598,7 @@ class RunnerExecutionFlowPostMixin:
         user_message = state.get("user_message")
         system_prompt = state.get("system_prompt")
         deps = state.get("deps")
+        persist_user_metadata = self._persist_user_message_metadata_from_deps(deps)
         max_tool_calls = int(state.get("max_tool_calls") or 0)
         timeout_seconds = float(state.get("timeout_seconds") or 0.0)
         token_failover_attempt = int(state.get("_token_failover_attempt") or 0)
@@ -826,6 +832,7 @@ class RunnerExecutionFlowPostMixin:
                 final_assistant="",
                 clear_tool_planning_text=tool_execution_required,
                 persist_user_message=user_message,
+                persist_user_metadata=persist_user_metadata,
             )
             await session_manager.persist_transcript(session_key, safe_messages)
             await self.runtime_events.trigger_run_context_ready(
@@ -1106,6 +1113,7 @@ class RunnerExecutionFlowPostMixin:
             final_assistant=final_assistant,
             clear_tool_planning_text=tool_execution_required,
             persist_user_message=user_message,
+            persist_user_metadata=persist_user_metadata,
         )
 
         if not assistant_output_streamed and final_assistant and not should_block_assistant_emit:
@@ -1274,6 +1282,7 @@ class RunnerExecutionFlowPostMixin:
                     final_assistant=final_assistant,
                     clear_tool_planning_text=tool_execution_required,
                     persist_user_message=user_message,
+                    persist_user_metadata=persist_user_metadata,
                 )
                 if not assistant_output_streamed:
                     thinking_emitter = state.get("thinking_emitter")
@@ -1340,6 +1349,7 @@ class RunnerExecutionFlowPostMixin:
                     final_assistant="",
                     clear_tool_planning_text=tool_execution_required,
                     persist_user_message=user_message,
+                    persist_user_metadata=persist_user_metadata,
                 )
                 await session_manager.persist_transcript(session_key, safe_messages)
                 await self.runtime_events.trigger_run_context_ready(
@@ -1407,6 +1417,7 @@ class RunnerExecutionFlowPostMixin:
                         final_assistant=final_assistant,
                         clear_tool_planning_text=tool_execution_required,
                         persist_user_message=user_message,
+                        persist_user_metadata=persist_user_metadata,
                     )
                     if not assistant_output_streamed:
                         state.get("thinking_emitter").assistant_emitted = True
@@ -1433,6 +1444,7 @@ class RunnerExecutionFlowPostMixin:
                                 final_assistant=final_assistant,
                                 clear_tool_planning_text=tool_execution_required,
                                 persist_user_message=user_message,
+                                persist_user_metadata=persist_user_metadata,
                             )
                             if not assistant_output_streamed:
                                 state.get("thinking_emitter").assistant_emitted = True
@@ -1461,6 +1473,7 @@ class RunnerExecutionFlowPostMixin:
                     final_assistant="",
                     clear_tool_planning_text=tool_execution_required,
                     persist_user_message=user_message,
+                    persist_user_metadata=persist_user_metadata,
                 )
                 await session_manager.persist_transcript(session_key, safe_messages)
                 await self.runtime_events.trigger_run_context_ready(

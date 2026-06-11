@@ -274,6 +274,7 @@ class _PostRunner(
         self.lookup_dump_recovery_answer = ""
         self.lookup_dump_recovery_calls = []
         self.retry_after_missing_tool_execution_calls = []
+        self.finalize_title_calls = []
 
     @staticmethod
     def _collect_buffered_assistant_text(buffered_events):
@@ -323,6 +324,7 @@ class _PostRunner(
         return self.lookup_dump_recovery_answer
 
     async def _maybe_finalize_title(self, **kwargs):
+        self.finalize_title_calls.append(kwargs)
         return None
 
 
@@ -1146,6 +1148,70 @@ def test_sanitize_turn_messages_for_persistence_restores_raw_user_message() -> N
         {"role": "user", "content": "TLS config?"},
         {"role": "assistant", "content": "Tool-backed answer"},
     ]
+
+
+def test_sanitize_turn_messages_for_persistence_attaches_user_metadata() -> None:
+    runner = _PostRunner()
+    sanitized = runner._sanitize_turn_messages_for_persistence(
+        messages=[
+            {"role": "user", "content": "internal detail action"},
+            {"role": "assistant", "content": "Detail answer"},
+        ],
+        start_index=0,
+        final_assistant="Detail answer",
+        persist_user_message="internal detail action",
+        persist_user_metadata={"visible_user_turn": False},
+    )
+
+    assert sanitized == [
+        {
+            "role": "user",
+            "content": "internal detail action",
+            "metadata": {"visible_user_turn": False},
+        },
+        {"role": "assistant", "content": "Detail answer"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_hidden_user_turn_does_not_finalize_session_title() -> None:
+    runner = _PostRunner()
+    session_manager = _SessionManager()
+    state = {
+        "deps": SimpleNamespace(extra={"context": {"visible_user_turn": False}}),
+        "context_history_for_hooks": [],
+        "session_title": "查看我的审批",
+    }
+
+    runner._schedule_post_success_side_effects(
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+        session_key="s-hidden-title",
+        run_id="run-hidden-title",
+        session_manager=session_manager,
+        persist_messages=[
+            {
+                "role": "user",
+                "content": "查看 RES20260518000001 的审批详情",
+                "metadata": {"visible_user_turn": False},
+            },
+            {"role": "assistant", "content": "CMP Request Detail: RES20260518000001"},
+        ],
+        final_assistant="CMP Request Detail: RES20260518000001",
+        final_messages=[
+            {"role": "user", "content": "查看 RES20260518000001 的审批详情"},
+            {"role": "assistant", "content": "CMP Request Detail: RES20260518000001"},
+        ],
+        session=SimpleNamespace(title="查看我的审批"),
+        user_message="查看 RES20260518000001 的审批详情",
+        system_prompt="system",
+        tool_call_summaries=[],
+    )
+    await runner._await_background_post_success_tasks()
+
+    assert runner.finalize_title_calls == []
+    assert session_manager.persisted_messages is not None
+    assert runner.runtime_events.context_ready_calls[0]["session_title"] == "查看我的审批"
 
 
 @pytest.mark.asyncio
@@ -3718,6 +3784,86 @@ def test_build_tool_only_markdown_answer_keeps_multi_item_structured_provider_ou
     assert "TIC20260313000006" in answer
     assert "TIC20260313000004" in answer
     assert "\n..." not in answer
+
+
+def test_build_tool_only_markdown_answer_uses_latest_single_object_detail_result() -> None:
+    runner = _PostRunner()
+
+    answer = runner._build_tool_only_markdown_answer_from_messages(
+        messages=[
+            {
+                "role": "assistant",
+                "tool_results": [
+                    {
+                        "tool_name": "list_resources",
+                        "content": {
+                            "output": "\n".join(
+                                [
+                                    "Found 2 virtual machine(s):",
+                                    "[1] vm-1 | status: started",
+                                    "[2] vm-2 | status: stopped",
+                                ]
+                            ),
+                            "object_actions": [
+                                {
+                                    "index": 1,
+                                    "object_id": "vm-1",
+                                    "object_name": "vm-1",
+                                    "object_actions": [
+                                        {
+                                            "action_id": "open_detail",
+                                            "kind": "open_url",
+                                            "href": "https://console.example.com/resources/vm-1",
+                                        }
+                                    ],
+                                },
+                                {
+                                    "index": 2,
+                                    "object_id": "vm-2",
+                                    "object_name": "vm-2",
+                                    "object_actions": [
+                                        {
+                                            "action_id": "open_detail",
+                                            "kind": "open_url",
+                                            "href": "https://console.example.com/resources/vm-2",
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                    },
+                    {
+                        "tool_name": "resource_detail",
+                        "content": {
+                            "output": "\n".join(
+                                [
+                                    "vm-1",
+                                    "",
+                                    "Status: started",
+                                    "Compute: 1 CPU / 1 GB",
+                                ]
+                            ),
+                            "object_id": "vm-1",
+                            "object_name": "vm-1",
+                            "object_actions": [
+                                {
+                                    "action_id": "open_detail",
+                                    "kind": "open_url",
+                                    "href": "https://console.example.com/resources/vm-1",
+                                }
+                            ],
+                        },
+                    },
+                ],
+            }
+        ],
+        start_index=0,
+    )
+
+    assert "Found 2 virtual machine(s)" not in answer
+    assert "[2] vm-2" not in answer
+    assert "vm-1" in answer
+    assert "Compute: 1 CPU / 1 GB" in answer
 
 
 def test_build_tool_only_markdown_answer_prefers_meta_block_over_ascii_layout() -> None:

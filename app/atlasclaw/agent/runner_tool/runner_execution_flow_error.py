@@ -110,12 +110,16 @@ class RunnerExecutionFlowErrorMixin:
                 system_prompt = state.get("system_prompt")
                 session_title = state.get("session_title")
                 thinking_emitter = state.get("thinking_emitter")
+                persist_user_metadata = self._persist_user_message_metadata_from_deps(
+                    state.get("deps")
+                )
                 safe_messages = self._sanitize_turn_messages_for_persistence(
                     messages=latest_messages,
                     start_index=persist_run_output_start_index,
                     final_assistant=tool_only_answer,
                     clear_tool_planning_text=True,
                     persist_user_message=user_message,
+                    persist_user_metadata=persist_user_metadata,
                 )
                 if thinking_emitter is not None:
                     async for event in thinking_emitter.close_if_active():

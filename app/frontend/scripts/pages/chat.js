@@ -6,12 +6,12 @@
  * chat.js - Chat Page Module
  */
 
-import { initSession, getSessionKey, setSessionKey } from '../session-manager.js?v=19'
-import { initChat, activateSession, abortCurrentStream, getCurrentAgentInfo, focusChatInput, cancelChatInputFocusRetry } from '../chat-ui.js?v=19'
-import { listSessions, deleteSession } from '../api-client.js?v=19'
+import { initSession, getSessionKey, setSessionKey } from '../session-manager.js?v=21'
+import { initChat, activateSession, abortCurrentStream, getCurrentAgentInfo, focusChatInput, cancelChatInputFocusRetry } from '../chat-ui.js?v=21'
+import { listSessions, deleteSession } from '../api-client.js?v=21'
 import { translateIfExists } from '../i18n.js'
-import { updateHeaderTitleText } from '../components/header.js?v=19'
-import { restoreInputFocus } from '../dom-utils.js?v=19'
+import { updateHeaderTitleText } from '../components/header.js?v=21'
+import { restoreInputFocus } from '../dom-utils.js?v=21'
 
 let chatElement = null
 let mounted = false

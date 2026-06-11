@@ -10,6 +10,13 @@
 const defaultMockTranslations = {
     'chat.placeholder': 'Enter your question...',
     'chat.copyMessage': 'Copy message',
+    'chat.openObject': 'Open',
+    'chat.openObjectAria': 'Open {{label}}',
+    'chat.objectAction': 'Action',
+    'chat.objectActions': 'Actions',
+    'chat.objectActionsAria': 'Actions for {{label}}',
+    'chat.objectActionConfirm': 'Confirm {{label}}?',
+    'chat.objectActionRequiredInput': 'This action requires input.',
     'chat.runtimeThinking': 'Thinking',
     'chat.runtimeRetrying': 'Retrying',
     'chat.runtimeWaitingForTool': 'Waiting for tool',
@@ -27,12 +34,13 @@ jest.mock('../../app/frontend/scripts/config.js', () => ({
 jest.mock('../../app/frontend/scripts/i18n.js', () => ({
     t: jest.fn((key) => key),
     translateIfExists: jest.fn((key) => globalThis.__atlasclawTestTranslations?.[key] || null),
-    getCurrentLocale: jest.fn(() => 'en-US'),
+    getCurrentLocale: jest.fn(() => globalThis.__atlasclawTestLocale || 'en-US'),
     isLocaleLoaded: jest.fn(() => false)
 }));
 
 beforeEach(() => {
     globalThis.__atlasclawTestTranslations = { ...defaultMockTranslations };
+    globalThis.__atlasclawTestLocale = 'en-US';
     jest.resetModules();
     global.fetch = jest.fn(() => Promise.resolve({
         ok: true,
@@ -155,6 +163,87 @@ async function renderAssistantHtml(text, runId = 'run-render-assistant-html') {
     stream.simulateEvent('lifecycle', { phase: 'end' });
     await handlerPromise;
     return htmlPayload;
+}
+
+async function startStreamingAssistant(runId = 'run-streaming-assistant') {
+    const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+    const element = createChatElement();
+    const signals = createMockSignals();
+
+    global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ session_key: 'session-123' })
+    }).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({})
+    });
+
+    await initChat(element);
+    global.fetch.mockClear();
+    global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ run_id: runId })
+    });
+
+    const handlerPromise = element.handler(
+        { messages: [{ text: 'render object links', role: 'user' }] },
+        signals
+    );
+
+    await new Promise(r => setTimeout(r, 100));
+    return {
+        element,
+        signals,
+        stream: MockEventSource.instances.at(-1),
+        handlerPromise
+    };
+}
+
+function latestHtml(signals) {
+    return signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
+}
+
+function latestAgentRunRequestBody() {
+    const runRequest = global.fetch.mock.calls
+        .filter(([url]) => String(url).endsWith('/api/agent/run'))
+        .at(-1);
+    return runRequest ? JSON.parse(runRequest[1].body) : null;
+}
+
+function parseHtml(html) {
+    const container = document.createElement('div');
+    container.innerHTML = html;
+    return container;
+}
+
+function localizedText(defaultText, translations = {}) {
+    return {
+        default: defaultText,
+        translations: {
+            'en-US': defaultText,
+            ...translations
+        }
+    };
+}
+
+function objectActionReference({
+    href,
+    actionId = 'open_detail',
+    label = 'Open',
+    actions = null,
+    ...context
+}) {
+    return {
+        ...context,
+        object_actions: actions || [
+            {
+                action_id: actionId,
+                kind: 'open_url',
+                display_label: localizedText(label),
+                href
+            }
+        ]
+    };
 }
 
 function createDomChatElement() {
@@ -1648,6 +1737,1513 @@ describe('chat-ui.js handler mode', () => {
         await handlerPromise;
     });
 
+    test('handler renders live tool-end object_action content as open actions', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-tool-object-action');
+
+        stream.simulateEvent('assistant', {
+            text: 'Created approval request.',
+            is_delta: true
+        });
+        stream.simulateEvent('tool', {
+            tool: 'provider_create_request',
+            phase: 'end',
+            content: JSON.stringify({
+                object_id: 'REQ-001',
+                object_name: 'Approval REQ-001',
+                object_actions: [
+                    objectActionReference({
+                        href: 'https://cmp.example.com/requests/REQ-001',
+                        object_id: 'REQ-001',
+                        object_name: 'Approval REQ-001'
+                    })
+                ]
+            })
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        const link = dom.querySelector('a.object-action-link');
+        expect(link).not.toBeNull();
+        expect(link.getAttribute('href')).toBe('https://cmp.example.com/requests/REQ-001');
+        expect(link.getAttribute('target')).toBe('_blank');
+        expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+        expect(link.textContent).toContain('Open');
+        expect(link.textContent).not.toContain('Approval REQ-001');
+        expect(link.getAttribute('aria-label')).toBe('Open Approval REQ-001');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler extracts object_action from tool-end internal metadata strings', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-tool-object-action-internal');
+
+        stream.simulateEvent('assistant', {
+            text: 'Found approval details.',
+            is_delta: true
+        });
+        stream.simulateEvent('tool', {
+            tool: 'provider_detail',
+            phase: 'end',
+            content: JSON.stringify({
+                success: true,
+                output: 'human detail',
+                _internal: JSON.stringify({
+                    object_id: 'REQ-002',
+                    object_name: 'Approval REQ-002',
+	                    object_actions: [
+	                        objectActionReference({
+	                            href: 'https://cmp.example.com/requests/REQ-002',
+	                            object_id: 'REQ-002',
+	                            object_name: 'Approval REQ-002'
+	                        })
+	                    ]
+                })
+            })
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        const link = dom.querySelector('a.object-action-link');
+        expect(link).not.toBeNull();
+        expect(link.getAttribute('href')).toBe('https://cmp.example.com/requests/REQ-002');
+        expect(link.getAttribute('aria-label')).toBe('Open Approval REQ-002');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler renders runtime metadata object_actions as open actions', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-runtime-object-actions');
+
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned object references.',
+            object_actions: [
+                objectActionReference({
+                    href: 'https://cmp.example.com/resources/res-001',
+                    object_id: 'res-001',
+                    object_name: 'Runtime resource'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 120));
+
+        const dom = parseHtml(latestHtml(signals));
+        const link = dom.querySelector('.object-actions a.object-action-link');
+        expect(link).not.toBeNull();
+        expect(link.getAttribute('href')).toBe('https://cmp.example.com/resources/res-001');
+        expect(link.textContent).toContain('Open');
+        expect(link.textContent).not.toContain('Runtime resource');
+        expect(link.getAttribute('aria-label')).toBe('Open Runtime resource');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler keeps single detail object_action in the rendered DOM when metadata arrives before answer', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        const signals = createDomSignals(messages);
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-runtime-detail-object-action' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'show Linux-test-mysqlds detail', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances.at(-1);
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Object actions ready.',
+            phase: 'object_actions',
+            object_actions: [
+                objectActionReference({
+                    href: 'https://cmp.example.com/resources/vm-46499/details',
+                    object_id: 'vm-46499',
+                    object_name: 'Linux-test-mysqlds'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 120));
+
+        expect(messages.querySelector('.object-actions a.object-action-link')).not.toBeNull();
+
+        stream.simulateEvent('assistant', {
+            text: [
+                'Linux-test-mysqlds',
+                '- Status: started',
+                '- Compute: 1 CPU / 1 GB',
+                'Disks',
+                '- Disk 1: 100 | CentOS 4/5 (64 位) | thin'
+            ].join('\n'),
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const links = messages.querySelectorAll('.object-actions a.object-action-link');
+        expect(links).toHaveLength(1);
+        expect(links[0].getAttribute('href')).toBe('https://cmp.example.com/resources/vm-46499/details');
+        expect(links[0].getAttribute('target')).toBe('_blank');
+        expect(links[0].getAttribute('rel')).toBe('noopener noreferrer');
+        expect(links[0].getAttribute('aria-label')).toBe('Open Linux-test-mysqlds');
+        expect(messages.querySelectorAll('.response-table-action a.object-action-link')).toHaveLength(0);
+        expect(messages.textContent).toContain('Disk 1: 100');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('initChat restores assistant object_action controls from persisted history metadata', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ welcome_message: 'Hello!' })
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({
+                    messages: [
+                        { role: 'user', content: 'show request', timestamp: '2026-03-27T10:00:00' },
+                        {
+                            role: 'assistant',
+                            content: 'Request created.',
+                            timestamp: '2026-03-27T10:00:01',
+	                            object_actions: [
+	                                objectActionReference({
+	                                    href: 'https://cmp.example.com/requests/REQ-100',
+	                                    object_id: 'REQ-100',
+	                                    object_name: 'Restored request'
+	                                })
+	                            ]
+                        }
+                    ]
+                })
+            });
+
+        await initChat(element);
+
+        const restoredAssistant = element.history[1];
+        const dom = parseHtml(restoredAssistant.html);
+        const link = dom.querySelector('a.object-action-link');
+        expect(restoredAssistant.role).toBe('ai');
+        expect(link).not.toBeNull();
+        expect(link.getAttribute('href')).toBe('https://cmp.example.com/requests/REQ-100');
+        expect(link.textContent).toContain('Open');
+        expect(link.textContent).not.toContain('Restored request');
+        expect(link.getAttribute('aria-label')).toBe('Open Restored request');
+    });
+
+    test('initChat binds restored object_action prompt buttons after history renders', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        const deepChatContainer = document.createElement('div');
+        deepChatContainer.id = 'container';
+        element.shadowRoot.appendChild(deepChatContainer);
+        element.loadHistory = jest.fn((history) => {
+            messages.innerHTML = '';
+            history.forEach((message) => {
+                appendHistoryMessage(messages, message);
+            });
+        });
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ welcome_message: 'Hello!' })
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({
+                    messages: [
+                        {
+                            role: 'assistant',
+                            content: 'Request detail.',
+                            timestamp: '2026-03-27T10:00:01',
+                            object_actions: [
+                                objectActionReference({
+                                    actionId: 'analyze',
+                                    actions: [
+                                        {
+                                            action_id: 'analyze',
+                                            kind: 'agent_prompt',
+                                            display_label: localizedText('Analyze'),
+                                            agent_prompt: localizedText('Analyze REQ-100')
+                                        }
+                                    ],
+                                    object_id: 'REQ-100',
+                                    object_name: 'Restored request'
+                                })
+                            ]
+                        }
+                    ]
+                })
+            });
+
+        await initChat(element);
+
+        const restoredButton = messages.querySelector('button[data-object-action-payload]');
+        expect(restoredButton).not.toBeNull();
+        expect(messages._objectActionClickBound).toBe(true);
+
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-restored-object-action' })
+        });
+
+        restoredButton.click();
+        await new Promise(r => setTimeout(r, 50));
+
+        expect(element.addMessage.mock.calls.some(([message]) => message?.role === 'user')).toBe(false);
+        expect(global.fetch).toHaveBeenCalledWith(
+            expect.stringMatching(/\/api\/agent\/run$/),
+            expect.objectContaining({
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: expect.stringContaining('"message":"Analyze REQ-100"')
+            })
+        );
+        const directStream = MockEventSource.instances.at(-1);
+        directStream?.simulateEvent('lifecycle', { phase: 'end' });
+        await new Promise(r => setTimeout(r, 0));
+    });
+
+    test('handler ignores unsafe object_action values', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-unsafe-object-actions');
+
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned unsafe object references.',
+            object_actions: [
+                objectActionReference({ href: 'javascript:alert(1)', label: 'script' }),
+                objectActionReference({ href: 'data:text/html,hello', label: 'data' }),
+                objectActionReference({ href: 'file:///tmp/object', label: 'file' }),
+                objectActionReference({ href: 'workspace://object/1', label: 'workspace' }),
+                objectActionReference({ href: '/relative/object/1', label: 'relative' }),
+                objectActionReference({ href: '   ', label: 'blank' })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 120));
+
+        const htmlPayload = latestHtml(signals);
+        expect(htmlPayload).not.toContain('object-action-link');
+        expect(htmlPayload).not.toContain('javascript:alert');
+        expect(htmlPayload).not.toContain('data:text/html');
+        expect(htmlPayload).not.toContain('file:///tmp/object');
+        expect(htmlPayload).not.toContain('workspace://object/1');
+        expect(htmlPayload).not.toContain('/relative/object/1');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler ignores reserved execute_tool object actions', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-execute-tool-object-actions');
+
+        stream.simulateEvent('assistant', {
+            text: 'Provider returned a reserved direct execution action.',
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned reserved object actions.',
+            object_actions: [
+                objectActionReference({
+                    object_id: 'vm-1',
+                    object_name: 'vm-1',
+                    actions: [
+                        {
+                            action_id: 'restart',
+                            kind: 'execute_tool',
+                            label: 'Restart',
+                            executor: { tool_name: 'provider_restart_vm' }
+                        }
+                    ]
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        expect(dom.querySelectorAll('.object-actions *')).toHaveLength(0);
+        expect(dom.textContent).toContain('Provider returned a reserved direct execution action.');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler ignores ordinary url and href fields for object open actions', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-ignore-ordinary-links');
+
+        stream.simulateEvent('assistant', {
+            text: 'Provider returned ordinary URLs.',
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider metadata has ordinary link fields.',
+            url: 'https://cmp.example.com/url-field',
+            href: 'https://cmp.example.com/href-field',
+            link: 'https://cmp.example.com/link-field',
+            source_url: 'https://cmp.example.com/source-field',
+            api_url: 'https://cmp.example.com/api-field',
+            doc_url: 'https://cmp.example.com/doc-field'
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const htmlPayload = latestHtml(signals);
+        expect(htmlPayload).not.toContain('object-action-link');
+        expect(htmlPayload).not.toContain('https://cmp.example.com/url-field');
+        expect(htmlPayload).not.toContain('https://cmp.example.com/href-field');
+        expect(htmlPayload).toContain('Provider returned ordinary URLs.');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler appends table object actions by numeric index column', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-table-object-index');
+
+        stream.simulateEvent('assistant', {
+            text: [
+                '| # | Name | Status |',
+                '| --- | --- | --- |',
+                '| 1 | Database cluster | Active |',
+                '| 2 | Web frontend | Pending |'
+            ].join('\n'),
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned table object links.',
+            object_actions: [
+                objectActionReference({
+                    index: 2,
+                    href: 'https://cmp.example.com/resources/web',
+                    object_name: 'Web frontend'
+                }),
+                objectActionReference({
+                    index: 1,
+                    href: 'https://cmp.example.com/resources/db',
+                    object_name: 'Database cluster'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        const rows = dom.querySelectorAll('.response-table tbody tr');
+        expect(dom.querySelector('.response-table-action-header')).not.toBeNull();
+        expect(dom.querySelector('.response-table-action-header')?.textContent).toBe('Actions');
+        expect(rows[0].querySelector('.response-table-action a')?.getAttribute('href')).toBe('https://cmp.example.com/resources/db');
+        expect(rows[1].querySelector('.response-table-action a')?.getAttribute('href')).toBe('https://cmp.example.com/resources/web');
+        expect(dom.querySelectorAll('.response-content > .object-actions a.object-action-link')).toHaveLength(0);
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler appends provider resource table object actions on the right', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-provider-resource-table-object-links');
+
+        stream.simulateEvent('assistant', {
+            text: [
+                'Found 2 virtual machine(s):',
+                '',
+                '| # | Name | Status | OS |',
+                '| --- | --- | --- | --- |',
+                '| 1 | Linux-test-mysqlds | started | CentOS |',
+                '| 2 | Linux-test-adwedsew | stopped | CentOS |'
+            ].join('\n'),
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned resource object links.',
+            object_actions: [
+                objectActionReference({
+                    index: 1,
+                    object_name: 'Linux-test-mysqlds',
+                    href: 'https://cmp.example.com/#/main/virtual-machines/vm-1/details'
+                }),
+                objectActionReference({
+                    index: 2,
+                    object_name: 'Linux-test-adwedsew',
+                    href: 'https://cmp.example.com/#/main/virtual-machines/vm-2/details'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        const rows = dom.querySelectorAll('.response-table tbody tr');
+        expect(dom.querySelector('.response-table-action-header')?.textContent).toBe('Actions');
+        expect(rows[0].querySelector('.response-table-action a')?.getAttribute('href')).toBe('https://cmp.example.com/#/main/virtual-machines/vm-1/details');
+        expect(rows[1].querySelector('.response-table-action a')?.getAttribute('href')).toBe('https://cmp.example.com/#/main/virtual-machines/vm-2/details');
+        expect(dom.querySelectorAll('.response-content > .object-actions a.object-action-link')).toHaveLength(0);
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler appends provider all-resource table object actions on the right', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-provider-all-resource-table-object-links');
+
+        stream.simulateEvent('assistant', {
+            text: [
+                'Found 2 resource(s):',
+                '',
+                '| # | Name | Status | Resource Type | Component Type |',
+                '| --- | --- | --- | --- | --- |',
+                '| 1 | Linux-test-mysqlds | started | cloudchef.nodes.Compute | iaas.machine.virtual_machine |',
+                '| 2 | mysql-prod | running | cloudchef.nodes.Database | paas.database.mysql |'
+            ].join('\n'),
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned resource object links.',
+            object_actions: [
+                objectActionReference({
+                    index: 1,
+                    object_name: 'Linux-test-mysqlds',
+                    href: 'https://cmp.example.com/#/main/cloud-resource/res-1/details'
+                }),
+                objectActionReference({
+                    index: 2,
+                    object_name: 'mysql-prod',
+                    href: 'https://cmp.example.com/#/main/cloud-resource/res-2/details'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        const rows = dom.querySelectorAll('.response-table tbody tr');
+        expect(dom.querySelector('.response-table-action-header')?.textContent).toBe('Actions');
+        expect(rows[0].querySelector('.response-table-action a')?.getAttribute('href')).toBe('https://cmp.example.com/#/main/cloud-resource/res-1/details');
+        expect(rows[1].querySelector('.response-table-action a')?.getAttribute('href')).toBe('https://cmp.example.com/#/main/cloud-resource/res-2/details');
+        expect(dom.querySelectorAll('.response-content > .object-actions a.object-action-link')).toHaveLength(0);
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler appends approval table object actions on the right by index', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-approval-table-object-links');
+
+        stream.simulateEvent('assistant', {
+            text: [
+                'Pending approvals - total 2 (sorted by updated time desc)',
+                '',
+                '| # | Request ID | Name | Catalog | Applicant | Priority |',
+                '| --- | --- | --- | --- | --- | --- |',
+                '| 1 | RES20260427000004 | Linux-test-agent | Linux VM | Admin User | low |',
+                '| 2 | RES20260426000003 | older urgent request | General Ticket | Admin User | high |'
+            ].join('\n'),
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned approval object links.',
+            object_actions: [
+                objectActionReference({
+                    index: 1,
+                    object_id: 'RES20260427000004',
+                    object_name: 'Linux-test-agent',
+                    href: 'https://cmp.example.com/#/main/new-application/pendingApproval/PROVISION_BP/approval-1?from=normal&fromPagePartUrl=SR_MY_APPROVAL',
+                    actions: [
+                        {
+                            action_id: 'view_detail',
+                            kind: 'agent_prompt',
+                            display_label: localizedText('View details', { 'zh-CN': '查看详情' }),
+                            agent_prompt: localizedText(
+                                'Show approval details for RES20260427000004',
+                                { 'zh-CN': '查看 RES20260427000004 的审批详情' }
+                            )
+                        },
+                        {
+                            action_id: 'open_detail',
+                            kind: 'open_url',
+                            display_label: localizedText('Open', { 'zh-CN': '打开' }),
+                            href: 'https://cmp.example.com/#/main/new-application/pendingApproval/PROVISION_BP/approval-1?from=normal&fromPagePartUrl=SR_MY_APPROVAL'
+                        }
+                    ]
+                }),
+                objectActionReference({
+                    index: 2,
+                    object_id: 'RES20260426000003',
+                    object_name: 'older urgent request',
+                    href: 'https://cmp.example.com/#/main/service-request/my-approval'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        const rows = dom.querySelectorAll('.response-table tbody tr');
+        expect(dom.querySelector('.response-table-action-header')?.textContent).toBe('Actions');
+        expect(rows[0].querySelector('.response-table-action button')?.textContent).toBe('View details');
+        expect(rows[0].querySelector('.response-table-action a')?.getAttribute('href')).toContain('/#/main/new-application/pendingApproval/');
+        expect(rows[1].querySelector('.response-table-action a')?.getAttribute('href')).toBe('https://cmp.example.com/#/main/service-request/my-approval');
+        expect(dom.querySelectorAll('.response-content > .object-actions a.object-action-link')).toHaveLength(0);
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler renders approval detail actions and submits prompt actions from buttons', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, input, messages } = createDomChatElementWithMessages();
+        const deepChatContainer = document.createElement('div');
+        deepChatContainer.id = 'container';
+        element.shadowRoot.appendChild(deepChatContainer);
+        const signals = createDomSignals(messages);
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-approval-detail-actions' })
+        });
+
+        const submitListener = jest.fn();
+        input.addEventListener('keydown', submitListener);
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'show approval detail', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances.at(-1);
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned approval detail actions.',
+            object_actions: [
+                objectActionReference({
+                    object_id: 'RES20260427000004',
+                    object_name: 'Linux-test-agent',
+                    actions: [
+                        {
+                            action_id: 'open_detail',
+                            kind: 'open_url',
+                            display_label: localizedText('Open', { 'zh-CN': '打开' }),
+                            href: 'https://cmp.example.com/#/main/service-request/my-approval'
+                        },
+                        {
+                            action_id: 'analyze',
+                            kind: 'agent_prompt',
+                            display_label: localizedText('Analyze', { 'zh-CN': '分析' }),
+                            agent_prompt: localizedText(
+                                'Analyze approval details for RES20260427000004',
+                                { 'zh-CN': '分析 RES20260427000004 的审批详情' }
+                            )
+                        },
+                        {
+                            action_id: 'approve',
+                            kind: 'agent_prompt',
+                            display_label: localizedText('Approve', { 'zh-CN': '同意' }),
+                            agent_prompt: localizedText(
+                                'Approve RES20260427000004',
+                                { 'zh-CN': '批准 RES20260427000004' }
+                            ),
+                            confirmation_message: localizedText(
+                                'Confirm approving RES20260427000004?',
+                                { 'zh-CN': '确认同意 RES20260427000004？' }
+                            ),
+                            requires_confirmation: true,
+                            tone: 'success'
+                        },
+                        {
+                            action_id: 'reject',
+                            kind: 'agent_prompt',
+                            display_label: localizedText('Reject', { 'zh-CN': '拒绝' }),
+                            agent_prompt_template: localizedText(
+                                'Reject RES20260427000004, reason: {{reason}}',
+                                { 'zh-CN': '拒绝 RES20260427000004，原因：{{reason}}' }
+                            ),
+                            confirmation_message: localizedText(
+                                'Confirm rejecting RES20260427000004?',
+                                { 'zh-CN': '确认拒绝 RES20260427000004？' }
+                            ),
+                            requires_confirmation: true,
+                            tone: 'danger',
+                            inputs: [
+                                {
+                                    name: 'reason',
+                                    display_label: localizedText('Rejection reason', { 'zh-CN': '拒绝原因' }),
+                                    type: 'textarea',
+                                    required: true
+                                }
+                            ]
+                        }
+                    ]
+                })
+            ]
+        });
+        stream.simulateEvent('assistant', {
+            text: [
+                'Linux-test-agent',
+                '- Request ID: RES20260427000004',
+                '- Status: Pending'
+            ].join('\n'),
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const actionGroup = messages.querySelector('.response-content > .object-actions');
+        expect(actionGroup).not.toBeNull();
+        expect(Array.from(actionGroup.children).map((node) => node.textContent.trim())).toEqual([
+            'Open',
+            'Analyze',
+            'Approve',
+            'Reject'
+        ]);
+        expect(actionGroup.querySelector('a.object-action-link')?.getAttribute('href')).toBe(
+            'https://cmp.example.com/#/main/service-request/my-approval'
+        );
+
+        const originalConfirm = window.confirm;
+        const originalPrompt = window.prompt;
+        const originalAlert = window.alert;
+        window.confirm = jest.fn(() => true);
+        window.prompt = jest.fn(() => '库存不足');
+        window.alert = jest.fn();
+        try {
+            global.fetch.mockClear();
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ run_id: 'run-approval-approve-action' })
+            });
+            actionGroup.querySelector('button.tone-success').click();
+            await new Promise(r => setTimeout(r, 60));
+            expect(window.confirm).toHaveBeenCalledWith('Confirm approving RES20260427000004?');
+            let runBody = latestAgentRunRequestBody();
+            expect(runBody.message).toBe('Approve RES20260427000004');
+            expect(runBody.context.visible_user_turn).toBe(false);
+            expect(input.textContent).toBe('');
+            expect(submitListener).not.toHaveBeenCalled();
+
+            global.fetch.mockClear();
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ run_id: 'run-approval-reject-action' })
+            });
+            actionGroup.querySelector('button.tone-danger').click();
+            await new Promise(r => setTimeout(r, 60));
+            expect(window.prompt).toHaveBeenCalledWith('Rejection reason', '');
+            expect(window.confirm).toHaveBeenLastCalledWith('Confirm rejecting RES20260427000004?');
+            runBody = latestAgentRunRequestBody();
+            expect(runBody.message).toBe('Reject RES20260427000004, reason: 库存不足');
+            expect(runBody.context.visible_user_turn).toBe(false);
+            expect(input.textContent).toBe('');
+            expect(submitListener).not.toHaveBeenCalled();
+
+            window.confirm = jest.fn(() => false);
+            global.fetch.mockClear();
+            actionGroup.querySelector('button.tone-success').click();
+            await new Promise(r => setTimeout(r, 0));
+            expect(window.confirm).toHaveBeenCalledWith('Confirm approving RES20260427000004?');
+            expect(latestAgentRunRequestBody()).toBeNull();
+            expect(submitListener).not.toHaveBeenCalled();
+
+            window.prompt = jest.fn(() => null);
+            global.fetch.mockClear();
+            actionGroup.querySelector('button.tone-danger').click();
+            await new Promise(r => setTimeout(r, 0));
+            expect(window.prompt).toHaveBeenCalledWith('Rejection reason', '');
+            expect(latestAgentRunRequestBody()).toBeNull();
+            expect(submitListener).not.toHaveBeenCalled();
+
+            window.prompt = jest.fn(() => '   ');
+            global.fetch.mockClear();
+            actionGroup.querySelector('button.tone-danger').click();
+            await new Promise(r => setTimeout(r, 0));
+            expect(window.alert).toHaveBeenCalledWith('This action requires input.');
+            expect(latestAgentRunRequestBody()).toBeNull();
+            expect(submitListener).not.toHaveBeenCalled();
+        } finally {
+            window.confirm = originalConfirm;
+            window.prompt = originalPrompt;
+            window.alert = originalAlert;
+        }
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler resolves approval action prompts from the current locale', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, input, messages } = createDomChatElementWithMessages();
+        const deepChatContainer = document.createElement('div');
+        deepChatContainer.id = 'container';
+        element.shadowRoot.appendChild(deepChatContainer);
+        const signals = createDomSignals(messages);
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-approval-detail-actions-en' })
+        });
+
+        const submitListener = jest.fn();
+        input.addEventListener('keydown', submitListener);
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'show approval detail', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances.at(-1);
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned localized approval detail actions.',
+            object_actions: [
+                objectActionReference({
+                    object_id: 'RES20260427000004',
+                    object_name: 'Linux-test-agent',
+                    actions: [
+                        {
+                            action_id: 'approve',
+                            kind: 'agent_prompt',
+                            display_label: localizedText('Approve', { 'zh-CN': '同意' }),
+                            agent_prompt: localizedText(
+                                'Approve RES20260427000004',
+                                { 'zh-CN': '批准 RES20260427000004' }
+                            ),
+                            confirmation_message: localizedText(
+                                'Confirm approving RES20260427000004?',
+                                { 'zh-CN': '确认同意 RES20260427000004？' }
+                            ),
+                            requires_confirmation: true,
+                            tone: 'success'
+                        },
+                        {
+                            action_id: 'reject',
+                            kind: 'agent_prompt',
+                            display_label: localizedText('Reject', { 'zh-CN': '拒绝' }),
+                            agent_prompt_template: localizedText(
+                                'Reject RES20260427000004, reason: {{reason}}',
+                                { 'zh-CN': '拒绝 RES20260427000004，原因：{{reason}}' }
+                            ),
+                            confirmation_message: localizedText(
+                                'Confirm rejecting RES20260427000004?',
+                                { 'zh-CN': '确认拒绝 RES20260427000004？' }
+                            ),
+                            requires_confirmation: true,
+                            tone: 'danger',
+                            inputs: [
+                                {
+                                    name: 'reason',
+                                    display_label: localizedText('Rejection reason', { 'zh-CN': '拒绝原因' }),
+                                    type: 'textarea',
+                                    required: true
+                                }
+                            ]
+                        }
+                    ]
+                })
+            ]
+        });
+        stream.simulateEvent('assistant', {
+            text: 'Approval detail for RES20260427000004',
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const actionGroup = messages.querySelector('.response-content > .object-actions');
+        expect(Array.from(actionGroup.children).map((node) => node.textContent.trim())).toEqual([
+            'Approve',
+            'Reject'
+        ]);
+
+        const originalConfirm = window.confirm;
+        const originalPrompt = window.prompt;
+        try {
+            window.confirm = jest.fn(() => true);
+            window.prompt = jest.fn(() => 'not needed');
+
+            global.fetch.mockClear();
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ run_id: 'run-approval-approve-action-en' })
+            });
+            actionGroup.querySelector('button.tone-success').click();
+            await new Promise(r => setTimeout(r, 60));
+            expect(window.confirm).toHaveBeenCalledWith('Confirm approving RES20260427000004?');
+            let runBody = latestAgentRunRequestBody();
+            expect(runBody.message).toBe('Approve RES20260427000004');
+            expect(runBody.context.visible_user_turn).toBe(false);
+            expect(input.textContent).toBe('');
+            expect(submitListener).not.toHaveBeenCalled();
+
+            global.fetch.mockClear();
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ run_id: 'run-approval-reject-action-en' })
+            });
+            actionGroup.querySelector('button.tone-danger').click();
+            await new Promise(r => setTimeout(r, 60));
+            expect(window.prompt).toHaveBeenCalledWith('Rejection reason', '');
+            expect(window.confirm).toHaveBeenLastCalledWith('Confirm rejecting RES20260427000004?');
+            runBody = latestAgentRunRequestBody();
+            expect(runBody.message).toBe('Reject RES20260427000004, reason: not needed');
+            expect(runBody.context.visible_user_turn).toBe(false);
+            expect(input.textContent).toBe('');
+            expect(submitListener).not.toHaveBeenCalled();
+        } finally {
+            window.confirm = originalConfirm;
+            window.prompt = originalPrompt;
+        }
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('object action prompt fails closed when direct submit is unavailable', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, input, messages } = createDomChatElementWithMessages();
+        const signals = createDomSignals(messages);
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-approval-action-without-direct-submit' })
+        });
+
+        const submitListener = jest.fn();
+        input.addEventListener('keydown', submitListener);
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'show approval detail', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances.at(-1);
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned approval detail action.',
+            object_actions: [
+                objectActionReference({
+                    object_id: 'RES20260427000004',
+                    object_name: 'Linux-test-agent',
+                    actions: [
+                        {
+                            action_id: 'approve',
+                            kind: 'agent_prompt',
+                            display_label: localizedText('Approve'),
+                            agent_prompt: localizedText('Approve RES20260427000004'),
+                            confirmation_message: localizedText('Confirm approving RES20260427000004?'),
+                            requires_confirmation: true,
+                            tone: 'success'
+                        }
+                    ]
+                })
+            ]
+        });
+        stream.simulateEvent('assistant', {
+            text: 'Approval detail for RES20260427000004',
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const originalConfirm = window.confirm;
+        const originalWarn = console.warn;
+        try {
+            window.confirm = jest.fn(() => true);
+            console.warn = jest.fn();
+            global.fetch.mockClear();
+
+            messages.querySelector('.response-content > .object-actions button').click();
+            await new Promise(r => setTimeout(r, 0));
+
+            expect(window.confirm).toHaveBeenCalledWith('Confirm approving RES20260427000004?');
+            expect(global.fetch).not.toHaveBeenCalled();
+            expect(input.textContent).toBe('');
+            expect(submitListener).not.toHaveBeenCalled();
+            expect(console.warn).toHaveBeenCalledWith('[ChatUI] Failed to submit object action prompt');
+        } finally {
+            window.confirm = originalConfirm;
+            console.warn = originalWarn;
+        }
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('object action direct submit does not append the resolved prompt as a user message', async () => {
+        globalThis.__atlasclawTestLocale = 'zh-CN';
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        const deepChatContainer = document.createElement('div');
+        deepChatContainer.id = 'container';
+        element.shadowRoot.appendChild(deepChatContainer);
+        const signals = createDomSignals(messages);
+        const onUserTurnStarted = jest.fn();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element, { onUserTurnStarted });
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-approval-list-actions' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: '查看我的审批', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const listStream = MockEventSource.instances.at(-1);
+        listStream.simulateEvent('assistant', {
+            text: [
+                '| # | Request ID | Name |',
+                '| --- | --- | --- |',
+                '| 1 | RES20260518000001 | test |'
+            ].join('\n'),
+            is_delta: true
+        });
+        listStream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned approval object links.',
+            object_actions: [
+                objectActionReference({
+                    index: 1,
+                    object_id: 'RES20260518000001',
+                    object_name: 'test',
+                    actions: [
+                        {
+                            action_id: 'view_detail',
+                            kind: 'agent_prompt',
+                            display_label: localizedText('查看详情', { 'en-US': 'View details' }),
+                            agent_prompt: localizedText(
+                                '查看 RES20260518000001 的审批详情',
+                                { 'en-US': 'Show approval details for RES20260518000001' }
+                            )
+                        }
+                    ]
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+        listStream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+
+        const viewDetailButton = messages.querySelector('.response-table-action button');
+        expect(viewDetailButton).not.toBeNull();
+        element.addMessage.mockClear();
+        onUserTurnStarted.mockClear();
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-approval-detail-direct-action' })
+        });
+
+        viewDetailButton.click();
+        await new Promise(r => setTimeout(r, 60));
+
+        expect(global.fetch).toHaveBeenCalledWith(
+            expect.stringMatching(/\/api\/agent\/run$/),
+            expect.objectContaining({
+                body: expect.stringContaining('Show approval details for RES20260518000001')
+            })
+        );
+        const runRequest = global.fetch.mock.calls.find(([url]) => String(url).endsWith('/api/agent/run'));
+        expect(JSON.parse(runRequest[1].body).context.visible_user_turn).toBe(false);
+        expect(onUserTurnStarted).not.toHaveBeenCalled();
+        expect(element.addMessage.mock.calls.some(([message]) => message?.role === 'user')).toBe(false);
+
+        const detailStream = MockEventSource.instances.at(-1);
+        expect(element.addMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+            role: 'ai',
+            overwrite: false
+        }));
+        detailStream.simulateEvent('assistant', {
+            text: 'CMP Request Detail: RES20260518000001',
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        expect(element.addMessage).toHaveBeenCalledWith(expect.objectContaining({
+            role: 'ai',
+            html: expect.stringContaining('CMP Request Detail: RES20260518000001'),
+            overwrite: true
+        }));
+        detailStream.simulateEvent('lifecycle', { phase: 'end' });
+        await new Promise(r => setTimeout(r, 0));
+    });
+
+    test('handler keeps single-row detail table actions at the bottom', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-detail-table-bottom-actions');
+
+        stream.simulateEvent('assistant', {
+            text: [
+                '| Request ID | Name | Status |',
+                '| --- | --- | --- |',
+                '| RES20260427000004 | Linux-test-agent | Pending |'
+            ].join('\n'),
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned single approval detail actions.',
+            object_actions: [
+                objectActionReference({
+                    object_id: 'RES20260427000004',
+                    object_name: 'Linux-test-agent',
+                    actions: [
+                        {
+                            action_id: 'open_detail',
+                            kind: 'open_url',
+                            display_label: localizedText('Open', { 'zh-CN': '打开' }),
+                            href: 'https://cmp.example.com/#/main/new-application/pendingApproval/PROVISION_BP/approval-1'
+                        },
+                        {
+                            action_id: 'analyze',
+                            kind: 'agent_prompt',
+                            display_label: localizedText('Analyze', { 'zh-CN': '分析' }),
+                            agent_prompt: localizedText(
+                                'Analyze approval details for RES20260427000004',
+                                { 'zh-CN': '分析 RES20260427000004 的审批详情' }
+                            )
+                        }
+                    ]
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        expect(dom.querySelectorAll('.response-table-action')).toHaveLength(0);
+        const bottomActions = dom.querySelectorAll('.response-content > .object-actions > *');
+        expect(Array.from(bottomActions).map((node) => node.textContent.trim())).toEqual([
+            'Open',
+            'Analyze'
+        ]);
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler does not attach object actions by row order on a single unrelated table', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-single-table-no-row-order-object-links');
+
+        stream.simulateEvent('assistant', {
+            text: [
+                '| Metric | Value |',
+                '| --- | --- |',
+                '| Count | 2 |',
+                '| Status | Active |'
+            ].join('\n'),
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned unmatched object links.',
+            object_actions: [
+                objectActionReference({
+                    href: 'https://cmp.example.com/resources/db',
+                    object_name: 'Database cluster'
+                }),
+                objectActionReference({
+                    href: 'https://cmp.example.com/resources/web',
+                    object_name: 'Web frontend'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        expect(dom.querySelectorAll('.response-table-action a')).toHaveLength(0);
+        expect(dom.querySelectorAll('.object-actions a.object-action-link')).toHaveLength(0);
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler does not use row-order fallback on unrelated tables before the object table', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-multiple-table-object-links');
+
+        stream.simulateEvent('assistant', {
+            text: [
+                '| Metric | Value |',
+                '| --- | --- |',
+                '| Count | 2 |',
+                '| Status | Active |',
+                '',
+                '| Object ID | Object Name |',
+                '| --- | --- |',
+                '| db-1 | Database cluster |',
+                '| web-1 | Web frontend |'
+            ].join('\n'),
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned table object links.',
+            object_actions: [
+                objectActionReference({
+                    object_id: 'db-1',
+                    href: 'https://cmp.example.com/resources/db',
+                    object_name: 'Database cluster'
+                }),
+                objectActionReference({
+                    object_id: 'web-1',
+                    href: 'https://cmp.example.com/resources/web',
+                    object_name: 'Web frontend'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        const tables = dom.querySelectorAll('.response-table');
+        expect(tables).toHaveLength(2);
+        expect(tables[0].querySelectorAll('.response-table-action a')).toHaveLength(0);
+        expect(tables[1].querySelectorAll('.response-table-action a')).toHaveLength(2);
+        expect(tables[1].querySelectorAll('.response-table-action a')[0].getAttribute('href')).toBe('https://cmp.example.com/resources/db');
+        expect(tables[1].querySelectorAll('.response-table-action a')[1].getAttribute('href')).toBe('https://cmp.example.com/resources/web');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler hides raw object_actions markdown table columns', async () => {
+        const objectAction = 'https://cmp.example.com/approvals/APP-001';
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-table-hide-object-action');
+
+        stream.simulateEvent('assistant', {
+            text: [
+                '| # | Name | object_actions | Status |',
+                '| --- | --- | --- | --- |',
+                `| 1 | Approval A | ${objectAction} | Pending |`
+            ].join('\n'),
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned hidden column link.',
+            object_actions: [
+                objectActionReference({
+                    index: 1,
+                    href: objectAction,
+                    object_name: 'Approval A'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        expect(Array.from(dom.querySelectorAll('.response-table th')).map((cell) => cell.textContent)).toEqual([
+            '#',
+            'Name',
+            'Status',
+            'Actions'
+        ]);
+        expect(dom.textContent).not.toContain(objectAction);
+        expect(dom.querySelector('.response-table-action a')?.getAttribute('href')).toBe(objectAction);
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler keeps raw object_actions markdown visible without sidecar metadata', async () => {
+        const tableHref = 'https://cmp.example.com/approvals/APP-raw-table';
+        const detailHref = 'https://cmp.example.com/approvals/APP-raw-detail';
+        const html = await renderAssistantHtml([
+            '| # | Name | object_actions | Status |',
+            '| --- | --- | --- | --- |',
+            `| 1 | Approval A | ${tableHref} | Pending |`,
+            '',
+            `object_actions: ${detailHref}`
+        ].join('\n'), 'run-raw-object-actions-without-metadata');
+
+        const dom = parseHtml(html);
+        expect(Array.from(dom.querySelectorAll('.response-table th')).map((cell) => cell.textContent)).toEqual([
+            '#',
+            'Name',
+            'object_actions',
+            'Status'
+        ]);
+        expect(dom.querySelectorAll('.response-table-action')).toHaveLength(0);
+        expect(dom.querySelectorAll('.object-actions')).toHaveLength(0);
+        expect(dom.textContent).toContain(tableHref);
+        expect(dom.textContent).toContain('object_actions');
+        expect(dom.textContent).toContain(detailHref);
+    });
+
+    test('handler renders a single detail object action as a compact bottom action group', async () => {
+        const objectAction = 'https://cmp.example.com/approvals/APP-002';
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-detail-single-object-action');
+
+        stream.simulateEvent('assistant', {
+            text: [
+                'Approval detail',
+                `object_actions: ${objectAction}`,
+                'Status: Pending'
+            ].join('\n'),
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned single detail link.',
+            object_actions: [
+                objectActionReference({
+                    href: objectAction,
+                    object_name: 'Approval detail'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        const actions = dom.querySelectorAll('.object-actions a.object-action-link');
+        expect(actions).toHaveLength(1);
+        expect(actions[0].getAttribute('href')).toBe(objectAction);
+        expect(actions[0].textContent).toContain('Open');
+        expect(actions[0].textContent).not.toContain('Approval detail');
+        expect(actions[0].getAttribute('aria-label')).toBe('Open Approval detail');
+        expect(dom.textContent).not.toContain(objectAction);
+        expect(dom.textContent).toContain('Status: Pending');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler suppresses multiple unmatched object_actions instead of putting them at the bottom', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-multiple-unmatched-object-actions');
+
+        stream.simulateEvent('assistant', {
+            text: 'Created two provider objects.',
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned unmatched object links.',
+            object_actions: [
+                objectActionReference({
+                    href: 'https://cmp.example.com/objects/one',
+                    label: 'First object'
+                }),
+                objectActionReference({
+                    href: 'https://cmp.example.com/objects/two',
+                    label: 'Second object'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        const actions = dom.querySelectorAll('.object-actions a.object-action-link');
+        expect(actions).toHaveLength(0);
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler replaces list object actions with the latest detail object action metadata', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-detail-replaces-list-object-actions');
+
+        stream.simulateEvent('assistant', {
+            text: [
+                'Found 2 virtual machines:',
+                '[1] vm-1 | status: started',
+                '[2] vm-2 | status: stopped',
+                '',
+                'vm-1',
+                '- Status: started'
+            ].join('\n'),
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned list links.',
+            phase: 'object_actions',
+            object_actions: [
+                objectActionReference({
+                    href: 'https://cmp.example.com/resources/vm-1',
+                    index: 1,
+                    object_name: 'vm-1'
+                }),
+                objectActionReference({
+                    href: 'https://cmp.example.com/resources/vm-2',
+                    index: 2,
+                    object_name: 'vm-2'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+        expect(parseHtml(latestHtml(signals)).querySelectorAll('.object-actions a.object-action-link')).toHaveLength(0);
+
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned detail link.',
+            phase: 'object_actions',
+            object_actions: [
+                objectActionReference({
+                    href: 'https://cmp.example.com/resources/vm-1',
+                    object_name: 'vm-1'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        const actions = dom.querySelectorAll('.object-actions a.object-action-link');
+        expect(actions).toHaveLength(1);
+        expect(actions[0].getAttribute('href')).toBe('https://cmp.example.com/resources/vm-1');
+        expect(actions[0].getAttribute('aria-label')).toBe('Open vm-1');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler clears object actions when replacement metadata is empty', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-empty-object-action-replacement');
+
+        stream.simulateEvent('assistant', {
+            text: 'vm-1 detail',
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned detail link.',
+            phase: 'object_actions',
+            object_actions: [
+                objectActionReference({
+                    href: 'https://cmp.example.com/resources/vm-1',
+                    object_id: 'vm-1',
+                    object_name: 'vm-1'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+        expect(parseHtml(latestHtml(signals)).querySelectorAll('.object-actions a.object-action-link')).toHaveLength(1);
+
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned no current object actions.',
+            phase: 'object_actions',
+            object_actions: []
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        expect(dom.querySelectorAll('.object-actions a.object-action-link')).toHaveLength(0);
+        expect(dom.textContent).toContain('vm-1 detail');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler does not show raw object_actions values as table or detail text', async () => {
+        const tableHref = 'https://cmp.example.com/table/APP-003';
+        const detailHref = 'https://cmp.example.com/detail/APP-004';
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('run-hide-raw-object-action-text');
+
+        stream.simulateEvent('assistant', {
+            text: [
+                '| # | Name | object_actions |',
+                '| --- | --- | --- |',
+                `| 1 | Table approval | ${tableHref} |`,
+                '',
+                `object_actions: ${detailHref}`
+            ].join('\n'),
+            is_delta: true
+        });
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Provider returned raw-value coverage links.',
+            object_actions: [
+                objectActionReference({
+                    index: 1,
+                    href: tableHref,
+                    object_name: 'Table approval'
+                }),
+                objectActionReference({
+                    href: detailHref,
+                    label: 'Detail approval'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const dom = parseHtml(latestHtml(signals));
+        expect(dom.textContent).not.toContain(tableHref);
+        expect(dom.textContent).not.toContain(detailHref);
+        expect(dom.querySelector(`a[href="${tableHref}"]`)).not.toBeNull();
+        expect(dom.querySelector(`a[href="${detailHref}"]`)).not.toBeNull();
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
     test('handler does not linkify unsafe local markdown links', async () => {
         const htmlPayload = await renderAssistantHtml(
             '[local](/etc/passwd)',
@@ -1668,6 +3264,77 @@ describe('chat-ui.js handler mode', () => {
         expect(htmlPayload).toContain('<a href="https://example.com/path?q=1"');
         expect(htmlPayload).toContain('target="_blank"');
         expect(htmlPayload).not.toContain('workspace-download-link');
+    });
+
+    test('handler keeps short low-density markdown tables compact', async () => {
+        const htmlPayload = await renderAssistantHtml(
+            [
+                '准备好了！有 2 个业务组 可选，请回复业务组编号和资源名称：',
+                '',
+                '| # | 业务组 |',
+                '| --- | --- |',
+                '| 1 | 开发部 |',
+                '| 2 | 测试部 |'
+            ].join('\n'),
+            'run-compact-choice-table'
+        );
+        const dom = parseHtml(htmlPayload);
+
+        expect(dom.querySelector('.response-table-wrap-compact')).not.toBeNull();
+        expect(dom.querySelector('.response-table-wrap-wide')).toBeNull();
+        expect(dom.querySelector('.response-table')?.textContent).toContain('开发部');
+        expect(dom.querySelector('.response-table')?.textContent).toContain('测试部');
+    });
+
+    test('handler keeps two-column tables wide when row content is dense', async () => {
+        const htmlPayload = await renderAssistantHtml(
+            [
+                'Options with detailed descriptions:',
+                '',
+                '| # | Description |',
+                '| --- | --- |',
+                '| 1 | Production cluster with cross-region disaster recovery and strict approval policy |',
+                '| 2 | Development cluster for short-lived experiments and shared integration tests |'
+            ].join('\n'),
+            'run-wide-dense-table'
+        );
+        const dom = parseHtml(htmlPayload);
+
+        expect(dom.querySelector('.response-table-wrap-wide')).not.toBeNull();
+        expect(dom.querySelector('.response-table-wrap-compact')).toBeNull();
+        expect(dom.querySelector('.response-table')?.textContent).toContain('cross-region disaster recovery');
+    });
+
+    test('handler keeps request confirmation summaries compact before json previews', async () => {
+        const htmlPayload = await renderAssistantHtml(
+            [
+                '| 服务目录 | Windows VM 2019 |',
+                '| --- | --- |',
+                '| 业务组 | 开发部 |',
+                '| 资源名称 | mytest-vm-adskj |',
+                '| 规格 | Tiny（1核1GB） |',
+                '| 系统盘 | 50 GB |',
+                '| 安全组 | 2 个默认安全组 |',
+                '| 登录用户 | administrator（默认） |',
+                '',
+                'JSON 预览：',
+                '',
+                '```json',
+                '{',
+                '  "catalogName": "Windows VM 2019",',
+                '  "businessGroupName": "开发部",',
+                '  "name": "mytest-vm-adskj"',
+                '}',
+                '```'
+            ].join('\n'),
+            'run-compact-confirmation-table'
+        );
+        const dom = parseHtml(htmlPayload);
+
+        expect(dom.querySelector('.response-table-wrap-compact')).not.toBeNull();
+        expect(dom.querySelector('.response-table-wrap-wide')).toBeNull();
+        expect(dom.querySelector('.response-table')?.textContent).toContain('Windows VM 2019');
+        expect(dom.querySelector('pre code.language-json')?.textContent).toContain('"catalogName"');
     });
 
     test('handler renders assistant pipe tables as aligned tables', async () => {
@@ -1713,6 +3380,7 @@ describe('chat-ui.js handler mode', () => {
         await new Promise(r => setTimeout(r, 160));
 
         const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
+        expect(htmlPayload).toContain('response-table-wrap-wide');
         expect(htmlPayload).toContain('<table class="response-table">');
         expect(htmlPayload).toContain('<th>Item ID</th>');
         expect(htmlPayload).toContain('<td>ITEM-001</td>');

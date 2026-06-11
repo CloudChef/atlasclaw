@@ -50,6 +50,16 @@ class SessionHistoryWorkspaceDownload(BaseModel):
     label: str = ""
 
 
+class SessionHistoryObjectAction(BaseModel):
+    """Provider-declared object action group restored with chat history."""
+
+    index: Optional[int] = None
+    object_type: str = ""
+    object_id: str = ""
+    object_name: str = ""
+    object_actions: list[dict[str, Any]] = Field(default_factory=list)
+
+
 class SessionHistoryMessage(BaseModel):
     """User-visible transcript entry returned to the chat UI."""
 
@@ -59,6 +69,7 @@ class SessionHistoryMessage(BaseModel):
     workspace_downloads: list[SessionHistoryWorkspaceDownload] = Field(
         default_factory=list,
     )
+    object_actions: list[SessionHistoryObjectAction] = Field(default_factory=list)
 
 
 class SessionHistoryResponse(BaseModel):

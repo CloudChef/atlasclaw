@@ -12,6 +12,7 @@ from app.atlasclaw.agent.plaintext_tool_calls import (
     looks_like_plaintext_tool_call_attempt,
     parse_plaintext_tool_calls,
 )
+from app.atlasclaw.core.object_actions import collect_object_action_references_from_payloads
 
 def _parse_workflow_internal_metadata(value: Any) -> Any:
     if value is None:
@@ -429,6 +430,7 @@ class RunnerToolEvidenceMixin:
         )
         if not records:
             return ""
+        records = self._select_current_object_tool_result_records(records)
 
         lines: list[str] = []
         for index, record in enumerate(records, start=1):
@@ -556,12 +558,32 @@ class RunnerToolEvidenceMixin:
                             max_lines=max_lines_per_item,
                         ),
                         "meta_blocks": self._extract_embedded_meta_payloads(text),
+                        "object_actions": collect_object_action_references_from_payloads([payload]),
                         "sources": self._extract_sources_from_tool_payload(payload),
                     }
                 )
                 if len(records) >= max(1, int(max_items)):
                     return records
         return records
+
+    @staticmethod
+    def _select_current_object_tool_result_records(
+        records: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if len(records) <= 1:
+            return records
+        object_record_indexes = [
+            index
+            for index, record in enumerate(records)
+            if record.get("object_actions")
+        ]
+        if len(object_record_indexes) <= 1:
+            return records
+        latest_index = object_record_indexes[-1]
+        latest_object_actions = records[latest_index].get("object_actions") or []
+        if len(latest_object_actions) != 1:
+            return records
+        return [records[latest_index]]
 
     def _render_tool_result_record_markdown(
         self,
@@ -884,6 +906,7 @@ class RunnerToolEvidenceMixin:
         final_assistant: str = "",
         clear_tool_planning_text: bool = False,
         persist_user_message: str | None = None,
+        persist_user_metadata: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         sanitized: list[dict[str, Any]] = []
         safe_start = max(0, min(int(start_index), len(messages)))
@@ -960,6 +983,11 @@ class RunnerToolEvidenceMixin:
                     continue
                 restored_user_message = dict(item)
                 restored_user_message["content"] = raw_user_message
+                if persist_user_metadata:
+                    current_metadata = restored_user_message.get("metadata")
+                    metadata = dict(current_metadata) if isinstance(current_metadata, dict) else {}
+                    metadata.update(persist_user_metadata)
+                    restored_user_message["metadata"] = metadata
                 sanitized[index] = restored_user_message
                 break
 
@@ -983,6 +1011,15 @@ class RunnerToolEvidenceMixin:
             updated["content"] = final_assistant_text
             sanitized[last_plain_assistant_index] = updated
         return sanitized
+
+    @staticmethod
+    def _persist_user_message_metadata_from_deps(deps: Any) -> dict[str, Any]:
+        """Return user-message metadata derived from API run context."""
+        extra = getattr(deps, "extra", {})
+        context = extra.get("context") if isinstance(extra, dict) else None
+        if isinstance(context, dict) and context.get("visible_user_turn") is False:
+            return {"visible_user_turn": False}
+        return {}
 
     def _collect_matched_tool_call_keys(
         self,

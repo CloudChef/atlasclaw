@@ -430,6 +430,13 @@
   "chat": {
     "placeholder": "Enter your question...",
     "copyMessage": "Copy message",
+    "openObject": "Open",
+    "openObjectAria": "Open {{label}}",
+    "objectAction": "Action",
+    "objectActions": "Actions",
+    "objectActionsAria": "Actions for {{label}}",
+    "objectActionConfirm": "Confirm {{label}}?",
+    "objectActionRequiredInput": "This action requires input.",
     "runtimeThinking": "Thinking",
     "runtimeRetrying": "Retrying",
     "runtimeWaitingForTool": "Waiting for tool",

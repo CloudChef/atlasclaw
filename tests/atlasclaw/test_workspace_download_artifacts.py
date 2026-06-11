@@ -10,6 +10,8 @@ from pathlib import Path
 import pytest
 
 from app.atlasclaw.agent.runner_tool.runner_execution_flow_stream import (
+    collect_object_action_reference_update_from_tool_results,
+    collect_object_action_references_from_tool_results,
     collect_workspace_download_references_from_tool_results,
 )
 
@@ -215,6 +217,247 @@ def test_collects_embedded_tool_results_once(tmp_path: Path) -> None:
     )
 
     assert refs == [{"path": "report.bin"}]
+
+
+def test_collects_object_actions_from_matching_tool_results() -> None:
+    refs = collect_object_action_references_from_tool_results(
+        messages=[
+            {
+                "role": "assistant",
+                "tool_results": [
+                    {
+                        "tool_name": "list_approvals",
+                        "content": {
+                            "object_actions": [
+                                {
+                                    "index": 1,
+                                    "object_type": "approval_request",
+                                    "object_id": "REQ-001",
+                                    "object_name": "Approval request",
+                                    "object_actions": [
+                                        {
+                                            "action_id": "open_detail",
+                                            "kind": "open_url",
+                                            "href": "https://console.example.com/requests/REQ-001",
+                                        }
+                                    ],
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "tool_name": "other_tool",
+                        "content": {
+                            "object_actions": [
+                                {
+                                    "object_id": "ignored",
+                                    "object_actions": [
+                                        {
+                                            "action_id": "open_detail",
+                                            "kind": "open_url",
+                                            "href": "https://console.example.com/requests/ignored",
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                    },
+                ],
+            }
+        ],
+        start_index=0,
+        target_tool_names=["list_approvals"],
+    )
+
+    assert refs == [
+        {
+            "object_actions": [
+                {
+                    "action_id": "open_detail",
+                    "kind": "open_url",
+                    "href": "https://console.example.com/requests/REQ-001",
+                }
+            ],
+            "index": 1,
+            "object_type": "approval_request",
+            "object_id": "REQ-001",
+            "object_name": "Approval request",
+        }
+    ]
+
+
+def test_latest_matching_tool_result_without_object_actions_clears_actions() -> None:
+    refs = collect_object_action_references_from_tool_results(
+        messages=[
+            {
+                "role": "assistant",
+                "tool_results": [
+                    {
+                        "tool_name": "list_approvals",
+                        "content": {
+                            "object_actions": [
+                                {
+                                    "index": 1,
+                                    "object_id": "REQ-001",
+                                    "object_name": "Approval request",
+                                    "object_actions": [
+                                        {
+                                            "action_id": "open_detail",
+                                            "kind": "open_url",
+                                            "href": "https://console.example.com/requests/REQ-001",
+                                        }
+                                    ],
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "tool_name": "list_approvals",
+                        "content": {
+                            "url": "https://console.example.com/requests/ignored",
+                        },
+                    },
+                ],
+            }
+        ],
+        start_index=0,
+        target_tool_names=["list_approvals"],
+    )
+
+    assert refs == []
+
+
+def test_empty_latest_object_actions_publishes_clear_update_only_after_prior_actions() -> None:
+    refs, should_publish = collect_object_action_reference_update_from_tool_results(
+        messages=[
+            {
+                "role": "assistant",
+                "tool_results": [
+                    {
+                        "tool_name": "list_approvals",
+                        "content": {
+                            "object_actions": [
+                                {
+                                    "index": 1,
+                                    "object_id": "REQ-001",
+                                    "object_actions": [
+                                        {
+                                            "action_id": "open_detail",
+                                            "kind": "open_url",
+                                            "href": "https://console.example.com/requests/REQ-001",
+                                        }
+                                    ],
+                                }
+                            ]
+                        },
+                    },
+                    {
+                        "tool_name": "list_approvals",
+                        "content": {"message": "detail has no current actions"},
+                    },
+                ],
+            }
+        ],
+        start_index=0,
+        target_tool_names=["list_approvals"],
+    )
+
+    assert refs == []
+    assert should_publish is True
+
+
+def test_provider_without_object_actions_does_not_publish_empty_protocol_update() -> None:
+    refs, should_publish = collect_object_action_reference_update_from_tool_results(
+        messages=[
+            {
+                "role": "assistant",
+                "tool_results": [
+                    {
+                        "tool_name": "list_approvals",
+                        "content": {"message": "ordinary provider result"},
+                    },
+                ],
+            }
+        ],
+        start_index=0,
+        target_tool_names=["list_approvals"],
+    )
+
+    assert refs == []
+    assert should_publish is False
+
+
+def test_collects_latest_object_actions_when_lookup_precedes_detail() -> None:
+    refs = collect_object_action_references_from_tool_results(
+        messages=[
+            {
+                "role": "assistant",
+                "tool_results": [
+                    {
+                        "tool_name": "list_resources",
+                        "content": {
+                            "object_actions": [
+                                {
+                                    "index": 1,
+                                    "object_id": "vm-1",
+                                    "object_name": "vm-1",
+                                    "object_actions": [
+                                        {
+                                            "action_id": "open_detail",
+                                            "kind": "open_url",
+                                            "href": "https://console.example.com/resources/vm-1",
+                                        }
+                                    ],
+                                },
+                                {
+                                    "index": 2,
+                                    "object_id": "vm-2",
+                                    "object_name": "vm-2",
+                                    "object_actions": [
+                                        {
+                                            "action_id": "open_detail",
+                                            "kind": "open_url",
+                                            "href": "https://console.example.com/resources/vm-2",
+                                        }
+                                    ],
+                                },
+                            ]
+                        },
+                    },
+                    {
+                        "tool_name": "resource_detail",
+                        "content": {
+                            "object_id": "vm-1",
+                            "object_name": "vm-1",
+                            "object_actions": [
+                                {
+                                    "action_id": "open_detail",
+                                    "kind": "open_url",
+                                    "href": "https://console.example.com/resources/vm-1",
+                                }
+                            ],
+                        },
+                    },
+                ],
+            }
+        ],
+        start_index=0,
+        target_tool_names=["list_resources", "resource_detail"],
+    )
+
+    assert refs == [
+        {
+            "object_actions": [
+                {
+                    "action_id": "open_detail",
+                    "kind": "open_url",
+                    "href": "https://console.example.com/resources/vm-1",
+                }
+            ],
+            "object_id": "vm-1",
+            "object_name": "vm-1",
+        }
+    ]
 
 
 def test_ignores_other_user_artifact_path(tmp_path: Path) -> None:

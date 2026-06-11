@@ -2,8 +2,8 @@
  *  Copyright 2026  Qianyun, Inc., www.cloudchef.io, All rights reserved.
  */
 
-import { listAgentCapabilities } from './api-client.js?v=19'
-import { getAuthToken } from './auth.js?v=19'
+import { listAgentCapabilities } from './api-client.js?v=21'
+import { getAuthToken } from './auth.js?v=21'
 
 const CACHE_MS = 10000
 

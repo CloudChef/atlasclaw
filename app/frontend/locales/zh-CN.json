@@ -430,6 +430,13 @@
   "chat": {
     "placeholder": "请输入您的问题...",
     "copyMessage": "复制消息",
+    "openObject": "打开",
+    "openObjectAria": "打开 {{label}}",
+    "objectAction": "操作",
+    "objectActions": "操作",
+    "objectActionsAria": "{{label}} 的可用操作",
+    "objectActionConfirm": "确认执行「{{label}}」？",
+    "objectActionRequiredInput": "该操作需要填写输入。",
     "runtimeThinking": "思考中",
     "runtimeRetrying": "重试中",
     "runtimeWaitingForTool": "等待工具",

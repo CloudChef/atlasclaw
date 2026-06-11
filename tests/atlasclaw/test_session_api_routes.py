@@ -285,13 +285,53 @@ class TestThreadSessionsAndOwnership:
                 "content": "hello atlas",
                 "timestamp": response.json()["messages"][0]["timestamp"],
                 "workspace_downloads": [],
+                "object_actions": [],
             },
             {
                 "role": "assistant",
                 "content": "hi there",
                 "timestamp": response.json()["messages"][1]["timestamp"],
                 "workspace_downloads": [],
+                "object_actions": [],
             },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_session_history_hides_internal_user_turns(self, tmp_path):
+        alice_manager = SessionManager(workspace_path=str(tmp_path), user_id="alice")
+        session_key = "agent:main:user:alice:web:dm:alice:topic:web-thread-1"
+        await alice_manager.get_or_create(session_key)
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="user", content="查看我的审批"),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="assistant", content="Found 1 approval request."),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(
+                role="user",
+                content="查看 RES20260518000001 的审批详情",
+                metadata={"visible_user_turn": False},
+            ),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="assistant", content="CMP Request Detail: RES20260518000001"),
+        )
+
+        client = _build_client(tmp_path, user_id="alice")
+        encoded_session_key = quote(session_key, safe="")
+
+        response = client.get(f"/api/sessions/{encoded_session_key}/history")
+
+        assert response.status_code == 200
+        assert [item["content"] for item in response.json()["messages"]] == [
+            "查看我的审批",
+            "Found 1 approval request.",
+            "CMP Request Detail: RES20260518000001",
         ]
 
     @pytest.mark.asyncio
@@ -342,6 +382,233 @@ class TestThreadSessionsAndOwnership:
         assert response.json()["messages"][1]["workspace_downloads"] == [
             {"path": "report.xlsx", "label": ""}
         ]
+        assert response.json()["messages"][1]["object_actions"] == []
+
+    @pytest.mark.asyncio
+    async def test_get_session_history_attaches_object_actions_from_tool_result_internal_metadata(
+        self,
+        tmp_path,
+    ):
+        alice_manager = SessionManager(workspace_path=str(tmp_path), user_id="alice")
+        session_key = "agent:main:user:alice:web:dm:alice:topic:web-thread-1"
+        await alice_manager.get_or_create(session_key)
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="user", content="show request"),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(
+                role="assistant",
+                content="",
+                tool_results=[
+                    {
+                        "tool_name": "provider_lookup",
+                        "content": {"success": True, "output": ""},
+                        "_internal": json.dumps(
+                            {
+                                "index": "7",
+                                "object_id": "REQ-003",
+                                "object_name": "VM request",
+                                "object_actions": [
+                                    {
+                                        "action_id": "open_detail",
+                                        "kind": "open_url",
+                                        "href": "https://console.example.com/requests/REQ-003",
+                                    }
+                                ],
+                            }
+                        ),
+                    }
+                ],
+            ),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="assistant", content="Request REQ-003 is ready to view."),
+        )
+
+        client = _build_client(tmp_path, user_id="alice")
+        encoded_session_key = quote(session_key, safe="")
+
+        response = client.get(f"/api/sessions/{encoded_session_key}/history")
+
+        assert response.status_code == 200
+        assert response.json()["messages"] == [
+            {
+                "role": "user",
+                "content": "show request",
+                "timestamp": response.json()["messages"][0]["timestamp"],
+                "workspace_downloads": [],
+                "object_actions": [],
+            },
+            {
+                "role": "assistant",
+                "content": "Request REQ-003 is ready to view.",
+                "timestamp": response.json()["messages"][1]["timestamp"],
+                "workspace_downloads": [],
+                "object_actions": [
+                    {
+                        "index": 7,
+                        "object_type": "",
+                        "object_id": "REQ-003",
+                        "object_name": "VM request",
+                        "object_actions": [
+                            {
+                                "action_id": "open_detail",
+                                "kind": "open_url",
+                                "href": "https://console.example.com/requests/REQ-003",
+                            }
+                        ],
+                    }
+                ],
+            },
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_session_history_uses_latest_object_action_group_for_detail_answers(
+        self,
+        tmp_path,
+    ):
+        alice_manager = SessionManager(workspace_path=str(tmp_path), user_id="alice")
+        session_key = "agent:main:user:alice:web:dm:alice:topic:web-thread-1"
+        await alice_manager.get_or_create(session_key)
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="user", content="show vm-1 detail"),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(
+                role="assistant",
+                content="",
+                tool_results=[
+                    {
+                        "tool_name": "list_resources",
+                        "content": {
+                            "object_actions": [
+                                {
+                                    "index": 1,
+                                    "object_id": "vm-1",
+                                    "object_name": "vm-1",
+                                    "object_actions": [
+                                        {
+                                            "action_id": "open_detail",
+                                            "kind": "open_url",
+                                            "href": "https://console.example.com/resources/vm-1",
+                                        }
+                                    ],
+                                },
+                                {
+                                    "index": 2,
+                                    "object_id": "vm-2",
+                                    "object_name": "vm-2",
+                                    "object_actions": [
+                                        {
+                                            "action_id": "open_detail",
+                                            "kind": "open_url",
+                                            "href": "https://console.example.com/resources/vm-2",
+                                        }
+                                    ],
+                                },
+                            ]
+                        },
+                    },
+                    {
+                        "tool_name": "resource_detail",
+                        "content": {
+                            "object_id": "vm-1",
+                            "object_name": "vm-1",
+                            "object_actions": [
+                                {
+                                    "action_id": "open_detail",
+                                    "kind": "open_url",
+                                    "href": "https://console.example.com/resources/vm-1",
+                                }
+                            ],
+                        },
+                    },
+                ],
+            ),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="assistant", content="vm-1 detail is ready."),
+        )
+
+        client = _build_client(tmp_path, user_id="alice")
+        encoded_session_key = quote(session_key, safe="")
+
+        response = client.get(f"/api/sessions/{encoded_session_key}/history")
+
+        assert response.status_code == 200
+        assert response.json()["messages"][1]["object_actions"] == [
+            {
+                "index": None,
+                "object_type": "",
+                "object_id": "vm-1",
+                "object_name": "vm-1",
+                "object_actions": [
+                    {
+                        "action_id": "open_detail",
+                        "kind": "open_url",
+                        "href": "https://console.example.com/resources/vm-1",
+                    }
+                ],
+            }
+        ]
+
+    @pytest.mark.asyncio
+    async def test_get_session_history_clears_object_actions_after_later_empty_tool_result(
+        self,
+        tmp_path,
+    ):
+        alice_manager = SessionManager(workspace_path=str(tmp_path), user_id="alice")
+        session_key = "agent:main:user:alice:web:dm:alice:topic:web-thread-1"
+        await alice_manager.get_or_create(session_key)
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="user", content="show current object"),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(
+                role="assistant",
+                content="",
+                tool_results=[
+                    {
+                        "tool_name": "object_lookup",
+                        "content": {
+                            "object_id": "vm-1",
+                            "object_name": "vm-1",
+                            "object_actions": [
+                                {
+                                    "action_id": "open_detail",
+                                    "kind": "open_url",
+                                    "href": "https://console.example.com/resources/vm-1",
+                                }
+                            ],
+                        },
+                    },
+                    {
+                        "tool_name": "object_lookup",
+                        "content": {"output": "latest result intentionally has no actions"},
+                    },
+                ],
+            ),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="assistant", content="Latest result has no object action."),
+        )
+
+        client = _build_client(tmp_path, user_id="alice")
+        encoded_session_key = quote(session_key, safe="")
+
+        response = client.get(f"/api/sessions/{encoded_session_key}/history")
+
+        assert response.status_code == 200
+        assert response.json()["messages"][1]["object_actions"] == []
 
     @pytest.mark.parametrize(
         ("method", "path_template", "payload"),
