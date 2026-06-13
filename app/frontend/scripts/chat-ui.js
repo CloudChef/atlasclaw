@@ -562,14 +562,23 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-content ul,.response-content ol{margin:0 0 12px 20px;padding:0}
 .response-content li{margin:4px 0;line-height:1.7}
 .response-content h1,.response-content h2,.response-content h3{margin:0 0 10px 0;line-height:1.4}
-.outer-message-container:has(.response-table-wrap-wide){padding-left:8%!important;padding-right:8%!important}
+:host{--atlas-chat-side-gutter:10%}
+#input{box-sizing:border-box!important;padding-left:var(--atlas-chat-side-gutter)!important;padding-right:var(--atlas-chat-side-gutter)!important}
+#text-input-container{box-sizing:border-box!important;width:100%!important}
+#messages,.messages,.messages-container{scrollbar-width:none!important}
+#messages::-webkit-scrollbar,.messages::-webkit-scrollbar,.messages-container::-webkit-scrollbar{display:none!important}
+.outer-message-container:has(.response-table-wrap-wide){padding-left:var(--atlas-chat-side-gutter)!important;padding-right:var(--atlas-chat-side-gutter)!important}
+.outer-message-container:has(.message-bubble.ai-message,.message-bubble.ai-message-text) .inner-message-container,.outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .inner-message-container{width:100%!important;max-width:100%!important;margin-left:0!important;margin-right:0!important}
+.outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .inner-message-container{position:relative}
+.outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .inner-message-container::after{content:"";position:absolute;top:0;right:-46px;width:46px;height:100%;min-height:54px;pointer-events:auto}
+.outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .atlas-user-message-copy-btn{position:absolute;right:-38px;top:12px;margin:0;z-index:1}
 .outer-message-container:has(.response-table-wrap-wide) .inner-message-container{width:100%!important;max-width:100%!important}
 .message-bubble.ai-message:has(.response-table-wrap-wide){width:100%!important;max-width:100%!important}
-.response-table-wrap{max-width:100%;overflow-x:auto;margin:4px 0 14px 0;border:1px solid #e2e8f0;border-radius:10px;background:#fff}
-.response-table-wrap-wide{display:inline-block;width:auto;max-height:min(60vh,640px);overflow:auto}
+.response-table-wrap{box-sizing:border-box;max-width:100%;overflow-x:auto;margin:4px 0 14px 0;border:1px solid #e2e8f0;border-radius:10px;background:#fff}
+.response-table-wrap-wide{display:block;width:100%;max-width:100%;max-height:min(60vh,640px);overflow:auto;margin-left:auto;margin-right:auto}
 .response-table-wrap-compact{display:inline-block;width:auto}
 .response-table{width:auto;border-collapse:separate;border-spacing:0;font-size:13px;line-height:1.45;color:#1f2937}
-.response-table-wrap-wide .response-table{width:max-content;min-width:860px}
+.response-table-wrap-wide .response-table{width:100%;min-width:860px}
 .response-table-wrap-compact .response-table{min-width:0}
 .response-table th,.response-table td{padding:9px 10px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top;white-space:nowrap}
 .response-table-wrap-compact .response-table th,.response-table-wrap-compact .response-table td{padding:8px 14px}
@@ -587,8 +596,9 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-content a.workspace-download-link:hover{border-color:rgba(37,99,235,.36);background:#dbeafe;text-decoration:none}
 .response-content .workspace-generated-downloads{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
 .workspace-download-icon{width:14px;height:14px;flex:0 0 14px}
-.response-table th.response-table-action-header,.response-table td.response-table-action{position:sticky;right:0;min-width:146px;text-align:right;background:#fff;box-shadow:-8px 0 12px rgba(255,255,255,.82)}
-.response-table th.response-table-action-header{background:#f8fafc}
+.response-table th.response-table-action-header,.response-table td.response-table-action{position:sticky;right:0;min-width:146px;background:#fff;box-shadow:-8px 0 12px rgba(255,255,255,.82)}
+.response-table th.response-table-action-header{background:#f8fafc;text-align:left}
+.response-table td.response-table-action{text-align:right}
 .response-table tbody tr:nth-child(even) td.response-table-action{background:#fbfdff}
 .response-content .object-actions{display:inline-flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px;max-width:100%;vertical-align:baseline}
 .response-content>.object-actions{display:flex;justify-content:flex-start;gap:8px;width:fit-content;max-width:100%;margin-top:12px;padding:7px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc}
@@ -617,7 +627,7 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .atlas-user-message-copy-btn:focus-visible{outline:2px solid rgba(124,131,253,.52);outline-offset:2px}
 .atlas-user-message-copy-btn.copied{color:#16a34a;border-color:rgba(22,163,74,.30);background:#ecfdf5}
 .atlas-user-message-copy-icon{width:15px;height:15px;display:block}
-.inner-message-container:hover>.atlas-user-message-copy-btn,.atlas-user-message-copy-btn:focus-visible,.atlas-user-message-copy-btn.copied{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}
+.inner-message-container:hover>.atlas-user-message-copy-btn,.atlas-user-message-copy-btn:hover,.atlas-user-message-copy-btn:focus-visible,.atlas-user-message-copy-btn.copied{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}
 @media (hover:none){.atlas-user-message-copy-btn{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}}
 `
 
@@ -916,8 +926,8 @@ function configureI18nAttributes(element) {
         },
         outerContainer: {
           justifyContent: 'flex-end',
-          paddingLeft: '30%',
-          paddingRight: '8%'
+          paddingLeft: '10%',
+          paddingRight: '10%'
         }
       },
       ai: {
@@ -930,9 +940,9 @@ function configureI18nAttributes(element) {
           maxWidth: '920px'
         },
         outerContainer: {
-          justifyContent: 'center',
-          paddingLeft: '8%',
-          paddingRight: '18%'
+          justifyContent: 'flex-start',
+          paddingLeft: '10%',
+          paddingRight: '10%'
         }
       }
     }
@@ -952,6 +962,8 @@ function configureI18nAttributes(element) {
     },
     styles: {
       container: {
+        width: '100%',
+        boxSizing: 'border-box',
         borderRadius: '32px',
         border: 'none',
         padding: '18px 22px',

@@ -461,6 +461,25 @@ describe('chat-ui.js handler mode', () => {
         expect(element.auxiliaryStyle).not.toContain('#input { background: transparent !important; }');
     });
 
+    test('initChat targets actual DeepChat message classes for alignment styles', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+
+        expect(element.auxiliaryStyle).toContain('.message-bubble.ai-message-text');
+        expect(element.auxiliaryStyle).toContain('.message-bubble.user-message-text');
+        expect(element.auxiliaryStyle).toContain('.inner-message-container::after');
+    });
+
     test('decorates only user messages with a localized copy action', async () => {
         sessionStorage.setItem('atlasclaw_session_key', 'session-123');
 
