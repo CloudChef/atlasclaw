@@ -525,7 +525,7 @@ const THINKING_STYLES = `
 .thinking-body{padding:8px 0 0 0;font-size:14px;line-height:1.7;color:#8b8b8b;max-height:none;overflow:visible}
 .thinking-caption{font-size:12px;font-weight:600;letter-spacing:.02em;color:#64748b;margin-bottom:6px;text-transform:uppercase}
 .thinking-content-text{white-space:pre-wrap;word-break:break-word}
-details.runtime-panel{box-sizing:border-box;width:fit-content;min-width:min(260px,100%);max-width:100%;margin-bottom:16px;padding:14px 16px;border:1px solid rgba(148,163,184,.20);border-radius:18px;background:rgba(248,250,252,.92)}
+details.runtime-panel{box-sizing:border-box;width:fit-content;min-width:min(260px,100%);max-width:100%;margin-bottom:12px;padding:10px 14px;border:1px solid rgba(148,163,184,.20);border-radius:14px;background:rgba(248,250,252,.92)}
 details.runtime-panel>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;user-select:none;list-style:none}
 details.runtime-panel>summary::-webkit-details-marker{display:none}
 details.runtime-panel>summary::marker{display:none}
@@ -539,7 +539,7 @@ details.runtime-panel>summary::marker{display:none}
 .runtime-title-elapsed{font-size:13px;font-weight:500;color:#94a3b8;font-variant-numeric:tabular-nums}
 .runtime-toggle{font-size:12px;transition:transform .15s ease;color:#94a3b8}
 details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
-.runtime-body{display:flex;flex-direction:column;gap:10px;padding-top:12px}
+.runtime-body{display:flex;flex-direction:column;gap:10px;padding-top:8px}
 .runtime-statuses{display:flex;flex-wrap:wrap;gap:8px}
 .runtime-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;font-size:13px;font-weight:500;background:#e2e8f0;color:#334155}
 .runtime-chip.active{box-shadow:0 0 0 1px rgba(59,130,246,.16) inset}
@@ -570,8 +570,8 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .outer-message-container:has(.response-table-wrap-wide){padding-left:var(--atlas-chat-side-gutter)!important;padding-right:var(--atlas-chat-side-gutter)!important}
 .outer-message-container:has(.message-bubble.ai-message,.message-bubble.ai-message-text) .inner-message-container,.outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .inner-message-container{width:100%!important;max-width:100%!important;margin-left:0!important;margin-right:0!important}
 .outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .inner-message-container{position:relative}
-.outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .inner-message-container::after{content:"";position:absolute;top:0;right:-46px;width:46px;height:100%;min-height:54px;pointer-events:auto}
-.outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .atlas-user-message-copy-btn{position:absolute;right:-38px;top:12px;margin:0;z-index:1}
+.outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .inner-message-container::after{content:"";position:absolute;top:0;right:-46px;width:46px;height:100%;min-height:46px;pointer-events:auto}
+.outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .atlas-user-message-copy-btn{position:absolute;right:-38px;top:8px;margin:0;z-index:1}
 .outer-message-container:has(.response-table-wrap-wide) .inner-message-container{width:100%!important;max-width:100%!important}
 .message-bubble.ai-message:has(.response-table-wrap-wide){width:100%!important;max-width:100%!important}
 .response-table-wrap{box-sizing:border-box;max-width:100%;overflow-x:auto;margin:4px 0 14px 0;border:1px solid #e2e8f0;border-radius:10px;background:#fff}
@@ -580,8 +580,8 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-table{width:auto;border-collapse:separate;border-spacing:0;font-size:13px;line-height:1.45;color:#1f2937}
 .response-table-wrap-wide .response-table{width:100%;min-width:860px}
 .response-table-wrap-compact .response-table{min-width:0}
-.response-table th,.response-table td{padding:9px 10px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:top;white-space:nowrap}
-.response-table-wrap-compact .response-table th,.response-table-wrap-compact .response-table td{padding:8px 14px}
+.response-table th,.response-table td{padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:left;vertical-align:middle;white-space:nowrap}
+.response-table-wrap-compact .response-table th,.response-table-wrap-compact .response-table td{padding:6px 12px}
 .response-table th{position:sticky;top:0;background:#f8fafc;color:#475569;font-size:12px;font-weight:700}
 .response-table td{font-variant-numeric:tabular-nums}
 .response-table td.response-table-number{text-align:right}
@@ -603,13 +603,16 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-content .object-actions{display:inline-flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px;max-width:100%;vertical-align:baseline}
 .response-content>.object-actions{display:flex;justify-content:flex-start;gap:8px;width:fit-content;max-width:100%;margin-top:12px;padding:7px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc}
 .response-table td.response-table-action .object-actions{flex-wrap:nowrap;gap:5px;justify-content:flex-end}
+/* Row action cards live inside right-aligned nowrap cells, so reset prose layout locally. */
+.response-table td.response-table-action .object-action-confirmation-card{white-space:normal;text-align:left}
 .response-content a.object-action-link,.response-content button.object-action-button{position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;gap:5px;max-width:100%;height:28px;min-height:28px;padding:0 8px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#334155;box-shadow:0 1px 1px rgba(15,23,42,.04);font:inherit;font-size:13px;font-weight:650;line-height:1;vertical-align:baseline;white-space:nowrap;cursor:pointer;transition:background .14s ease,border-color .14s ease,box-shadow .14s ease,color .14s ease,transform .14s ease}
 .response-content a.object-action-link:hover,.response-content button.object-action-button:hover{border-color:#94a3b8;background:#f8fafc;box-shadow:0 3px 8px rgba(15,23,42,.08);text-decoration:none;transform:translateY(-1px)}
 .response-content a.object-action-link:active,.response-content button.object-action-button:active{box-shadow:0 1px 2px rgba(15,23,42,.08);transform:translateY(0)}
 .response-content a.object-action-link:focus-visible,.response-content button.object-action-button:focus-visible{outline:2px solid rgba(37,99,235,.38);outline-offset:2px}
 .response-content button.object-action-button::before{content:"";width:6px;height:6px;flex:0 0 6px;border-radius:999px;background:#64748b;box-shadow:0 0 0 3px rgba(100,116,139,.12)}
-.response-content a.object-action-link{border-color:rgba(20,184,166,.28);background:#f0fdfa;color:#0f766e}
-.response-content a.object-action-link:hover{border-color:rgba(13,148,136,.46);background:#ccfbf1;color:#0f766e}
+.response-content a.object-action-link,.response-content button.object-action-open-button{border-color:rgba(20,184,166,.28);background:#f0fdfa;color:#0f766e}
+.response-content a.object-action-link:hover,.response-content button.object-action-open-button:hover{border-color:rgba(13,148,136,.46);background:#ccfbf1;color:#0f766e}
+.response-content button.object-action-open-button::before{content:none}
 .response-content button.object-action-button.tone-success{border-color:rgba(22,163,74,.28);background:#f0fdf4;color:#15803d}
 .response-content button.object-action-button.tone-success::before{background:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.13)}
 .response-content button.object-action-button.tone-success:hover{border-color:rgba(22,163,74,.46);background:#dcfce7;color:#166534}
@@ -619,10 +622,26 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-content button.object-action-button.tone-danger{border-color:rgba(220,38,38,.28);background:#fef2f2;color:#b91c1c}
 .response-content button.object-action-button.tone-danger::before{background:#dc2626;box-shadow:0 0 0 3px rgba(220,38,38,.13)}
 .response-content button.object-action-button.tone-danger:hover{border-color:rgba(220,38,38,.48);background:#fee2e2;color:#991b1b}
+.response-content .object-actions.is-confirming button.object-action-button{opacity:.52;pointer-events:none}
+.object-action-confirmation-card{box-sizing:border-box;width:min(100%,420px);margin-top:8px;padding:10px;border:1px solid #dbe3ee;border-radius:8px;background:#fff;box-shadow:0 8px 22px rgba(15,23,42,.08);color:#1f2937}
+.object-action-confirmation-title{font-size:13px;font-weight:700;line-height:1.45}
+.object-action-confirmation-help{margin-top:3px;color:#64748b;font-size:12px;line-height:1.45}
+.object-action-confirmation-inputs{display:grid;gap:8px;margin-top:9px}
+.object-action-input-label{display:grid;gap:5px;color:#475569;font-size:12px;font-weight:650}
+.object-action-input,.object-action-textarea{box-sizing:border-box;width:100%;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#0f172a;font:inherit;font-size:13px;line-height:1.45;outline:none;transition:border-color .14s ease,box-shadow .14s ease}
+.object-action-input{height:32px;padding:0 9px}
+.object-action-textarea{min-height:72px;padding:8px 9px;resize:vertical}
+.object-action-input:focus,.object-action-textarea:focus{border-color:#7c83fd;box-shadow:0 0 0 3px rgba(124,131,253,.14)}
+.object-action-confirmation-error{display:none;margin-top:7px;color:#b91c1c;font-size:12px;font-weight:650;line-height:1.4}
+.object-action-confirmation-card.has-error .object-action-confirmation-error{display:block}
+.object-action-confirmation-buttons{display:flex;flex-wrap:wrap;gap:7px;justify-content:flex-end;margin-top:10px}
+.response-content .object-action-confirmation-buttons button.object-action-button{height:30px;min-height:30px}
+.response-content button.object-action-cancel-button::before{display:none}
+.object-action-confirmation-card.is-submitting .object-action-input,.object-action-confirmation-card.is-submitting .object-action-textarea,.object-action-confirmation-card.is-submitting button{opacity:.58;pointer-events:none}
 .object-action-icon{width:11px;height:11px;flex:0 0 11px}
 .object-action-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
 .message-wrapper{display:flex;flex-direction:column;gap:12px}
-.atlas-user-message-copy-btn{width:30px;height:30px;margin-top:12px;margin-left:8px;border:1px solid rgba(148,163,184,.34);border-radius:999px;background:rgba(255,255,255,.92);color:#64748b;box-shadow:0 10px 24px rgba(15,23,42,.10);display:inline-flex;align-items:center;justify-content:center;flex:0 0 30px;cursor:pointer;opacity:0;pointer-events:none;transform:translateY(2px) scale(.96);transition:opacity .16s ease,transform .16s ease,color .16s ease,border-color .16s ease,background .16s ease}
+.atlas-user-message-copy-btn{width:30px;height:30px;margin-top:12px;margin-left:8px;border:1px solid rgba(148,163,184,.34);border-radius:999px;background:rgba(255,255,255,.92);color:#64748b;box-shadow:0 10px 24px rgba(15,23,42,.10);display:inline-flex;align-items:center;justify-content:center;flex:0 0 30px;cursor:pointer;opacity:0;pointer-events:auto;transform:translateY(2px) scale(.96);transition:opacity .16s ease,transform .16s ease,color .16s ease,border-color .16s ease,background .16s ease}
 .atlas-user-message-copy-btn:hover{color:#1f2937;border-color:rgba(124,131,253,.46);background:#ffffff}
 .atlas-user-message-copy-btn:focus-visible{outline:2px solid rgba(124,131,253,.52);outline-offset:2px}
 .atlas-user-message-copy-btn.copied{color:#16a34a;border-color:rgba(22,163,74,.30);background:#ecfdf5}
@@ -856,7 +875,7 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
       }
       signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(errorMessage)}</p>` })
       signals.onClose()
-      return
+      return false
     }
 
     const data = await response.json()
@@ -864,13 +883,13 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     if (!runId) {
       signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(data.detail || 'Error: No run_id')}</p>` })
       signals.onClose()
-      return
+      return false
     }
   } catch (err) {
     console.error('[ChatUI] API call failed:', err)
     signals.onResponse({ html: `<p style="color: #d32f2f;">Error: ${escapeHtml(err.message)}</p>` })
     signals.onClose()
-    return
+    return false
   }
 
   const initialPayload = buildMessageContent(
@@ -888,6 +907,7 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
   }
 
   await handleStreamWithSignals(runId, signals, { sessionKey, messageText })
+  return true
 }
 
 function extractMessageFromBody(body) {
@@ -908,14 +928,14 @@ function configureI18nAttributes(element) {
     default: {
       shared: {
         bubble: {
-          padding: '16px 20px',
+          padding: '10px 18px',
           fontSize: '16px',
           lineHeight: '1.75',
           borderRadius: '24px'
         },
         outerContainer: {
-          marginTop: '12px',
-          marginBottom: '12px'
+          marginTop: '8px',
+          marginBottom: '8px'
         }
       },
       user: {
@@ -966,12 +986,13 @@ function configureI18nAttributes(element) {
         boxSizing: 'border-box',
         borderRadius: '32px',
         border: 'none',
-        padding: '18px 22px',
+        padding: '12px 20px',
         backgroundColor: '#ffffff',
         boxShadow: '0 22px 60px rgba(15, 23, 42, 0.08)'
       },
       text: {
         fontSize: '18px',
+        lineHeight: '1.45',
         color: '#1f2937'
       }
     }
@@ -1621,7 +1642,8 @@ function getObjectActionPrompt(action) {
 
 function objectActionButtonClass(action) {
   const tone = String(action?.tone || '').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '')
-  return `object-action-button${tone ? ` tone-${tone}` : ''}`
+  const openClass = action?.kind === 'open_url' ? ' object-action-open-button' : ''
+  return `object-action-button${openClass}${tone ? ` tone-${tone}` : ''}`
 }
 
 function buildObjectActionAnchor(action, reference) {
@@ -1633,10 +1655,16 @@ function buildObjectActionAnchor(action, reference) {
 
 function buildObjectActionButton(action, reference) {
   const prompt = getObjectActionPrompt(action)
-  if (!prompt) return ''
+  if (action?.kind === 'open_url') {
+    const href = normalizeObjectActionUrl(action?.href)
+    if (!href) return ''
+  } else if (!prompt) {
+    return ''
+  }
   const payload = encodeURIComponent(JSON.stringify({ action, object: actionReferencePublicContext(reference) }))
   const text = getObjectActionLabel(action)
-  return `<button type="button" class="${objectActionButtonClass(action)}" data-object-action-payload="${escapeHtml(payload)}" aria-label="${escapeHtml(`${text} ${getObjectActionDisplayLabel(reference)}`.trim())}"><span class="object-action-text">${escapeHtml(text)}</span></button>`
+  const icon = action?.kind === 'open_url' ? OBJECT_ACTION_ICON : ''
+  return `<button type="button" class="${objectActionButtonClass(action)}" data-object-action-payload="${escapeHtml(payload)}" aria-label="${escapeHtml(`${text} ${getObjectActionDisplayLabel(reference)}`.trim())}">${icon}<span class="object-action-text">${escapeHtml(text)}</span></button>`
 }
 
 function actionReferencePublicContext(reference) {
@@ -1653,7 +1681,9 @@ function buildObjectActionControls(reference) {
   const actions = Array.isArray(reference?.object_actions) ? reference.object_actions : []
   const controls = actions.map((action) => {
     if (action.kind === 'open_url') {
-      return buildObjectActionAnchor(action, reference)
+      return objectActionNeedsInlineInteraction(action)
+        ? buildObjectActionButton(action, reference)
+        : buildObjectActionAnchor(action, reference)
     }
     return buildObjectActionButton(action, reference)
   }).filter(Boolean).join('')
@@ -1661,34 +1691,279 @@ function buildObjectActionControls(reference) {
   return `<div class="object-actions" aria-label="${escapeHtml(getObjectActionAriaLabel(reference))}">${controls}</div>`
 }
 
-function resolveObjectActionPrompt(action) {
-  let prompt = getObjectActionPrompt(action)
-  if (!prompt) return ''
+function objectActionNeedsInlineInteraction(action) {
+  return !!action?.requires_confirmation || !!action?.inputs?.length
+}
 
+function getObjectActionConfirmationMessage(action) {
+  const label = getObjectActionLabel(action)
+  const confirmationMessage = resolveLocalizedText(action?.confirmation_message)
+  if (!confirmationMessage && !action?.requires_confirmation && action?.inputs?.length) {
+    const inputTemplate = getTranslatedChatLabel(
+      'chat.objectActionInputTitle',
+      'Provide information for {{label}}'
+    )
+    return inputTemplate.replace('{{label}}', label)
+  }
+  const template = confirmationMessage ||
+    getTranslatedChatLabel('chat.objectActionConfirm', 'Confirm {{label}}?')
+  return template.replace('{{label}}', label)
+}
+
+function getObjectActionInputLabel(input) {
+  return resolveLocalizedText(input?.display_label) || String(input?.name || '').trim()
+}
+
+function getObjectActionInputPlaceholder(input) {
+  return resolveLocalizedText(input?.placeholder) || ''
+}
+
+function resolveObjectActionPrompt(action, inputValues = {}) {
+  let prompt = getObjectActionPrompt(action)
+  if (!prompt) return { prompt: '', error: '' }
+
+  // Providers own the action wording; core only fills declared placeholders and enforces required fields.
   for (const input of action.inputs || []) {
     const name = String(input?.name || '').trim()
     if (!name) continue
-    const label = resolveLocalizedText(input.display_label) || name
-    const placeholder = resolveLocalizedText(input.placeholder)
-    const value = window.prompt(label, placeholder)
-    if (value === null) return ''
+    const value = String(inputValues[name] ?? '').trim()
     if (input.required && !String(value).trim()) {
-      window.alert?.(getTranslatedChatLabel('chat.objectActionRequiredInput', 'This action requires input.'))
-      return ''
+      return {
+        prompt: '',
+        error: getTranslatedChatLabel('chat.objectActionRequiredInput', 'This action requires input.')
+      }
     }
     prompt = prompt.replace(new RegExp(`{{\\s*${escapeRegExp(name)}\\s*}}`, 'g'), String(value).trim())
   }
 
-  if (action.requires_confirmation) {
-    const label = getObjectActionLabel(action)
-    const confirmationMessage = resolveLocalizedText(action.confirmation_message)
-    const template = confirmationMessage ||
-      getTranslatedChatLabel('chat.objectActionConfirm', 'Confirm {{label}}?')
-    if (!window.confirm(template.replace('{{label}}', label))) {
-      return ''
+  return { prompt, error: '' }
+}
+
+function validateObjectActionInputs(action, inputValues = {}) {
+  for (const input of action.inputs || []) {
+    const name = String(input?.name || '').trim()
+    if (!name) continue
+    const value = String(inputValues[name] ?? '').trim()
+    if (input.required && !value) {
+      return getTranslatedChatLabel('chat.objectActionRequiredInput', 'This action requires input.')
     }
   }
-  return prompt
+  return ''
+}
+
+function resolveObjectActionHref(action, inputValues = {}) {
+  const inputError = validateObjectActionInputs(action, inputValues)
+  if (inputError) return { href: '', error: inputError }
+
+  const href = normalizeObjectActionUrl(action?.href)
+  if (!href) {
+    return {
+      href: '',
+      error: getTranslatedChatLabel('chat.objectActionOpenFailed', 'Unable to open this action.')
+    }
+  }
+  return { href, error: '' }
+}
+
+function openObjectActionHref(href) {
+  const normalizedHref = normalizeObjectActionUrl(href)
+  if (!normalizedHref) return false
+  // With `noopener`, `window.open()` can return null even when the browser opens the tab.
+  // A real anchor keeps the same security attributes without turning that null into a false failure.
+  const anchor = document.createElement('a')
+  anchor.href = normalizedHref
+  anchor.target = '_blank'
+  anchor.rel = 'noopener noreferrer'
+  anchor.style.position = 'fixed'
+  anchor.style.left = '-9999px'
+  anchor.style.top = '0'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  return true
+}
+
+function setObjectActionGroupConfirming(actionGroup, confirming) {
+  if (!actionGroup) return
+  actionGroup.classList.toggle('is-confirming', confirming)
+  for (const button of actionGroup.querySelectorAll('button.object-action-button')) {
+    button.disabled = confirming
+  }
+}
+
+function removeObjectActionConfirmationCards(parent) {
+  if (!parent) return
+  for (const child of Array.from(parent.children)) {
+    if (child.classList?.contains('object-action-confirmation-card')) {
+      child.remove()
+    }
+  }
+}
+
+function setObjectActionCardError(card, message) {
+  const error = card?.querySelector('.object-action-confirmation-error')
+  if (!error) return
+  error.textContent = message || ''
+  card.classList.toggle('has-error', !!message)
+}
+
+function collectObjectActionCardInputs(card, action) {
+  const values = {}
+  for (const input of action.inputs || []) {
+    const name = String(input?.name || '').trim()
+    if (!name) continue
+    const field = Array.from(card.querySelectorAll('[data-object-action-input-name]'))
+      .find((node) => node.dataset.objectActionInputName === name)
+    values[name] = field?.value || ''
+  }
+  return values
+}
+
+function buildObjectActionInputControl(input) {
+  const name = String(input?.name || '').trim()
+  if (!name) return null
+  const label = document.createElement('label')
+  label.className = 'object-action-input-label'
+  const labelText = document.createElement('span')
+  labelText.textContent = getObjectActionInputLabel(input)
+  label.appendChild(labelText)
+
+  const field = String(input?.type || '').toLowerCase() === 'textarea'
+    ? document.createElement('textarea')
+    : document.createElement('input')
+  field.className = field.tagName === 'TEXTAREA'
+    ? 'object-action-textarea'
+    : 'object-action-input'
+  if (field.tagName !== 'TEXTAREA') {
+    field.type = 'text'
+  }
+  field.dataset.objectActionInputName = name
+  field.placeholder = getObjectActionInputPlaceholder(input)
+  if (input.required) {
+    field.required = true
+  }
+  label.appendChild(field)
+  return label
+}
+
+function buildObjectActionConfirmationCard(action, actionGroup) {
+  const card = document.createElement('div')
+  card.className = 'object-action-confirmation-card'
+  card.setAttribute('role', 'group')
+  card.setAttribute('aria-live', 'polite')
+
+  const title = document.createElement('div')
+  title.className = 'object-action-confirmation-title'
+  title.textContent = getObjectActionConfirmationMessage(action)
+  card.appendChild(title)
+
+  if (!action.inputs?.length) {
+    const help = document.createElement('div')
+    help.className = 'object-action-confirmation-help'
+    help.textContent = getTranslatedChatLabel(
+      'chat.objectActionConfirmHelp',
+      'The action will be submitted after confirmation.'
+    )
+    card.appendChild(help)
+  }
+
+  if (action.inputs?.length) {
+    const inputs = document.createElement('div')
+    inputs.className = 'object-action-confirmation-inputs'
+    for (const input of action.inputs) {
+      const control = buildObjectActionInputControl(input)
+      if (control) inputs.appendChild(control)
+    }
+    card.appendChild(inputs)
+  }
+
+  const error = document.createElement('div')
+  error.className = 'object-action-confirmation-error'
+  card.appendChild(error)
+
+  const buttons = document.createElement('div')
+  buttons.className = 'object-action-confirmation-buttons'
+
+  const cancelButton = document.createElement('button')
+  cancelButton.type = 'button'
+  cancelButton.className = 'object-action-button object-action-cancel-button'
+  cancelButton.textContent = getTranslatedChatLabel('chat.objectActionCancel', 'Cancel')
+  cancelButton.addEventListener('click', () => {
+    card.remove()
+    setObjectActionGroupConfirming(actionGroup, false)
+  })
+  buttons.appendChild(cancelButton)
+
+  const submitButton = document.createElement('button')
+  submitButton.type = 'button'
+  submitButton.className = objectActionButtonClass(action)
+  const label = getObjectActionLabel(action)
+  const submitTemplate = action.inputs?.length
+    ? getTranslatedChatLabel('chat.objectActionSubmitWithLabel', 'Submit {{label}}')
+    : getTranslatedChatLabel('chat.objectActionConfirmWithLabel', 'Confirm {{label}}')
+  submitButton.textContent = submitTemplate.replace('{{label}}', label)
+  submitButton.addEventListener('click', () => {
+    const inputValues = collectObjectActionCardInputs(card, action)
+    const resolvedAction = action.kind === 'open_url'
+      ? resolveObjectActionHref(action, inputValues)
+      : resolveObjectActionPrompt(action, inputValues)
+    if (resolvedAction.error || (!resolvedAction.prompt && !resolvedAction.href)) {
+      setObjectActionCardError(card, resolvedAction.error)
+      return
+    }
+    setObjectActionCardError(card, '')
+    card.classList.add('is-submitting')
+    submitButton.textContent = getTranslatedChatLabel('chat.objectActionSubmitting', 'Submitting...')
+
+    const restoreSubmissionState = (message = '') => {
+      card.classList.remove('is-submitting')
+      submitButton.textContent = submitTemplate.replace('{{label}}', label)
+      setObjectActionCardError(card, message)
+    }
+
+    if (action.kind === 'open_url') {
+      if (openObjectActionHref(resolvedAction.href)) {
+        card.remove()
+        setObjectActionGroupConfirming(actionGroup, false)
+        return
+      }
+      restoreSubmissionState(
+        getTranslatedChatLabel('chat.objectActionOpenFailed', 'Unable to open this action.')
+      )
+      console.warn('[ChatUI] Failed to open object action URL')
+      return
+    }
+
+    if (!submitObjectActionPrompt(resolvedAction.prompt, {
+      onRunCreationFailed: () => {
+        restoreSubmissionState(
+          getTranslatedChatLabel('chat.objectActionSubmitFailed', 'Unable to submit action. Please try again.')
+        )
+      }
+    })) {
+      restoreSubmissionState(
+        getTranslatedChatLabel('chat.objectActionSubmitFailed', 'Unable to submit action. Please try again.')
+      )
+      console.warn('[ChatUI] Failed to submit object action prompt')
+    }
+  })
+  buttons.appendChild(submitButton)
+  card.appendChild(buttons)
+  return card
+}
+
+function showObjectActionInlineInteraction(target, action) {
+  const actionGroup = target.closest('.object-actions')
+  const parent = actionGroup?.parentElement
+  if (!actionGroup || !parent) return false
+  removeObjectActionConfirmationCards(parent)
+  setObjectActionGroupConfirming(actionGroup, true)
+  const card = buildObjectActionConfirmationCard(action, actionGroup)
+  actionGroup.insertAdjacentElement('afterend', card)
+  const firstField = card.querySelector('.object-action-textarea,.object-action-input')
+  const focusTarget = firstField || card.querySelector('button.object-action-button')
+  window.setTimeout(() => focusTarget?.focus?.(), 0)
+  return true
 }
 
 function canSubmitObjectActionDirectly(element) {
@@ -1716,21 +1991,31 @@ function createObjectActionSignals(element) {
   }
 }
 
-function submitObjectActionDirectly(message) {
+function submitObjectActionDirectly(message, callbacks = {}) {
   const element = chatElement || document.querySelector('deep-chat')
   if (!canSubmitObjectActionDirectly(element)) return false
   window.setTimeout(() => {
+    // Object actions are follow-up commands, not new visible user turns in the conversation history.
     void runAgentMessage(message, null, createObjectActionSignals(element), {
       visibleUserTurn: false
+    }).then((created) => {
+      if (created === false && typeof callbacks.onRunCreationFailed === 'function') {
+        callbacks.onRunCreationFailed()
+      }
+    }).catch((error) => {
+      console.warn('[ChatUI] Object action submit failed:', error)
+      if (typeof callbacks.onRunCreationFailed === 'function') {
+        callbacks.onRunCreationFailed()
+      }
     })
   }, 0)
   return true
 }
 
-function submitObjectActionPrompt(prompt) {
+function submitObjectActionPrompt(prompt, callbacks = {}) {
   const message = String(prompt || '').trim()
   if (!message) return false
-  return submitObjectActionDirectly(message)
+  return submitObjectActionDirectly(message, callbacks)
 }
 
 function bindObjectActionHandlers(element = chatElement) {
@@ -1759,7 +2044,14 @@ function bindObjectActionHandlers(element = chatElement) {
     const encoded = target.getAttribute('data-object-action-payload') || ''
     try {
       const payload = JSON.parse(decodeURIComponent(encoded))
-      const prompt = resolveObjectActionPrompt(payload.action || {})
+      const action = payload.action || {}
+      if (objectActionNeedsInlineInteraction(action)) {
+        if (!showObjectActionInlineInteraction(target, action)) {
+          console.warn('[ChatUI] Failed to render object action confirmation')
+        }
+        return
+      }
+      const { prompt } = resolveObjectActionPrompt(action)
       if (!prompt) return
       if (!submitObjectActionPrompt(prompt)) {
         console.warn('[ChatUI] Failed to submit object action prompt')

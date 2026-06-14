@@ -16,7 +16,15 @@ const defaultMockTranslations = {
     'chat.objectActions': 'Actions',
     'chat.objectActionsAria': 'Actions for {{label}}',
     'chat.objectActionConfirm': 'Confirm {{label}}?',
+    'chat.objectActionConfirmHelp': 'The action will be submitted after confirmation.',
+    'chat.objectActionInputTitle': 'Provide information for {{label}}',
+    'chat.objectActionConfirmWithLabel': 'Confirm {{label}}',
+    'chat.objectActionSubmitWithLabel': 'Submit {{label}}',
+    'chat.objectActionCancel': 'Cancel',
+    'chat.objectActionSubmitting': 'Submitting...',
     'chat.objectActionRequiredInput': 'This action requires input.',
+    'chat.objectActionSubmitFailed': 'Unable to submit action. Please try again.',
+    'chat.objectActionOpenFailed': 'Unable to open this action.',
     'chat.runtimeThinking': 'Thinking',
     'chat.runtimeRetrying': 'Retrying',
     'chat.runtimeWaitingForTool': 'Waiting for tool',
@@ -459,6 +467,34 @@ describe('chat-ui.js handler mode', () => {
         expect(typeof element.handler).toBe('function');
         expect(element.auxiliaryStyle).not.toContain('#text-input-container { border: none !important; background: transparent !important; box-shadow: none !important; }');
         expect(element.auxiliaryStyle).not.toContain('#input { background: transparent !important; }');
+    });
+
+    test('initChat keeps chat input and user history bubbles compact', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+
+        expect(element.messageStyles.default.shared.bubble.padding).toBe('10px 18px');
+        expect(element.messageStyles.default.shared.outerContainer.marginTop).toBe('8px');
+        expect(element.messageStyles.default.shared.outerContainer.marginBottom).toBe('8px');
+        expect(element.textInput.styles.container.padding).toBe('12px 20px');
+        expect(element.textInput.styles.text.lineHeight).toBe('1.45');
+        expect(element.auxiliaryStyle).toContain('min-height:46px');
+        expect(element.auxiliaryStyle).toContain('top:8px');
+        expect(element.auxiliaryStyle).toContain('.atlas-user-message-copy-btn{width:30px;height:30px;');
+        expect(element.auxiliaryStyle).toContain('pointer-events:auto;transform:translateY(2px) scale(.96)');
+        expect(element.auxiliaryStyle).toContain('details.runtime-panel{box-sizing:border-box;width:fit-content;min-width:min(260px,100%);max-width:100%;margin-bottom:12px;padding:10px 14px;');
+        expect(element.auxiliaryStyle).toContain('border-radius:14px');
+        expect(element.auxiliaryStyle).toContain('.runtime-body{display:flex;flex-direction:column;gap:10px;padding-top:8px}');
     });
 
     test('initChat targets actual DeepChat message classes for alignment styles', async () => {
@@ -2338,6 +2374,140 @@ describe('chat-ui.js handler mode', () => {
         await handlerPromise;
     });
 
+    test('handler renders inline confirmation card from approval table row actions', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, input, messages } = createDomChatElementWithMessages();
+        const deepChatContainer = document.createElement('div');
+        deepChatContainer.id = 'container';
+        element.shadowRoot.appendChild(deepChatContainer);
+        const signals = createDomSignals(messages);
+        const originalConfirm = window.confirm;
+        const originalPrompt = window.prompt;
+        const originalAlert = window.alert;
+
+        try {
+            window.confirm = jest.fn(() => true);
+            window.prompt = jest.fn(() => 'not used');
+            window.alert = jest.fn();
+
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ session_key: 'session-123' })
+            }).mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            });
+
+            await initChat(element);
+            global.fetch.mockClear();
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ run_id: 'run-approval-table-inline-action' })
+            });
+
+            const handlerPromise = element.handler(
+                { messages: [{ text: '查看我的审批', role: 'user' }] },
+                signals
+            );
+
+            await new Promise(r => setTimeout(r, 100));
+            const stream = MockEventSource.instances.at(-1);
+            stream.simulateEvent('assistant', {
+                text: [
+                    '| # | Request ID | Name |',
+                    '| --- | --- | --- |',
+                    '| 1 | RES20260427000004 | Linux-test-agent |'
+                ].join('\n'),
+                is_delta: true
+            });
+            stream.simulateEvent('runtime', {
+                state: 'artifact',
+                phase: 'object_actions',
+                message: 'Provider returned approval object actions.',
+                object_actions: [
+                    objectActionReference({
+                        index: 1,
+                        object_id: 'RES20260427000004',
+                        object_name: 'Linux-test-agent',
+                        actions: [
+                            {
+                                action_id: 'reject',
+                                kind: 'agent_prompt',
+                                tone: 'danger',
+                                display_label: localizedText('Reject', { 'zh-CN': '拒绝' }),
+                                agent_prompt_template: localizedText(
+                                    'Reject RES20260427000004, reason: {{reason}}',
+                                    { 'zh-CN': '拒绝 RES20260427000004，原因：{{reason}}' }
+                                ),
+                                requires_confirmation: true,
+                                confirmation_message: localizedText(
+                                    'Confirm rejecting RES20260427000004?',
+                                    { 'zh-CN': '确认拒绝 RES20260427000004？' }
+                                ),
+                                inputs: [
+                                    {
+                                        name: 'reason',
+                                        type: 'textarea',
+                                        required: true,
+                                        display_label: localizedText('Rejection reason', { 'zh-CN': '拒绝原因' })
+                                    }
+                                ]
+                            }
+                        ]
+                    })
+                ]
+            });
+            await new Promise(r => setTimeout(r, 160));
+            stream.simulateEvent('lifecycle', { phase: 'end' });
+            await handlerPromise;
+
+            const tableActionCell = messages.querySelector('.response-table-action');
+            const rejectButton = tableActionCell.querySelector('button.tone-danger');
+            expect(rejectButton).not.toBeNull();
+            expect(messages.querySelector('.response-content > .object-actions')).toBeNull();
+
+            global.fetch.mockClear();
+            // Row actions render inside table cells, which have stricter alignment and wrapping rules.
+            rejectButton.click();
+            await new Promise(r => setTimeout(r, 0));
+
+            const card = tableActionCell.querySelector('.object-action-confirmation-card');
+            expect(card).not.toBeNull();
+            expect(card.querySelector('.object-action-confirmation-title').textContent).toBe(
+                'Confirm rejecting RES20260427000004?'
+            );
+            expect(card.querySelector('.object-action-textarea')).not.toBeNull();
+            expect(window.confirm).not.toHaveBeenCalled();
+            expect(window.prompt).not.toHaveBeenCalled();
+
+            card.querySelector('.tone-danger').click();
+            await new Promise(r => setTimeout(r, 0));
+            expect(card.querySelector('.object-action-confirmation-error').textContent).toBe(
+                'This action requires input.'
+            );
+            expect(window.alert).not.toHaveBeenCalled();
+            expect(latestAgentRunRequestBody()).toBeNull();
+            expect(input.textContent).toBe('');
+
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ run_id: 'run-approval-table-reject-action' })
+            });
+            card.querySelector('.object-action-textarea').value = '库存不足';
+            card.querySelector('.tone-danger').click();
+            await new Promise(r => setTimeout(r, 60));
+
+            const runBody = latestAgentRunRequestBody();
+            expect(runBody.message).toBe('Reject RES20260427000004, reason: 库存不足');
+            expect(runBody.context.visible_user_turn).toBe(false);
+            expect(input.textContent).toBe('');
+        } finally {
+            window.confirm = originalConfirm;
+            window.prompt = originalPrompt;
+            window.alert = originalAlert;
+        }
+    });
+
     test('handler renders approval detail actions and submits prompt actions from buttons', async () => {
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const { element, input, messages } = createDomChatElementWithMessages();
@@ -2471,51 +2641,62 @@ describe('chat-ui.js handler mode', () => {
                 json: () => Promise.resolve({ run_id: 'run-approval-approve-action' })
             });
             actionGroup.querySelector('button.tone-success').click();
-            await new Promise(r => setTimeout(r, 60));
-            expect(window.confirm).toHaveBeenCalledWith('Confirm approving RES20260427000004?');
-            let runBody = latestAgentRunRequestBody();
-            expect(runBody.message).toBe('Approve RES20260427000004');
-            expect(runBody.context.visible_user_turn).toBe(false);
+            await new Promise(r => setTimeout(r, 0));
+            let card = messages.querySelector('.object-action-confirmation-card');
+            expect(card).not.toBeNull();
+            expect(card.querySelector('.object-action-confirmation-title').textContent).toBe(
+                'Confirm approving RES20260427000004?'
+            );
+            expect(Array.from(card.querySelectorAll('button')).map((button) => button.textContent)).toEqual([
+                'Cancel',
+                'Confirm Approve'
+            ]);
+            expect(window.confirm).not.toHaveBeenCalled();
+            expect(window.prompt).not.toHaveBeenCalled();
+            expect(global.fetch).not.toHaveBeenCalled();
             expect(input.textContent).toBe('');
             expect(submitListener).not.toHaveBeenCalled();
+
+            card.querySelector('.object-action-cancel-button').click();
+            await new Promise(r => setTimeout(r, 0));
+            expect(messages.querySelector('.object-action-confirmation-card')).toBeNull();
+            expect(actionGroup.querySelector('button.tone-success').disabled).toBe(false);
+
+            actionGroup.querySelector('button.tone-danger').click();
+            await new Promise(r => setTimeout(r, 0));
+            card = messages.querySelector('.object-action-confirmation-card');
+            expect(card).not.toBeNull();
+            expect(card.querySelector('.object-action-confirmation-title').textContent).toBe(
+                'Confirm rejecting RES20260427000004?'
+            );
+            expect(card.querySelector('.object-action-textarea')).not.toBeNull();
+            expect(Array.from(card.querySelectorAll('button')).map((button) => button.textContent)).toEqual([
+                'Cancel',
+                'Submit Reject'
+            ]);
+
+            card.querySelector('.tone-danger').click();
+            await new Promise(r => setTimeout(r, 0));
+            expect(card.querySelector('.object-action-confirmation-error').textContent).toBe(
+                'This action requires input.'
+            );
+            expect(window.alert).not.toHaveBeenCalled();
+            expect(latestAgentRunRequestBody()).toBeNull();
 
             global.fetch.mockClear();
             global.fetch.mockResolvedValueOnce({
                 ok: true,
                 json: () => Promise.resolve({ run_id: 'run-approval-reject-action' })
             });
-            actionGroup.querySelector('button.tone-danger').click();
+            card.querySelector('.object-action-textarea').value = '库存不足';
+            card.querySelector('.tone-danger').click();
             await new Promise(r => setTimeout(r, 60));
-            expect(window.prompt).toHaveBeenCalledWith('Rejection reason', '');
-            expect(window.confirm).toHaveBeenLastCalledWith('Confirm rejecting RES20260427000004?');
-            runBody = latestAgentRunRequestBody();
+            expect(window.prompt).not.toHaveBeenCalled();
+            expect(window.confirm).not.toHaveBeenCalled();
+            const runBody = latestAgentRunRequestBody();
             expect(runBody.message).toBe('Reject RES20260427000004, reason: 库存不足');
             expect(runBody.context.visible_user_turn).toBe(false);
             expect(input.textContent).toBe('');
-            expect(submitListener).not.toHaveBeenCalled();
-
-            window.confirm = jest.fn(() => false);
-            global.fetch.mockClear();
-            actionGroup.querySelector('button.tone-success').click();
-            await new Promise(r => setTimeout(r, 0));
-            expect(window.confirm).toHaveBeenCalledWith('Confirm approving RES20260427000004?');
-            expect(latestAgentRunRequestBody()).toBeNull();
-            expect(submitListener).not.toHaveBeenCalled();
-
-            window.prompt = jest.fn(() => null);
-            global.fetch.mockClear();
-            actionGroup.querySelector('button.tone-danger').click();
-            await new Promise(r => setTimeout(r, 0));
-            expect(window.prompt).toHaveBeenCalledWith('Rejection reason', '');
-            expect(latestAgentRunRequestBody()).toBeNull();
-            expect(submitListener).not.toHaveBeenCalled();
-
-            window.prompt = jest.fn(() => '   ');
-            global.fetch.mockClear();
-            actionGroup.querySelector('button.tone-danger').click();
-            await new Promise(r => setTimeout(r, 0));
-            expect(window.alert).toHaveBeenCalledWith('This action requires input.');
-            expect(latestAgentRunRequestBody()).toBeNull();
             expect(submitListener).not.toHaveBeenCalled();
         } finally {
             window.confirm = originalConfirm;
@@ -2634,25 +2815,20 @@ describe('chat-ui.js handler mode', () => {
                 json: () => Promise.resolve({ run_id: 'run-approval-approve-action-en' })
             });
             actionGroup.querySelector('button.tone-success').click();
-            await new Promise(r => setTimeout(r, 60));
-            expect(window.confirm).toHaveBeenCalledWith('Confirm approving RES20260427000004?');
-            let runBody = latestAgentRunRequestBody();
-            expect(runBody.message).toBe('Approve RES20260427000004');
-            expect(runBody.context.visible_user_turn).toBe(false);
-            expect(input.textContent).toBe('');
-            expect(submitListener).not.toHaveBeenCalled();
+            await new Promise(r => setTimeout(r, 0));
+            const card = messages.querySelector('.object-action-confirmation-card');
+            expect(card.querySelector('.object-action-confirmation-title').textContent).toBe(
+                'Confirm approving RES20260427000004?'
+            );
+            expect(card.querySelector('.tone-success').textContent).toBe('Confirm Approve');
+            expect(window.confirm).not.toHaveBeenCalled();
+            expect(window.prompt).not.toHaveBeenCalled();
+            expect(global.fetch).not.toHaveBeenCalled();
 
-            global.fetch.mockClear();
-            global.fetch.mockResolvedValueOnce({
-                ok: true,
-                json: () => Promise.resolve({ run_id: 'run-approval-reject-action-en' })
-            });
-            actionGroup.querySelector('button.tone-danger').click();
+            card.querySelector('.tone-success').click();
             await new Promise(r => setTimeout(r, 60));
-            expect(window.prompt).toHaveBeenCalledWith('Rejection reason', '');
-            expect(window.confirm).toHaveBeenLastCalledWith('Confirm rejecting RES20260427000004?');
-            runBody = latestAgentRunRequestBody();
-            expect(runBody.message).toBe('Reject RES20260427000004, reason: not needed');
+            const runBody = latestAgentRunRequestBody();
+            expect(runBody.message).toBe('Approve RES20260427000004');
             expect(runBody.context.visible_user_turn).toBe(false);
             expect(input.textContent).toBe('');
             expect(submitListener).not.toHaveBeenCalled();
@@ -2660,6 +2836,285 @@ describe('chat-ui.js handler mode', () => {
             window.confirm = originalConfirm;
             window.prompt = originalPrompt;
         }
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('object action opens confirmed URLs only after inline confirmation', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        const deepChatContainer = document.createElement('div');
+        deepChatContainer.id = 'container';
+        element.shadowRoot.appendChild(deepChatContainer);
+        const signals = createDomSignals(messages);
+        const targetHref = 'https://cmp.example.com/#/main/service-request/my-approval';
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-confirm-open-url-action' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'show approval detail', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances.at(-1);
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned approval detail open action.',
+            object_actions: [
+                objectActionReference({
+                    object_id: 'RES20260427000004',
+                    object_name: 'Linux-test-agent',
+                    actions: [
+                        {
+                            action_id: 'open_detail',
+                            kind: 'open_url',
+                            display_label: localizedText('Open'),
+                            confirmation_message: localizedText('Open the approval console?'),
+                            requires_confirmation: true,
+                            href: targetHref
+                        }
+                    ]
+                })
+            ]
+        });
+        stream.simulateEvent('assistant', {
+            text: 'Approval detail for RES20260427000004',
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const actionGroup = messages.querySelector('.response-content > .object-actions');
+        expect(actionGroup.querySelector('a.object-action-link')).toBeNull();
+        const openButton = actionGroup.querySelector('button.object-action-open-button');
+        expect(openButton).not.toBeNull();
+        expect(openButton.textContent.trim()).toBe('Open');
+
+        const originalAnchorClick = HTMLAnchorElement.prototype.click;
+        const clickedAnchors = [];
+        try {
+            HTMLAnchorElement.prototype.click = function () {
+                clickedAnchors.push({
+                    href: this.href,
+                    target: this.target,
+                    rel: this.rel
+                });
+            };
+            global.fetch.mockClear();
+
+            openButton.click();
+            await new Promise(r => setTimeout(r, 0));
+
+            let card = messages.querySelector('.object-action-confirmation-card');
+            expect(card).not.toBeNull();
+            expect(card.querySelector('.object-action-confirmation-title').textContent).toBe(
+                'Open the approval console?'
+            );
+            expect(clickedAnchors).toHaveLength(0);
+            expect(global.fetch).not.toHaveBeenCalled();
+
+            card.querySelector('.object-action-open-button').click();
+            await new Promise(r => setTimeout(r, 0));
+
+            expect(clickedAnchors).toEqual([{
+                href: targetHref,
+                target: '_blank',
+                rel: 'noopener noreferrer'
+            }]);
+            expect(messages.querySelector('.object-action-confirmation-card')).toBeNull();
+            expect(actionGroup.querySelector('button.object-action-open-button').disabled).toBe(false);
+            expect(global.fetch).not.toHaveBeenCalled();
+        } finally {
+            HTMLAnchorElement.prototype.click = originalAnchorClick;
+        }
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('input-only object actions use input wording instead of confirmation wording', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        const deepChatContainer = document.createElement('div');
+        deepChatContainer.id = 'container';
+        element.shadowRoot.appendChild(deepChatContainer);
+        const signals = createDomSignals(messages);
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-input-only-action' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'show approval detail', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances.at(-1);
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned input-only action.',
+            object_actions: [
+                objectActionReference({
+                    object_id: 'RES20260427000004',
+                    object_name: 'Linux-test-agent',
+                    actions: [
+                        {
+                            action_id: 'comment',
+                            kind: 'agent_prompt',
+                            display_label: localizedText('Comment'),
+                            agent_prompt_template: localizedText('Comment on RES20260427000004: {{comment}}'),
+                            inputs: [
+                                {
+                                    name: 'comment',
+                                    display_label: localizedText('Comment'),
+                                    required: true
+                                }
+                            ]
+                        }
+                    ]
+                })
+            ]
+        });
+        stream.simulateEvent('assistant', {
+            text: 'Approval detail for RES20260427000004',
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        messages.querySelector('.response-content > .object-actions button').click();
+        await new Promise(r => setTimeout(r, 0));
+
+        const card = messages.querySelector('.object-action-confirmation-card');
+        expect(card).not.toBeNull();
+        expect(card.querySelector('.object-action-confirmation-title').textContent).toBe(
+            'Provide information for Comment'
+        );
+        expect(card.querySelector('.object-action-confirmation-help')).toBeNull();
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('object action card recovers when run creation fails after submit', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, input, messages } = createDomChatElementWithMessages();
+        const deepChatContainer = document.createElement('div');
+        deepChatContainer.id = 'container';
+        element.shadowRoot.appendChild(deepChatContainer);
+        const signals = createDomSignals(messages);
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-approval-action-failure-setup' })
+        });
+
+        const submitListener = jest.fn();
+        input.addEventListener('keydown', submitListener);
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'show approval detail', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances.at(-1);
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned approval detail action.',
+            object_actions: [
+                objectActionReference({
+                    object_id: 'RES20260427000004',
+                    object_name: 'Linux-test-agent',
+                    actions: [
+                        {
+                            action_id: 'approve',
+                            kind: 'agent_prompt',
+                            display_label: localizedText('Approve'),
+                            agent_prompt: localizedText('Approve RES20260427000004'),
+                            confirmation_message: localizedText('Confirm approving RES20260427000004?'),
+                            requires_confirmation: true,
+                            tone: 'success'
+                        }
+                    ]
+                })
+            ]
+        });
+        stream.simulateEvent('assistant', {
+            text: 'Approval detail for RES20260427000004',
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const actionGroup = messages.querySelector('.response-content > .object-actions');
+        actionGroup.querySelector('button.tone-success').click();
+        await new Promise(r => setTimeout(r, 0));
+
+        const card = messages.querySelector('.object-action-confirmation-card');
+        expect(card).not.toBeNull();
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: false,
+            status: 500,
+            statusText: 'Server Error',
+            json: () => Promise.resolve({ detail: 'run creation failed' })
+        });
+
+        card.querySelector('.tone-success').click();
+        await new Promise(r => setTimeout(r, 80));
+
+        const runBody = latestAgentRunRequestBody();
+        expect(runBody.message).toBe('Approve RES20260427000004');
+        expect(runBody.context.visible_user_turn).toBe(false);
+        expect(card.classList.contains('is-submitting')).toBe(false);
+        expect(card.querySelector('.tone-success').textContent).toBe('Confirm Approve');
+        expect(card.querySelector('.object-action-confirmation-error').textContent).toBe(
+            'Unable to submit action. Please try again.'
+        );
+        expect(actionGroup.querySelector('button.tone-success').disabled).toBe(true);
+        expect(input.textContent).toBe('');
+        expect(submitListener).not.toHaveBeenCalled();
+
+        card.querySelector('.object-action-cancel-button').click();
+        await new Promise(r => setTimeout(r, 0));
+        expect(actionGroup.querySelector('button.tone-success').disabled).toBe(false);
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;
@@ -2732,7 +3187,12 @@ describe('chat-ui.js handler mode', () => {
             messages.querySelector('.response-content > .object-actions button').click();
             await new Promise(r => setTimeout(r, 0));
 
-            expect(window.confirm).toHaveBeenCalledWith('Confirm approving RES20260427000004?');
+            const card = messages.querySelector('.object-action-confirmation-card');
+            expect(card).not.toBeNull();
+            expect(window.confirm).not.toHaveBeenCalled();
+            card.querySelector('.tone-success').click();
+            await new Promise(r => setTimeout(r, 0));
+
             expect(global.fetch).not.toHaveBeenCalled();
             expect(input.textContent).toBe('');
             expect(submitListener).not.toHaveBeenCalled();
