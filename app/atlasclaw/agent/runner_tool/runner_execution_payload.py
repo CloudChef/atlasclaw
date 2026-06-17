@@ -126,7 +126,6 @@ def _looks_like_provider_auth_failure(value: Any) -> bool:
             "not configured",
             "not available",
             "missing",
-            "required",
             "no usable",
             "unavailable",
             "rejected",
@@ -134,6 +133,17 @@ def _looks_like_provider_auth_failure(value: Any) -> bool:
             "expired",
             "denied",
             "failed",
+        )
+    )
+    has_auth_required_context = any(
+        marker in text
+        for marker in (
+            "auth required",
+            "authentication required",
+            "credential required",
+            "token required",
+            "provider access required",
+            "permission required",
         )
     )
     has_http_auth_status = any(
@@ -157,7 +167,11 @@ def _looks_like_provider_auth_failure(value: Any) -> bool:
             "http request",
         )
     )
-    return has_http_auth_status or (has_provider_auth_context and has_failure_context) or has_backend_detail
+    return (
+        has_http_auth_status
+        or (has_provider_auth_context and (has_failure_context or has_auth_required_context))
+        or has_backend_detail
+    )
 
 
 def _sanitize_provider_auth_text(value: Any, diagnostic: dict[str, Any] | None) -> str:

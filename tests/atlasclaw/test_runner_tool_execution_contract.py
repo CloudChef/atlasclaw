@@ -134,6 +134,54 @@ def test_provider_auth_diagnostic_sanitizes_rejected_user_token_failure() -> Non
     assert "contact an administrator" not in message
 
 
+def test_provider_auth_diagnostic_does_not_treat_schema_required_as_auth_failure() -> None:
+    schema_output = json.dumps(
+        {
+            "type": "object",
+            "required": ["name"],
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "config": {
+                        "visibility": {
+                            "allowInRequest": True,
+                            "allowInApproval": True,
+                        }
+                    },
+                }
+            },
+        }
+    )
+
+    diagnostic = select_provider_auth_diagnostic(
+        extra={
+            "provider_auth_diagnostics": {
+                "smartcmp": {
+                    "default": {
+                        "provider_type": "smartcmp",
+                        "instance_name": "default",
+                        "missing_user_token": True,
+                        "contact_admin": False,
+                    }
+                }
+            },
+            "tools_snapshot": [
+                {"name": "smartcmp_design_form_schema", "provider_type": "smartcmp"},
+            ],
+        },
+        attempted_tools=[{"name": "smartcmp_design_form_schema"}],
+        failure_reasons=[],
+        tool_results=[
+            {
+                "tool_name": "smartcmp_design_form_schema",
+                "content": f"Schema JSON:\n```json\n{schema_output}\n```",
+            }
+        ],
+    )
+
+    assert diagnostic is None
+
+
 def test_provider_auth_diagnostic_ignores_unmatched_provider() -> None:
     diagnostic = select_provider_auth_diagnostic(
         extra={
