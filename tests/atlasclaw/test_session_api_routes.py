@@ -11,6 +11,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
+from app.atlasclaw.api.routes_session import (
+    _completed_object_action_key,
+    _with_completed_object_action_state,
+)
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.session.context import SessionKey, TranscriptEntry
 from app.atlasclaw.session.manager import SessionManager
@@ -36,6 +40,50 @@ def _build_client(tmp_path, user_id: str = "default") -> TestClient:
 
     app.include_router(create_router())
     return TestClient(app)
+
+
+def test_completed_object_action_state_scopes_by_object_type():
+    references = [
+        {
+            "object_type": "approval_request",
+            "object_id": "RES20260625000010",
+            "object_actions": [
+                {
+                    "action_id": "analyze",
+                    "kind": "agent_prompt",
+                    "agent_prompt": {"default": "Analyze approval"},
+                    "effect": "read",
+                },
+                {
+                    "action_id": "approve",
+                    "kind": "agent_prompt",
+                    "agent_prompt": {"default": "Approve approval"},
+                    "effect": "mutate",
+                },
+            ],
+        },
+        {
+            "object_type": "resource",
+            "object_id": "RES20260625000010",
+            "object_actions": [
+                {
+                    "action_id": "analyze",
+                    "kind": "agent_prompt",
+                    "agent_prompt": {"default": "Analyze resource"},
+                    "effect": "read",
+                }
+            ],
+        },
+    ]
+
+    updated = _with_completed_object_action_state(
+        references,
+        {_completed_object_action_key("RES20260625000010", "approval_request")},
+    )
+
+    assert updated[0]["object_actions"][0]["disabled"] is True
+    assert updated[0]["object_actions"][1]["disabled"] is True
+    assert "disabled" not in updated[1]["object_actions"][0]
 
 
 def test_session_routes_use_current_session_manager_interface(tmp_path):
@@ -557,6 +605,118 @@ class TestThreadSessionsAndOwnership:
                 ],
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_get_session_history_disables_completed_approval_mutate_actions(
+        self,
+        tmp_path,
+    ):
+        alice_manager = SessionManager(workspace_path=str(tmp_path), user_id="alice")
+        session_key = "agent:main:user:alice:web:dm:alice:topic:web-thread-1"
+        await alice_manager.get_or_create(session_key)
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="user", content="show approval detail"),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(
+                role="tool",
+                tool_name="smartcmp_get_request_detail",
+                content={
+                    "success": True,
+                    "output": "detail",
+                    "_internal": json.dumps(
+                        [
+                            {
+                                "object_type": "approval_request",
+                                "object_id": "RES20260625000010",
+                                "object_name": "test-ui-10",
+                                "object_actions": [
+                                    {
+                                        "action_id": "analyze",
+                                        "kind": "agent_prompt",
+                                        "agent_prompt": {"default": "Analyze RES20260625000010"},
+                                        "effect": "read",
+                                    },
+                                    {
+                                        "action_id": "approve",
+                                        "kind": "agent_prompt",
+                                        "agent_prompt": {"default": "Approve RES20260625000010"},
+                                        "effect": "mutate",
+                                    },
+                                    {
+                                        "action_id": "reject",
+                                        "kind": "agent_prompt",
+                                        "agent_prompt": {"default": "Reject RES20260625000010"},
+                                        "effect": "mutate",
+                                    },
+                                ],
+                            },
+                            {
+                                "object_type": "resource",
+                                "object_id": "RES20260625000010",
+                                "object_name": "same id resource",
+                                "object_actions": [
+                                    {
+                                        "action_id": "analyze",
+                                        "kind": "agent_prompt",
+                                        "agent_prompt": {"default": "Analyze resource RES20260625000010"},
+                                        "effect": "read",
+                                    },
+                                ],
+                            },
+                        ]
+                    ),
+                },
+            ),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="assistant", content="Approval detail is ready."),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="user", content="同意"),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(
+                role="tool",
+                tool_name="smartcmp_approve",
+                content={
+                    "success": True,
+                    "output": "\n".join(
+                        [
+                            "[SUCCESS] Approval completed.",
+                            "##APPROVE_RESULT_START##",
+                            '{"approved_ids": ["RES20260625000010"], "status": "approved"}',
+                            "##APPROVE_RESULT_END##",
+                        ]
+                    ),
+                },
+            ),
+        )
+        await alice_manager.append_transcript(
+            session_key,
+            TranscriptEntry(role="assistant", content="Approval completed."),
+        )
+
+        client = _build_client(tmp_path, user_id="alice")
+        encoded_session_key = quote(session_key, safe="")
+
+        response = client.get(f"/api/sessions/{encoded_session_key}/history")
+
+        assert response.status_code == 200
+        object_actions = response.json()["messages"][1]["object_actions"]
+        actions = object_actions[0]["object_actions"]
+        assert actions[0]["disabled"] is True
+        assert actions[0]["disabled_reason"] == "completed"
+        assert actions[1]["disabled"] is True
+        assert actions[1]["disabled_reason"] == "completed"
+        assert actions[2]["disabled"] is True
+        assert actions[2]["disabled_reason"] == "completed"
+        assert "disabled" not in object_actions[1]["object_actions"][0]
 
     @pytest.mark.asyncio
     async def test_get_session_history_clears_object_actions_after_later_empty_tool_result(

@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 from urllib.parse import urlparse
 
@@ -29,6 +30,10 @@ ACTION_LOCALIZED_TEXT_FIELDS: tuple[str, ...] = (
     "agent_prompt",
     "agent_prompt_template",
     "confirmation_message",
+)
+APPROVAL_RESULT_MARKER_PATTERN = re.compile(
+    r"##(APPROVE|REJECT)_RESULT_START##\s*(.*?)\s*##\1_RESULT_END##",
+    re.DOTALL,
 )
 
 
@@ -116,6 +121,94 @@ def collect_latest_object_action_references_from_payloads(
     """Return only the latest provider-declared object action references."""
     latest_references, _should_publish = collect_latest_object_action_reference_update(payloads)
     return latest_references
+
+
+def collect_completed_object_action_references_from_payloads(
+    payloads: list[Any],
+) -> list[dict[str, str]]:
+    """Collect completed approval object references from provider result payloads."""
+    references: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for payload in payloads:
+        _collect_completed_object_action_references(payload, references=references, seen=seen)
+    return references
+
+
+def _collect_completed_object_action_references(
+    payload: Any,
+    *,
+    references: list[dict[str, str]],
+    seen: set[str],
+) -> None:
+    normalized = coerce_object_action_payload(payload)
+    if isinstance(normalized, str):
+        _collect_completed_object_action_references_from_text(
+            normalized,
+            references=references,
+            seen=seen,
+        )
+        return
+
+    if isinstance(normalized, list):
+        for item in normalized:
+            _collect_completed_object_action_references(item, references=references, seen=seen)
+        return
+
+    if not isinstance(normalized, dict):
+        return
+
+    _record_completed_approval_ids(
+        normalized.get("approved_ids"),
+        status="approved",
+        references=references,
+        seen=seen,
+    )
+    _record_completed_approval_ids(
+        normalized.get("rejected_ids"),
+        status="rejected",
+        references=references,
+        seen=seen,
+    )
+    for value in normalized.values():
+        if isinstance(coerce_object_action_payload(value), (dict, list, str)):
+            _collect_completed_object_action_references(value, references=references, seen=seen)
+
+
+def _collect_completed_object_action_references_from_text(
+    text: str,
+    *,
+    references: list[dict[str, str]],
+    seen: set[str],
+) -> None:
+    for match in APPROVAL_RESULT_MARKER_PATTERN.finditer(text):
+        try:
+            parsed = json.loads((match.group(2) or "").strip())
+        except json.JSONDecodeError:
+            continue
+        _collect_completed_object_action_references(parsed, references=references, seen=seen)
+
+
+def _record_completed_approval_ids(
+    ids: Any,
+    *,
+    status: str,
+    references: list[dict[str, str]],
+    seen: set[str],
+) -> None:
+    if not isinstance(ids, list):
+        return
+    for raw_id in ids:
+        object_id = str(raw_id or "").strip()
+        if not object_id or object_id in seen:
+            continue
+        seen.add(object_id)
+        references.append(
+            {
+                "object_type": "approval_request",
+                "object_id": object_id,
+                "status": status,
+            }
+        )
 
 
 def _collect_object_action_references(

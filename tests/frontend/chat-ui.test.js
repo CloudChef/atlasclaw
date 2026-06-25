@@ -2841,6 +2841,181 @@ describe('chat-ui.js handler mode', () => {
         await handlerPromise;
     });
 
+    test('completed approval state from history disables stale analysis buttons when runtime completion is missing', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        const deepChatContainer = document.createElement('div');
+        deepChatContainer.id = 'container';
+        element.shadowRoot.appendChild(deepChatContainer);
+        const detailSignals = createDomSignals(messages);
+        let runCounter = 0;
+        let historyPayload = { messages: [] };
+
+        global.fetch.mockImplementation((url, options = {}) => {
+            const target = String(url);
+            const method = String(options.method || 'GET').toUpperCase();
+            if (target.endsWith('/api/sessions/threads') && method === 'POST') {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ session_key: 'session-123' })
+                });
+            }
+            if (target.endsWith('/api/agent/run')) {
+                runCounter += 1;
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ run_id: `run-history-completion-${runCounter}` })
+                });
+            }
+            if (target.includes('/api/sessions/session-123/history')) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve(historyPayload)
+                });
+            }
+            return Promise.resolve({
+                ok: true,
+                json: () => Promise.resolve({})
+            });
+        });
+
+        await initChat(element);
+
+        const detailPromise = element.handler(
+            { messages: [{ text: 'show approval detail', role: 'user' }] },
+            detailSignals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const detailStream = MockEventSource.instances.at(-1);
+        const approvalActions = [
+            {
+                action_id: 'open_detail',
+                kind: 'open_url',
+                display_label: localizedText('Open'),
+                href: 'https://cmp.example.com/#/main/service-request/my-approval'
+            },
+            {
+                action_id: 'analyze',
+                kind: 'agent_prompt',
+                display_label: localizedText('Analyze'),
+                agent_prompt: localizedText('Run read-only approval analysis for RES20260625000032'),
+                effect: 'read'
+            },
+            {
+                action_id: 'approve',
+                kind: 'agent_prompt',
+                display_label: localizedText('Approve'),
+                agent_prompt: localizedText('Approve RES20260625000032'),
+                effect: 'mutate',
+                tone: 'success'
+            },
+            {
+                action_id: 'reject',
+                kind: 'agent_prompt',
+                display_label: localizedText('Reject'),
+                agent_prompt_template: localizedText('Reject RES20260625000032, reason: {{reason}}'),
+                effect: 'mutate',
+                tone: 'danger',
+                requires_confirmation: true,
+                inputs: [
+                    {
+                        name: 'reason',
+                        display_label: localizedText('Rejection reason'),
+                        type: 'textarea',
+                        required: true
+                    }
+                ]
+            }
+        ];
+        detailStream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            message: 'Provider returned approval detail actions.',
+            object_actions: [
+                objectActionReference({
+                    object_type: 'approval_request',
+                    object_id: 'RES20260625000032',
+                    object_name: 'test-ui',
+                    actions: approvalActions
+                })
+            ]
+        });
+        detailStream.simulateEvent('assistant', {
+            text: 'Approval detail for RES20260625000032',
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+        detailStream.simulateEvent('lifecycle', { phase: 'end' });
+        await detailPromise;
+
+        const actionGroup = messages.querySelector('.response-content > .object-actions');
+        const analyzeButton = actionGroup.querySelector('button:not(.tone-success):not(.tone-danger)');
+        const approveButton = actionGroup.querySelector('button.tone-success');
+        const rejectButton = actionGroup.querySelector('button.tone-danger');
+        expect(analyzeButton.disabled).toBe(false);
+        expect(approveButton.disabled).toBe(false);
+        expect(rejectButton.disabled).toBe(false);
+
+        historyPayload = {
+            messages: [
+                {
+                    role: 'assistant',
+                    content: 'Approval detail for RES20260625000032',
+                    object_actions: [
+                        objectActionReference({
+                            object_type: 'approval_request',
+                            object_id: 'RES20260625000032',
+                            object_name: 'test-ui',
+                            actions: approvalActions.map((action) => {
+                                if (['analyze', 'approve', 'reject'].includes(action.action_id)) {
+                                    return {
+                                        ...action,
+                                        disabled: true,
+                                        disabled_reason: 'completed'
+                                    };
+                                }
+                                return action;
+                            })
+                        })
+                    ]
+                }
+            ]
+        };
+        const currentTurn = document.createElement('div');
+        messages.appendChild(currentTurn);
+        const rejectSignals = {
+            onResponse: jest.fn((payload = {}) => {
+                currentTurn.innerHTML = payload.html || '';
+            }),
+            onClose: jest.fn(),
+            stopClicked: { listener: null }
+        };
+
+        const rejectPromise = element.handler(
+            { messages: [{ text: 'no reason', role: 'user' }] },
+            rejectSignals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const rejectStream = MockEventSource.instances.at(-1);
+        rejectStream.simulateEvent('tool', {
+            tool: 'smartcmp_reject',
+            phase: 'end'
+        });
+        rejectStream.simulateEvent('assistant', {
+            text: 'Rejected RES20260625000032.',
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+        rejectStream.simulateEvent('lifecycle', { phase: 'end' });
+        await rejectPromise;
+
+        expect(analyzeButton.disabled).toBe(true);
+        expect(approveButton.disabled).toBe(true);
+        expect(rejectButton.disabled).toBe(true);
+    });
+
     test('object action opens confirmed URLs only after inline confirmation', async () => {
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const { element, messages } = createDomChatElementWithMessages();

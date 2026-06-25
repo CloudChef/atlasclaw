@@ -6,6 +6,7 @@ from __future__ import annotations
 import pytest
 
 from app.atlasclaw.core.object_actions import (
+    collect_completed_object_action_references_from_payloads,
     collect_latest_object_action_reference_update,
     collect_latest_object_action_references_from_payloads,
     collect_object_action_references_from_payloads,
@@ -20,6 +21,40 @@ def localized(default: str, zh_cn: str | None = None) -> dict[str, object]:
             "zh-CN": zh_cn or default,
         },
     }
+
+
+def test_collects_completed_approval_references_from_result_markers() -> None:
+    refs = collect_completed_object_action_references_from_payloads(
+        [
+            {
+                "success": True,
+                "output": "\n".join(
+                    [
+                        "Approval completed.",
+                        "##APPROVE_RESULT_START##",
+                        '{"approved_ids": ["RES20260625000010"], "status": "approved"}',
+                        "##APPROVE_RESULT_END##",
+                    ]
+                ),
+            },
+            "##REJECT_RESULT_START##\n"
+            '{"rejected_ids": ["RES20260625000011"], "status": "rejected"}'
+            "\n##REJECT_RESULT_END##",
+        ]
+    )
+
+    assert refs == [
+        {
+            "object_type": "approval_request",
+            "object_id": "RES20260625000010",
+            "status": "approved",
+        },
+        {
+            "object_type": "approval_request",
+            "object_id": "RES20260625000011",
+            "status": "rejected",
+        },
+    ]
 
 
 def test_collects_nested_object_actions_and_context_fields() -> None:

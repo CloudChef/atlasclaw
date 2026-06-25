@@ -9,7 +9,10 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from ..auth.models import ANONYMOUS_USER, UserInfo
-from ..core.object_actions import collect_latest_object_action_references_from_payloads
+from ..core.object_actions import (
+    collect_completed_object_action_references_from_payloads,
+    collect_latest_object_action_references_from_payloads,
+)
 from ..core.workspace_downloads import collect_workspace_download_references_from_payloads
 from ..session.context import ChatType as SessionChatType
 from ..session.context import SessionKey, SessionScope
@@ -176,6 +179,87 @@ def _collect_object_action_references(
     return collect_latest_object_action_references_from_payloads(payloads)
 
 
+def _collect_completed_object_action_references(
+    *,
+    entry: Any,
+) -> list[dict[str, str]]:
+    payloads: list[Any] = []
+    content = getattr(entry, "content", None)
+    if content:
+        payloads.append(content)
+    tool_results = getattr(entry, "tool_results", [])
+    if isinstance(tool_results, list):
+        for result in tool_results:
+            if isinstance(result, dict):
+                payloads.append(result)
+    return collect_completed_object_action_references_from_payloads(payloads)
+
+
+def _completed_object_action_key(object_id: Any, object_type: Any = "") -> str:
+    normalized_id = str(object_id or "").strip()
+    if not normalized_id:
+        return ""
+    normalized_type = str(object_type or "approval_request").strip() or "approval_request"
+    return f"{normalized_type}:{normalized_id}"
+
+
+def _completed_object_action_keys(transcript: list[Any]) -> set[str]:
+    completed_keys: set[str] = set()
+    for entry in transcript:
+        role = str(getattr(entry, "role", "") or "").strip().lower()
+        if role != "tool" and not getattr(entry, "tool_results", []):
+            continue
+        for reference in _collect_completed_object_action_references(entry=entry):
+            key = _completed_object_action_key(
+                reference.get("object_id"),
+                reference.get("object_type"),
+            )
+            if key:
+                completed_keys.add(key)
+    return completed_keys
+
+
+def _object_action_is_invalidated_by_completion(action: dict[str, Any]) -> bool:
+    action_id = str(action.get("action_id", "") or "").strip().lower()
+    if action_id in {"analyze", "approve", "reject"}:
+        return True
+    effect = str(action.get("effect", "") or "").strip().lower()
+    if effect in {"mutate", "write", "execute"}:
+        return True
+    return False
+
+
+def _with_completed_object_action_state(
+    references: list[dict[str, Any]],
+    completed_keys: set[str],
+) -> list[dict[str, Any]]:
+    if not references or not completed_keys:
+        return references
+    updated_references: list[dict[str, Any]] = []
+    for reference in references:
+        key = _completed_object_action_key(
+            reference.get("object_id"),
+            reference.get("object_type"),
+        )
+        if key not in completed_keys:
+            updated_references.append(reference)
+            continue
+        updated_reference = dict(reference)
+        updated_actions = []
+        for action in reference.get("object_actions", []):
+            if not isinstance(action, dict):
+                updated_actions.append(action)
+                continue
+            updated_action = dict(action)
+            if _object_action_is_invalidated_by_completion(updated_action):
+                updated_action["disabled"] = True
+                updated_action["disabled_reason"] = "completed"
+            updated_actions.append(updated_action)
+        updated_reference["object_actions"] = updated_actions
+        updated_references.append(updated_reference)
+    return updated_references
+
+
 def _entry_hides_user_turn(entry: Any) -> bool:
     """Return whether a transcript user entry is intentionally hidden from UI history."""
     metadata = getattr(entry, "metadata", {})
@@ -192,6 +276,7 @@ def _build_session_history_response(
     pending_workspace_downloads: list[dict[str, str]] = []
     pending_download_paths: set[str] = set()
     pending_object_actions: list[dict[str, Any]] = []
+    completed_object_action_keys = _completed_object_action_keys(transcript)
     for entry in transcript:
         role = str(getattr(entry, "role", "") or "").strip().lower()
         content = getattr(entry, "content", "")
@@ -224,7 +309,10 @@ def _build_session_history_response(
             workspace_downloads = list(pending_workspace_downloads)
             pending_workspace_downloads = []
             pending_download_paths = set()
-            object_actions = list(pending_object_actions)
+            object_actions = _with_completed_object_action_state(
+                list(pending_object_actions),
+                completed_object_action_keys,
+            )
             pending_object_actions = []
 
         messages.append(

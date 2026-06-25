@@ -28,6 +28,7 @@ let blockNextEnterAfterComposition = false
 let blockNextEnterStartedAt = 0
 let focusRetryGeneration = 0
 let sessionActivationGeneration = 0
+let completedObjectActionKeys = new Set()
 
 const IME_ENTER_GUARD_MS = 150
 const SCROLL_THRESHOLD = 50
@@ -36,6 +37,7 @@ const CHAT_INPUT_FOCUS_RETRY_DELAY_MS = 100
 const USER_MESSAGE_COPY_RETRY_DELAY_MS = 250
 const USER_MESSAGE_COPY_RESET_MS = 1200
 const OBJECT_ACTION_BIND_RETRY_DELAY_MS = 250
+const COMPLETION_INVALIDATED_ACTION_IDS = new Set(['analyze', 'approve', 'reject'])
 
 const COPY_MESSAGE_ICON = `
 <svg class="atlas-user-message-copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -622,6 +624,9 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-content button.object-action-button.tone-danger{border-color:rgba(220,38,38,.28);background:#fef2f2;color:#b91c1c}
 .response-content button.object-action-button.tone-danger::before{background:#dc2626;box-shadow:0 0 0 3px rgba(220,38,38,.13)}
 .response-content button.object-action-button.tone-danger:hover{border-color:rgba(220,38,38,.48);background:#fee2e2;color:#991b1b}
+.response-content button.object-action-button:disabled{border-color:#cbd5e1;background:#f1f5f9;color:#94a3b8;box-shadow:none;cursor:not-allowed;transform:none}
+.response-content button.object-action-button:disabled::before{background:#94a3b8;box-shadow:0 0 0 3px rgba(148,163,184,.12)}
+.response-content button.object-action-button:disabled:hover{border-color:#cbd5e1;background:#f1f5f9;color:#94a3b8;box-shadow:none;transform:none}
 .response-content .object-actions.is-confirming button.object-action-button{opacity:.52;pointer-events:none}
 .object-action-confirmation-card{box-sizing:border-box;width:min(100%,420px);margin-top:8px;padding:10px;border:1px solid #dbe3ee;border-radius:8px;background:#fff;box-shadow:0 8px 22px rgba(15,23,42,.08);color:#1f2937}
 .object-action-confirmation-title{font-size:13px;font-weight:700;line-height:1.45}
@@ -689,6 +694,7 @@ export async function activateSession(sessionKey) {
   const requestedSessionKey = sessionKey || getSessionKey()
   const activationGeneration = ++sessionActivationGeneration
   currentSessionKey = requestedSessionKey || null
+  completedObjectActionKeys = new Set()
   if (currentSessionKey) {
     setSessionKey(currentSessionKey)
   }
@@ -1015,6 +1021,7 @@ function notifyUserTurnStarted(sessionKey, messageText) {
 
 async function notifyRunCompleted(sessionKey) {
   const hasHistory = true
+  await syncCompletedObjectActionsFromHistory(sessionKey)
   if (typeof chatCallbacks.onRunCompleted === 'function') {
     await chatCallbacks.onRunCompleted({ sessionKey, hasHistory })
   }
@@ -1466,6 +1473,11 @@ function normalizeObjectAction(rawAction) {
   if (typeof rawAction.requires_confirmation === 'boolean') {
     action.requires_confirmation = rawAction.requires_confirmation
   }
+  if (rawAction.disabled === true) {
+    action.disabled = true
+    const disabledReason = String(rawAction.disabled_reason || '').trim()
+    if (disabledReason) action.disabled_reason = disabledReason
+  }
   if (Array.isArray(rawAction.inputs)) {
     action.inputs = rawAction.inputs
       .filter((input) => input && typeof input === 'object' && String(input.name || '').trim())
@@ -1541,6 +1553,38 @@ function objectActionKey(action) {
   })
 }
 
+function completedObjectActionKey(objectId, objectType = '') {
+  const id = String(objectId || '').trim()
+  if (!id) return ''
+  const type = String(objectType || 'approval_request').trim() || 'approval_request'
+  return `${type}:${id}`
+}
+
+function objectActionCompletionKeyForReference(reference) {
+  return completedObjectActionKey(reference?.object_id, reference?.object_type)
+}
+
+function isMutatingObjectAction(action) {
+  const effect = String(action?.effect || '').trim().toLowerCase()
+  if (effect === 'mutate' || effect === 'write' || effect === 'execute') {
+    return true
+  }
+  const actionId = String(action?.action_id || '').trim().toLowerCase()
+  return ['approve', 'reject'].includes(actionId)
+}
+
+function isObjectActionInvalidatedByCompletion(action) {
+  const actionId = String(action?.action_id || '').trim().toLowerCase()
+  return COMPLETION_INVALIDATED_ACTION_IDS.has(actionId) || isMutatingObjectAction(action)
+}
+
+function isObjectActionCompleted(reference, action) {
+  if (action?.disabled === true) return true
+  if (!isObjectActionInvalidatedByCompletion(action)) return false
+  const key = objectActionCompletionKeyForReference(reference)
+  return !!key && completedObjectActionKeys.has(key)
+}
+
 function normalizeObjectActionReferences(references) {
   if (!Array.isArray(references)) return []
   const normalizedReferences = []
@@ -1604,6 +1648,90 @@ function extractObjectActionReferences(rawPayload) {
   return normalizeObjectActionReferences(references)
 }
 
+function hasRenderedObjectActionButtons(element = chatElement) {
+  const container = getMessageContainerForElement(element) || getMessageContainer()
+  return !!container?.querySelector('button[data-object-action-payload]')
+}
+
+function isHistoryCompletedObjectAction(action) {
+  if (action?.disabled !== true) return false
+  if (!isObjectActionInvalidatedByCompletion(action)) return false
+  return String(action.disabled_reason || '').trim().toLowerCase() === 'completed'
+}
+
+function recordCompletedObjectActionsFromHistoryPayload(payload, element = chatElement) {
+  let changed = false
+  const messages = Array.isArray(payload?.messages) ? payload.messages : []
+  for (const message of messages) {
+    const references = normalizeObjectActionReferences(message?.object_actions)
+    for (const reference of references) {
+      if (!reference.object_actions?.some(isHistoryCompletedObjectAction)) continue
+      const key = objectActionCompletionKeyForReference(reference)
+      if (!key || completedObjectActionKeys.has(key)) continue
+      completedObjectActionKeys.add(key)
+      changed = true
+    }
+  }
+  if (changed) {
+    applyCompletedObjectActionState(element)
+  }
+  return changed
+}
+
+async function syncCompletedObjectActionsFromHistory(sessionKey, element = chatElement) {
+  if (!sessionKey || !hasRenderedObjectActionButtons(element)) return false
+  try {
+    const payload = await getSessionHistory(sessionKey)
+    return recordCompletedObjectActionsFromHistoryPayload(payload, element)
+  } catch (error) {
+    console.warn('[ChatUI] Failed to sync completed object action state:', error)
+    return false
+  }
+}
+
+function objectActionButtonCompletionKey(button) {
+  if (!(button instanceof HTMLButtonElement)) return ''
+  const objectId = button.dataset.objectActionObjectId || ''
+  const objectType = button.dataset.objectActionObjectType || ''
+  if (objectId) return completedObjectActionKey(objectId, objectType)
+  const encoded = button.getAttribute('data-object-action-payload') || ''
+  if (!encoded) return ''
+  try {
+    const payload = JSON.parse(decodeURIComponent(encoded))
+    return completedObjectActionKey(payload?.object?.object_id, payload?.object?.object_type)
+  } catch (_error) {
+    return ''
+  }
+}
+
+function isCompletedObjectActionButton(button) {
+  if (!(button instanceof HTMLButtonElement)) return false
+  if (!buttonInvalidatedByCompletion(button)) return false
+  if (button.dataset.objectActionCompleted === 'true') return true
+  const key = objectActionButtonCompletionKey(button)
+  return !!key && completedObjectActionKeys.has(key)
+}
+
+function buttonInvalidatedByCompletion(button) {
+  if (!(button instanceof HTMLButtonElement)) return false
+  if (button.dataset.objectActionCompletionInvalidated === 'true') return true
+  const actionId = String(button.dataset.objectActionActionId || '').trim().toLowerCase()
+  return COMPLETION_INVALIDATED_ACTION_IDS.has(actionId)
+}
+
+function applyCompletedObjectActionState(element = chatElement) {
+  const container = getMessageContainerForElement(element) || getMessageContainer()
+  if (!container) return
+  for (const button of container.querySelectorAll('button[data-object-action-payload]')) {
+    if (!buttonInvalidatedByCompletion(button)) continue
+    const key = objectActionButtonCompletionKey(button)
+    if (!key || !completedObjectActionKeys.has(key)) continue
+    button.disabled = true
+    button.setAttribute('aria-disabled', 'true')
+    button.dataset.objectActionCompleted = 'true'
+  }
+}
+
 function getObjectActionDisplayLabel(reference) {
   if (!reference) return ''
   const label = reference.object_name ||
@@ -1664,7 +1792,13 @@ function buildObjectActionButton(action, reference) {
   const payload = encodeURIComponent(JSON.stringify({ action, object: actionReferencePublicContext(reference) }))
   const text = getObjectActionLabel(action)
   const icon = action?.kind === 'open_url' ? OBJECT_ACTION_ICON : ''
-  return `<button type="button" class="${objectActionButtonClass(action)}" data-object-action-payload="${escapeHtml(payload)}" aria-label="${escapeHtml(`${text} ${getObjectActionDisplayLabel(reference)}`.trim())}">${icon}<span class="object-action-text">${escapeHtml(text)}</span></button>`
+  const objectId = String(reference?.object_id || '').trim()
+  const objectType = String(reference?.object_type || '').trim()
+  const actionId = String(action?.action_id || '').trim()
+  const completionInvalidated = isObjectActionInvalidatedByCompletion(action)
+  const disabled = isObjectActionCompleted(reference, action)
+  const completedAttrs = disabled ? ' disabled aria-disabled="true" data-object-action-completed="true"' : ''
+  return `<button type="button" class="${objectActionButtonClass(action)}" data-object-action-payload="${escapeHtml(payload)}" data-object-action-object-id="${escapeHtml(objectId)}" data-object-action-object-type="${escapeHtml(objectType)}" data-object-action-action-id="${escapeHtml(actionId)}" data-object-action-completion-invalidated="${completionInvalidated ? 'true' : 'false'}"${completedAttrs} aria-label="${escapeHtml(`${text} ${getObjectActionDisplayLabel(reference)}`.trim())}">${icon}<span class="object-action-text">${escapeHtml(text)}</span></button>`
 }
 
 function actionReferencePublicContext(reference) {
@@ -1787,7 +1921,7 @@ function setObjectActionGroupConfirming(actionGroup, confirming) {
   if (!actionGroup) return
   actionGroup.classList.toggle('is-confirming', confirming)
   for (const button of actionGroup.querySelectorAll('button.object-action-button')) {
-    button.disabled = confirming
+    button.disabled = confirming || isCompletedObjectActionButton(button)
   }
 }
 
@@ -1953,6 +2087,7 @@ function buildObjectActionConfirmationCard(action, actionGroup) {
 }
 
 function showObjectActionInlineInteraction(target, action) {
+  if (isCompletedObjectActionButton(target)) return false
   const actionGroup = target.closest('.object-actions')
   const parent = actionGroup?.parentElement
   if (!actionGroup || !parent) return false
@@ -2041,10 +2176,18 @@ function bindObjectActionHandlers(element = chatElement) {
       : null
     if (!(target instanceof HTMLButtonElement)) return
     event.preventDefault()
+    if (target.disabled || isCompletedObjectActionButton(target)) {
+      applyCompletedObjectActionState(element)
+      return
+    }
     const encoded = target.getAttribute('data-object-action-payload') || ''
     try {
       const payload = JSON.parse(decodeURIComponent(encoded))
       const action = payload.action || {}
+      if (isObjectActionCompleted(payload.object, action)) {
+        applyCompletedObjectActionState(element)
+        return
+      }
       if (objectActionNeedsInlineInteraction(action)) {
         if (!showObjectActionInlineInteraction(target, action)) {
           console.warn('[ChatUI] Failed to render object action confirmation')
@@ -3009,6 +3152,7 @@ async function handleStreamWithSignals(runId, signals, context) {
         scheduleRuntimePanelStateSync(panelShouldOpen)
         bindRuntimePanelToggle()
         bindObjectActionHandlers()
+        applyCompletedObjectActionState()
       }
       setupScrollListener()
       scrollToBottom()
