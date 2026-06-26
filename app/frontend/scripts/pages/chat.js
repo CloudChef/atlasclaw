@@ -6,12 +6,12 @@
  * chat.js - Chat Page Module
  */
 
-import { initSession, getSessionKey, setSessionKey } from '../session-manager.js?v=21'
-import { initChat, activateSession, abortCurrentStream, getCurrentAgentInfo, focusChatInput, cancelChatInputFocusRetry } from '../chat-ui.js?v=21'
-import { listSessions, deleteSession } from '../api-client.js?v=21'
+import { initSession, getSessionKey, setSessionKey } from '../session-manager.js?v=24'
+import { initChat, activateSession, abortCurrentStream, getCurrentAgentInfo, focusChatInput, cancelChatInputFocusRetry } from '../chat-ui.js?v=24'
+import { listSessions, deleteSession } from '../api-client.js?v=24'
 import { translateIfExists } from '../i18n.js'
-import { updateHeaderTitleText } from '../components/header.js?v=21'
-import { restoreInputFocus } from '../dom-utils.js?v=21'
+import { updateHeaderTitleText } from '../components/header.js?v=24'
+import { restoreInputFocus } from '../dom-utils.js?v=24'
 
 let chatElement = null
 let mounted = false
@@ -50,7 +50,7 @@ function buildSessionDraftTitle(messageText) {
   const cleaned = String(messageText || '')
     .replace(/\s+/g, ' ')
     .trim()
-    .replace(/[,.!?，。！？；：]+$/g, '')
+    .replace(/[,.!???????]+$/g, '')
 
   if (!cleaned) return getNewChatLabel()
   return cleaned.length > 24 ? `${cleaned.slice(0, 23).trim()}...` : cleaned
@@ -319,9 +319,9 @@ function upsertSession(nextSession) {
 }
 
 function buildDraftTitle(messageText) {
-  const cleaned = String(messageText || '').replace(/\s+/g, ' ').trim().replace(/[,.!?，。！？；：]+$/g, '')
+  const cleaned = String(messageText || '').replace(/\s+/g, ' ').trim().replace(/[,.!???????]+$/g, '')
   if (!cleaned) return 'New Chat'
-  return cleaned.length > 24 ? `${cleaned.slice(0, 23).trim()}…` : cleaned
+  return cleaned.length > 24 ? `${cleaned.slice(0, 23).trim()}?` : cleaned
 }
 
 async function handleDeleteSessionClick(event) {

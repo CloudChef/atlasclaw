@@ -254,6 +254,113 @@ function objectActionReference({
     };
 }
 
+async function setupApprovalConfirmationCard({
+    runId = 'run-approval-action-setup',
+    enableDirectSubmit = true
+} = {}) {
+    const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+    const { element, input, messages } = createDomChatElementWithMessages();
+    if (enableDirectSubmit) {
+        const deepChatContainer = document.createElement('div');
+        deepChatContainer.id = 'container';
+        element.shadowRoot.appendChild(deepChatContainer);
+    }
+    const signals = createDomSignals(messages);
+
+    global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ session_key: 'session-123' })
+    }).mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({})
+    });
+
+    await initChat(element);
+    global.fetch.mockClear();
+    global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ run_id: runId })
+    });
+
+    const handlerPromise = element.handler(
+        { messages: [{ text: 'show approval detail', role: 'user' }] },
+        signals
+    );
+
+    await new Promise(r => setTimeout(r, 100));
+    const stream = MockEventSource.instances.at(-1);
+    stream.simulateEvent('runtime', {
+        state: 'artifact',
+        phase: 'object_actions',
+        message: 'Provider returned approval detail action.',
+        object_actions: [
+            objectActionReference({
+                object_id: 'RES20260427000004',
+                object_name: 'Linux-test-agent',
+                actions: [
+                    {
+                        action_id: 'approve',
+                        kind: 'agent_prompt',
+                        display_label: localizedText('Approve'),
+                        agent_prompt: localizedText('Approve RES20260427000004'),
+                        confirmation_message: localizedText('Confirm approving RES20260427000004?'),
+                        requires_confirmation: true,
+                        tone: 'success'
+                    }
+                ]
+            })
+        ]
+    });
+    stream.simulateEvent('assistant', {
+        text: 'Approval detail for RES20260427000004',
+        is_delta: true
+    });
+    await new Promise(r => setTimeout(r, 160));
+
+    const actionGroup = messages.querySelector('.response-content > .object-actions');
+    actionGroup.querySelector('button.tone-success').click();
+    await new Promise(r => setTimeout(r, 0));
+    const card = messages.querySelector('.object-action-confirmation-card');
+    expect(card).not.toBeNull();
+
+    return { actionGroup, card, handlerPromise, input, messages, stream };
+}
+
+async function submitApprovalConfirmationCard(card, runId) {
+    global.fetch.mockClear();
+    global.fetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ run_id: runId })
+    });
+    card.querySelector('.tone-success').click();
+    await new Promise(r => setTimeout(r, 80));
+    return MockEventSource.instances.at(-1);
+}
+
+function expectApprovalActionPromptSubmitted() {
+    const runBody = latestAgentRunRequestBody();
+    expect(runBody.message).toBe('Approve RES20260427000004');
+    expect(runBody.context.visible_user_turn).toBe(false);
+}
+
+function expectApprovalCardRecovered({ actionGroup, card, messages }) {
+    expect(messages.querySelector('.object-action-confirmation-card')).toBe(card);
+    expect(card.classList.contains('is-submitting')).toBe(false);
+    expect(card.querySelector('.tone-success').textContent).toBe('Confirm Approve');
+    expect(card.querySelector('.object-action-confirmation-error').textContent).toBe(
+        'Unable to submit action. Please try again.'
+    );
+    expect(actionGroup.classList.contains('is-confirming')).toBe(true);
+    expect(actionGroup.querySelector('button.tone-success').disabled).toBe(true);
+}
+
+async function cancelApprovalCard({ actionGroup, card }) {
+    card.querySelector('.object-action-cancel-button').click();
+    await new Promise(r => setTimeout(r, 0));
+    expect(actionGroup.classList.contains('is-confirming')).toBe(false);
+    expect(actionGroup.querySelector('button.tone-success').disabled).toBe(false);
+}
+
 function createDomChatElement() {
     const element = document.createElement('deep-chat');
     element.handler = null;
@@ -1593,16 +1700,16 @@ describe('chat-ui.js handler mode', () => {
         await new Promise(r => setTimeout(r, 100));
         const stream = MockEventSource.instances[0];
         stream.simulateEvent('assistant', {
-            text: '## 标题\n- **加粗项**\n- [链接](https://example.com)',
+            text: '## ??\n- **???**\n- [??](https://example.com)',
             is_delta: true
         });
         await new Promise(r => setTimeout(r, 160));
 
         const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
-        expect(htmlPayload).toContain('<h2>标题</h2>');
-        expect(htmlPayload).toContain('<strong>加粗项</strong>');
+        expect(htmlPayload).toContain('<h2>??</h2>');
+        expect(htmlPayload).toContain('<strong>???</strong>');
         expect(htmlPayload).toContain('<a href="https://example.com"');
-        expect(htmlPayload).not.toContain('**加粗项**');
+        expect(htmlPayload).not.toContain('**???**');
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;
@@ -1945,7 +2052,7 @@ describe('chat-ui.js handler mode', () => {
                 '- Status: started',
                 '- Compute: 1 CPU / 1 GB',
                 'Disks',
-                '- Disk 1: 100 | CentOS 4/5 (64 位) | thin'
+                '- Disk 1: 100 | CentOS 4/5 (64 ?) | thin'
             ].join('\n'),
             is_delta: true
         });
@@ -2338,16 +2445,16 @@ describe('chat-ui.js handler mode', () => {
                         {
                             action_id: 'view_detail',
                             kind: 'agent_prompt',
-                            display_label: localizedText('View details', { 'zh-CN': '查看详情' }),
+                            display_label: localizedText('View details', { 'zh-CN': '????' }),
                             agent_prompt: localizedText(
                                 'Show approval details for RES20260427000004',
-                                { 'zh-CN': '查看 RES20260427000004 的审批详情' }
+                                { 'zh-CN': '?? RES20260427000004 ?????' }
                             )
                         },
                         {
                             action_id: 'open_detail',
                             kind: 'open_url',
-                            display_label: localizedText('Open', { 'zh-CN': '打开' }),
+                            display_label: localizedText('Open', { 'zh-CN': '??' }),
                             href: 'https://cmp.example.com/#/main/new-application/pendingApproval/PROVISION_BP/approval-1?from=normal&fromPagePartUrl=SR_MY_APPROVAL'
                         }
                     ]
@@ -2406,7 +2513,7 @@ describe('chat-ui.js handler mode', () => {
             });
 
             const handlerPromise = element.handler(
-                { messages: [{ text: '查看我的审批', role: 'user' }] },
+                { messages: [{ text: '??????', role: 'user' }] },
                 signals
             );
 
@@ -2434,22 +2541,22 @@ describe('chat-ui.js handler mode', () => {
                                 action_id: 'reject',
                                 kind: 'agent_prompt',
                                 tone: 'danger',
-                                display_label: localizedText('Reject', { 'zh-CN': '拒绝' }),
+                                display_label: localizedText('Reject', { 'zh-CN': '??' }),
                                 agent_prompt_template: localizedText(
                                     'Reject RES20260427000004, reason: {{reason}}',
-                                    { 'zh-CN': '拒绝 RES20260427000004，原因：{{reason}}' }
+                                    { 'zh-CN': '?? RES20260427000004????{{reason}}' }
                                 ),
                                 requires_confirmation: true,
                                 confirmation_message: localizedText(
                                     'Confirm rejecting RES20260427000004?',
-                                    { 'zh-CN': '确认拒绝 RES20260427000004？' }
+                                    { 'zh-CN': '???? RES20260427000004?' }
                                 ),
                                 inputs: [
                                     {
                                         name: 'reason',
                                         type: 'textarea',
                                         required: true,
-                                        display_label: localizedText('Rejection reason', { 'zh-CN': '拒绝原因' })
+                                        display_label: localizedText('Rejection reason', { 'zh-CN': '????' })
                                     }
                                 ]
                             }
@@ -2493,12 +2600,12 @@ describe('chat-ui.js handler mode', () => {
                 ok: true,
                 json: () => Promise.resolve({ run_id: 'run-approval-table-reject-action' })
             });
-            card.querySelector('.object-action-textarea').value = '库存不足';
+            card.querySelector('.object-action-textarea').value = '????';
             card.querySelector('.tone-danger').click();
             await new Promise(r => setTimeout(r, 60));
 
             const runBody = latestAgentRunRequestBody();
-            expect(runBody.message).toBe('Reject RES20260427000004, reason: 库存不足');
+            expect(runBody.message).toBe('Reject RES20260427000004, reason: ????');
             expect(runBody.context.visible_user_turn).toBe(false);
             expect(input.textContent).toBe('');
         } finally {
@@ -2552,29 +2659,29 @@ describe('chat-ui.js handler mode', () => {
                         {
                             action_id: 'open_detail',
                             kind: 'open_url',
-                            display_label: localizedText('Open', { 'zh-CN': '打开' }),
+                            display_label: localizedText('Open', { 'zh-CN': '??' }),
                             href: 'https://cmp.example.com/#/main/service-request/my-approval'
                         },
                         {
                             action_id: 'analyze',
                             kind: 'agent_prompt',
-                            display_label: localizedText('Analyze', { 'zh-CN': '分析' }),
+                            display_label: localizedText('Analyze', { 'zh-CN': '??' }),
                             agent_prompt: localizedText(
                                 'Analyze approval details for RES20260427000004',
-                                { 'zh-CN': '分析 RES20260427000004 的审批详情' }
+                                { 'zh-CN': '?? RES20260427000004 ?????' }
                             )
                         },
                         {
                             action_id: 'approve',
                             kind: 'agent_prompt',
-                            display_label: localizedText('Approve', { 'zh-CN': '同意' }),
+                            display_label: localizedText('Approve', { 'zh-CN': '??' }),
                             agent_prompt: localizedText(
                                 'Approve RES20260427000004',
-                                { 'zh-CN': '批准 RES20260427000004' }
+                                { 'zh-CN': '?? RES20260427000004' }
                             ),
                             confirmation_message: localizedText(
                                 'Confirm approving RES20260427000004?',
-                                { 'zh-CN': '确认同意 RES20260427000004？' }
+                                { 'zh-CN': '???? RES20260427000004?' }
                             ),
                             requires_confirmation: true,
                             tone: 'success'
@@ -2582,21 +2689,21 @@ describe('chat-ui.js handler mode', () => {
                         {
                             action_id: 'reject',
                             kind: 'agent_prompt',
-                            display_label: localizedText('Reject', { 'zh-CN': '拒绝' }),
+                            display_label: localizedText('Reject', { 'zh-CN': '??' }),
                             agent_prompt_template: localizedText(
                                 'Reject RES20260427000004, reason: {{reason}}',
-                                { 'zh-CN': '拒绝 RES20260427000004，原因：{{reason}}' }
+                                { 'zh-CN': '?? RES20260427000004????{{reason}}' }
                             ),
                             confirmation_message: localizedText(
                                 'Confirm rejecting RES20260427000004?',
-                                { 'zh-CN': '确认拒绝 RES20260427000004？' }
+                                { 'zh-CN': '???? RES20260427000004?' }
                             ),
                             requires_confirmation: true,
                             tone: 'danger',
                             inputs: [
                                 {
                                     name: 'reason',
-                                    display_label: localizedText('Rejection reason', { 'zh-CN': '拒绝原因' }),
+                                    display_label: localizedText('Rejection reason', { 'zh-CN': '????' }),
                                     type: 'textarea',
                                     required: true
                                 }
@@ -2632,7 +2739,7 @@ describe('chat-ui.js handler mode', () => {
         const originalPrompt = window.prompt;
         const originalAlert = window.alert;
         window.confirm = jest.fn(() => true);
-        window.prompt = jest.fn(() => '库存不足');
+        window.prompt = jest.fn(() => '????');
         window.alert = jest.fn();
         try {
             global.fetch.mockClear();
@@ -2688,13 +2795,13 @@ describe('chat-ui.js handler mode', () => {
                 ok: true,
                 json: () => Promise.resolve({ run_id: 'run-approval-reject-action' })
             });
-            card.querySelector('.object-action-textarea').value = '库存不足';
+            card.querySelector('.object-action-textarea').value = '????';
             card.querySelector('.tone-danger').click();
             await new Promise(r => setTimeout(r, 60));
             expect(window.prompt).not.toHaveBeenCalled();
             expect(window.confirm).not.toHaveBeenCalled();
             const runBody = latestAgentRunRequestBody();
-            expect(runBody.message).toBe('Reject RES20260427000004, reason: 库存不足');
+            expect(runBody.message).toBe('Reject RES20260427000004, reason: ????');
             expect(runBody.context.visible_user_turn).toBe(false);
             expect(input.textContent).toBe('');
             expect(submitListener).not.toHaveBeenCalled();
@@ -2752,14 +2859,14 @@ describe('chat-ui.js handler mode', () => {
                         {
                             action_id: 'approve',
                             kind: 'agent_prompt',
-                            display_label: localizedText('Approve', { 'zh-CN': '同意' }),
+                            display_label: localizedText('Approve', { 'zh-CN': '??' }),
                             agent_prompt: localizedText(
                                 'Approve RES20260427000004',
-                                { 'zh-CN': '批准 RES20260427000004' }
+                                { 'zh-CN': '?? RES20260427000004' }
                             ),
                             confirmation_message: localizedText(
                                 'Confirm approving RES20260427000004?',
-                                { 'zh-CN': '确认同意 RES20260427000004？' }
+                                { 'zh-CN': '???? RES20260427000004?' }
                             ),
                             requires_confirmation: true,
                             tone: 'success'
@@ -2767,21 +2874,21 @@ describe('chat-ui.js handler mode', () => {
                         {
                             action_id: 'reject',
                             kind: 'agent_prompt',
-                            display_label: localizedText('Reject', { 'zh-CN': '拒绝' }),
+                            display_label: localizedText('Reject', { 'zh-CN': '??' }),
                             agent_prompt_template: localizedText(
                                 'Reject RES20260427000004, reason: {{reason}}',
-                                { 'zh-CN': '拒绝 RES20260427000004，原因：{{reason}}' }
+                                { 'zh-CN': '?? RES20260427000004????{{reason}}' }
                             ),
                             confirmation_message: localizedText(
                                 'Confirm rejecting RES20260427000004?',
-                                { 'zh-CN': '确认拒绝 RES20260427000004？' }
+                                { 'zh-CN': '???? RES20260427000004?' }
                             ),
                             requires_confirmation: true,
                             tone: 'danger',
                             inputs: [
                                 {
                                     name: 'reason',
-                                    display_label: localizedText('Rejection reason', { 'zh-CN': '拒绝原因' }),
+                                    display_label: localizedText('Rejection reason', { 'zh-CN': '????' }),
                                     type: 'textarea',
                                     required: true
                                 }
@@ -3024,71 +3131,12 @@ describe('chat-ui.js handler mode', () => {
     });
 
     test('object action card recovers when run creation fails after submit', async () => {
-        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
-        const { element, input, messages } = createDomChatElementWithMessages();
-        const deepChatContainer = document.createElement('div');
-        deepChatContainer.id = 'container';
-        element.shadowRoot.appendChild(deepChatContainer);
-        const signals = createDomSignals(messages);
-
-        global.fetch.mockResolvedValueOnce({
-            ok: true,
-            json: () => Promise.resolve({ session_key: 'session-123' })
-        }).mockResolvedValueOnce({
-            ok: true,
-            json: () => Promise.resolve({})
+        const { actionGroup, card, handlerPromise, input, messages, stream } = await setupApprovalConfirmationCard({
+            runId: 'run-approval-action-failure-setup'
         });
-
-        await initChat(element);
-        global.fetch.mockClear();
-        global.fetch.mockResolvedValueOnce({
-            ok: true,
-            json: () => Promise.resolve({ run_id: 'run-approval-action-failure-setup' })
-        });
-
         const submitListener = jest.fn();
         input.addEventListener('keydown', submitListener);
-        const handlerPromise = element.handler(
-            { messages: [{ text: 'show approval detail', role: 'user' }] },
-            signals
-        );
 
-        await new Promise(r => setTimeout(r, 100));
-        const stream = MockEventSource.instances.at(-1);
-        stream.simulateEvent('runtime', {
-            state: 'artifact',
-            phase: 'object_actions',
-            message: 'Provider returned approval detail action.',
-            object_actions: [
-                objectActionReference({
-                    object_id: 'RES20260427000004',
-                    object_name: 'Linux-test-agent',
-                    actions: [
-                        {
-                            action_id: 'approve',
-                            kind: 'agent_prompt',
-                            display_label: localizedText('Approve'),
-                            agent_prompt: localizedText('Approve RES20260427000004'),
-                            confirmation_message: localizedText('Confirm approving RES20260427000004?'),
-                            requires_confirmation: true,
-                            tone: 'success'
-                        }
-                    ]
-                })
-            ]
-        });
-        stream.simulateEvent('assistant', {
-            text: 'Approval detail for RES20260427000004',
-            is_delta: true
-        });
-        await new Promise(r => setTimeout(r, 160));
-
-        const actionGroup = messages.querySelector('.response-content > .object-actions');
-        actionGroup.querySelector('button.tone-success').click();
-        await new Promise(r => setTimeout(r, 0));
-
-        const card = messages.querySelector('.object-action-confirmation-card');
-        expect(card).not.toBeNull();
         global.fetch.mockClear();
         global.fetch.mockResolvedValueOnce({
             ok: false,
@@ -3100,82 +3148,84 @@ describe('chat-ui.js handler mode', () => {
         card.querySelector('.tone-success').click();
         await new Promise(r => setTimeout(r, 80));
 
-        const runBody = latestAgentRunRequestBody();
-        expect(runBody.message).toBe('Approve RES20260427000004');
-        expect(runBody.context.visible_user_turn).toBe(false);
-        expect(card.classList.contains('is-submitting')).toBe(false);
-        expect(card.querySelector('.tone-success').textContent).toBe('Confirm Approve');
-        expect(card.querySelector('.object-action-confirmation-error').textContent).toBe(
-            'Unable to submit action. Please try again.'
-        );
-        expect(actionGroup.querySelector('button.tone-success').disabled).toBe(true);
+        expectApprovalActionPromptSubmitted();
+        expectApprovalCardRecovered({ actionGroup, card, messages });
         expect(input.textContent).toBe('');
         expect(submitListener).not.toHaveBeenCalled();
 
-        card.querySelector('.object-action-cancel-button').click();
-        await new Promise(r => setTimeout(r, 0));
+        await cancelApprovalCard({ actionGroup, card });
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('object action card stays submitting until direct submit run completes', async () => {
+        const { actionGroup, card, handlerPromise, messages, stream } =
+            await setupApprovalConfirmationCard({ runId: 'run-approval-action-success-setup' });
+        const actionStream = await submitApprovalConfirmationCard(card, 'run-approval-action-success');
+
+        expectApprovalActionPromptSubmitted();
+        expect(messages.querySelector('.object-action-confirmation-card')).not.toBeNull();
+        expect(card.classList.contains('is-submitting')).toBe(true);
+        expect(card.querySelector('.tone-success').textContent).toBe('Submitting...');
+        expect(actionGroup.classList.contains('is-confirming')).toBe(true);
+        expect(actionGroup.querySelector('button.tone-success').disabled).toBe(true);
+
+        actionStream.simulateEvent('assistant', {
+            text: 'Approval completed for RES20260427000004',
+            is_delta: true
+        });
+        actionStream.simulateEvent('lifecycle', { phase: 'end' });
+        await new Promise(r => setTimeout(r, 260));
+
+        expect(messages.querySelector('.object-action-confirmation-card')).toBeNull();
+        expect(actionGroup.classList.contains('is-confirming')).toBe(false);
         expect(actionGroup.querySelector('button.tone-success').disabled).toBe(false);
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;
     });
 
+    test('object action card recovers when direct submit stream fails', async () => {
+        const { actionGroup, card, handlerPromise, messages, stream } =
+            await setupApprovalConfirmationCard({ runId: 'run-approval-action-stream-failure-setup' });
+        const actionStream = await submitApprovalConfirmationCard(card, 'run-approval-action-stream-failure');
+
+        actionStream.simulateEvent('lifecycle', {
+            phase: 'error',
+            error: 'Approval failed'
+        });
+        await new Promise(r => setTimeout(r, 80));
+
+        expectApprovalCardRecovered({ actionGroup, card, messages });
+        await cancelApprovalCard({ actionGroup, card });
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('object action card recovers when direct submit ends without usable answer', async () => {
+        const { actionGroup, card, handlerPromise, messages, stream } =
+            await setupApprovalConfirmationCard({ runId: 'run-approval-action-empty-result-setup' });
+        const actionStream = await submitApprovalConfirmationCard(card, 'run-approval-action-empty-result');
+
+        actionStream.simulateEvent('lifecycle', { phase: 'end' });
+        await new Promise(r => setTimeout(r, 260));
+
+        expectApprovalCardRecovered({ actionGroup, card, messages });
+        await cancelApprovalCard({ actionGroup, card });
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
     test('object action prompt fails closed when direct submit is unavailable', async () => {
-        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
-        const { element, input, messages } = createDomChatElementWithMessages();
-        const signals = createDomSignals(messages);
-
-        global.fetch.mockResolvedValueOnce({
-            ok: true,
-            json: () => Promise.resolve({ session_key: 'session-123' })
-        }).mockResolvedValueOnce({
-            ok: true,
-            json: () => Promise.resolve({})
+        const { actionGroup, card, handlerPromise, input, messages, stream } = await setupApprovalConfirmationCard({
+            runId: 'run-approval-action-without-direct-submit',
+            enableDirectSubmit: false
         });
-
-        await initChat(element);
-        global.fetch.mockClear();
-        global.fetch.mockResolvedValueOnce({
-            ok: true,
-            json: () => Promise.resolve({ run_id: 'run-approval-action-without-direct-submit' })
-        });
-
         const submitListener = jest.fn();
         input.addEventListener('keydown', submitListener);
-        const handlerPromise = element.handler(
-            { messages: [{ text: 'show approval detail', role: 'user' }] },
-            signals
-        );
-
-        await new Promise(r => setTimeout(r, 100));
-        const stream = MockEventSource.instances.at(-1);
-        stream.simulateEvent('runtime', {
-            state: 'artifact',
-            phase: 'object_actions',
-            message: 'Provider returned approval detail action.',
-            object_actions: [
-                objectActionReference({
-                    object_id: 'RES20260427000004',
-                    object_name: 'Linux-test-agent',
-                    actions: [
-                        {
-                            action_id: 'approve',
-                            kind: 'agent_prompt',
-                            display_label: localizedText('Approve'),
-                            agent_prompt: localizedText('Approve RES20260427000004'),
-                            confirmation_message: localizedText('Confirm approving RES20260427000004?'),
-                            requires_confirmation: true,
-                            tone: 'success'
-                        }
-                    ]
-                })
-            ]
-        });
-        stream.simulateEvent('assistant', {
-            text: 'Approval detail for RES20260427000004',
-            is_delta: true
-        });
-        await new Promise(r => setTimeout(r, 160));
 
         const originalConfirm = window.confirm;
         const originalWarn = console.warn;
@@ -3184,16 +3234,12 @@ describe('chat-ui.js handler mode', () => {
             console.warn = jest.fn();
             global.fetch.mockClear();
 
-            messages.querySelector('.response-content > .object-actions button').click();
-            await new Promise(r => setTimeout(r, 0));
-
-            const card = messages.querySelector('.object-action-confirmation-card');
-            expect(card).not.toBeNull();
-            expect(window.confirm).not.toHaveBeenCalled();
             card.querySelector('.tone-success').click();
             await new Promise(r => setTimeout(r, 0));
 
             expect(global.fetch).not.toHaveBeenCalled();
+            expectApprovalCardRecovered({ actionGroup, card, messages });
+            expect(window.confirm).not.toHaveBeenCalled();
             expect(input.textContent).toBe('');
             expect(submitListener).not.toHaveBeenCalled();
             expect(console.warn).toHaveBeenCalledWith('[ChatUI] Failed to submit object action prompt');
@@ -3232,7 +3278,7 @@ describe('chat-ui.js handler mode', () => {
         });
 
         const handlerPromise = element.handler(
-            { messages: [{ text: '查看我的审批', role: 'user' }] },
+            { messages: [{ text: '??????', role: 'user' }] },
             signals
         );
 
@@ -3259,9 +3305,9 @@ describe('chat-ui.js handler mode', () => {
                         {
                             action_id: 'view_detail',
                             kind: 'agent_prompt',
-                            display_label: localizedText('查看详情', { 'en-US': 'View details' }),
+                            display_label: localizedText('????', { 'en-US': 'View details' }),
                             agent_prompt: localizedText(
-                                '查看 RES20260518000001 的审批详情',
+                                '?? RES20260518000001 ?????',
                                 { 'en-US': 'Show approval details for RES20260518000001' }
                             )
                         }
@@ -3340,16 +3386,16 @@ describe('chat-ui.js handler mode', () => {
                         {
                             action_id: 'open_detail',
                             kind: 'open_url',
-                            display_label: localizedText('Open', { 'zh-CN': '打开' }),
+                            display_label: localizedText('Open', { 'zh-CN': '??' }),
                             href: 'https://cmp.example.com/#/main/new-application/pendingApproval/PROVISION_BP/approval-1'
                         },
                         {
                             action_id: 'analyze',
                             kind: 'agent_prompt',
-                            display_label: localizedText('Analyze', { 'zh-CN': '分析' }),
+                            display_label: localizedText('Analyze', { 'zh-CN': '??' }),
                             agent_prompt: localizedText(
                                 'Analyze approval details for RES20260427000004',
-                                { 'zh-CN': '分析 RES20260427000004 的审批详情' }
+                                { 'zh-CN': '?? RES20260427000004 ?????' }
                             )
                         }
                     ]
@@ -3748,12 +3794,12 @@ describe('chat-ui.js handler mode', () => {
     test('handler keeps short low-density markdown tables compact', async () => {
         const htmlPayload = await renderAssistantHtml(
             [
-                '准备好了！有 2 个业务组 可选，请回复业务组编号和资源名称：',
+                '?????? 2 ???? ?????????????????',
                 '',
-                '| # | 业务组 |',
+                '| # | ??? |',
                 '| --- | --- |',
-                '| 1 | 开发部 |',
-                '| 2 | 测试部 |'
+                '| 1 | ??? |',
+                '| 2 | ??? |'
             ].join('\n'),
             'run-compact-choice-table'
         );
@@ -3761,8 +3807,8 @@ describe('chat-ui.js handler mode', () => {
 
         expect(dom.querySelector('.response-table-wrap-compact')).not.toBeNull();
         expect(dom.querySelector('.response-table-wrap-wide')).toBeNull();
-        expect(dom.querySelector('.response-table')?.textContent).toContain('开发部');
-        expect(dom.querySelector('.response-table')?.textContent).toContain('测试部');
+        expect(dom.querySelector('.response-table')?.textContent).toContain('???');
+        expect(dom.querySelector('.response-table')?.textContent).toContain('???');
     });
 
     test('handler keeps two-column tables wide when row content is dense', async () => {
@@ -3787,21 +3833,21 @@ describe('chat-ui.js handler mode', () => {
     test('handler keeps request confirmation summaries compact before json previews', async () => {
         const htmlPayload = await renderAssistantHtml(
             [
-                '| 服务目录 | Windows VM 2019 |',
+                '| ???? | Windows VM 2019 |',
                 '| --- | --- |',
-                '| 业务组 | 开发部 |',
-                '| 资源名称 | mytest-vm-adskj |',
-                '| 规格 | Tiny（1核1GB） |',
-                '| 系统盘 | 50 GB |',
-                '| 安全组 | 2 个默认安全组 |',
-                '| 登录用户 | administrator（默认） |',
+                '| ??? | ??? |',
+                '| ???? | mytest-vm-adskj |',
+                '| ?? | Tiny?1?1GB? |',
+                '| ??? | 50 GB |',
+                '| ??? | 2 ?????? |',
+                '| ???? | administrator???? |',
                 '',
-                'JSON 预览：',
+                'JSON ???',
                 '',
                 '```json',
                 '{',
                 '  "catalogName": "Windows VM 2019",',
-                '  "businessGroupName": "开发部",',
+                '  "businessGroupName": "???",',
                 '  "name": "mytest-vm-adskj"',
                 '}',
                 '```'
@@ -3902,7 +3948,7 @@ describe('chat-ui.js handler mode', () => {
         const stream = MockEventSource.instances[0];
         stream.simulateEvent('assistant', {
             text: [
-                'JSON 预览：',
+                'JSON ???',
                 '',
                 '```json',
                 '{',
@@ -3910,7 +3956,7 @@ describe('chat-ui.js handler mode', () => {
                 '}',
                 '```',
                 '',
-                '请确认。'
+                '????'
             ].join('\n'),
             is_delta: true
         });
@@ -3981,22 +4027,22 @@ describe('chat-ui.js handler mode', () => {
 
     test('handler localizes runtime panel labels through i18n', async () => {
         globalThis.__atlasclawTestTranslations = {
-            'chat.placeholder': '请输入您的问题...',
-            'chat.copyMessage': '复制消息',
-            'chat.runtimeThinking': '思考中',
-            'chat.runtimeRetrying': '重试中',
-            'chat.modelThinking': '模型思考'
+            'chat.placeholder': '???????...',
+            'chat.copyMessage': '????',
+            'chat.runtimeThinking': '???',
+            'chat.runtimeRetrying': '???',
+            'chat.modelThinking': '????'
         };
 
         global.fetch.mockResolvedValueOnce({
             ok: true,
             json: () => Promise.resolve({
                 chat: {
-                    placeholder: '请输入您的问题...',
-                    copyMessage: '复制消息',
-                    runtimeThinking: '思考中',
-                    runtimeRetrying: '重试中',
-                    modelThinking: '模型思考'
+                    placeholder: '???????...',
+                    copyMessage: '????',
+                    runtimeThinking: '???',
+                    runtimeRetrying: '???',
+                    modelThinking: '????'
                 }
             })
         });
@@ -4026,7 +4072,7 @@ describe('chat-ui.js handler mode', () => {
         });
 
         const handlerPromise = element.handler(
-            { messages: [{ text: '我有多少审批', role: 'user' }] },
+            { messages: [{ text: '??????', role: 'user' }] },
             signals
         );
 
@@ -4039,10 +4085,10 @@ describe('chat-ui.js handler mode', () => {
         await new Promise(r => setTimeout(r, 160));
 
         const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
-        expect(htmlPayload).toContain('<span class="runtime-title">思考中</span>');
-        expect(htmlPayload).toContain('思考中');
-        expect(htmlPayload).toContain('重试中');
-        expect(htmlPayload).toContain('模型思考');
+        expect(htmlPayload).toContain('<span class="runtime-title">???</span>');
+        expect(htmlPayload).toContain('???');
+        expect(htmlPayload).toContain('???');
+        expect(htmlPayload).toContain('????');
         expect(htmlPayload).not.toContain('<span class="runtime-title">Thinking</span>');
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
@@ -4450,7 +4496,7 @@ describe('chat-ui.js handler mode', () => {
                     <summary>
                         <div class="runtime-summary-left">
                             <span class="runtime-title">Thinking</span>
-                            <span class="runtime-state-icon done">✓</span>
+                            <span class="runtime-state-icon done">?</span>
                             <span class="runtime-title-elapsed">0.0s</span>
                         </div>
                     </summary>
@@ -4680,11 +4726,11 @@ describe('chat-ui.js handler mode', () => {
         });
 
         element.getMessages.mockImplementation(() => ([
-            { role: 'user', text: '你好' }
+            { role: 'user', text: '??' }
         ]));
 
         const handlerPromise = element.handler(
-            { messages: [{ text: '你好', role: 'user' }] },
+            { messages: [{ text: '??', role: 'user' }] },
             signals
         );
 
@@ -4915,7 +4961,7 @@ describe('chat-ui.js handler mode', () => {
         });
 
         const handlerPromise = element.handler(
-            { messages: [{ text: '明天上海天气', role: 'user' }] },
+            { messages: [{ text: '??????', role: 'user' }] },
             signals
         );
 
@@ -4962,7 +5008,7 @@ describe('chat-ui.js handler mode', () => {
         await new Promise(r => setTimeout(r, 100));
         const stream = MockEventSource.instances[0];
         stream.simulateEvent('assistant', {
-            text: 'Answer\n=====\n- 第一项\n- 第二项',
+            text: 'Answer\n=====\n- ???\n- ???',
             is_delta: true
         });
         await new Promise(r => setTimeout(r, 160));
@@ -4970,8 +5016,8 @@ describe('chat-ui.js handler mode', () => {
         const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
         expect(htmlPayload).not.toContain('>Answer<');
         expect(htmlPayload).not.toContain('=====');
-        expect(htmlPayload).toContain('<li>第一项</li>');
-        expect(htmlPayload).toContain('<li>第二项</li>');
+        expect(htmlPayload).toContain('<li>???</li>');
+        expect(htmlPayload).toContain('<li>???</li>');
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;
@@ -5006,15 +5052,15 @@ describe('chat-ui.js handler mode', () => {
         await new Promise(r => setTimeout(r, 100));
         const stream = MockEventSource.instances[0];
         stream.simulateEvent('assistant', {
-            text: 'Answer\n\n- 第一项\n- 第二项',
+            text: 'Answer\n\n- ???\n- ???',
             is_delta: true
         });
         await new Promise(r => setTimeout(r, 160));
 
         const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
         expect(htmlPayload).not.toContain('>Answer<');
-        expect(htmlPayload).toContain('<li>第一项</li>');
-        expect(htmlPayload).toContain('<li>第二项</li>');
+        expect(htmlPayload).toContain('<li>???</li>');
+        expect(htmlPayload).toContain('<li>???</li>');
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;
@@ -5049,7 +5095,7 @@ describe('chat-ui.js handler mode', () => {
         await new Promise(r => setTimeout(r, 100));
         const stream = MockEventSource.instances[0];
         stream.simulateEvent('assistant', {
-            text: '### 列表\n- 第一项',
+            text: '### ??\n- ???',
             is_delta: true
         });
         stream.simulateEvent('runtime', {
@@ -5062,8 +5108,8 @@ describe('chat-ui.js handler mode', () => {
 
         const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
         expect(htmlPayload).not.toContain('Answered');
-        expect(htmlPayload).toContain('<h3>列表</h3>');
-        expect(htmlPayload).toContain('<li>第一项</li>');
+        expect(htmlPayload).toContain('<h3>??</h3>');
+        expect(htmlPayload).toContain('<li>???</li>');
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;
@@ -5098,7 +5144,7 @@ describe('chat-ui.js handler mode', () => {
         await new Promise(r => setTimeout(r, 100));
         const stream = MockEventSource.instances[0];
         stream.simulateEvent('assistant', {
-            text: '### 列表\n- 第一项',
+            text: '### ??\n- ???',
             is_delta: true
         });
         stream.simulateEvent('runtime', {
@@ -5117,7 +5163,7 @@ describe('chat-ui.js handler mode', () => {
         const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
         expect(htmlPayload).not.toContain('Reasoning phase completed.');
         expect(htmlPayload).not.toContain('Answered');
-        expect(htmlPayload).toContain('<h3>列表</h3>');
+        expect(htmlPayload).toContain('<h3>??</h3>');
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;
