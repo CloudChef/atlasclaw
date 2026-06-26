@@ -7,12 +7,12 @@
  * Configure DeepChat component integration with AtlasClaw API
  */
 
-import { getSessionKey, initSession, setSessionKey, setSessionHasMessages } from './session-manager.js?v=21'
-import { buildWorkspaceFileDownloadUrl, getAgentInfo, getSessionHistory } from './api-client.js?v=21'
-import { createStreamHandler } from './stream-handler.js?v=21'
-import { buildApiUrl } from './config.js?v=21'
+import { getSessionKey, initSession, setSessionKey, setSessionHasMessages } from './session-manager.js?v=24'
+import { buildWorkspaceFileDownloadUrl, getAgentInfo, getSessionHistory } from './api-client.js?v=24'
+import { createStreamHandler } from './stream-handler.js?v=24'
+import { buildApiUrl } from './config.js?v=24'
 import { translateIfExists, getCurrentLocale } from './i18n.js'
-import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=21'
+import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=24'
 
 let chatElement = null
 let currentStreamHandler = null
@@ -36,6 +36,11 @@ const CHAT_INPUT_FOCUS_RETRY_DELAY_MS = 100
 const USER_MESSAGE_COPY_RETRY_DELAY_MS = 250
 const USER_MESSAGE_COPY_RESET_MS = 1200
 const OBJECT_ACTION_BIND_RETRY_DELAY_MS = 250
+const STREAM_RESULT_STATUS = {
+  aborted: 'aborted',
+  completed: 'completed',
+  failed: 'failed'
+}
 
 const COPY_MESSAGE_ICON = `
 <svg class="atlas-user-message-copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -69,14 +74,14 @@ const OBJECT_ACTION_CONTEXT_FIELDS = [
   'object_name'
 ]
 
-const OBJECT_ACTION_INDEX_HEADER_KEYS = new Set(['#', 'index', '序号', '编号'])
+const OBJECT_ACTION_INDEX_HEADER_KEYS = new Set(['#', 'index', '??', '??'])
 const OBJECT_ACTION_ID_HEADER_KEYS = new Set([
   'objectid',
-  '对象id'
+  '??id'
 ])
 const OBJECT_ACTION_NAME_HEADER_KEYS = new Set([
   'objectname',
-  '对象名称'
+  '????'
 ])
 
 function clearImeEnterGuard() {
@@ -885,6 +890,9 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
       signals.onClose()
       return false
     }
+    if (typeof options.onRunCreated === 'function') {
+      options.onRunCreated({ runId, sessionKey })
+    }
   } catch (err) {
     console.error('[ChatUI] API call failed:', err)
     signals.onResponse({ html: `<p style="color: #d32f2f;">Error: ${escapeHtml(err.message)}</p>` })
@@ -906,7 +914,12 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     })
   }
 
-  await handleStreamWithSignals(runId, signals, { sessionKey, messageText })
+  const streamResult = await handleStreamWithSignals(runId, signals, { sessionKey, messageText })
+  if (streamResult?.status === STREAM_RESULT_STATUS.completed && typeof options.onRunCompleted === 'function') {
+    options.onRunCompleted({ runId, sessionKey })
+  } else if (streamResult?.status === STREAM_RESULT_STATUS.failed && typeof options.onRunFailed === 'function') {
+    options.onRunFailed({ runId, sessionKey, error: streamResult.error })
+  }
   return true
 }
 
@@ -1112,7 +1125,7 @@ function buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs = null, is
   }).join('')
   const thinkingHtml = buildThinkingHtml(thinkingContent, elapsedMs, isThinking)
   const titleIcon = hasAnswered
-    ? '<span class="runtime-state-icon done">✓</span>'
+    ? '<span class="runtime-state-icon done">?</span>'
     : !hasFailed
     ? '<span class="thinking-dots thinking-title-dots"><span>.</span><span>.</span><span>.</span></span>'
     : ''
@@ -1920,6 +1933,10 @@ function buildObjectActionConfirmationCard(action, actionGroup) {
       submitButton.textContent = submitTemplate.replace('{{label}}', label)
       setObjectActionCardError(card, message)
     }
+    const submitFailedMessage = () => getTranslatedChatLabel(
+      'chat.objectActionSubmitFailed',
+      'Unable to submit action. Please try again.'
+    )
 
     if (action.kind === 'open_url') {
       if (openObjectActionHref(resolvedAction.href)) {
@@ -1935,15 +1952,20 @@ function buildObjectActionConfirmationCard(action, actionGroup) {
     }
 
     if (!submitObjectActionPrompt(resolvedAction.prompt, {
+      onRunCompleted: () => {
+        if (!card.isConnected) return
+        card.remove()
+        setObjectActionGroupConfirming(actionGroup, false)
+      },
+      onRunFailed: () => {
+        if (!card.isConnected) return
+        restoreSubmissionState(submitFailedMessage())
+      },
       onRunCreationFailed: () => {
-        restoreSubmissionState(
-          getTranslatedChatLabel('chat.objectActionSubmitFailed', 'Unable to submit action. Please try again.')
-        )
+        restoreSubmissionState(submitFailedMessage())
       }
     })) {
-      restoreSubmissionState(
-        getTranslatedChatLabel('chat.objectActionSubmitFailed', 'Unable to submit action. Please try again.')
-      )
+      restoreSubmissionState(submitFailedMessage())
       console.warn('[ChatUI] Failed to submit object action prompt')
     }
   })
@@ -1997,7 +2019,10 @@ function submitObjectActionDirectly(message, callbacks = {}) {
   window.setTimeout(() => {
     // Object actions are follow-up commands, not new visible user turns in the conversation history.
     void runAgentMessage(message, null, createObjectActionSignals(element), {
-      visibleUserTurn: false
+      visibleUserTurn: false,
+      onRunCreated: callbacks.onRunCreated,
+      onRunCompleted: callbacks.onRunCompleted,
+      onRunFailed: callbacks.onRunFailed
     }).then((created) => {
       if (created === false && typeof callbacks.onRunCreationFailed === 'function') {
         callbacks.onRunCreationFailed()
@@ -2105,7 +2130,7 @@ function stripWrapperHeading(text) {
     .replace(/\r\n/g, '\n')
     .replace(/^[\uFEFF\u200B\u200C\u200D\s]+/, '')
   if (!normalized.trim()) return ''
-  const wrapperPattern = /^(answer|result|response|回答|结果|回复)\s*[:：-]?$/i
+  const wrapperPattern = /^(answer|result|response|??|??|??)\s*[:?-]?$/i
 
   while (normalized.trim()) {
     const lines = normalized.split('\n')
@@ -2590,7 +2615,7 @@ function renderAssistantMarkdown(text, objectActionContext = null) {
       continue
     }
 
-    const pipeFieldMatch = /^\|\s*(.+?)\s*[:：]\s*(.+)$/.exec(line)
+    const pipeFieldMatch = /^\|\s*(.+?)\s*[:?]\s*(.+)$/.exec(line)
     if (pipeFieldMatch) {
       if (suppressRawObjectActions && isObjectActionDetailField(pipeFieldMatch[1])) {
         continue
@@ -2607,7 +2632,7 @@ function renderAssistantMarkdown(text, objectActionContext = null) {
       continue
     }
 
-    const objectActionFieldMatch = /^([^:：|]+?)\s*[:：]\s*(.+)$/.exec(line)
+    const objectActionFieldMatch = /^([^:?|]+?)\s*[:?]\s*(.+)$/.exec(line)
     if (
       suppressRawObjectActions &&
       objectActionFieldMatch &&
@@ -3079,7 +3104,7 @@ async function handleStreamWithSignals(runId, signals, context) {
       cleanupStreamTimers()
       clearActiveStreamHandler()
       signals.onClose()
-      resolve()
+      resolve({ status: STREAM_RESULT_STATUS.aborted })
     }
 
     streamHandler = createStreamHandler(runId, {
@@ -3189,18 +3214,21 @@ async function handleStreamWithSignals(runId, signals, context) {
           streamSettled = true
           thinkingFinalized = true
           cleanupStreamTimers()
-          if (!runtimeEntries.some((entry) => entry.state === 'failed')) {
+          if (!runtimeEntries.some((entry) => entry.state === STREAM_RESULT_STATUS.failed)) {
             if (aiMessageContent.trim() || workspaceDownloadReferences.length || objectActionReferences.length) {
               finalAnswerReady = true
             } else {
               pushRuntimeEntry('failed', 'Run ended without a usable answer.', { phase: 'completed' })
             }
           }
+          const finalStatus = runtimeEntries.some((entry) => entry.state === STREAM_RESULT_STATUS.failed)
+            ? STREAM_RESULT_STATUS.failed
+            : STREAM_RESULT_STATUS.completed
           updateUI()
           await notifyRunCompleted(context.sessionKey)
           signals.onClose()
           clearActiveStreamHandler()
-          resolve()
+          resolve({ status: finalStatus })
         }
         setTimeout(() => {
           void doFinalRender()
@@ -3219,7 +3247,7 @@ async function handleStreamWithSignals(runId, signals, context) {
         await notifyRunCompleted(context.sessionKey)
         signals.onClose()
         clearActiveStreamHandler()
-        resolve()
+        resolve({ status: STREAM_RESULT_STATUS.failed, error })
       }
     })
 
