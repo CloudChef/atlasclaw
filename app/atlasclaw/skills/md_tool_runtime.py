@@ -271,6 +271,14 @@ def create_script_wrapper(
 
         if deps is not None and hasattr(deps, "extra"):
             extra = deps.extra
+            request_context = extra.get("context") if isinstance(extra, dict) else None
+            request_timezone = (
+                str(request_context.get("timezone", "") or "").strip()
+                if isinstance(request_context, dict)
+                else ""
+            )
+            if request_timezone:
+                env["ATLASCLAW_TIMEZONE"] = request_timezone
             provider_resolution = resolve_provider_instance_selection(
                 provider_type=str(provider_type or ""),
                 instances=_provider_bucket(extra),

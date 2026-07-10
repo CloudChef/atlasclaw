@@ -167,6 +167,32 @@ def test_script_wrapper_exposes_user_id_to_script_environment(tmp_path: Path) ->
     assert payload["user_id"] == "admin"
 
 
+def test_script_wrapper_exposes_request_timezone_to_script_environment(tmp_path: Path) -> None:
+    script = tmp_path / "echo_timezone.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "print(json.dumps({'timezone': os.environ.get('ATLASCLAW_TIMEZONE', '')}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    class _Deps:
+        extra = {"context": {"timezone": "America/New_York"}}
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(script)
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is True
+    payload = json.loads(result["output"].strip())
+    assert payload["timezone"] == "America/New_York"
+
+
 def test_script_wrapper_normalizes_crlf_output(tmp_path: Path) -> None:
     script = tmp_path / "echo_crlf.py"
     script.write_text(
