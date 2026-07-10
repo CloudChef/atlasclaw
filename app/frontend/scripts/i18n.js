@@ -55,17 +55,17 @@ function isTransientLocaleFetchError(error) {
  */
 export function detectBrowserLocale() {
     const browserLang = navigator.language || navigator.userLanguage;
-    
+
     // Direct match
     if (SUPPORTED_LOCALES.includes(browserLang)) {
         return browserLang;
     }
-    
+
     // Prefix match (e.g., 'zh' -> 'zh-CN', 'en' -> 'en-US')
     const langPrefix = browserLang.split('-')[0];
     if (langPrefix === 'zh') return 'zh-CN';
     if (langPrefix === 'en') return 'en-US';
-    
+
     return DEFAULT_LOCALE;
 }
 
@@ -134,13 +134,14 @@ export async function loadLocale(locale) {
 }
 
 /**
- * Initialize i18n
- * Detect browser language and load corresponding file
+ * Initialize i18n from SmartCMP when embedded, otherwise browser locale.
  * @returns {Promise<string>} Current locale code
  */
 export async function initI18n() {
-    // Always use browser language
-    const locale = detectBrowserLocale();
+    // SmartCMP stores its locale as "zh" or "en" in the host window.
+    const locale = window.parent === window
+        ? detectBrowserLocale()
+        : window.parent.localStorage.getItem('local_lang') === 'zh' ? 'zh-CN' : 'en-US';
     
     await loadLocale(locale);
     return currentLocale;

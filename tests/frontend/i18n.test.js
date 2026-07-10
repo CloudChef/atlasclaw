@@ -29,12 +29,20 @@ global.fetch = jest.fn();
 document.querySelectorAll = jest.fn(() => []);
 document.querySelector = jest.fn(() => null);
 
+function setParentWindow(parentWindow) {
+    Object.defineProperty(window, 'parent', {
+        configurable: true,
+        value: parentWindow
+    });
+}
+
 describe('i18n Module', () => {
     beforeEach(() => {
         jest.clearAllMocks();
         jest.resetModules();
         localStorageMock.store = {};
         global.fetch.mockClear();
+        setParentWindow(window);
     });
 
     describe('detectBrowserLocale', () => {
@@ -267,7 +275,8 @@ describe('i18n Module', () => {
     });
 
     describe('initI18n', () => {
-        test('should initialize with saved locale', async () => {
+        test('should use browser locale outside SmartCMP even when a locale was saved', async () => {
+            global.navigator = { language: 'zh-CN' };
             localStorageMock.store['atlasclaw_locale'] = 'en-US';
             
             global.fetch.mockResolvedValueOnce({
@@ -277,7 +286,28 @@ describe('i18n Module', () => {
             
             const { initI18n } = await import('../../app/frontend/scripts/i18n.js');
             await initI18n();
-            expect(global.fetch).toHaveBeenCalledWith('/locales/en-US.json');
+            expect(global.fetch).toHaveBeenCalledWith('/locales/zh-CN.json');
+        });
+
+        test.each([
+            ['en', 'zh-CN', 'en-US'],
+            ['zh', 'en-US', 'zh-CN']
+        ])('should use SmartCMP %s locale over browser locale %s', async (hostLocale, browserLocale, expectedLocale) => {
+            global.navigator = { language: browserLocale };
+            setParentWindow({
+                localStorage: {
+                    getItem: jest.fn((key) => key === 'local_lang' ? hostLocale : null)
+                }
+            });
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ app: {} })
+            });
+
+            const { initI18n } = await import('../../app/frontend/scripts/i18n.js');
+            await initI18n();
+
+            expect(global.fetch).toHaveBeenCalledWith(`/locales/${expectedLocale}.json`);
         });
 
         test('should detect browser locale when no saved preference', async () => {
