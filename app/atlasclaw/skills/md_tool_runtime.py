@@ -230,6 +230,8 @@ def create_script_wrapper(
 
         runtime_kwargs = dict(kwargs)
         env = os.environ.copy()
+        # Request context must not inherit a service-level display timezone.
+        env.pop("ATLASCLAW_TIMEZONE", None)
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
         deps = getattr(ctx, "deps", None) if ctx is not None else None
@@ -277,7 +279,7 @@ def create_script_wrapper(
                 if isinstance(request_context, dict)
                 else ""
             )
-            if request_timezone:
+            if request_timezone and request_timezone.isprintable():
                 env["ATLASCLAW_TIMEZONE"] = request_timezone
             provider_resolution = resolve_provider_instance_selection(
                 provider_type=str(provider_type or ""),
