@@ -116,18 +116,28 @@ class SessionQueue:
     
     async def acquire(self, session_key: str) -> bool:
         """Acquire execution slots for a session run."""
-        # Acquire the global slot first.
-        await self._global_semaphore.acquire()
-        # Then acquire the session-local serialization slot.
-        await self._locks[session_key].acquire()
+        session_lock = self._locks[session_key]
+        # Serialize within a session before consuming scarce cross-session
+        # capacity. Queued runs for one busy conversation must not starve
+        # independent conversations.
+        await session_lock.acquire()
+        try:
+            await self._global_semaphore.acquire()
+        except BaseException:
+            # Cancellation while waiting for global capacity owns only the
+            # session-local lock and must release exactly that resource.
+            session_lock.release()
+            raise
         self._active[session_key] = True
         return True
     
     def release(self, session_key: str) -> None:
         """Release execution slots after a session run completes."""
         self._active[session_key] = False
-        self._locks[session_key].release()
+        # Release in reverse acquisition order so the next run for this
+        # session cannot contend globally until this run has returned its slot.
         self._global_semaphore.release()
+        self._locks[session_key].release()
     
     def is_active(self, session_key: str) -> bool:
         """Return whether a session currently has an active run."""

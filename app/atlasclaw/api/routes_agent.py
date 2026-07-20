@@ -10,10 +10,26 @@ from typing import Any, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request, status
 
 from ..auth.models import ANONYMOUS_USER, UserInfo
-from ..auth.guards import AuthorizationContext, get_optional_authorization_context
+from ..auth.guards import (
+    AuthorizationContext,
+    get_optional_authorization_context,
+    has_provider_instance_access,
+)
 from ..agent.runner_tool.runner_execution_payload import build_no_runtime_capability_answer
 from ..agent.selected_capability import SELECTED_CAPABILITY_KEY
 from ..session.context import SessionKey
+from ..core.embed.snapshot_store import (
+    SnapshotExpiredError,
+    SnapshotGenerationError,
+    SnapshotNotFoundError,
+)
+from ..core.embed.context_service import (
+    EmbedContextService,
+    EmbedPermissionError,
+    EmbedResolverError,
+    require_embed_resolver_access,
+)
+from ..core.tool_confirmation import ToolConfirmationError
 from .agent_capabilities import build_agent_capabilities, resolve_selected_capability
 from .deps_context import APIContext, get_api_context
 from .schemas import AgentRunRequest, AgentRunResponse, AgentStatusResponse
@@ -22,6 +38,7 @@ from .services.run_service import (
     build_provider_config,
     complete_run_with_static_answer,
     execute_agent_run,
+    execute_confirmed_tool_run,
     get_run_or_404,
     init_run,
     normalize_user_message,
@@ -174,8 +191,129 @@ def register_agent_routes(router: APIRouter) -> None:
             ) from exc
 
         request_context = dict(request.context or {})
+        confirmation_token = str(request_context.pop("tool_confirmation_token", "") or "").strip()
+        request_context.pop("_tool_confirmation_grant", None)
+        request_context.pop("turn_context", None)
+        request_context.pop("allowed_page_skill_refs", None)
+        request_context.pop("embed_scope", None)
+        request_context.pop("surface_id", None)
+        embed_context_id = request_context.pop("embed_context_id", None)
+        embed_generation = request_context.pop("context_generation", None)
+        embed_integration_id = request_context.pop("integration_id", None)
+        embed_fields = (embed_context_id, embed_generation, embed_integration_id)
+        if any(value is not None for value in embed_fields):
+            if not all(value is not None for value in embed_fields):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Embed context id, generation, and integration id must be supplied together.",
+                )
+            integration = (
+                ctx.embed_integration_registry.get(str(embed_integration_id))
+                if ctx.embed_integration_registry is not None
+                else None
+            )
+            if integration is None:
+                raise HTTPException(status_code=404, detail="Embed integration not found")
+            parsed_session = SessionKey.from_string(request.session_key)
+            if (
+                parsed_session.agent_id != integration.config.agent_id
+                or parsed_session.account_id != integration.config.session_scope
+            ):
+                raise HTTPException(status_code=404, detail="Chat session not found")
+            try:
+                snapshot = ctx.embed_context_store.get(
+                    str(embed_context_id),
+                    owner_user_id=user_info.user_id,
+                    integration_id=str(embed_integration_id),
+                    generation=int(embed_generation),
+                )
+            except SnapshotExpiredError as exc:
+                raise HTTPException(status_code=status.HTTP_410_GONE, detail=str(exc)) from exc
+            except SnapshotGenerationError as exc:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            except (SnapshotNotFoundError, TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Embed context not found",
+                ) from exc
+            if not ctx.embed_context_store.is_latest(
+                snapshot.context_id,
+                owner_user_id=user_info.user_id,
+                integration_id=snapshot.integration_id,
+                surface_id=snapshot.surface_id,
+                generation=snapshot.generation,
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Embed context no longer targets the current page",
+                )
+            if (
+                snapshot.provider_type != integration.config.provider_type
+                or snapshot.provider_instance != integration.config.provider_instance
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Embed integration Provider binding changed",
+                )
+            try:
+                require_embed_resolver_access(
+                    resolved_authz,
+                    provider_type=snapshot.provider_type,
+                    provider_instance=snapshot.provider_instance,
+                )
+            except EmbedPermissionError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=str(exc),
+                ) from exc
+            provider_bucket = provider_instances_for_request.get(snapshot.provider_type, {})
+            provider_instance = (
+                provider_bucket.get(snapshot.provider_instance)
+                if isinstance(provider_bucket, dict)
+                else None
+            )
+            if not isinstance(provider_instance, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Embed Provider instance is not configured for this run",
+                )
+            try:
+                EmbedContextService(
+                    ctx,
+                    ctx.embed_integration_registry,
+                    ctx.embed_context_store,
+                ).validate_snapshot_skill_binding(
+                    provider_type=snapshot.provider_type,
+                    skill_ref=snapshot.skill_ref,
+                )
+            except EmbedResolverError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Embed page Skill binding changed",
+                ) from exc
+            request_context["turn_context"] = {
+                "integration_id": snapshot.integration_id,
+                "page_type": snapshot.page_type,
+                "object": snapshot.object.model_dump(),
+                "context_generation": snapshot.generation,
+            }
+            request_context["allowed_page_skill_refs"] = [snapshot.skill_ref]
+            request_context["embed_scope"] = {
+                "context_id": snapshot.context_id,
+                "generation": snapshot.generation,
+                "integration_id": snapshot.integration_id,
+                "provider_type": snapshot.provider_type,
+                "provider_instance": snapshot.provider_instance,
+                "object_type": snapshot.object.type,
+                "object_id": snapshot.object.id,
+            }
         request_context.pop(SELECTED_CAPABILITY_KEY, None)
         selected_capability = request_context.pop("selected_capability", None)
+        if embed_context_id is not None and selected_capability is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Embed runs cannot accept a client-selected capability",
+            )
         canonical_capability: dict[str, Any] | None = None
         if selected_capability is not None:
             canonical_capability = resolve_selected_capability(
@@ -192,7 +330,7 @@ def register_agent_routes(router: APIRouter) -> None:
             request_context[SELECTED_CAPABILITY_KEY] = canonical_capability
 
         slash_command = _leading_slash_command(safe_message)
-        if slash_command:
+        if slash_command and embed_context_id is None:
             slash_capability = _resolve_slash_capability(
                 ctx=ctx,
                 authz=resolved_authz,
@@ -237,6 +375,54 @@ def register_agent_routes(router: APIRouter) -> None:
                 **(request_context or {}),
                 "_provider_permissions": user_provider_permissions,
             }
+
+        if confirmation_token:
+            if resolved_authz is None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Current authorization is unavailable for Tool confirmation.",
+                )
+            parsed_session = SessionKey.from_string(request.session_key)
+            embed_scope = request_context.get("embed_scope")
+            try:
+                confirmation_grant = ctx.tool_confirmation_store.claim(
+                    confirmation_token,
+                    owner_user_id=user_info.user_id,
+                    session_key=request.session_key,
+                    agent_id=parsed_session.agent_id or "main",
+                    embed_scope=embed_scope,
+                )
+            except ToolConfirmationError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=str(exc),
+                ) from exc
+            if confirmation_grant.provider_type and not has_provider_instance_access(
+                resolved_authz,
+                confirmation_grant.provider_type,
+                confirmation_grant.provider_instance,
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Confirmed Tool Provider is not available to the current user.",
+                )
+            request_context["_tool_confirmation_grant"] = confirmation_grant
+            init_run(ctx, run_id, request.session_key, safe_message, request.timeout_seconds)
+            background_tasks.add_task(
+                execute_confirmed_tool_run,
+                ctx,
+                run_id,
+                request.session_key,
+                request.timeout_seconds,
+                user_info,
+                request_cookies,
+                request_context,
+            )
+            return AgentRunResponse(
+                run_id=run_id,
+                status="running",
+                session_key=request.session_key,
+            )
 
         init_run(ctx, run_id, request.session_key, safe_message, request.timeout_seconds)
 

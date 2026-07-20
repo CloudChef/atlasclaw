@@ -59,6 +59,91 @@ beforeEach(() => {
     MockEventSource.instances = [];
 });
 
+describe.each([
+    ['ordinary menu', null],
+    ['Embed page', {
+        integration_id: 'smart-assistant',
+        embed_context_id: 'ctx-confirm',
+        context_generation: 7
+    }]
+])('Tool confirmation action in %s', (_surface, turnContext) => {
+    test('Cancel creates no run and Confirm submits only the opaque token', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        const deepChatContainer = document.createElement('div');
+        deepChatContainer.id = 'container';
+        element.shadowRoot.appendChild(deepChatContainer);
+        const signals = createDomSignals(messages);
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-confirm' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+        await initChat(element, turnContext
+            ? { getTurnContext: jest.fn(() => Promise.resolve(turnContext)) }
+            : {});
+
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-stage-confirmation' })
+        });
+        const initialRun = element.handler(
+            { messages: [{ text: 'restart the resource', role: 'user' }] },
+            signals
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const firstStream = MockEventSource.instances.at(-1);
+        firstStream.simulateEvent('runtime', {
+            state: 'artifact',
+            phase: 'object_actions',
+            object_actions: [{
+                object_actions: [{
+                    action_id: 'confirm-tool-abcd',
+                    kind: 'agent_prompt',
+                    display_label: localizedText('Confirm action'),
+                    agent_prompt: localizedText('Execute the operation I just confirmed.'),
+                    confirmation_message: localizedText('Confirm this operation?'),
+                    requires_confirmation: true,
+                    effect: 'mutate',
+                    confirmation_token: 'opaque-ticket-123'
+                }]
+            }]
+        });
+        firstStream.simulateEvent('assistant', { text: 'Confirmation required.', is_delta: true });
+        firstStream.simulateEvent('lifecycle', { phase: 'end' });
+        await initialRun;
+
+        global.fetch.mockClear();
+        const actionButton = messages.querySelector('button[data-object-action-payload]');
+        expect(actionButton).not.toBeNull();
+        actionButton.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        let card = messages.querySelector('.object-action-confirmation-card');
+        card.querySelector('.object-action-cancel-button').click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(global.fetch).not.toHaveBeenCalled();
+
+        actionButton.click();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        card = messages.querySelector('.object-action-confirmation-card');
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-confirmed-tool' })
+        });
+        card.querySelector('button:not(.object-action-cancel-button)').click();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const request = latestAgentRunRequestBody();
+        expect(request.context.tool_confirmation_token).toBe('opaque-ticket-123');
+        if (turnContext) {
+            expect(request.context).toMatchObject(turnContext);
+        }
+        MockEventSource.instances.at(-1).simulateEvent('lifecycle', { phase: 'end' });
+    });
+});
+
 const sessionStorageMock = (() => {
     let store = {};
     return {
@@ -1014,6 +1099,80 @@ describe('chat-ui.js handler mode', () => {
         MockEventSource.instances[0].simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;
 
+        expect(signals.onClose).toHaveBeenCalled();
+    });
+
+    test('handler binds send-time Embed context without changing visible user text', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-context' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element, {
+            getTurnContext: jest.fn(() => Promise.resolve({
+                integration_id: 'tenant-assistant',
+                embed_context_id: 'ctx-9',
+                context_generation: 9
+            }))
+        });
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-context' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'analyze this item', role: 'user' }] },
+            signals
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const body = latestAgentRunRequestBody();
+        expect(body.message).toBe('analyze this item');
+        expect(body.context).toMatchObject({
+            integration_id: 'tenant-assistant',
+            embed_context_id: 'ctx-9',
+            context_generation: 9
+        });
+
+        MockEventSource.instances.at(-1).simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test.each([
+        ['EMBED_CONTEXT_PENDING', 'Page context is still loading. Please try again.'],
+        ['EMBED_CONTEXT_UNAVAILABLE', 'Page context could not be resolved. Please try again.']
+    ])('handler fails closed for %s', async (code, message) => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-blocked-context' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+        const contextError = Object.assign(new Error(message), { code });
+        await initChat(element, {
+            getTurnContext: jest.fn(() => Promise.reject(contextError))
+        });
+
+        global.fetch.mockClear();
+        await element.handler(
+            { messages: [{ text: 'perform this page action', role: 'user' }] },
+            signals
+        );
+
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(signals.onResponse).toHaveBeenCalledWith(expect.objectContaining({
+            html: expect.stringContaining(message)
+        }));
         expect(signals.onClose).toHaveBeenCalled();
     });
 

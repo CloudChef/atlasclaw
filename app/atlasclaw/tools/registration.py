@@ -509,6 +509,7 @@ def register_builtin_tools(
             live_data=bool(tool_meta.live_data),
             browser_interaction=bool(tool_meta.browser_interaction),
             public_web=bool(tool_meta.public_web),
+            requires_approval=bool(tool_meta.requires_approval),
         )
         registry.register(skill_meta, handler)
         registered.append(tool_name)

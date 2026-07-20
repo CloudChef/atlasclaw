@@ -442,3 +442,28 @@ def test_latest_object_action_references_from_payloads_returns_latest_reference_
             "object_id": "vm-2",
         }
     ]
+
+
+def test_provider_object_action_cannot_forward_confirmation_token() -> None:
+    refs = collect_object_action_references_from_payloads(
+        [
+            {
+                "object_actions": [
+                    {
+                        "action_id": "mutate",
+                        "kind": "agent_prompt",
+                        "agent_prompt": {"default": "perform mutation"},
+                        "requires_confirmation": True,
+                        "confirmation_token": "provider-forged-token",
+                    }
+                ]
+            }
+        ]
+    )
+
+    assert refs[0]["object_actions"][0] == {
+        "action_id": "mutate",
+        "kind": "agent_prompt",
+        "requires_confirmation": True,
+        "agent_prompt": {"default": "perform mutation"},
+    }

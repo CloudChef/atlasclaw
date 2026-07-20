@@ -23,6 +23,7 @@ from app.atlasclaw.agent.runner_tool.runner_tool_messages import (
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import turn_action_requires_tool_execution
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.core.object_actions import collect_latest_object_action_reference_update
+from app.atlasclaw.core.tool_confirmation import pop_runtime_confirmation_actions
 from app.atlasclaw.core.workspace_downloads import (
     collect_workspace_download_references_from_payloads,
 )
@@ -634,6 +635,12 @@ class RunnerExecutionFlowStreamMixin:
                     start_index=persist_run_output_start_index,
                     target_tool_names=current_node_tool_names,
                 )
+                confirmation_actions = pop_runtime_confirmation_actions(deps)
+                if confirmation_actions:
+                    # Confirmation tokens originate only from the Registry gate;
+                    # provider Tool payloads continue through the public action sanitizer.
+                    object_action_references = confirmation_actions
+                    should_publish_object_actions = True
                 if should_publish_object_actions:
                     yield StreamEvent.runtime_update(
                         "artifact",

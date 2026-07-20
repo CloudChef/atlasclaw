@@ -24,18 +24,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+import pytest
 
 from app.atlasclaw.agent.selected_capability import SELECTED_CAPABILITY_KEY
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
+from app.atlasclaw.api.service_provider_schemas import register_provider_schema_definition
 from app.atlasclaw.auth.models import UserInfo
+from app.atlasclaw.auth.guards import AuthorizationContext
+from app.atlasclaw.api.services import run_service
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
+from app.atlasclaw.session.context import SessionKey
+from tests.atlasclaw.provider_schema_fixtures import managed_provider_definition
 
 
 class _StreamingRunner:
@@ -131,6 +138,199 @@ def _assert_static_slash_denial(client, ctx, runner, session_key: str, run) -> N
     )
     assert [entry.role for entry in entries] == ["user", "assistant"]
     assert "没有可用的 provider、skill 或工具" in entries[-1].content
+
+
+class _ConfirmationDbSession:
+    async def commit(self):
+        return None
+
+    async def rollback(self):
+        return None
+
+    async def close(self):
+        return None
+
+
+class _ConfirmationDbManager:
+    is_initialized = True
+
+    def __init__(self):
+        self._session_factory = _ConfirmationDbSession
+
+    @asynccontextmanager
+    async def get_session(self):
+        yield _ConfirmationDbSession()
+
+
+def _install_confirmation_auth(monkeypatch, user: UserInfo) -> None:
+    manager = _ConfirmationDbManager()
+    authz = AuthorizationContext(
+        user=user,
+        permissions={
+            "skills": {"allow_all": True},
+            "providers": {"allow_all": True},
+        },
+    )
+
+    async def resolve_authz(_session, _user):
+        return authz
+
+    monkeypatch.setattr(
+        "app.atlasclaw.db.database.get_db_manager",
+        lambda: manager,
+    )
+    monkeypatch.setattr(
+        "app.atlasclaw.auth.guards.resolve_authorization_context",
+        resolve_authz,
+    )
+    monkeypatch.setattr(run_service, "get_db_manager", lambda: manager)
+    monkeypatch.setattr(run_service, "resolve_authorization_context", resolve_authz)
+
+
+def _register_confirmed_fake_tool(ctx: APIContext, calls: list[dict]) -> SkillMetadata:
+    register_provider_schema_definition(managed_provider_definition(provider_type="provider"))
+
+    async def handler(ctx=None, **kwargs):
+        calls.append(dict(kwargs))
+        return {"success": True}
+
+    metadata = SkillMetadata(
+        name="provider_mutation",
+        source="provider",
+        provider_type="provider",
+        owner_skill_ref="provider:resource",
+        effect="mutate",
+        requires_approval=True,
+        parameters_schema={
+            "type": "object",
+            "properties": {"resource_id": {"type": "string"}},
+            "required": ["resource_id"],
+        },
+    )
+    ctx.skill_registry.register(metadata, handler)
+    ctx.provider_instances = {
+        "provider": {
+            "primary": {
+                "provider_type": "provider",
+                "instance_name": "primary",
+                "base_url": "https://provider.example.com",
+                "auth_type": "provider_token",
+                "provider_token": "test-provider-token",
+            }
+        }
+    }
+    return metadata
+
+
+def test_agent_run_claims_ticket_and_executes_frozen_tool_once(tmp_path, monkeypatch) -> None:
+    user = UserInfo(user_id="alice", display_name="Alice")
+    client, ctx = _build_client_and_context(
+        tmp_path,
+        _StreamingRunner(),
+        user_id=user.user_id,
+    )
+    _install_confirmation_auth(monkeypatch, user)
+    calls: list[dict] = []
+    metadata = _register_confirmed_fake_tool(ctx, calls)
+    session = client.post("/api/sessions", json={})
+    session_key = session.json()["session_key"]
+    agent_id = SessionKey.from_string(session_key).agent_id or "main"
+    ticket = ctx.tool_confirmation_store.issue(
+        owner_user_id=user.user_id,
+        session_key=session_key,
+        agent_id=agent_id,
+        tool_name=metadata.name,
+        owner_skill_ref=metadata.owner_skill_ref,
+        contract_fingerprint=ctx.skill_registry._tool_contract_fingerprint(metadata),
+        arguments={"resource_id": "resource-frozen"},
+        provider_type="provider",
+        provider_instance="primary",
+    )
+
+    response = client.post(
+        "/api/agent/run",
+        json={
+            "session_key": session_key,
+            "message": "execute confirmed operation",
+            "timeout_seconds": 30,
+            "context": {"tool_confirmation_token": ticket.token},
+        },
+    )
+
+    assert response.status_code == 200
+    run_id = response.json()["run_id"]
+    with client.stream("GET", f"/api/agent/runs/{run_id}/stream") as stream:
+        events = _parse_sse_events("".join(stream.iter_text()))
+    status_payload = client.get(f"/api/agent/runs/{run_id}").json()
+    assert status_payload["status"] == "completed", (status_payload, events)
+    assert calls == [{"resource_id": "resource-frozen"}]
+    assert [(event, payload.get("phase")) for event, payload in events] == [
+        ("lifecycle", "start"),
+        ("tool", "start"),
+        ("tool", "end"),
+        ("assistant", None),
+        ("runtime", "confirmed_tool_completed"),
+        ("lifecycle", "end"),
+    ]
+    transcript = asyncio.run(
+        ctx.session_manager_router.for_session_key(session_key).load_transcript(session_key)
+    )
+    assert transcript[-1].role == "assistant"
+    assert transcript[-1].metadata["confirmed_tool"] == metadata.name
+
+
+@pytest.mark.parametrize("failure", ["forged", "replay", "cross_user", "cross_session"])
+def test_agent_run_rejects_invalid_confirmation_ticket(
+    tmp_path,
+    monkeypatch,
+    failure: str,
+) -> None:
+    user = UserInfo(user_id="alice", display_name="Alice")
+    client, ctx = _build_client_and_context(
+        tmp_path,
+        _StreamingRunner(),
+        user_id=user.user_id,
+    )
+    _install_confirmation_auth(monkeypatch, user)
+    calls: list[dict] = []
+    metadata = _register_confirmed_fake_tool(ctx, calls)
+    session_key = client.post("/api/sessions", json={}).json()["session_key"]
+    agent_id = SessionKey.from_string(session_key).agent_id or "main"
+    if failure == "forged":
+        token = "forged-token"
+    else:
+        ticket = ctx.tool_confirmation_store.issue(
+            owner_user_id="bob" if failure == "cross_user" else user.user_id,
+            session_key="agent:main:user:alice:other" if failure == "cross_session" else session_key,
+            agent_id=agent_id,
+            tool_name=metadata.name,
+            owner_skill_ref=metadata.owner_skill_ref,
+            contract_fingerprint=ctx.skill_registry._tool_contract_fingerprint(metadata),
+            arguments={"resource_id": "resource-frozen"},
+            provider_type="provider",
+            provider_instance="primary",
+        )
+        token = ticket.token
+        if failure == "replay":
+            ctx.tool_confirmation_store.claim(
+                token,
+                owner_user_id=user.user_id,
+                session_key=session_key,
+                agent_id=agent_id,
+            )
+
+    response = client.post(
+        "/api/agent/run",
+        json={
+            "session_key": session_key,
+            "message": "execute confirmed operation",
+            "timeout_seconds": 30,
+            "context": {"tool_confirmation_token": token},
+        },
+    )
+
+    assert response.status_code == 409
+    assert calls == []
 
 
 def test_agent_run_stream_does_not_duplicate_lifecycle_or_assistant_events(tmp_path):

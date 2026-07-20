@@ -7,12 +7,12 @@
  * Configure DeepChat component integration with AtlasClaw API
  */
 
-import { getSessionKey, initSession, setSessionKey, setSessionHasMessages } from './session-manager.js?v=21'
-import { buildWorkspaceFileDownloadUrl, getAgentInfo, getSessionHistory } from './api-client.js?v=21'
-import { createStreamHandler } from './stream-handler.js?v=21'
-import { buildApiUrl } from './config.js?v=21'
+import { getSessionKey, initSession, setSessionKey, setSessionHasMessages } from './session-manager.js?v=27'
+import { buildWorkspaceFileDownloadUrl, getAgentInfo, getSessionHistory } from './api-client.js?v=27'
+import { createStreamHandler } from './stream-handler.js?v=27'
+import { buildApiUrl } from './config.js?v=27'
 import { translateIfExists, getCurrentLocale } from './i18n.js'
-import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=21'
+import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=27'
 
 let chatElement = null
 let currentStreamHandler = null
@@ -28,6 +28,7 @@ let blockNextEnterAfterComposition = false
 let blockNextEnterStartedAt = 0
 let focusRetryGeneration = 0
 let sessionActivationGeneration = 0
+const activeRunActivityCounts = new Map()
 
 const IME_ENTER_GUARD_MS = 150
 const SCROLL_THRESHOLD = 50
@@ -509,6 +510,55 @@ function readRenderedRuntimePanelOpen() {
   return !!details.open
 }
 
+const OBJECT_ACTION_STYLE_ID = 'atlasclaw-object-action-styles'
+const OBJECT_ACTION_STYLES = `
+.response-table th.response-table-action-header,.response-table td.response-table-action{position:sticky;right:0;min-width:146px;background:#fff;box-shadow:-8px 0 12px rgba(255,255,255,.82)}
+.response-table th.response-table-action-header{background:#f8fafc;text-align:left}
+.response-table td.response-table-action{text-align:right}
+.response-table tbody tr:nth-child(even) td.response-table-action{background:#fbfdff}
+.response-content .object-actions{display:inline-flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px;max-width:100%;vertical-align:baseline}
+.response-content>.object-actions{display:flex;justify-content:flex-start;gap:8px;width:fit-content;max-width:100%;margin-top:12px;padding:7px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc}
+.response-table td.response-table-action .object-actions{flex-wrap:nowrap;gap:5px;justify-content:flex-end}
+/* Row action cards live inside right-aligned nowrap cells, so reset prose layout locally. */
+.response-table td.response-table-action .object-action-confirmation-card{white-space:normal;text-align:left}
+.response-content a.object-action-link,.response-content button.object-action-button{position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;gap:5px;max-width:100%;height:28px;min-height:28px;padding:0 8px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#334155;box-shadow:0 1px 1px rgba(15,23,42,.04);font:inherit;font-size:13px;font-weight:650;line-height:1;vertical-align:baseline;white-space:nowrap;cursor:pointer;transition:background .14s ease,border-color .14s ease,box-shadow .14s ease,color .14s ease,transform .14s ease}
+.response-content a.object-action-link:hover,.response-content button.object-action-button:hover{border-color:#94a3b8;background:#f8fafc;box-shadow:0 3px 8px rgba(15,23,42,.08);text-decoration:none;transform:translateY(-1px)}
+.response-content a.object-action-link:active,.response-content button.object-action-button:active{box-shadow:0 1px 2px rgba(15,23,42,.08);transform:translateY(0)}
+.response-content a.object-action-link:focus-visible,.response-content button.object-action-button:focus-visible{outline:2px solid rgba(37,99,235,.38);outline-offset:2px}
+.response-content button.object-action-button::before{content:"";width:6px;height:6px;flex:0 0 6px;border-radius:999px;background:#64748b;box-shadow:0 0 0 3px rgba(100,116,139,.12)}
+.response-content a.object-action-link,.response-content button.object-action-open-button{border-color:rgba(20,184,166,.28);background:#f0fdfa;color:#0f766e}
+.response-content a.object-action-link:hover,.response-content button.object-action-open-button:hover{border-color:rgba(13,148,136,.46);background:#ccfbf1;color:#0f766e}
+.response-content button.object-action-open-button::before{content:none}
+.response-content button.object-action-button.tone-success{border-color:rgba(22,163,74,.28);background:#f0fdf4;color:#15803d}
+.response-content button.object-action-button.tone-success::before{background:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.13)}
+.response-content button.object-action-button.tone-success:hover{border-color:rgba(22,163,74,.46);background:#dcfce7;color:#166534}
+.response-content button.object-action-button.tone-warning{border-color:rgba(217,119,6,.32);background:#fffbeb;color:#b45309}
+.response-content button.object-action-button.tone-warning::before{background:#d97706;box-shadow:0 0 0 3px rgba(217,119,6,.14)}
+.response-content button.object-action-button.tone-warning:hover{border-color:rgba(217,119,6,.50);background:#fef3c7;color:#92400e}
+.response-content button.object-action-button.tone-danger{border-color:rgba(220,38,38,.28);background:#fef2f2;color:#b91c1c}
+.response-content button.object-action-button.tone-danger::before{background:#dc2626;box-shadow:0 0 0 3px rgba(220,38,38,.13)}
+.response-content button.object-action-button.tone-danger:hover{border-color:rgba(220,38,38,.48);background:#fee2e2;color:#991b1b}
+.response-content .object-actions.is-confirming button.object-action-button{opacity:.52;pointer-events:none}
+.object-action-confirmation-card{box-sizing:border-box;width:min(100%,420px);margin-top:8px;padding:10px;border:1px solid #dbe3ee;border-radius:8px;background:#fff;box-shadow:0 8px 22px rgba(15,23,42,.08);color:#1f2937}
+.object-action-confirmation-title{font-size:13px;font-weight:700;line-height:1.45}
+.object-action-confirmation-help{margin-top:3px;color:#64748b;font-size:12px;line-height:1.45}
+.object-action-confirmation-inputs{display:grid;gap:8px;margin-top:9px}
+.object-action-input-label{display:grid;gap:5px;color:#475569;font-size:12px;font-weight:650}
+.object-action-input,.object-action-textarea{box-sizing:border-box;width:100%;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#0f172a;font:inherit;font-size:13px;line-height:1.45;outline:none;transition:border-color .14s ease,box-shadow .14s ease}
+.object-action-input{height:32px;padding:0 9px}
+.object-action-textarea{min-height:72px;padding:8px 9px;resize:vertical}
+.object-action-input:focus,.object-action-textarea:focus{border-color:#7c83fd;box-shadow:0 0 0 3px rgba(124,131,253,.14)}
+.object-action-confirmation-error{display:none;margin-top:7px;color:#b91c1c;font-size:12px;font-weight:650;line-height:1.4}
+.object-action-confirmation-card.has-error .object-action-confirmation-error{display:block}
+.object-action-submit-alert{margin-top:7px;color:#b91c1c;font-size:12px;font-weight:650;line-height:1.4}
+.object-action-confirmation-buttons{display:flex;flex-wrap:wrap;gap:7px;justify-content:flex-end;margin-top:10px}
+.response-content .object-action-confirmation-buttons button.object-action-button{height:30px;min-height:30px}
+.response-content button.object-action-cancel-button::before{display:none}
+.object-action-confirmation-card.is-submitting .object-action-input,.object-action-confirmation-card.is-submitting .object-action-textarea,.object-action-confirmation-card.is-submitting button{opacity:.58;pointer-events:none}
+.object-action-icon{width:11px;height:11px;flex:0 0 11px}
+.object-action-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
+`
+
 const THINKING_STYLES = `
 @keyframes thinking-dot-minimal{0%,100%{opacity:.4;transform:translateY(0)}50%{opacity:.8;transform:translateY(-3px)}}
 @keyframes thinking-pulse-minimal{0%,100%{opacity:1}50%{opacity:.5}}
@@ -596,50 +646,7 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-content a.workspace-download-link:hover{border-color:rgba(37,99,235,.36);background:#dbeafe;text-decoration:none}
 .response-content .workspace-generated-downloads{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:10px}
 .workspace-download-icon{width:14px;height:14px;flex:0 0 14px}
-.response-table th.response-table-action-header,.response-table td.response-table-action{position:sticky;right:0;min-width:146px;background:#fff;box-shadow:-8px 0 12px rgba(255,255,255,.82)}
-.response-table th.response-table-action-header{background:#f8fafc;text-align:left}
-.response-table td.response-table-action{text-align:right}
-.response-table tbody tr:nth-child(even) td.response-table-action{background:#fbfdff}
-.response-content .object-actions{display:inline-flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:6px;max-width:100%;vertical-align:baseline}
-.response-content>.object-actions{display:flex;justify-content:flex-start;gap:8px;width:fit-content;max-width:100%;margin-top:12px;padding:7px;border:1px solid #e2e8f0;border-radius:8px;background:#f8fafc}
-.response-table td.response-table-action .object-actions{flex-wrap:nowrap;gap:5px;justify-content:flex-end}
-/* Row action cards live inside right-aligned nowrap cells, so reset prose layout locally. */
-.response-table td.response-table-action .object-action-confirmation-card{white-space:normal;text-align:left}
-.response-content a.object-action-link,.response-content button.object-action-button{position:relative;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;gap:5px;max-width:100%;height:28px;min-height:28px;padding:0 8px;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#334155;box-shadow:0 1px 1px rgba(15,23,42,.04);font:inherit;font-size:13px;font-weight:650;line-height:1;vertical-align:baseline;white-space:nowrap;cursor:pointer;transition:background .14s ease,border-color .14s ease,box-shadow .14s ease,color .14s ease,transform .14s ease}
-.response-content a.object-action-link:hover,.response-content button.object-action-button:hover{border-color:#94a3b8;background:#f8fafc;box-shadow:0 3px 8px rgba(15,23,42,.08);text-decoration:none;transform:translateY(-1px)}
-.response-content a.object-action-link:active,.response-content button.object-action-button:active{box-shadow:0 1px 2px rgba(15,23,42,.08);transform:translateY(0)}
-.response-content a.object-action-link:focus-visible,.response-content button.object-action-button:focus-visible{outline:2px solid rgba(37,99,235,.38);outline-offset:2px}
-.response-content button.object-action-button::before{content:"";width:6px;height:6px;flex:0 0 6px;border-radius:999px;background:#64748b;box-shadow:0 0 0 3px rgba(100,116,139,.12)}
-.response-content a.object-action-link,.response-content button.object-action-open-button{border-color:rgba(20,184,166,.28);background:#f0fdfa;color:#0f766e}
-.response-content a.object-action-link:hover,.response-content button.object-action-open-button:hover{border-color:rgba(13,148,136,.46);background:#ccfbf1;color:#0f766e}
-.response-content button.object-action-open-button::before{content:none}
-.response-content button.object-action-button.tone-success{border-color:rgba(22,163,74,.28);background:#f0fdf4;color:#15803d}
-.response-content button.object-action-button.tone-success::before{background:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.13)}
-.response-content button.object-action-button.tone-success:hover{border-color:rgba(22,163,74,.46);background:#dcfce7;color:#166534}
-.response-content button.object-action-button.tone-warning{border-color:rgba(217,119,6,.32);background:#fffbeb;color:#b45309}
-.response-content button.object-action-button.tone-warning::before{background:#d97706;box-shadow:0 0 0 3px rgba(217,119,6,.14)}
-.response-content button.object-action-button.tone-warning:hover{border-color:rgba(217,119,6,.50);background:#fef3c7;color:#92400e}
-.response-content button.object-action-button.tone-danger{border-color:rgba(220,38,38,.28);background:#fef2f2;color:#b91c1c}
-.response-content button.object-action-button.tone-danger::before{background:#dc2626;box-shadow:0 0 0 3px rgba(220,38,38,.13)}
-.response-content button.object-action-button.tone-danger:hover{border-color:rgba(220,38,38,.48);background:#fee2e2;color:#991b1b}
-.response-content .object-actions.is-confirming button.object-action-button{opacity:.52;pointer-events:none}
-.object-action-confirmation-card{box-sizing:border-box;width:min(100%,420px);margin-top:8px;padding:10px;border:1px solid #dbe3ee;border-radius:8px;background:#fff;box-shadow:0 8px 22px rgba(15,23,42,.08);color:#1f2937}
-.object-action-confirmation-title{font-size:13px;font-weight:700;line-height:1.45}
-.object-action-confirmation-help{margin-top:3px;color:#64748b;font-size:12px;line-height:1.45}
-.object-action-confirmation-inputs{display:grid;gap:8px;margin-top:9px}
-.object-action-input-label{display:grid;gap:5px;color:#475569;font-size:12px;font-weight:650}
-.object-action-input,.object-action-textarea{box-sizing:border-box;width:100%;border:1px solid #cbd5e1;border-radius:7px;background:#fff;color:#0f172a;font:inherit;font-size:13px;line-height:1.45;outline:none;transition:border-color .14s ease,box-shadow .14s ease}
-.object-action-input{height:32px;padding:0 9px}
-.object-action-textarea{min-height:72px;padding:8px 9px;resize:vertical}
-.object-action-input:focus,.object-action-textarea:focus{border-color:#7c83fd;box-shadow:0 0 0 3px rgba(124,131,253,.14)}
-.object-action-confirmation-error{display:none;margin-top:7px;color:#b91c1c;font-size:12px;font-weight:650;line-height:1.4}
-.object-action-confirmation-card.has-error .object-action-confirmation-error{display:block}
-.object-action-confirmation-buttons{display:flex;flex-wrap:wrap;gap:7px;justify-content:flex-end;margin-top:10px}
-.response-content .object-action-confirmation-buttons button.object-action-button{height:30px;min-height:30px}
-.response-content button.object-action-cancel-button::before{display:none}
-.object-action-confirmation-card.is-submitting .object-action-input,.object-action-confirmation-card.is-submitting .object-action-textarea,.object-action-confirmation-card.is-submitting button{opacity:.58;pointer-events:none}
-.object-action-icon{width:11px;height:11px;flex:0 0 11px}
-.object-action-text{min-width:0;overflow:hidden;text-overflow:ellipsis}
+${OBJECT_ACTION_STYLES}
 .message-wrapper{display:flex;flex-direction:column;gap:12px}
 .atlas-user-message-copy-btn{width:30px;height:30px;margin-top:12px;margin-left:8px;border:1px solid rgba(148,163,184,.34);border-radius:999px;background:rgba(255,255,255,.92);color:#64748b;box-shadow:0 10px 24px rgba(15,23,42,.10);display:inline-flex;align-items:center;justify-content:center;flex:0 0 30px;cursor:pointer;opacity:0;pointer-events:auto;transform:translateY(2px) scale(.96);transition:opacity .16s ease,transform .16s ease,color .16s ease,border-color .16s ease,background .16s ease}
 .atlas-user-message-copy-btn:hover{color:#1f2937;border-color:rgba(124,131,253,.46);background:#ffffff}
@@ -836,6 +843,8 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     currentSessionKey = sessionKey
   }
 
+  const settleRunActivity = beginRunActivity(sessionKey)
+
   if (options.visibleUserTurn !== false) {
     notifyUserTurnStarted(sessionKey, messageText)
   }
@@ -851,6 +860,38 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     }
     if (options.visibleUserTurn === false) {
       requestContext.visible_user_turn = false
+    }
+    const toolConfirmationToken = String(options.toolConfirmationToken || '').trim()
+    if (toolConfirmationToken) {
+      requestContext.tool_confirmation_token = toolConfirmationToken
+    }
+    const explicitTurnContext = normalizeEmbedActionTurnContext(options.turnContext)
+    if (explicitTurnContext) {
+      Object.assign(requestContext, explicitTurnContext)
+    } else if (typeof chatCallbacks.getTurnContext === 'function') {
+      try {
+        const turnContext = await chatCallbacks.getTurnContext()
+        if (
+          turnContext?.embed_context_id &&
+          turnContext.integration_id &&
+          Number.isSafeInteger(turnContext.context_generation)
+        ) {
+          requestContext.embed_context_id = turnContext.embed_context_id
+          requestContext.context_generation = turnContext.context_generation
+          requestContext.integration_id = turnContext.integration_id
+        }
+      } catch (error) {
+        console.warn('[ChatUI] Send-time Embed context unavailable:', error)
+        const errorMessage = [
+          'EMBED_CONTEXT_PENDING',
+          'EMBED_CONTEXT_UNAVAILABLE'
+        ].includes(error?.code)
+          ? error.message
+          : 'Page context is unavailable. Please try again.'
+        reportRunCreationError(signals, errorMessage, options.onRunCreationError)
+        settleRunActivity()
+        return false
+      }
     }
     const response = await fetch(buildApiUrl('/api/agent/run'), {
       method: 'POST',
@@ -873,22 +914,26 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
       } catch (_) {
         // Keep the HTTP status fallback when the response body is not JSON.
       }
-      signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(errorMessage)}</p>` })
-      signals.onClose()
+      reportRunCreationError(signals, errorMessage, options.onRunCreationError)
+      settleRunActivity()
       return false
     }
 
     const data = await response.json()
     runId = data.run_id || data.runId || data.id
     if (!runId) {
-      signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(data.detail || 'Error: No run_id')}</p>` })
-      signals.onClose()
+      reportRunCreationError(
+        signals,
+        data.detail || 'Error: No run_id',
+        options.onRunCreationError
+      )
+      settleRunActivity()
       return false
     }
   } catch (err) {
     console.error('[ChatUI] API call failed:', err)
-    signals.onResponse({ html: `<p style="color: #d32f2f;">Error: ${escapeHtml(err.message)}</p>` })
-    signals.onClose()
+    reportRunCreationError(signals, `Error: ${err.message}`, options.onRunCreationError)
+    settleRunActivity()
     return false
   }
 
@@ -906,8 +951,36 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     })
   }
 
-  await handleStreamWithSignals(runId, signals, { sessionKey, messageText })
-  return true
+  try {
+    await handleStreamWithSignals(runId, signals, { sessionKey, messageText })
+    return true
+  } finally {
+    settleRunActivity()
+  }
+}
+
+function reportRunCreationError(signals, message, onRunCreationError = null) {
+  const text = String(message || 'Unable to submit action. Please try again.')
+  if (typeof onRunCreationError === 'function') {
+    onRunCreationError(text)
+  } else {
+    signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(text)}</p>` })
+  }
+  signals.onClose()
+}
+
+function normalizeEmbedActionTurnContext(value) {
+  const contextId = String(value?.embed_context_id || '').trim()
+  const integrationId = String(value?.integration_id || '').trim()
+  const generation = value?.context_generation
+  if (!contextId || !integrationId || !Number.isSafeInteger(generation) || generation < 0) {
+    return null
+  }
+  return Object.freeze({
+    embed_context_id: contextId,
+    context_generation: generation,
+    integration_id: integrationId
+  })
 }
 
 function extractMessageFromBody(body) {
@@ -1011,6 +1084,34 @@ function notifyUserTurnStarted(sessionKey, messageText) {
   if (typeof chatCallbacks.onUserTurnStarted === 'function') {
     chatCallbacks.onUserTurnStarted({ sessionKey, messageText })
   }
+}
+
+function beginRunActivity(sessionKey) {
+  const key = String(sessionKey || '')
+  activeRunActivityCounts.set(key, (activeRunActivityCounts.get(key) || 0) + 1)
+  notifyRunActivityChange(key)
+  let settled = false
+  return () => {
+    if (settled) return
+    settled = true
+    const remaining = Math.max(0, (activeRunActivityCounts.get(key) || 1) - 1)
+    if (remaining) {
+      activeRunActivityCounts.set(key, remaining)
+    } else {
+      activeRunActivityCounts.delete(key)
+    }
+    notifyRunActivityChange(key)
+  }
+}
+
+function notifyRunActivityChange(sessionKey) {
+  if (typeof chatCallbacks.onRunActivityChange !== 'function') return
+  const activeCount = activeRunActivityCounts.get(sessionKey) || 0
+  chatCallbacks.onRunActivityChange({
+    sessionKey,
+    active: activeCount > 0,
+    activeCount
+  })
 }
 
 async function notifyRunCompleted(sessionKey) {
@@ -1466,6 +1567,10 @@ function normalizeObjectAction(rawAction) {
   if (typeof rawAction.requires_confirmation === 'boolean') {
     action.requires_confirmation = rawAction.requires_confirmation
   }
+  const confirmationToken = String(rawAction.confirmation_token || '').trim()
+  if (confirmationToken) {
+    action.confirmation_token = confirmationToken
+  }
   if (Array.isArray(rawAction.inputs)) {
     action.inputs = rawAction.inputs
       .filter((input) => input && typeof input === 'object' && String(input.name || '').trim())
@@ -1653,7 +1758,7 @@ function buildObjectActionAnchor(action, reference) {
   return `<a href="${escapeHtml(href)}" class="object-action-link" target="_blank" rel="noopener noreferrer" aria-label="${escapeHtml(`${text} ${getObjectActionDisplayLabel(reference)}`.trim())}">${OBJECT_ACTION_ICON}<span class="object-action-text">${escapeHtml(text)}</span></a>`
 }
 
-function buildObjectActionButton(action, reference) {
+function buildObjectActionButton(action, reference, turnContext = null) {
   const prompt = getObjectActionPrompt(action)
   if (action?.kind === 'open_url') {
     const href = normalizeObjectActionUrl(action?.href)
@@ -1661,7 +1766,11 @@ function buildObjectActionButton(action, reference) {
   } else if (!prompt) {
     return ''
   }
-  const payload = encodeURIComponent(JSON.stringify({ action, object: actionReferencePublicContext(reference) }))
+  const payload = encodeURIComponent(JSON.stringify({
+    action,
+    object: actionReferencePublicContext(reference),
+    turn_context: normalizeEmbedActionTurnContext(turnContext)
+  }))
   const text = getObjectActionLabel(action)
   const icon = action?.kind === 'open_url' ? OBJECT_ACTION_ICON : ''
   return `<button type="button" class="${objectActionButtonClass(action)}" data-object-action-payload="${escapeHtml(payload)}" aria-label="${escapeHtml(`${text} ${getObjectActionDisplayLabel(reference)}`.trim())}">${icon}<span class="object-action-text">${escapeHtml(text)}</span></button>`
@@ -1677,15 +1786,15 @@ function actionReferencePublicContext(reference) {
   return context
 }
 
-function buildObjectActionControls(reference) {
+function buildObjectActionControls(reference, turnContext = null) {
   const actions = Array.isArray(reference?.object_actions) ? reference.object_actions : []
   const controls = actions.map((action) => {
     if (action.kind === 'open_url') {
       return objectActionNeedsInlineInteraction(action)
-        ? buildObjectActionButton(action, reference)
+        ? buildObjectActionButton(action, reference, turnContext)
         : buildObjectActionAnchor(action, reference)
     }
-    return buildObjectActionButton(action, reference)
+    return buildObjectActionButton(action, reference, turnContext)
   }).filter(Boolean).join('')
   if (!controls) return ''
   return `<div class="object-actions" aria-label="${escapeHtml(getObjectActionAriaLabel(reference))}">${controls}</div>`
@@ -1791,6 +1900,34 @@ function setObjectActionGroupConfirming(actionGroup, confirming) {
   }
 }
 
+function beginExclusiveObjectActionSubmission(target, submissionContext = {}) {
+  if (!submissionContext.exclusiveSubmission) return () => {}
+  const container = submissionContext.submissionContainer
+  if (!container || container._objectActionSubmissionToken) return null
+
+  const token = {}
+  const buttonStates = Array.from(container.querySelectorAll('button')).map((button) => ({
+    button,
+    disabled: button.disabled
+  }))
+  container._objectActionSubmissionToken = token
+  container.setAttribute('aria-busy', 'true')
+  for (const { button } of buttonStates) {
+    button.disabled = true
+  }
+  target?.classList?.add('is-submitting')
+
+  return () => {
+    if (container._objectActionSubmissionToken !== token) return
+    container._objectActionSubmissionToken = null
+    container.removeAttribute('aria-busy')
+    target?.classList?.remove('is-submitting')
+    for (const { button, disabled } of buttonStates) {
+      if (button.isConnected) button.disabled = disabled
+    }
+  }
+}
+
 function removeObjectActionConfirmationCards(parent) {
   if (!parent) return
   for (const child of Array.from(parent.children)) {
@@ -1846,7 +1983,7 @@ function buildObjectActionInputControl(input) {
   return label
 }
 
-function buildObjectActionConfirmationCard(action, actionGroup) {
+function buildObjectActionConfirmationCard(action, actionGroup, submissionContext = {}) {
   const card = document.createElement('div')
   card.className = 'object-action-confirmation-card'
   card.setAttribute('role', 'group')
@@ -1911,6 +2048,8 @@ function buildObjectActionConfirmationCard(action, actionGroup) {
       setObjectActionCardError(card, resolvedAction.error)
       return
     }
+    const finishSubmission = beginExclusiveObjectActionSubmission(submitButton, submissionContext)
+    if (!finishSubmission) return
     setObjectActionCardError(card, '')
     card.classList.add('is-submitting')
     submitButton.textContent = getTranslatedChatLabel('chat.objectActionSubmitting', 'Submitting...')
@@ -1923,10 +2062,12 @@ function buildObjectActionConfirmationCard(action, actionGroup) {
 
     if (action.kind === 'open_url') {
       if (openObjectActionHref(resolvedAction.href)) {
+        finishSubmission()
         card.remove()
         setObjectActionGroupConfirming(actionGroup, false)
         return
       }
+      finishSubmission()
       restoreSubmissionState(
         getTranslatedChatLabel('chat.objectActionOpenFailed', 'Unable to open this action.')
       )
@@ -1937,11 +2078,26 @@ function buildObjectActionConfirmationCard(action, actionGroup) {
     if (!submitObjectActionPrompt(resolvedAction.prompt, {
       onRunCreationFailed: () => {
         restoreSubmissionState(
-          getTranslatedChatLabel('chat.objectActionSubmitFailed', 'Unable to submit action. Please try again.')
+          submissionContext.onRunCreationError
+            ? ''
+            : getTranslatedChatLabel(
+                'chat.objectActionSubmitFailed',
+                'Unable to submit action. Please try again.'
+              )
         )
-      }
-    })) {
+      },
+      onRunSettled: finishSubmission
+    }, action, submissionContext)) {
+      finishSubmission()
       restoreSubmissionState(
+        submissionContext.onRunCreationError
+          ? ''
+          : getTranslatedChatLabel(
+              'chat.objectActionSubmitFailed',
+              'Unable to submit action. Please try again.'
+            )
+      )
+      submissionContext.onRunCreationError?.(
         getTranslatedChatLabel('chat.objectActionSubmitFailed', 'Unable to submit action. Please try again.')
       )
       console.warn('[ChatUI] Failed to submit object action prompt')
@@ -1952,13 +2108,13 @@ function buildObjectActionConfirmationCard(action, actionGroup) {
   return card
 }
 
-function showObjectActionInlineInteraction(target, action) {
+function showObjectActionInlineInteraction(target, action, submissionContext = {}) {
   const actionGroup = target.closest('.object-actions')
   const parent = actionGroup?.parentElement
   if (!actionGroup || !parent) return false
   removeObjectActionConfirmationCards(parent)
   setObjectActionGroupConfirming(actionGroup, true)
-  const card = buildObjectActionConfirmationCard(action, actionGroup)
+  const card = buildObjectActionConfirmationCard(action, actionGroup, submissionContext)
   actionGroup.insertAdjacentElement('afterend', card)
   const firstField = card.querySelector('.object-action-textarea,.object-action-input')
   const focusTarget = firstField || card.querySelector('button.object-action-button')
@@ -1991,31 +2147,61 @@ function createObjectActionSignals(element) {
   }
 }
 
-function submitObjectActionDirectly(message, callbacks = {}) {
+function submitObjectActionDirectly(
+  message,
+  callbacks = {},
+  action = null,
+  submissionContext = {}
+) {
   const element = chatElement || document.querySelector('deep-chat')
   if (!canSubmitObjectActionDirectly(element)) return false
+  const turnContext = normalizeEmbedActionTurnContext(submissionContext.turnContext)
+  const isContextCurrent = typeof submissionContext.isContextCurrent === 'function'
+    ? submissionContext.isContextCurrent
+    : null
   window.setTimeout(() => {
+    const signals = createObjectActionSignals(element)
+    if (turnContext && isContextCurrent && !isContextCurrent(turnContext)) {
+      reportRunCreationError(
+        signals,
+        getTranslatedChatLabel(
+          'chat.objectActionContextChanged',
+          'The page context changed. Please use the current page actions.'
+        ),
+        submissionContext.onRunCreationError
+      )
+      if (typeof callbacks.onRunCreationFailed === 'function') {
+        callbacks.onRunCreationFailed()
+      }
+      callbacks.onRunSettled?.(false)
+      return
+    }
     // Object actions are follow-up commands, not new visible user turns in the conversation history.
-    void runAgentMessage(message, null, createObjectActionSignals(element), {
-      visibleUserTurn: false
+    void runAgentMessage(message, null, signals, {
+      visibleUserTurn: false,
+      turnContext,
+      toolConfirmationToken: action?.confirmation_token,
+      onRunCreationError: submissionContext.onRunCreationError
     }).then((created) => {
       if (created === false && typeof callbacks.onRunCreationFailed === 'function') {
         callbacks.onRunCreationFailed()
       }
+      callbacks.onRunSettled?.(created !== false)
     }).catch((error) => {
       console.warn('[ChatUI] Object action submit failed:', error)
       if (typeof callbacks.onRunCreationFailed === 'function') {
         callbacks.onRunCreationFailed()
       }
+      callbacks.onRunSettled?.(false)
     })
   }, 0)
   return true
 }
 
-function submitObjectActionPrompt(prompt, callbacks = {}) {
+function submitObjectActionPrompt(prompt, callbacks = {}, action = null, submissionContext = {}) {
   const message = String(prompt || '').trim()
   if (!message) return false
-  return submitObjectActionDirectly(message, callbacks)
+  return submitObjectActionDirectly(message, callbacks, action, submissionContext)
 }
 
 function bindObjectActionHandlers(element = chatElement) {
@@ -2030,43 +2216,62 @@ function bindObjectActionHandlers(element = chatElement) {
     scheduleObjectActionHandlers(element)
     return false
   }
-  if (container._objectActionClickBound) {
-    element._objectActionContainer = container
-    return true
-  }
+  bindObjectActionClickHandler(container)
+  element._objectActionContainer = container
+  return true
+}
+
+function bindObjectActionClickHandler(container) {
+  if (!container || container._objectActionClickBound) return !!container
   container._objectActionClickBound = true
   container.addEventListener('click', (event) => {
     const target = event.target instanceof Element
       ? event.target.closest('button[data-object-action-payload]')
       : null
-    if (!(target instanceof HTMLButtonElement)) return
+    if (!(target instanceof HTMLButtonElement) || target.disabled) return
     event.preventDefault()
     const encoded = target.getAttribute('data-object-action-payload') || ''
     try {
       const payload = JSON.parse(decodeURIComponent(encoded))
       const action = payload.action || {}
+      const turnContext = normalizeEmbedActionTurnContext(payload.turn_context)
+      const submissionContext = {
+        turnContext,
+        isContextCurrent: container._objectActionIsContextCurrent,
+        submissionContainer: container,
+        exclusiveSubmission: container._objectActionExclusiveSubmission === true,
+        onRunCreationError: container._objectActionOnRunCreationError
+      }
       if (objectActionNeedsInlineInteraction(action)) {
-        if (!showObjectActionInlineInteraction(target, action)) {
+        if (!showObjectActionInlineInteraction(target, action, submissionContext)) {
           console.warn('[ChatUI] Failed to render object action confirmation')
         }
         return
       }
       const { prompt } = resolveObjectActionPrompt(action)
       if (!prompt) return
-      if (!submitObjectActionPrompt(prompt)) {
+      const finishSubmission = beginExclusiveObjectActionSubmission(target, submissionContext)
+      if (!finishSubmission) return
+      if (!submitObjectActionPrompt(prompt, {
+        onRunSettled: finishSubmission
+      }, action, submissionContext)) {
+        finishSubmission()
+        submissionContext.onRunCreationError?.(
+          getTranslatedChatLabel('chat.objectActionSubmitFailed', 'Unable to submit action. Please try again.')
+        )
         console.warn('[ChatUI] Failed to submit object action prompt')
       }
     } catch (error) {
       console.warn('[ChatUI] Invalid object action payload:', error)
     }
   }, true)
-  element._objectActionContainer = container
   return true
 }
 
 function createObjectActionRenderContext(references) {
   return {
     references: normalizeObjectActionReferences(references),
+    turnContext: null,
     usedObjectActions: new Set()
   }
 }
@@ -2082,7 +2287,60 @@ function buildGeneratedObjectActionActionsHtml(context) {
   const unmatchedReferences = context.references
     .filter((reference) => !context.usedObjectActions.has(objectActionReferenceKey(reference)))
   if (unmatchedReferences.length !== 1) return ''
-  return buildObjectActionControls(unmatchedReferences[0])
+  return buildObjectActionControls(unmatchedReferences[0], context.turnContext)
+}
+
+/**
+ * Render one optional standard object_actions reference group outside DeepChat.
+ * The floating Context surface uses this entry point so action validation,
+ * localization, confirmation and submission stay identical to Chat history.
+ *
+ * @param {HTMLElement|null} container - Light-DOM slot below the Context bar.
+ * @param {Array<object>} references - Standard object_actions references.
+ * @param {object} options - Optional immutable Embed action scope.
+ * @param {object|null} options.turnContext - Context id, generation, and integration.
+ * @param {Function|null} options.isContextCurrent - Current-page guard before submit.
+ * @param {boolean} options.exclusiveSubmission - Disable rendered controls while one submit runs.
+ * @param {Function|null} options.onRunCreationError - Optional local run-creation error presenter.
+ * @returns {boolean} Whether a valid action group was rendered.
+ */
+export function renderObjectActionReferences(container, references, options = {}) {
+  if (!container) return false
+  container._objectActionSubmissionToken = null
+  container.removeAttribute('aria-busy')
+  container.replaceChildren()
+  container._objectActionIsContextCurrent = typeof options.isContextCurrent === 'function'
+    ? options.isContextCurrent
+    : null
+  container._objectActionExclusiveSubmission = options.exclusiveSubmission === true
+  container._objectActionOnRunCreationError = typeof options.onRunCreationError === 'function'
+    ? options.onRunCreationError
+    : null
+  const renderContext = createObjectActionRenderContext(references)
+  renderContext.turnContext = normalizeEmbedActionTurnContext(options.turnContext)
+  const html = buildGeneratedObjectActionActionsHtml(renderContext)
+  if (!html) {
+    container.hidden = true
+    return false
+  }
+
+  const documentRef = container.ownerDocument || document
+  ensureDocumentObjectActionStyles(documentRef)
+  const content = documentRef.createElement('div')
+  content.className = 'response-content embed-context-object-actions'
+  content.innerHTML = html
+  container.appendChild(content)
+  bindObjectActionClickHandler(container)
+  container.hidden = false
+  return true
+}
+
+function ensureDocumentObjectActionStyles(documentRef) {
+  if (!documentRef?.head || documentRef.getElementById(OBJECT_ACTION_STYLE_ID)) return
+  const style = documentRef.createElement('style')
+  style.id = OBJECT_ACTION_STYLE_ID
+  style.textContent = OBJECT_ACTION_STYLES
+  documentRef.head.appendChild(style)
 }
 
 function linkifyBareWorkspaceReferences(html) {

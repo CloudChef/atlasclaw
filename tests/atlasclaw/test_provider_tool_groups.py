@@ -686,6 +686,98 @@ def test_build_scoped_deps_keeps_provider_tools_when_instance_is_allowed(tmp_pat
     assert deps.extra["available_providers"] == {"smartcmp": ["default"]}
 
 
+def test_build_scoped_deps_projects_the_existing_page_skill_tool_set(
+    tmp_path,
+) -> None:
+    provider_root = tmp_path / "provider-skills"
+    standalone_root = tmp_path / "standalone-skills"
+    skill_dir = provider_root / "item-helper"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: item-helper
+description: Example item tools
+provider_type: generic
+group: items
+tool_get_name: example_get_item
+tool_get_entrypoint: run.py:get_item
+tool_update_name: example_update_item
+tool_update_entrypoint: run.py:update_item
+---
+# Example items
+""",
+        encoding="utf-8",
+    )
+    (skill_dir / "run.py").write_text(
+        "async def get_item(ctx=None, **kwargs):\n"
+        "    return {'ok': True, 'op': 'get_item', 'kwargs': kwargs}\n"
+        "async def update_item(ctx=None, **kwargs):\n"
+        "    return {'ok': True, 'op': 'update_item', 'kwargs': kwargs}\n",
+        encoding="utf-8",
+    )
+    _write_standalone_md_tool_skill(standalone_root)
+    _register_generic_provider_schema()
+    registry = SkillRegistry()
+    registry.load_from_directory(
+        str(provider_root),
+        location="external",
+        provider="generic",
+    )
+    registry.load_from_directory(str(standalone_root), location="external")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True, exist_ok=True)
+    ctx = APIContext(
+        session_manager=SessionManager(str(workspace)),
+        session_queue=SessionQueue(),
+        skill_registry=registry,
+        provider_instances={
+            "generic": {
+                "default": {
+                    "base_url": "https://provider.example.com",
+                    "auth_type": "user_token",
+                    "user_token": "example-user-token",
+                }
+            }
+        },
+    )
+    deps = build_scoped_deps(
+        ctx,
+        UserInfo(user_id="u1", display_name="User", roles=["user"]),
+        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        extra={
+            "context": {
+                "_user_skill_permissions": [],
+                "_provider_permissions": [
+                    {
+                        "provider_type": "generic",
+                        "instance_name": "default",
+                        "allowed": True,
+                    }
+                ],
+                "allowed_page_skill_refs": ["generic:item-helper"],
+                "embed_scope": {
+                    "provider_type": "generic",
+                    "provider_instance": "default",
+                },
+            }
+        },
+    )
+
+    assert {tool["name"] for tool in deps.extra["tools_snapshot"]} == {
+        "example_get_item",
+        "example_update_item",
+    }
+    assert {
+        skill["qualified_name"] for skill in deps.extra["md_skills_snapshot"]
+    } == {"generic:item-helper"}
+    assert "vm_request_prepare" not in {
+        tool["name"] for tool in deps.extra["tools_snapshot"]
+    }
+    assert deps.extra["provider_type"] == "generic"
+    assert deps.extra["provider_instance_name"] == "default"
+    assert deps.extra["provider_instance"]["base_url"] == "https://provider.example.com"
+
+
 def test_build_scoped_deps_keeps_provider_tools_when_visible_instance_lacks_user_auth(tmp_path) -> None:
     _write_provider_skill(tmp_path)
     registry = SkillRegistry()

@@ -1,0 +1,132 @@
+/*
+ *  Copyright 2026  Qianyun, Inc., www.cloudchef.io, All rights reserved.
+ */
+
+/* Every rule is floating-scoped so the fixed menu URL and legacy /atlasclaw/
+ * retain their existing DOM geometry and visual treatment. */
+html.atlas-surface-floating,
+body.atlas-surface-floating {
+  background: #ffffff;
+}
+
+body.atlas-surface-floating .chat-header {
+  min-height: 54px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #eef1f6;
+}
+
+body.atlas-surface-floating .embedded-new-chat-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+}
+
+body.atlas-surface-floating .chat-page-shell {
+  position: relative;
+}
+
+body.atlas-surface-floating .floating-assistant-toolbar {
+  display: flex;
+  gap: 6px;
+}
+
+body.atlas-surface-floating .chat-header-leading {
+  gap: 6px;
+}
+
+body.atlas-surface-floating .floating-assistant-control {
+  width: 32px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #475569;
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+body.atlas-surface-floating .floating-assistant-control:hover {
+  border-color: #a5b4fc;
+  color: #4f46e5;
+  background: #f8faff;
+}
+
+body.atlas-surface-floating .floating-assistant-control:focus-visible {
+  outline: 2px solid rgba(79, 70, 229, 0.35);
+  outline-offset: 2px;
+}
+
+body.atlas-surface-floating .embed-context-extension {
+  flex: 0 0 auto;
+  padding: 0 14px;
+  background: #ffffff;
+}
+
+body.atlas-surface-floating .embed-object-context-bar {
+  min-width: 0;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px;
+  border: 1px solid #e3e8f1;
+  border-radius: 11px;
+  background: #f8fafc;
+  color: #334155;
+}
+
+body.atlas-surface-floating .embed-object-context-marker {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: #6366f1;
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.12);
+}
+
+body.atlas-surface-floating .embed-object-context-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+body.atlas-surface-floating .embed-object-context-id {
+  margin-left: auto;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+body.atlas-surface-floating .chat-canvas-shell {
+  padding: 8px 10px 14px;
+}
+
+body.atlas-surface-floating .chat-empty-title {
+  font-size: clamp(34px, 9vw, 52px);
+  margin-bottom: 18px;
+}
+
+body.atlas-surface-floating .chat-empty-copy {
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+@media (max-width: 420px) {
+  body.atlas-surface-floating .embed-context-extension {
+    padding-inline: 10px;
+  }
+
+  body.atlas-surface-floating .embed-object-context-id {
+    display: none;
+  }
+}

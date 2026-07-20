@@ -124,6 +124,13 @@ initializeConfiguration manager
         try:
             self._config = AtlasClawConfig(**config_dict)
         except ValidationError as e:
+            embed_errors = [
+                error
+                for error in e.errors()
+                if error.get("loc") and error["loc"][0] == "embed_integrations"
+            ]
+            if embed_errors:
+                raise ValueError(f"Embed integration configuration is invalid: {e}") from e
             # Config validation failed, use defaults
             print(f"[ConfigManager] Config validation failed, using defaults: {e}")
             self._config = AtlasClawConfig()

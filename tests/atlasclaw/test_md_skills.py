@@ -28,6 +28,32 @@ from app.atlasclaw.tools.catalog import ToolCatalog, ToolProfile
 from app.atlasclaw.tools.registration import register_builtin_tools
 
 
+def test_current_md_tool_owner_is_exact_and_cannot_use_bare_suffix() -> None:
+    """A later same-name handler invalidates stale and ambiguous Skill ownership."""
+    registry = SkillRegistry()
+
+    async def first_handler() -> str:
+        return "first"
+
+    async def second_handler() -> str:
+        return "second"
+
+    metadata = SkillMetadata(name="shared_tool", source="provider")
+    registry.register(metadata, first_handler)
+    registry._md_skill_tools["provider-a:approval"] = {"shared_tool"}
+    registry._md_tool_owners["shared_tool"] = "provider-a:approval"
+    registry.register(metadata, second_handler)
+    registry._md_skill_tools["provider-b:approval"] = {"shared_tool"}
+    registry._md_tool_owners["shared_tool"] = "provider-b:approval"
+
+    assert not registry.tool_belongs_to_md_skill("provider-a:approval", "shared_tool")
+    assert not registry.tool_belongs_to_md_skill("approval", "shared_tool")
+    assert registry.tool_belongs_to_md_skill("provider-b:approval", "shared_tool")
+
+    registry._unregister_md_skill_tools("provider-a:approval")
+    assert registry.get("shared_tool") is not None
+
+
 # ======================================================================
 # 7.1 TestFrontmatterParser
 # ======================================================================

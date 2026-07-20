@@ -8,7 +8,8 @@ from __future__ import annotations
 import os
 from enum import Enum
 from typing import Any, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from urllib.parse import urlsplit
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.atlasclaw.heartbeat.models import HeartbeatTargetType
 from app.atlasclaw.tools.web.provider_models import SearchProviderConfig
@@ -174,6 +175,51 @@ class SkillsConfig(BaseModel):
         default_factory=list,
         description="Built-in tools or tool groups to exclude at startup registration time",
     )
+
+
+class EmbedIntegrationConfig(BaseModel):
+    """Provider-neutral configuration for one trusted iframe integration.
+
+    Authentication continues to use the existing shared Host Cookie/JWT flow.
+    This profile only constrains the embed protocol, Provider runtime, and Chat
+    Active Session scope; it never stores browser credentials.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = True
+    agent_id: str = Field(default="main", min_length=1, max_length=128)
+    provider_type: str = Field(min_length=1, max_length=128)
+    provider_instance: str = Field(min_length=1, max_length=128)
+    session_scope: str = Field(min_length=1, max_length=128)
+    allowed_origins: list[str] = Field(min_length=1, max_length=32)
+    route_manifest: str = Field(min_length=1, max_length=512)
+    context_ttl_seconds: int = Field(default=1800, ge=60, le=86400)
+    max_contexts_per_user: int = Field(default=128, ge=1, le=2048)
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def validate_allowed_origins(cls, values: list[str]) -> list[str]:
+        """Require exact HTTP(S) origins without paths, credentials, or wildcards."""
+        normalized: list[str] = []
+        for value in values:
+            origin = str(value or "").strip()
+            parsed = urlsplit(origin)
+            if (
+                parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.path not in {"", "/"}
+                or parsed.query
+                or parsed.fragment
+                or "*" in origin
+            ):
+                raise ValueError("allowed_origins entries must be exact HTTP(S) origins")
+            canonical = f"{parsed.scheme}://{parsed.netloc}"
+            if canonical not in normalized:
+                normalized.append(canonical)
+        return normalized
 
 
 class HookScriptHandlerConfig(BaseModel):
@@ -509,6 +555,10 @@ class AtlasClawConfig(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     security: SecurityPolicyConfig = Field(default_factory=SecurityPolicyConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    embed_integrations: dict[str, EmbedIntegrationConfig] = Field(
+        default_factory=dict,
+        description="Trusted iframe integration profiles; empty preserves legacy behavior",
+    )
     reset: ResetConfig = Field(default_factory=ResetConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     hooks_runtime: HooksRuntimeConfig = Field(default_factory=HooksRuntimeConfig)

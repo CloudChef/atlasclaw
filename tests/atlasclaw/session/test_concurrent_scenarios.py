@@ -199,6 +199,41 @@ class TestConcurrentScenarios:
                 "同一会话的消息应该是串行执行"
             )
 
+    @pytest.mark.asyncio
+    async def test_waiting_same_session_does_not_starve_other_session(self):
+        """Queued work for one session must not reserve global capacity."""
+        queue = SessionQueue(max_concurrent=2)
+        await queue.acquire("session-a")
+        queued_same_session = asyncio.create_task(queue.acquire("session-a"))
+        await asyncio.sleep(0)
+
+        await asyncio.wait_for(queue.acquire("session-b"), timeout=0.2)
+        assert queue.is_active("session-b")
+
+        queued_same_session.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await queued_same_session
+        queue.release("session-b")
+        queue.release("session-a")
+
+    @pytest.mark.asyncio
+    async def test_cancelled_global_wait_releases_only_session_lock(self):
+        """Cancellation after local acquisition must not leak either capacity."""
+        queue = SessionQueue(max_concurrent=1)
+        await queue.acquire("global-holder")
+        cancelled_waiter = asyncio.create_task(queue.acquire("cancelled-session"))
+        await asyncio.sleep(0)
+        assert queue._locks["cancelled-session"].locked()
+
+        cancelled_waiter.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cancelled_waiter
+        assert not queue._locks["cancelled-session"].locked()
+
+        queue.release("global-holder")
+        await asyncio.wait_for(queue.acquire("cancelled-session"), timeout=0.2)
+        queue.release("cancelled-session")
+
 
 class TestToolCallLimit:
     """工具调用限制测试"""

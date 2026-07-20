@@ -51,6 +51,7 @@ def build_system_prompt(
         "mode_override": prompt_mode,
         "transcript_skill_hint": collect_transcript_skill_hint(deps),
         "current_follow_up_context": collect_current_follow_up_context(deps),
+        "current_host_page_context": collect_current_host_page_context(deps),
         "memory_available": collect_memory_available(deps),
     }
     build_fn = prompt_builder.build
@@ -191,7 +192,35 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
             }
         )
 
-    return capability_index
+    return _project_server_page_skill_capabilities(capability_index, extra)
+
+
+def _project_server_page_skill_capabilities(
+    capability_index: list[dict[str, Any]],
+    extra: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Project prompt capabilities to the server-validated page Skill."""
+    request_context = extra.get("context")
+    if not isinstance(request_context, dict) or not isinstance(
+        request_context.get("embed_scope"), dict
+    ):
+        return capability_index
+    allowed_skill_refs = {
+        name.lower()
+        for name in _normalize_string_list(
+            request_context.get("allowed_page_skill_refs", [])
+        )
+    }
+    projected: list[dict[str, Any]] = []
+    for raw_entry in capability_index:
+        qualified_name = _normalize_optional_text(
+            raw_entry.get("qualified_skill_name", ""),
+            raw_entry.get("qualified_name", ""),
+        ).lower()
+        if not qualified_name or qualified_name not in allowed_skill_refs:
+            continue
+        projected.append(dict(raw_entry))
+    return projected
 
 
 def _provider_type_from_skill_entry(item: dict[str, Any]) -> str:
@@ -561,6 +590,14 @@ def collect_current_follow_up_context(deps) -> Optional[str]:
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None
+
+
+def collect_current_host_page_context(deps) -> Optional[dict[str, Any]]:
+    """Read server-validated Host page context from request-scoped dependencies."""
+    extra = deps.extra if isinstance(deps.extra, dict) else {}
+    context = extra.get("context")
+    value = context.get("turn_context") if isinstance(context, dict) else None
+    return dict(value) if isinstance(value, dict) else None
 
 
 def collect_provider_contexts(deps) -> dict[str, dict]:

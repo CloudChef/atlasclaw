@@ -9,7 +9,6 @@ import asyncio
 import hashlib
 import importlib.util
 import json
-import subprocess
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +29,42 @@ class ScriptInvocationConfig:
     positional_args: tuple[str, ...] = ()
     split_args: tuple[str, ...] = ()
     flag_name_overrides: dict[str, str] = field(default_factory=dict)
+
+
+async def _run_script_process(
+    cmd: list[str],
+    *,
+    env: dict[str, str],
+    cwd: str,
+    timeout_seconds: float = 120,
+) -> tuple[int, str, str]:
+    """Run a Tool script without blocking the server event loop.
+
+    Cancellation terminates the child process so an outer, shorter workflow
+    timeout cannot leave a detached resolver consuming resources.
+    """
+    process = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        env=env,
+        cwd=cwd,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            process.communicate(),
+            timeout=timeout_seconds,
+        )
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        if process.returncode is None:
+            process.kill()
+            await process.wait()
+        raise
+    return (
+        process.returncode if process.returncode is not None else -1,
+        stdout.decode("utf-8", errors="replace"),
+        stderr.decode("utf-8", errors="replace"),
+    )
 
 
 def parse_entrypoint(entrypoint: str) -> tuple[str, str]:
@@ -265,7 +300,6 @@ def create_script_wrapper(
                 env["ATLASCLAW_PROVIDER_INSTANCE"] = provider_instance_meta
             if robot_profile_meta:
                 env["ATLASCLAW_ROBOT_PROFILE"] = robot_profile_meta
-
             provider_sso_token = str(extra.get("provider_sso_token", "") or "").strip()
             provider_sso_available = bool(extra.get("provider_sso_available")) and bool(
                 provider_sso_token
@@ -336,19 +370,14 @@ def create_script_wrapper(
         cmd.extend(_build_script_command_arguments(kwargs=runtime_kwargs, config=config))
 
         try:
-            result = subprocess.run(
+            returncode, stdout, stderr = await _run_script_process(
                 cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=120,
                 env=env,
                 cwd=str(py_file.parent),
             )
-            output = result.stdout
+            output = stdout
             _internal_meta = ""
-            if result.stderr:
+            if stderr:
                 # Separate META blocks from error messages in stderr.
                 # META blocks (##xxx_META_START## ... ##xxx_META_END##) are
                 # placed in a separate "_internal" field so the LLM can
@@ -359,7 +388,7 @@ def create_script_wrapper(
                 _other_stderr: list[str] = []
                 _in_meta = False
                 _meta_buf: list[str] = []
-                for _line in result.stderr.splitlines():
+                for _line in stderr.splitlines():
                     if _re.match(r"^##\w+_META_START##$", _line.strip()):
                         _in_meta = True
                         _meta_buf = []
@@ -379,8 +408,8 @@ def create_script_wrapper(
                 if _other_stderr:
                     output += f"\n[STDERR] {''.join(_other_stderr)}"
             result_dict = {
-                "success": result.returncode == 0,
-                "returncode": result.returncode,
+                "success": returncode == 0,
+                "returncode": returncode,
                 "output": output,
             }
             if _internal_meta:
@@ -394,7 +423,7 @@ def create_script_wrapper(
                 result=result_dict,
             )
             return result_dict
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             return {"success": False, "error": "Script execution timed out"}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
@@ -463,6 +492,47 @@ def _normalize_provider_auth_failure_output(
         "[ERROR] Provider authentication failed. The provider service rejected "
         "or expired the configured authentication credential.\n"
     )
+
+
+def _extract_requires_approval(metadata: dict[str, Any], *, tool_id: str) -> bool:
+    """Return the explicit per-Tool confirmation policy from MD metadata."""
+    per_tool_key = f"tool_{tool_id}_requires_approval" if tool_id else ""
+    has_per_tool_value = bool(per_tool_key and per_tool_key in metadata)
+    has_default_value = "requires_approval" in metadata
+    raw_value = (
+        metadata.get(per_tool_key)
+        if has_per_tool_value
+        else metadata.get("requires_approval", False)
+    )
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in {"true", "yes", "1"}:
+            return True
+        if normalized in {"false", "no", "0"}:
+            return False
+    if has_per_tool_value or has_default_value:
+        raise ValueError(f"unsupported requires_approval value: {raw_value!r}")
+    return False
+
+
+def _extract_effect(metadata: dict[str, Any], *, tool_id: str) -> str:
+    """Return the normalized Tool effect declared by Markdown metadata."""
+    per_tool_key = f"tool_{tool_id}_effect" if tool_id else ""
+    has_per_tool_value = bool(per_tool_key and per_tool_key in metadata)
+    has_default_value = "effect" in metadata
+    raw_value = (
+        metadata.get(per_tool_key)
+        if has_per_tool_value
+        else metadata.get("effect", "read")
+    )
+    normalized = str(raw_value or "read").strip().lower()
+    if normalized not in {"read", "mutate"}:
+        if has_per_tool_value or has_default_value:
+            raise ValueError(f"unsupported Tool effect: {normalized}")
+        return "read"
+    return normalized
 
 
 def register_executable_tools_from_md(
@@ -585,6 +655,12 @@ def _register_md_tool_entry(
     group_ids = _extract_group_ids(metadata, entry.provider, tool_id=tool_id)
     priority = _extract_priority(metadata, tool_id=tool_id)
     parameters_schema = _extract_parameters_schema(metadata, tool_id=tool_id)
+    try:
+        requires_approval = _extract_requires_approval(metadata, tool_id=tool_id)
+        effect = _extract_effect(metadata, tool_id=tool_id)
+    except ValueError as exc:
+        logger.warning("Skipping md tool %s from %s: %s", tool_name, entry.name, exc)
+        return
     source = "provider" if provider_type else "md_skill"
     if _capability_is_artifact(capability_class):
         handler = _wrap_artifact_handler(handler, capability_class=capability_class)
@@ -614,8 +690,12 @@ def _register_md_tool_entry(
         ),
         result_mode=result_mode,
         success_contract=success_contract,
+        effect=effect,
+        requires_approval=requires_approval,
+        owner_skill_ref=entry.qualified_name,
     )
     registry.register(meta, handler)
+    registry._md_tool_owners[tool_name] = entry.qualified_name
     registered.add(tool_name)
 
 

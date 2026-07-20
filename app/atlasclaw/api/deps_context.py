@@ -294,8 +294,15 @@ class APIContext:
     provider_instances: dict[str, dict[str, dict[str, Any]]] = None
     webhook_manager: Optional[WebhookDispatchManager] = None
     active_runs: dict[str, dict[str, Any]] = None
+    embed_integration_registry: Optional[Any] = None
+    embed_context_store: Optional[Any] = None
+    tool_confirmation_store: Optional[Any] = None
 
     def __post_init__(self):
+        if self.tool_confirmation_store is None:
+            from app.atlasclaw.core.tool_confirmation import ToolConfirmationStore
+
+            self.tool_confirmation_store = ToolConfirmationStore()
         if self.active_runs is None:
             self.active_runs = {}
         if self.sse_manager is None:
@@ -662,6 +669,45 @@ def build_scoped_deps(
         len(tools_snapshot or []) != tool_count_before_provider_filter
         or len(md_skills_snapshot or []) != md_count_before_provider_filter
     )
+    request_context = _extra.get("context")
+    page_skill_refs = _extra.get("allowed_page_skill_refs")
+    if isinstance(request_context, dict):
+        if page_skill_refs is None:
+            page_skill_refs = request_context.get("allowed_page_skill_refs")
+    embed_scope = (
+        request_context.get("embed_scope")
+        if isinstance(request_context, dict)
+        else None
+    )
+    page_projection_authoritative = isinstance(embed_scope, dict)
+    if page_projection_authoritative:
+        if not isinstance(page_skill_refs, list):
+            page_skill_refs = []
+        normalized_skill_refs = {
+            skill_permission_service.normalize_key(item) for item in page_skill_refs
+        }
+        tools_snapshot = [
+            tool
+            for tool in tools_snapshot
+            if any(
+                ctx.skill_registry.tool_belongs_to_md_skill(
+                    skill_ref,
+                    str(tool.get("name", "") or ""),
+                )
+                for skill_ref in normalized_skill_refs
+            )
+        ]
+        md_skills_snapshot = [
+            skill
+            for skill in md_skills_snapshot
+            if skill_permission_service.normalize_key(
+                skill.get("qualified_name") or skill.get("name", "")
+            )
+            in normalized_skill_refs
+        ]
+        # The page-scoped projection must remain authoritative; otherwise the
+        # Agent's pre-registered provider tools could be merged back later.
+        provider_snapshot_filtered = True
     builtin_skills_snapshot = [
         skill
         for skill in ctx.skill_registry.snapshot_builtins()
@@ -674,6 +720,17 @@ def build_scoped_deps(
         visible_provider_instances,
         enforce=True,
     )
+    if page_projection_authoritative:
+        skills_snapshot = [
+            skill
+            for skill in skills_snapshot
+            if skill_permission_service.normalize_key(
+                skill.get("qualified_name")
+                or skill.get("skill_name")
+                or skill.get("name", "")
+            )
+            in normalized_skill_refs
+        ]
     skills_snapshot_filtered = len(skills_snapshot or []) != builtin_count_before_provider_filter
     visible_tool_names = {
         str(tool.get("name", "") or "").strip()
@@ -714,6 +771,7 @@ def build_scoped_deps(
         "skills_snapshot": skills_snapshot,
         "md_skills_snapshot": md_skills_snapshot,
         "internal_runtime_tools_snapshot": internal_runtime_tools_snapshot,
+        "_tool_confirmation_store": ctx.tool_confirmation_store,
         "work_dir": str(
             ensure_user_work_dir(
                 str(scoped_session_mgr.workspace_path),
@@ -750,6 +808,21 @@ def build_scoped_deps(
                 deps_extra["provider_type"] = provider_type
                 deps_extra["provider_instance_name"] = instance_name
                 deps_extra["provider_instance"] = provider_instance
+    embed_scope = (
+        request_context.get("embed_scope")
+        if isinstance(request_context, dict)
+        else None
+    )
+    if isinstance(embed_scope, dict):
+        provider_type = str(embed_scope.get("provider_type") or "").strip()
+        instance_name = str(embed_scope.get("provider_instance") or "").strip()
+        provider_instance = provider_registry.get_instance_config(provider_type, instance_name)
+        if provider_type and instance_name and isinstance(provider_instance, dict):
+            # The Host cannot select this binding: routes_agent rebuilds embed_scope
+            # from the immutable server snapshot after rechecking Provider RBAC.
+            deps_extra["provider_type"] = provider_type
+            deps_extra["provider_instance_name"] = instance_name
+            deps_extra["provider_instance"] = provider_instance
     deps_extra = enrich_trace_metadata(session_key, extra=deps_extra)
 
     return SkillDeps(

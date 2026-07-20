@@ -8,8 +8,12 @@ import json
 import logging
 from pathlib import Path
 
+import pytest
+
 from app.atlasclaw.skills.md_tool_runtime import (
     ScriptInvocationConfig,
+    _extract_effect,
+    _extract_requires_approval,
     create_script_wrapper,
     register_executable_tools_from_md,
 )
@@ -44,6 +48,36 @@ def test_script_wrapper_serializes_positional_and_flag_arguments(tmp_path: Path)
     assert result["success"] is True
     payload = json.loads(result["output"].strip())
     assert payload["argv"] == ["TIC20260316000001", "--days", "90"]
+
+
+def test_script_wrapper_cancellation_terminates_blocking_child(tmp_path: Path) -> None:
+    started = tmp_path / "started"
+    finished = tmp_path / "finished"
+    script = tmp_path / "block.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import pathlib, time",
+                f"pathlib.Path({str(started)!r}).write_text('started')",
+                "time.sleep(5)",
+                f"pathlib.Path({str(finished)!r}).write_text('finished')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    wrapper = create_script_wrapper(script)
+
+    async def cancel_wrapper() -> None:
+        try:
+            await asyncio.wait_for(wrapper(), timeout=0.2)
+        except asyncio.TimeoutError:
+            return
+        raise AssertionError("blocking script completed before cancellation")
+
+    asyncio.run(cancel_wrapper())
+
+    assert started.is_file()
+    assert not finished.exists()
 
 
 def test_script_wrapper_splits_repeatable_positional_arguments(tmp_path: Path) -> None:
@@ -955,3 +989,17 @@ def test_script_wrapper_leaves_submit_confirmation_to_model_routing(
     assert result["success"] is True
     assert result["output"] == "submitted\n"
     assert marker.read_text(encoding="utf-8") == "ran"
+
+
+@pytest.mark.parametrize("value", ["maybe", 2, [], None])
+def test_invalid_explicit_requires_approval_is_rejected(value) -> None:
+    with pytest.raises(ValueError, match="unsupported requires_approval"):
+        _extract_requires_approval(
+            {"tool_submit_requires_approval": value},
+            tool_id="submit",
+        )
+
+
+def test_invalid_explicit_effect_is_rejected() -> None:
+    with pytest.raises(ValueError, match="unsupported Tool effect"):
+        _extract_effect({"tool_submit_effect": "write"}, tool_id="submit")

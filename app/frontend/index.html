@@ -63,12 +63,17 @@
             const chatEmbeddedMode = embeddedMode && logicalPath === '/'
             const pageName = logicalPath.replace(/\/$/, '').split('/').pop()
             const configEmbeddedMode = embeddedMode && ['models', 'channels', 'providers'].includes(pageName)
+            const surface = String(params.get('surface') || '').trim().toLowerCase()
+            const integration = String(params.get('integration') || '').trim()
+            const integrationSurface = embeddedMode && integration && ['floating', 'menu'].includes(surface)
             window.__atlasclawEmbeddedMode = embeddedMode
             window.__atlasclawChatEmbeddedMode = chatEmbeddedMode
             window.__atlasclawConfigEmbeddedMode = configEmbeddedMode
             document.documentElement.classList.toggle('atlas-embedded-mode', embeddedMode)
             document.documentElement.classList.toggle('atlas-chat-embedded-mode', chatEmbeddedMode)
             document.documentElement.classList.toggle('atlas-config-embedded-mode', configEmbeddedMode)
+            document.documentElement.classList.toggle('atlas-surface-floating', integrationSurface && surface === 'floating')
+            document.documentElement.classList.toggle('atlas-surface-menu', integrationSurface && surface === 'menu')
         })()
     </script>
     <style>
@@ -89,7 +94,8 @@
     <!-- Deep Chat - loaded globally for chat page -->
     <script type="module" src="__ATLASCLAW_BASE_PATH__/static/deepChat.bundle.js"></script>
     <!-- Styles -->
-    <link rel="stylesheet" href="__ATLASCLAW_BASE_PATH__/styles/main.css?v=21">
+    <link rel="stylesheet" href="__ATLASCLAW_BASE_PATH__/styles/main.css?v=27">
+    <link rel="stylesheet" href="__ATLASCLAW_BASE_PATH__/styles/floating-assistant.css?v=27">
     <link rel="stylesheet" href="__ATLASCLAW_BASE_PATH__/styles/channels.css">
     <link rel="stylesheet" href="__ATLASCLAW_BASE_PATH__/static/style.css">
     <link rel="stylesheet" href="__ATLASCLAW_BASE_PATH__/static/mention.css">
@@ -126,6 +132,6 @@
     <div id="toast-container" class="toast-container"></div>
 
     <!-- SPA Entry Point -->
-    <script type="module" src="__ATLASCLAW_BASE_PATH__/scripts/main.js?v=21"></script>
+    <script type="module" src="__ATLASCLAW_BASE_PATH__/scripts/main.js?v=28"></script>
 </body>
 </html>

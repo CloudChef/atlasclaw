@@ -50,6 +50,8 @@ from app.atlasclaw.agent.context_pruning import (
 )
 from app.atlasclaw.core.config import get_config, get_config_path
 from app.atlasclaw.core.provider_registry import ServiceProviderRegistry
+from app.atlasclaw.core.embed.integration_registry import EmbedIntegrationRegistry
+from app.atlasclaw.core.embed.snapshot_store import EmbedContextSnapshotStore
 from app.atlasclaw.core.provider_scanner import ProviderScanner
 from app.atlasclaw.core.trace import enrich_trace_metadata
 from app.atlasclaw.core.workspace import WorkspaceInitializer
@@ -849,6 +851,11 @@ async def lifespan(app: FastAPI):
         available_providers=available_providers,
         provider_instances=provider_instances,
         webhook_manager=webhook_manager,
+        embed_integration_registry=EmbedIntegrationRegistry(
+            config.embed_integrations,
+            _global_provider_registry,
+        ),
+        embed_context_store=EmbedContextSnapshotStore(),
     )
 
     set_api_context(api_context)

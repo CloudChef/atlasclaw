@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import json
 import inspect
+import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Any, Optional, TYPE_CHECKING
+from typing import Callable, Any, Literal, Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 from pydantic_ai import RunContext
@@ -29,6 +30,12 @@ from app.atlasclaw.skills.frontmatter import parse_frontmatter
 from app.atlasclaw.skills.md_tool_runtime import (
     register_executable_tools_from_md,
     should_override_location,
+)
+from app.atlasclaw.core.tool_confirmation import (
+    ToolConfirmationError,
+    ToolConfirmationRequired,
+    append_runtime_confirmation_action,
+    get_tool_confirmation_grant,
 )
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.tools.catalog import GROUP_TOOLS
@@ -129,6 +136,9 @@ class SkillMetadata(BaseModel):
     live_data: bool = False
     browser_interaction: bool = False
     public_web: bool = False
+    effect: Literal["read", "mutate"] = "read"
+    requires_approval: bool = False
+    owner_skill_ref: str = ""
 
 
 @dataclass
@@ -196,6 +206,7 @@ class SkillRegistry:
         self._skills: dict[str, tuple[SkillMetadata, Callable]] = {}
         self._md_skills: dict[str, MdSkillEntry] = {}
         self._md_skill_tools: dict[str, set[str]] = {}
+        self._md_tool_owners: dict[str, str] = {}
         self._md_tool_profiles: dict[str, dict[str, Any]] = {}
         self._workspace = workspace
     
@@ -206,6 +217,9 @@ class SkillRegistry:
     ) -> None:
         """Register an executable skill handler."""
         self._skills[metadata.name] = (metadata, handler)
+        # A generic same-name registration replaces the previous handler and
+        # therefore invalidates any prior Markdown-skill ownership assertion.
+        self._md_tool_owners.pop(metadata.name, None)
         if metadata.source in {"md_skill", "provider"}:
             self._md_tool_profiles[metadata.name] = {
                 "source": metadata.source,
@@ -218,6 +232,9 @@ class SkillRegistry:
                 "live_data": bool(metadata.live_data),
                 "browser_interaction": bool(metadata.browser_interaction),
                 "public_web": bool(metadata.public_web),
+                "effect": str(metadata.effect or "read").strip().lower(),
+                "requires_approval": bool(metadata.requires_approval),
+                "owner_skill_ref": str(metadata.owner_skill_ref or "").strip(),
             }
 
     def unregister(self, name: str) -> bool:
@@ -225,13 +242,23 @@ class SkillRegistry:
         if name in self._skills:
             del self._skills[name]
             self._md_tool_profiles.pop(name, None)
+            self._md_tool_owners.pop(name, None)
             return True
         return False
     
     def get(self, name: str) -> Optional[tuple[SkillMetadata, Callable]]:
         """Return the registered skill metadata and handler for a name."""
         return self._skills.get(name)
-    
+
+    def tool_belongs_to_md_skill(self, skill_ref: str, tool_name: str) -> bool:
+        """Return whether the current tool handler has one exact qualified owner."""
+        normalized_ref = str(skill_ref or "").strip().lower()
+        normalized_tool = str(tool_name or "").strip()
+        if not normalized_ref or not normalized_tool:
+            return False
+        owner = str(self._md_tool_owners.get(normalized_tool, "") or "").strip().lower()
+        return bool(owner) and owner == normalized_ref
+
     def snapshot(self) -> list[dict]:
         """Return a metadata snapshot used by the prompt builder."""
         return [
@@ -258,6 +285,9 @@ class SkillRegistry:
                 "live_data": bool(meta.live_data),
                 "browser_interaction": bool(meta.browser_interaction),
                 "public_web": bool(meta.public_web),
+                "effect": str(meta.effect or "read").strip().lower(),
+                "requires_approval": bool(meta.requires_approval),
+                "owner_skill_ref": str(meta.owner_skill_ref or "").strip(),
             }
             for meta, _ in self._skills.values()
             if str(meta.source or "").strip().lower() != "internal_runtime"
@@ -297,6 +327,9 @@ class SkillRegistry:
                 "live_data": bool(meta.live_data),
                 "browser_interaction": bool(meta.browser_interaction),
                 "public_web": bool(meta.public_web),
+                "effect": str(meta.effect or "read").strip().lower(),
+                "requires_approval": bool(meta.requires_approval),
+                "owner_skill_ref": str(meta.owner_skill_ref or "").strip(),
             }
             for meta, _ in self._skills.values()
             if meta.name not in md_derived
@@ -335,6 +368,9 @@ class SkillRegistry:
                 "live_data": bool(meta.live_data),
                 "browser_interaction": bool(meta.browser_interaction),
                 "public_web": bool(meta.public_web),
+                "effect": str(meta.effect or "read").strip().lower(),
+                "requires_approval": bool(meta.requires_approval),
+                "owner_skill_ref": str(meta.owner_skill_ref or "").strip(),
             }
             normalized.append(record)
         return normalized
@@ -451,23 +487,7 @@ convert Skills register PydanticAI Agent tool
         args = json.loads(args_json) if args_json else {}
         
         try:
-            # check handler Run-Context parameter
-            sig = inspect.signature(handler)
-            params = list(sig.parameters.keys())
-            
-            if deps is not None and params and params[0] in ("ctx", "context"):
-                # such as handler Run-Context, Mock context
-                # use, deps
-                from dataclasses import dataclass
-                
-                @dataclass
-                class MockRunContext:
-                    deps: Any
-                
-                ctx = MockRunContext(deps=deps)
-                result = await handler(ctx, **args)
-            else:
-                result = await handler(**args)
+            result = await self._invoke_registered_handler(meta, handler, deps, args)
             
             if isinstance(result, BaseModel):
                 return result.model_dump_json()
@@ -475,7 +495,7 @@ convert Skills register PydanticAI Agent tool
             
         except Exception as e:
             return json.dumps({"error": str(e)})
-    
+
     def _extract_schema(self, handler: Callable) -> dict:
         """
 
@@ -532,21 +552,36 @@ from count JSON Schema
     ) -> Callable:
         """Build a metadata-aware runtime handler so the model sees the intended tool schema."""
         parameters_schema = self._coerce_parameters_schema(metadata.parameters_schema)
-        if not parameters_schema:
+        if not parameters_schema and not self._requires_tool_confirmation(metadata):
             return handler
 
         accepts_ctx = self._handler_accepts_ctx(handler)
-        signature = self._build_runtime_signature(parameters_schema)
-        docstring = self._build_runtime_docstring(metadata, parameters_schema)
+        signature = (
+            self._build_runtime_signature(parameters_schema)
+            if parameters_schema
+            else inspect.signature(handler)
+        )
+        docstring = (
+            self._build_runtime_docstring(metadata, parameters_schema)
+            if parameters_schema
+            else (inspect.getdoc(handler) or metadata.description)
+        )
 
         async def runtime_handler(ctx: RunContext[SkillDeps], **kwargs: Any) -> Any:
-            if accepts_ctx:
-                result = handler(ctx, **kwargs)
-            else:
-                result = handler(**kwargs)
-            if inspect.isawaitable(result):
-                return await result
-            return result
+            try:
+                return await self._invoke_registered_handler(
+                    metadata,
+                    handler,
+                    getattr(ctx, "deps", None),
+                    kwargs,
+                    run_context=ctx if accepts_ctx else None,
+                )
+            except ToolConfirmationRequired:
+                return {
+                    "success": False,
+                    "confirmation_required": True,
+                    "message": "Use the server confirmation control to continue.",
+                }
 
         runtime_handler.__name__ = re.sub(r"[^a-zA-Z0-9_]", "_", metadata.name) or "atlasclaw_tool"
         runtime_handler.__qualname__ = runtime_handler.__name__
@@ -559,6 +594,151 @@ from count JSON Schema
         }
         runtime_handler.__annotations__["return"] = Any
         return runtime_handler
+
+    async def _invoke_registered_handler(
+        self,
+        metadata: SkillMetadata,
+        handler: Callable,
+        deps: Any,
+        arguments: dict[str, Any],
+        *,
+        run_context: Any = None,
+    ) -> Any:
+        """Apply the confirmation gate and invoke the original registered handler."""
+        frozen_arguments = dict(arguments)
+        if self._requires_tool_confirmation(metadata):
+            frozen_arguments = self._authorize_or_request_confirmation(
+                metadata,
+                deps,
+                frozen_arguments,
+            )
+
+        if self._handler_accepts_ctx(handler):
+            if run_context is None:
+                if deps is None:
+                    raise ToolConfirmationError(
+                        "Request-scoped dependencies are required for this Tool"
+                    )
+
+                @dataclass
+                class _ExecutionRunContext:
+                    deps: Any
+
+                run_context = _ExecutionRunContext(deps=deps)
+            result = handler(run_context, **frozen_arguments)
+        else:
+            result = handler(**frozen_arguments)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+
+    def _authorize_or_request_confirmation(
+        self,
+        metadata: SkillMetadata,
+        deps: Any,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return confirmed frozen arguments or stop before the mutation handler."""
+        extra = getattr(deps, "extra", None)
+        if deps is None or not isinstance(extra, dict):
+            raise ToolConfirmationError(
+                "Explicit confirmation is required before this Tool can run"
+            )
+
+        owner_skill_ref = str(metadata.owner_skill_ref or "").strip().lower()
+        provider_type = str(metadata.provider_type or "").strip().lower()
+        provider_instance = str(extra.get("provider_instance_name", "") or "").strip()
+        self._require_visible_confirmed_tool(
+            metadata,
+            deps,
+            owner_skill_ref=owner_skill_ref,
+            provider_type=provider_type,
+            provider_instance=provider_instance,
+        )
+        grant = get_tool_confirmation_grant(deps)
+        contract_fingerprint = self._tool_contract_fingerprint(metadata)
+        if grant is not None:
+            return grant.consume_for(
+                tool_name=metadata.name,
+                owner_skill_ref=owner_skill_ref,
+                provider_type=provider_type,
+                provider_instance=provider_instance,
+                contract_fingerprint=contract_fingerprint,
+            )
+
+        store = extra.get("_tool_confirmation_store")
+        if store is None:
+            raise ToolConfirmationError("Tool confirmation service is unavailable")
+        request_context = extra.get("context")
+        embed_scope = request_context.get("embed_scope") if isinstance(request_context, dict) else None
+        ticket = store.issue(
+            owner_user_id=str(getattr(getattr(deps, "user_info", None), "user_id", "") or ""),
+            session_key=str(getattr(deps, "session_key", "") or ""),
+            agent_id=str(extra.get("agent_id", "") or ""),
+            tool_name=metadata.name,
+            owner_skill_ref=owner_skill_ref,
+            contract_fingerprint=contract_fingerprint,
+            arguments=arguments,
+            provider_type=provider_type,
+            provider_instance=provider_instance,
+            embed_scope=embed_scope,
+        )
+        append_runtime_confirmation_action(deps, ticket)
+        raise ToolConfirmationRequired("Explicit confirmation is required")
+
+    @staticmethod
+    def _requires_tool_confirmation(metadata: SkillMetadata) -> bool:
+        """Return whether Tool metadata requires server-enforced confirmation."""
+        return bool(metadata.requires_approval) or str(metadata.effect or "").strip().lower() == "mutate"
+
+    @staticmethod
+    def _tool_contract_fingerprint(metadata: SkillMetadata) -> str:
+        """Fingerprint the security-relevant registered Tool contract."""
+        payload = json.dumps(
+            {
+                "name": metadata.name,
+                "owner_skill_ref": str(metadata.owner_skill_ref or "").strip().lower(),
+                "provider_type": str(metadata.provider_type or "").strip().lower(),
+                "effect": str(metadata.effect or "read").strip().lower(),
+                "requires_approval": bool(metadata.requires_approval),
+                "parameters_schema": metadata.parameters_schema,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _require_visible_confirmed_tool(
+        metadata: SkillMetadata,
+        deps: Any,
+        *,
+        owner_skill_ref: str,
+        provider_type: str,
+        provider_instance: str,
+    ) -> None:
+        """Require the latest permission-filtered snapshot to expose the exact Tool."""
+        extra = getattr(deps, "extra", None)
+        tools_snapshot = extra.get("tools_snapshot") if isinstance(extra, dict) else None
+        if not isinstance(tools_snapshot, list):
+            raise ToolConfirmationError("Current Tool permissions are unavailable")
+        matching = [
+            item
+            for item in tools_snapshot
+            if isinstance(item, dict)
+            and str(item.get("name", "") or "").strip() == metadata.name
+        ]
+        if len(matching) != 1:
+            raise ToolConfirmationError("Confirmed Tool is not available to the current user")
+        current = matching[0]
+        if str(current.get("owner_skill_ref", "") or "").strip().lower() != owner_skill_ref:
+            raise ToolConfirmationError("Confirmed Tool owner changed")
+        if str(current.get("provider_type", "") or "").strip().lower() != provider_type:
+            raise ToolConfirmationError("Confirmed Tool Provider changed")
+        if provider_type and not provider_instance:
+            raise ToolConfirmationError("Confirmed Tool Provider instance is unavailable")
 
     @staticmethod
     def _handler_accepts_ctx(handler: Callable) -> bool:
@@ -876,7 +1056,8 @@ single MD Skill.
     def _unregister_md_skill_tools(self, qualified_name: str) -> None:
         tool_names = self._md_skill_tools.pop(qualified_name, set())
         for tool_name in tool_names:
-            self.unregister(tool_name)
+            if self._md_tool_owners.get(tool_name) == qualified_name:
+                self.unregister(tool_name)
 
     def _register_executable_tools_from_md(self, entry: MdSkillEntry) -> None:
         register_executable_tools_from_md(
