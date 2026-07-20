@@ -18,7 +18,7 @@ import { renderHeader, updateHeaderTitle, updateHeaderTitleText } from './compon
 import { showToast } from './components/toast.js'
 import { getAgentInfo } from './api-client.js?v=27'
 import { parseEmbedSurface, applySurfaceClasses } from './embed/surface.js'
-import { initializeIntegrationChatSession } from './session-manager.js?v=27'
+import { initializeIntegrationChatSession, startNewSession } from './session-manager.js?v=27'
 import {
   canAccessChannelManagement,
   canAccessModelManagement,
@@ -26,7 +26,7 @@ import {
   canAccessUserManagement
 } from './permissions.js'
 
-const SCRIPT_VERSION = '28'
+const SCRIPT_VERSION = '29'
 
 /**
  * Route table - lazy loaded page modules
@@ -276,7 +276,6 @@ function setupLinkInterception() {
 
 async function handleNewChatClick() {
   try {
-    const { startNewSession } = await import(`./session-manager.js?v=${SCRIPT_VERSION}`)
     const nextSessionKey = await startNewSession(true, { channel: 'web', chatType: 'dm' })
     if (stripBasePath(window.location.pathname) === '/') {
       const { activateChatSession } = await import(`./pages/chat.js?v=${SCRIPT_VERSION}`)

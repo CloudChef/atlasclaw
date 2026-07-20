@@ -169,7 +169,7 @@ export async function unmount() {
 
 export async function activateChatSession(nextKey) {
   if (!mounted || !nextKey) return false
-  await switchActiveSession(nextKey)
+  if (!await switchActiveSession(nextKey)) return false
   focusChatInput()
   return true
 }

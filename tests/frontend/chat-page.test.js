@@ -478,6 +478,31 @@ describe('chat page', () => {
     expect(cancelChatInputFocusRetry).toHaveBeenCalledTimes(1)
   })
 
+  test('activateChatSession reports a rejected scoped session without changing focus', async () => {
+    const chatPage = await import('../../app/frontend/scripts/pages/chat.js')
+    const sessionManager = await import('../../app/frontend/scripts/session-manager.js?v=27')
+    const container = document.getElementById('page-root')
+    await chatPage.mount(container)
+
+    global.fetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ agent_id: 'main', session_scope: 'tenant-scope', active_session_key: null })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ agent_id: 'main', session_scope: 'tenant-scope', active_session_key: null })
+      })
+    await sessionManager.initializeIntegrationChatSession({
+      integrationMode: true,
+      integrationId: 'tenant-assistant',
+      surface: 'menu'
+    })
+
+    await expect(chatPage.activateChatSession('out-of-scope-session')).resolves.toBe(false)
+    expect(sessionManager.getSessionKey()).toBeNull()
+  })
+
   test('empty state follows visible messages and current-session run activity', async () => {
     jest.resetModules()
 
