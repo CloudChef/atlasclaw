@@ -1017,6 +1017,78 @@ describe('chat-ui.js handler mode', () => {
         expect(signals.onClose).toHaveBeenCalled();
     });
 
+    test('handler binds send-time Embed context without changing visible user text', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-context' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element, {
+            getTurnContext: jest.fn(() => Promise.resolve({
+                embed_context_id: 'ctx-9',
+                context_generation: 9
+            }))
+        });
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-context' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'analyze this item', role: 'user' }] },
+            signals
+        );
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const body = latestAgentRunRequestBody();
+        expect(body.message).toBe('analyze this item');
+        expect(body.context).toMatchObject({
+            embed_context_id: 'ctx-9',
+            context_generation: 9
+        });
+
+        MockEventSource.instances.at(-1).simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test.each([
+        ['EMBED_CONTEXT_PENDING', 'Page context is still loading. Please try again.'],
+        ['EMBED_CONTEXT_UNAVAILABLE', 'Page context could not be resolved. Please try again.']
+    ])('handler fails closed for %s', async (code, message) => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-blocked-context' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+        const contextError = Object.assign(new Error(message), { code });
+        await initChat(element, {
+            getTurnContext: jest.fn(() => Promise.reject(contextError))
+        });
+
+        global.fetch.mockClear();
+        await element.handler(
+            { messages: [{ text: 'perform this page action', role: 'user' }] },
+            signals
+        );
+
+        expect(global.fetch).not.toHaveBeenCalled();
+        expect(signals.onResponse).toHaveBeenCalledWith(expect.objectContaining({
+            html: expect.stringContaining(message)
+        }));
+        expect(signals.onClose).toHaveBeenCalled();
+    });
+
     test('handler sends selected provider skill capability from slash picker', async () => {
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const { element, input } = createDomChatElement();

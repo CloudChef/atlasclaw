@@ -196,6 +196,7 @@ class SkillRegistry:
         self._skills: dict[str, tuple[SkillMetadata, Callable]] = {}
         self._md_skills: dict[str, MdSkillEntry] = {}
         self._md_skill_tools: dict[str, set[str]] = {}
+        self._md_tool_owners: dict[str, str] = {}
         self._md_tool_profiles: dict[str, dict[str, Any]] = {}
         self._workspace = workspace
     
@@ -206,6 +207,9 @@ class SkillRegistry:
     ) -> None:
         """Register an executable skill handler."""
         self._skills[metadata.name] = (metadata, handler)
+        # A generic same-name registration replaces the previous handler and
+        # therefore invalidates any prior Markdown-skill ownership assertion.
+        self._md_tool_owners.pop(metadata.name, None)
         if metadata.source in {"md_skill", "provider"}:
             self._md_tool_profiles[metadata.name] = {
                 "source": metadata.source,
@@ -225,13 +229,23 @@ class SkillRegistry:
         if name in self._skills:
             del self._skills[name]
             self._md_tool_profiles.pop(name, None)
+            self._md_tool_owners.pop(name, None)
             return True
         return False
     
     def get(self, name: str) -> Optional[tuple[SkillMetadata, Callable]]:
         """Return the registered skill metadata and handler for a name."""
         return self._skills.get(name)
-    
+
+    def tool_belongs_to_md_skill(self, skill_ref: str, tool_name: str) -> bool:
+        """Return whether the current tool handler has one exact qualified owner."""
+        normalized_ref = str(skill_ref or "").strip().lower()
+        normalized_tool = str(tool_name or "").strip()
+        if not normalized_ref or not normalized_tool:
+            return False
+        owner = str(self._md_tool_owners.get(normalized_tool, "") or "").strip().lower()
+        return bool(owner) and owner == normalized_ref
+
     def snapshot(self) -> list[dict]:
         """Return a metadata snapshot used by the prompt builder."""
         return [
@@ -876,7 +890,8 @@ single MD Skill.
     def _unregister_md_skill_tools(self, qualified_name: str) -> None:
         tool_names = self._md_skill_tools.pop(qualified_name, set())
         for tool_name in tool_names:
-            self.unregister(tool_name)
+            if self._md_tool_owners.get(tool_name) == qualified_name:
+                self.unregister(tool_name)
 
     def _register_executable_tools_from_md(self, entry: MdSkillEntry) -> None:
         register_executable_tools_from_md(

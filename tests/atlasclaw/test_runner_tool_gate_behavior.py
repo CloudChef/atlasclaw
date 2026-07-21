@@ -5,10 +5,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 
 import pytest
 
+from app.atlasclaw.agent.runner import AgentRunner
+from app.atlasclaw.agent.runner_tool import runner_execution_prepare as prepare_module
 from app.atlasclaw.agent.runner_tool.runner_tool_gate_model import RunnerToolGateModelMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_loop import (
     hydrate_session_provider_instance_selections,
@@ -42,6 +45,7 @@ from app.atlasclaw.agent.tool_gate_models import (
     ToolIntentPlan,
     ToolPolicyMode,
 )
+from app.atlasclaw.core.deps import SkillDeps
 
 
 class _GateRunner(RunnerToolGateModelMixin, RunnerToolGateRoutingMixin):
@@ -66,6 +70,100 @@ class _ProviderSelectionSessionManager:
 
 class _PrepareRunner(RunnerExecutionPreparePhaseMixin):
     pass
+
+
+class _PrepareSessionManager:
+    def __init__(self, transcript: list[dict] | None = None) -> None:
+        self.transcript = list(transcript or [])
+        self.session = SimpleNamespace(title="Existing chat", title_status="ready", extra={})
+
+    async def get_or_create(self, session_key: str):
+        return self.session
+
+    async def load_transcript(self, session_key: str) -> list[dict]:
+        return list(self.transcript)
+
+
+class _PrepareHistory:
+    @staticmethod
+    def build_message_history(transcript: list[dict]) -> list[dict]:
+        return list(transcript)
+
+    @staticmethod
+    def prune_summary_messages(messages: list[dict]) -> list[dict]:
+        return list(messages)
+
+
+class _PrepareRuntimeEvents:
+    async def trigger_message_received(self, **kwargs) -> None:
+        return None
+
+    async def trigger_run_started(self, **kwargs) -> None:
+        return None
+
+
+class _PrepareActiveMemory:
+    async def recall_usage_profile_for_routing(self, **kwargs):
+        return SimpleNamespace(status="disabled", elapsed_ms=0, result_count=0, context="")
+
+
+class _StopPrepare(Exception):
+    pass
+
+
+def _prepare_phase_state(*, deps: SkillDeps) -> dict:
+    return {
+        "session_key": deps.session_key,
+        "user_message": "restart this vm",
+        "deps": deps,
+        "_emit_lifecycle_bounds": False,
+        "start_time": time.monotonic(),
+        "run_id": "run-prepare-test",
+        "message_history": [],
+        "context_history_for_hooks": [],
+        "tool_call_summaries": [],
+        "buffered_assistant_events": [],
+        "tool_request_message": "restart this vm",
+        "tool_gate_decision": ToolGateDecision(reason="not evaluated"),
+        "all_available_tools": [],
+        "tool_groups_snapshot": {},
+        "available_tools": [],
+        "toolset_filter_trace": [],
+        "tool_projection_trace": {},
+        "metadata_candidates": {},
+        "ranking_trace": {},
+    }
+
+
+async def _run_prepare_until_tool_policy(
+    runner: AgentRunner,
+    *,
+    state: dict,
+) -> list[tuple[str, dict]]:
+    logs: list[tuple[str, dict]] = []
+
+    def _log_step(step: str, **data) -> None:
+        logs.append((step, dict(data)))
+        if step == "tool_policy_injected":
+            raise _StopPrepare
+
+    try:
+        async for _event in runner._run_prepare_phase(state=state, _log_step=_log_step):
+            pass
+    except _StopPrepare:
+        pass
+    return logs
+
+
+def _build_prepare_runner(session_manager: _PrepareSessionManager) -> AgentRunner:
+    runner = AgentRunner(agent=SimpleNamespace(), session_manager=session_manager)
+    runner.history = _PrepareHistory()
+    runner.runtime_events = _PrepareRuntimeEvents()
+    runner.active_memory = _PrepareActiveMemory()
+    runner.context_pruning_settings = SimpleNamespace(mode="off")
+    runner._build_turn_toolset = lambda **kwargs: (list(kwargs["all_tools"]), [], False)
+    runner._build_filtered_group_map = lambda _groups, _tools: {}
+    return runner
 
 
 class _ClassifierAgent:
@@ -97,6 +195,138 @@ class _SelectorAgent:
     async def run(self, user_message, *, deps):
         self.messages.append(str(user_message))
         return SimpleNamespace(output=json.dumps(self.payload))
+
+
+def test_embed_prepare_skips_selectors_and_preserves_server_page_projection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "# Item management\n\n"
+        "Use the declared item tools for requests about the current item.",
+        encoding="utf-8",
+    )
+    tools = [
+        {
+            "name": "example_read_item",
+            "provider_type": "example",
+            "qualified_skill_name": "example:item",
+            "skill_name": "item",
+        },
+        {
+            "name": "example_update_item",
+            "provider_type": "example",
+            "qualified_skill_name": "example:item",
+            "skill_name": "item",
+        },
+        {"name": "example_list_items", "provider_type": "example"},
+    ]
+    provider_skill_entry = {
+        "capability_id": "provider_skill:primary.item",
+        "kind": "provider_skill",
+        "name": "primary.item",
+        "provider_type": "example",
+        "provider_name": "primary",
+        "instance_name": "primary",
+        "qualified_skill_name": "example:item",
+        "target_provider_instances": ["example.primary"],
+        "target_provider_skill_names": ["primary.item"],
+        "declared_tool_names": [
+            "example_read_item",
+            "example_update_item",
+        ],
+        "locator": str(skill_path),
+    }
+    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: list(tools))
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_capability_index_snapshot",
+        lambda **kwargs: [dict(provider_skill_entry)],
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "_infer_active_provider_skill_from_transcript",
+        lambda **kwargs: "example:other",
+    )
+    manager = _PrepareSessionManager(
+        transcript=[{"role": "assistant", "content": "Continue the previous request workflow."}]
+    )
+    runner = _build_prepare_runner(manager)
+    selector_calls = {"active": 0, "capability": 0}
+
+    async def _forbid_active_selector(**kwargs):
+        selector_calls["active"] += 1
+        raise AssertionError("Embed page projection must skip the active-capability selector")
+
+    async def _forbid_capability_selector(**kwargs):
+        selector_calls["capability"] += 1
+        raise AssertionError("Embed page projection must skip the capability selector")
+
+    runner._select_active_capability_route_with_model = _forbid_active_selector
+    runner._select_capability_intent_plan_with_model = _forbid_capability_selector
+    deps = SkillDeps(
+        session_key="embed-session",
+        channel="api",
+        extra={
+            "active_internal_request_trace_id": "old-request-trace",
+            "context": {
+                "embed_scope": {
+                    "provider_type": "example",
+                    "provider_instance": "primary",
+                },
+                "allowed_page_skill_refs": ["example:item"],
+            },
+        },
+    )
+    state = _prepare_phase_state(deps=deps)
+
+    logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert selector_calls == {"active": 0, "capability": 0}
+    assert deps.extra["runtime_allowed_tool_names"] == [
+        "example_read_item",
+        "example_update_item",
+    ]
+    assert state["tool_intent_plan"].target_tool_names == []
+    assert state["tool_intent_plan"].action is ToolIntentAction.DIRECT_ANSWER
+    assert state["tool_execution_required"] is False
+    assert "active_internal_request_trace_id" not in deps.extra
+    assert deps.extra["target_md_skill"]["qualified_name"] == "example:item"
+    assert "declared item tools" in deps.extra["target_md_skill"]["instructions"]
+    assert "workflow_context" not in deps.extra["target_md_skill"]
+    assert any(step == "server_page_projection_plan_resolved" for step, _ in logs)
+    assert not any(step == "capability_selector_plan_resolved" for step, _ in logs)
+
+
+def test_ordinary_menu_prepare_still_calls_capability_selector_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools = [{"name": "example_update_item", "provider_type": "example"}]
+    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: list(tools))
+    monkeypatch.setattr(prepare_module, "collect_capability_index_snapshot", lambda **kwargs: [])
+    manager = _PrepareSessionManager()
+    runner = _build_prepare_runner(manager)
+    selector_calls = 0
+
+    async def _select_capability(**kwargs):
+        nonlocal selector_calls
+        selector_calls += 1
+        return ToolIntentPlan(
+            action=ToolIntentAction.DIRECT_ANSWER,
+            target_tool_names=["example_update_item"],
+            reason="ordinary_menu_selector",
+        )
+
+    runner._select_capability_intent_plan_with_model = _select_capability
+    deps = SkillDeps(session_key="menu-session", channel="api", extra={})
+    state = _prepare_phase_state(deps=deps)
+
+    asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert selector_calls == 1
+    assert deps.extra["runtime_allowed_tool_names"] == ["example_update_item"]
+    assert state["tool_intent_plan"].reason == "ordinary_menu_selector"
 
 
 def test_coordination_only_toolset_is_not_executable_runtime_capability() -> None:

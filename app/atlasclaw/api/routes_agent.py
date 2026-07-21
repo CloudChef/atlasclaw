@@ -14,8 +14,20 @@ from ..auth.guards import AuthorizationContext, get_optional_authorization_conte
 from ..agent.runner_tool.runner_execution_payload import build_no_runtime_capability_answer
 from ..agent.selected_capability import SELECTED_CAPABILITY_KEY
 from ..session.context import SessionKey
+from ..core.embed.snapshot_store import (
+    SnapshotExpiredError,
+    SnapshotGenerationError,
+    SnapshotNotFoundError,
+)
+from ..core.embed.context_service import (
+    EmbedContextService,
+    EmbedPermissionError,
+    EmbedResolverError,
+    require_embed_resolver_access,
+)
 from .agent_capabilities import build_agent_capabilities, resolve_selected_capability
 from .deps_context import APIContext, get_api_context
+from .routes_embed import embed_session_matches_scope
 from .schemas import AgentRunRequest, AgentRunResponse, AgentStatusResponse
 from .services.run_service import (
     abort_run,
@@ -174,8 +186,130 @@ def register_agent_routes(router: APIRouter) -> None:
             ) from exc
 
         request_context = dict(request.context or {})
+        if "embed_tool_name" in request_context or "allowed_page_tool_names" in request_context:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Embed runs do not accept client-selected Tools",
+            )
+        request_context.pop("turn_context", None)
+        request_context.pop("allowed_page_skill_refs", None)
+        request_context.pop("embed_scope", None)
+        request_context.pop("surface_id", None)
+        embed_context_id = request_context.pop("embed_context_id", None)
+        embed_generation = request_context.pop("context_generation", None)
+        embed_fields = (embed_context_id, embed_generation)
+        if any(value is not None for value in embed_fields):
+            if not all(value is not None for value in embed_fields):
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Embed context id and generation must be supplied together.",
+                )
+            integration = (
+                ctx.embed_integration_registry.get()
+                if ctx.embed_integration_registry is not None
+                else None
+            )
+            if integration is None:
+                raise HTTPException(status_code=404, detail="Embed integration not found")
+            parsed_session = SessionKey.from_string(request.session_key)
+            if not embed_session_matches_scope(
+                parsed_session,
+                user=user_info,
+                agent_id=integration.agent_id,
+                session_scope=integration.session_scope,
+            ):
+                raise HTTPException(status_code=404, detail="Chat session not found")
+            try:
+                snapshot = ctx.embed_context_store.get(
+                    str(embed_context_id),
+                    owner_user_id=user_info.user_id,
+                    generation=int(embed_generation),
+                )
+            except SnapshotExpiredError as exc:
+                raise HTTPException(status_code=status.HTTP_410_GONE, detail=str(exc)) from exc
+            except SnapshotGenerationError as exc:
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+            except (SnapshotNotFoundError, TypeError, ValueError) as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Embed context not found",
+                ) from exc
+            if not ctx.embed_context_store.is_latest(
+                snapshot.context_id,
+                owner_user_id=user_info.user_id,
+                surface_id=snapshot.surface_id,
+                generation=snapshot.generation,
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Embed context no longer targets the current page",
+                )
+            if (
+                snapshot.provider_type != integration.config.provider_type
+                or snapshot.provider_instance != integration.config.provider_instance
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Embed integration Provider binding changed",
+                )
+            try:
+                require_embed_resolver_access(
+                    resolved_authz,
+                    provider_type=snapshot.provider_type,
+                    provider_instance=snapshot.provider_instance,
+                )
+            except EmbedPermissionError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=str(exc),
+                ) from exc
+            provider_bucket = provider_instances_for_request.get(snapshot.provider_type, {})
+            provider_instance = (
+                provider_bucket.get(snapshot.provider_instance)
+                if isinstance(provider_bucket, dict)
+                else None
+            )
+            if not isinstance(provider_instance, dict):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Embed Provider instance is not configured for this run",
+                )
+            service = EmbedContextService(
+                ctx,
+                ctx.embed_integration_registry,
+                ctx.embed_context_store,
+            )
+            try:
+                service.validate_snapshot_skill_binding(
+                    provider_type=snapshot.provider_type,
+                    skill_ref=snapshot.skill_ref,
+                )
+            except EmbedResolverError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Embed page Skill binding changed",
+                ) from exc
+            request_context["turn_context"] = {
+                "page_type": snapshot.page_type,
+                "object": snapshot.object.model_dump(),
+                "context_generation": snapshot.generation,
+            }
+            request_context["allowed_page_skill_refs"] = [snapshot.skill_ref]
+            request_context["embed_scope"] = {
+                "context_id": snapshot.context_id,
+                "generation": snapshot.generation,
+                "provider_type": snapshot.provider_type,
+                "provider_instance": snapshot.provider_instance,
+                "object_type": snapshot.object.type,
+                "object_id": snapshot.object.id,
+            }
         request_context.pop(SELECTED_CAPABILITY_KEY, None)
         selected_capability = request_context.pop("selected_capability", None)
+        if embed_context_id is not None and selected_capability is not None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Embed runs cannot accept a client-selected capability",
+            )
         canonical_capability: dict[str, Any] | None = None
         if selected_capability is not None:
             canonical_capability = resolve_selected_capability(
@@ -192,7 +326,7 @@ def register_agent_routes(router: APIRouter) -> None:
             request_context[SELECTED_CAPABILITY_KEY] = canonical_capability
 
         slash_command = _leading_slash_command(safe_message)
-        if slash_command:
+        if slash_command and embed_context_id is None:
             slash_capability = _resolve_slash_capability(
                 ctx=ctx,
                 authz=resolved_authz,

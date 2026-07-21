@@ -8,9 +8,12 @@ import json
 import logging
 from pathlib import Path
 
+import pytest
+
 from app.atlasclaw.skills.md_tool_runtime import (
     ScriptInvocationConfig,
     create_script_wrapper,
+    load_handler_from_file,
     register_executable_tools_from_md,
 )
 from app.atlasclaw.skills.registry import MdSkillEntry, SkillMetadata, SkillRegistry
@@ -250,6 +253,161 @@ def test_script_wrapper_normalizes_crlf_output(tmp_path: Path) -> None:
     assert "\r" not in result["output"]
     assert "line1" in result["output"]
     assert "line2" in result["output"]
+
+
+def test_script_wrapper_timeout_does_not_block_the_event_loop(tmp_path: Path) -> None:
+    script = tmp_path / "slow.py"
+    script.write_text("import time\ntime.sleep(1)\nprint('late')\n", encoding="utf-8")
+    wrapper = create_script_wrapper(
+        script,
+        invocation_config=ScriptInvocationConfig(timeout_seconds=0.05),
+    )
+
+    async def run_scenario() -> tuple[dict, bool]:
+        ticked = False
+
+        async def ticker() -> None:
+            nonlocal ticked
+            await asyncio.sleep(0.01)
+            ticked = True
+
+        result, _ = await asyncio.gather(wrapper(), ticker())
+        return result, ticked
+
+    result, ticked = asyncio.run(run_scenario())
+
+    assert ticked is True
+    assert result == {"success": False, "error": "Script execution timed out"}
+
+
+def test_script_wrapper_revalidates_embed_scope_before_provider_io(tmp_path: Path) -> None:
+    marker = tmp_path / "provider-ran.txt"
+    script = tmp_path / "provider.py"
+    script.write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    guard_calls: list[str] = []
+
+    async def deny_stale(tool_name: str) -> None:
+        guard_calls.append(tool_name)
+        raise PermissionError("stale page")
+
+    class _Deps:
+        cookies = {}
+        extra = {"_provider_io_guard": deny_stale}
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(script, tool_name="provider_mutate")
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is False
+    assert "stale page" in result["error"]
+    assert guard_calls == ["provider_mutate"]
+    assert marker.exists() is False
+
+
+def test_function_handler_revalidates_embed_scope_before_provider_io(tmp_path: Path) -> None:
+    marker = tmp_path / "function-ran.txt"
+    module = tmp_path / "provider.py"
+    module.write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "async def execute(ctx=None):",
+                f"    Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
+                "    return {'success': True}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    async def deny_stale(_tool_name: str) -> None:
+        raise PermissionError("stale page")
+
+    class _Deps:
+        extra = {"_provider_io_guard": deny_stale}
+
+    class _Ctx:
+        deps = _Deps()
+
+    handler = load_handler_from_file(
+        module,
+        "execute",
+        provider_type="example",
+        tool_name="example_execute",
+    )
+
+    with pytest.raises(PermissionError, match="stale page"):
+        asyncio.run(handler(ctx=_Ctx()))
+    assert marker.exists() is False
+
+
+def test_cancelled_script_wrapper_kills_child_process(tmp_path: Path) -> None:
+    started = tmp_path / "started.txt"
+    finished = tmp_path / "finished.txt"
+    script = tmp_path / "slow.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import time",
+                "from pathlib import Path",
+                f"Path({str(started)!r}).write_text('started', encoding='utf-8')",
+                "time.sleep(1)",
+                f"Path({str(finished)!r}).write_text('finished', encoding='utf-8')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    wrapper = create_script_wrapper(script)
+
+    async def run_scenario() -> None:
+        task = asyncio.create_task(wrapper())
+        for _ in range(100):
+            if started.exists():
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.sleep(0.1)
+
+    asyncio.run(run_scenario())
+
+    assert started.exists() is True
+    assert finished.exists() is False
+
+
+def test_script_wrapper_stops_stream_at_output_limit(tmp_path: Path) -> None:
+    finished = tmp_path / "finished.txt"
+    script = tmp_path / "noisy.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import sys, time",
+                "from pathlib import Path",
+                "sys.stdout.write('x' * 65536)",
+                "sys.stdout.flush()",
+                "time.sleep(1)",
+                f"Path({str(finished)!r}).write_text('finished', encoding='utf-8')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    wrapper = create_script_wrapper(
+        script,
+        invocation_config=ScriptInvocationConfig(max_output_bytes=1024),
+    )
+
+    result = asyncio.run(wrapper())
+
+    assert result == {
+        "success": False,
+        "error": "Script output exceeded the configured limit",
+    }
+    assert finished.exists() is False
 
 
 def test_script_wrapper_sanitizes_provider_http_auth_errors(tmp_path: Path) -> None:
@@ -914,6 +1072,74 @@ def test_script_wrapper_exports_only_selected_provider_instance_config(
             "cmp": provider_config["smartcmp"]["cmp"],
         }
     }
+
+
+def test_request_cookie_only_wrapper_excludes_shared_credentials(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    script = tmp_path / "echo_context_env.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "print(json.dumps({",
+                "  'config': json.loads(os.environ.get('ATLASCLAW_PROVIDER_CONFIG', '{}')),",
+                "  'username': os.environ.get('USERNAME', ''),",
+                "  'password': os.environ.get('PASSWORD', ''),",
+                "  'cookie': json.loads(os.environ.get('ATLASCLAW_COOKIES', '{}')),",
+                "  'unknown_secret': os.environ.get('EXAMPLE_ACCESS_TOKEN', ''),",
+                "}))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    provider_config = {
+        "smartcmp": {
+            "cmp": {
+                "base_url": "https://cmp.example.com/platform-api",
+                "timeout": 30,
+                "auth_type": "credential",
+                "username": "shared-user",
+                "password": "shared-password",
+            }
+        }
+    }
+    monkeypatch.setenv("EXAMPLE_ACCESS_TOKEN", "must-not-cross-resolver-boundary")
+
+    class _Deps:
+        cookies = {"CloudChef-Authenticate": "request-cookie"}
+        extra = {
+            "provider_instances": provider_config,
+            "provider_type": "smartcmp",
+            "provider_instance_name": "cmp",
+            "provider_instance": provider_config["smartcmp"]["cmp"],
+        }
+
+    class _Ctx:
+        deps = _Deps()
+
+    wrapper = create_script_wrapper(
+        script,
+        provider_type="smartcmp",
+        invocation_config=ScriptInvocationConfig(request_cookie_only=True),
+    )
+    result = asyncio.run(wrapper(ctx=_Ctx()))
+
+    assert result["success"] is True
+    payload = json.loads(result["output"])
+    assert payload["config"] == {
+        "smartcmp": {
+            "cmp": {
+                "base_url": "https://cmp.example.com/platform-api",
+                "timeout": 30,
+            }
+        }
+    }
+    assert payload["username"] == ""
+    assert payload["password"] == ""
+    assert payload["cookie"] == {"CloudChef-Authenticate": "request-cookie"}
+    assert payload["unknown_secret"] == ""
 
 
 def test_script_wrapper_leaves_submit_confirmation_to_model_routing(

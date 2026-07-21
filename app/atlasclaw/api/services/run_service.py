@@ -6,11 +6,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timezone
+from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
 from fastapi import HTTPException, status
 
 from ...auth.models import ANONYMOUS_USER, UserInfo
+from ...auth.guards import resolve_authorization_context
+from ...db import get_db_manager
 from ...core.security_guard import encode_if_untrusted
 from ...session.context import SessionKey, TranscriptEntry
 from ..deps_context import APIContext, build_scoped_deps
@@ -151,17 +154,30 @@ async def execute_agent_run(
                 "AgentRunner not configured. Ensure LLM provider is properly configured in atlasclaw.json",
             )
 
+        request_context, provider_io_guard = await _refresh_embed_run_context(
+            ctx,
+            user_info=_user_info,
+            request_context=request_context,
+        )
+        if isinstance(request_context, dict) and isinstance(
+            request_context.get("embed_scope"), dict
+        ):
+            provider_config = build_provider_config(ctx)
+
+        deps_extra: dict[str, Any] = {
+            "agent_id": target_agent_id,
+            "run_id": run_id,
+            "context": request_context or {},
+        }
+        if provider_io_guard is not None:
+            deps_extra["_provider_io_guard"] = provider_io_guard
         deps = build_scoped_deps(
             ctx,
             _user_info,
             session_key,
             request_cookies=request_cookies,
             provider_config=provider_config,
-            extra={
-                "agent_id": target_agent_id,
-                "run_id": run_id,
-                "context": request_context or {},
-            },
+            extra=deps_extra,
         )
 
         async for event in runner.run(
@@ -234,3 +250,158 @@ async def execute_agent_run(
 
     finally:
         ctx.sse_manager.close_stream(run_id)
+
+
+async def _refresh_embed_run_context(
+    ctx: APIContext,
+    *,
+    user_info: UserInfo,
+    request_context: Optional[dict[str, Any]],
+) -> tuple[dict[str, Any], Callable[[str], Awaitable[None]] | None]:
+    """Rebuild a page-bound run from current snapshot and authorization state."""
+    current = dict(request_context or {})
+    scope = current.get("embed_scope")
+    if not isinstance(scope, dict):
+        return current, None
+
+    from app.atlasclaw.core.embed.context_service import (
+        EmbedContextService,
+        build_authorization_extras,
+        require_embed_resolver_access,
+    )
+
+    context_id = str(scope.get("context_id") or "").strip()
+    generation = int(scope.get("generation"))
+    snapshot = ctx.embed_context_store.get(
+        context_id,
+        owner_user_id=user_info.user_id,
+        generation=generation,
+    )
+    if not ctx.embed_context_store.is_latest(
+        snapshot.context_id,
+        owner_user_id=user_info.user_id,
+        surface_id=snapshot.surface_id,
+        generation=snapshot.generation,
+    ):
+        raise PermissionError("Embed context no longer targets the current page")
+    integration = ctx.embed_integration_registry.get()
+    if (
+        integration is None
+        or integration.config.provider_type != snapshot.provider_type
+        or integration.config.provider_instance != snapshot.provider_instance
+    ):
+        raise PermissionError("Embed integration Provider binding changed")
+    db_manager = get_db_manager()
+    if db_manager is None or not db_manager.is_initialized:
+        raise PermissionError("current authorization storage is unavailable")
+    async with db_manager.get_session() as session:
+        current_authz = await resolve_authorization_context(session, user_info)
+    require_embed_resolver_access(
+        current_authz,
+        provider_type=snapshot.provider_type,
+        provider_instance=snapshot.provider_instance,
+    )
+    service = EmbedContextService(
+        ctx,
+        ctx.embed_integration_registry,
+        ctx.embed_context_store,
+    )
+    service.validate_snapshot_skill_binding(
+        provider_type=snapshot.provider_type,
+        skill_ref=snapshot.skill_ref,
+    )
+    refreshed = {
+        key: value
+        for key, value in current.items()
+        if key
+        not in {
+            "turn_context",
+            "allowed_page_skill_refs",
+            "embed_scope",
+            "_user_skill_permissions",
+            "_provider_permissions",
+        }
+    }
+    refreshed.update(build_authorization_extras(current_authz))
+    refreshed["turn_context"] = {
+        "page_type": snapshot.page_type,
+        "object": snapshot.object.model_dump(),
+        "context_generation": snapshot.generation,
+    }
+    refreshed["allowed_page_skill_refs"] = [snapshot.skill_ref]
+    refreshed["embed_scope"] = {
+        "context_id": snapshot.context_id,
+        "generation": snapshot.generation,
+        "provider_type": snapshot.provider_type,
+        "provider_instance": snapshot.provider_instance,
+        "object_type": snapshot.object.type,
+        "object_id": snapshot.object.id,
+    }
+    async def require_current_provider_tool(tool_name: str) -> None:
+        """Revalidate the immutable page scope immediately before Provider I/O."""
+        await _require_current_embed_provider_tool(
+            ctx,
+            user_info=user_info,
+            snapshot=snapshot,
+            tool_name=tool_name,
+        )
+
+    return refreshed, require_current_provider_tool
+
+
+async def _require_current_embed_provider_tool(
+    ctx: APIContext,
+    *,
+    user_info: UserInfo,
+    snapshot: Any,
+    tool_name: str,
+) -> None:
+    """Fail closed when page generation, binding, RBAC, or Tool ownership drifted."""
+    # Keep these imports local to avoid the API/context-service import cycle, but
+    # import them in the callback that actually executes.  Imports made inside
+    # ``_refresh_embed_run_context`` are local to that function and are not
+    # visible when this deferred Provider-I/O guard runs later.
+    from app.atlasclaw.core.embed.context_service import (
+        EmbedContextService,
+        require_embed_resolver_access,
+    )
+
+    if not ctx.embed_context_store.is_latest(
+        snapshot.context_id,
+        owner_user_id=user_info.user_id,
+        surface_id=snapshot.surface_id,
+        generation=snapshot.generation,
+    ):
+        raise PermissionError("Embed context no longer targets the current page")
+    integration = ctx.embed_integration_registry.get()
+    if (
+        integration is None
+        or integration.config.provider_type != snapshot.provider_type
+        or integration.config.provider_instance != snapshot.provider_instance
+    ):
+        raise PermissionError("Embed integration Provider binding changed")
+    db_manager = get_db_manager()
+    if db_manager is None or not db_manager.is_initialized:
+        raise PermissionError("current authorization storage is unavailable")
+    async with db_manager.get_session() as session:
+        current_authz = await resolve_authorization_context(session, user_info)
+    require_embed_resolver_access(
+        current_authz,
+        provider_type=snapshot.provider_type,
+        provider_instance=snapshot.provider_instance,
+    )
+    service = EmbedContextService(
+        ctx,
+        ctx.embed_integration_registry,
+        ctx.embed_context_store,
+    )
+    service.validate_snapshot_skill_binding(
+        provider_type=snapshot.provider_type,
+        skill_ref=snapshot.skill_ref,
+    )
+    service.require_visible_snapshot_tool(
+        snapshot=snapshot,
+        integration=integration,
+        authz=current_authz,
+        tool_name=tool_name,
+    )

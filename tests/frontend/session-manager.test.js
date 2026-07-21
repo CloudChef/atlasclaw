@@ -35,6 +35,7 @@ beforeEach(() => {
     sessionStorageMock.setItem.mockClear();
     sessionStorageMock.removeItem.mockClear();
     global.fetch.mockClear();
+    localStorage.clear();
 });
 
 describe('session-manager.js', () => {
@@ -209,5 +210,233 @@ describe('session-manager.js', () => {
             
             expect(sessionStorageMock.removeItem).toHaveBeenCalledWith('atlasclaw_session_key');
         });
+    });
+
+    describe('integration-scoped Chat Active Session', () => {
+        const surface = {
+            integrationMode: true,
+            surface: 'menu',
+            hostOrigin: null,
+            nonce: null
+        };
+
+        test('stores only a bootstrap-validated candidate in scoped localStorage', async () => {
+            const storageKey = 'atlasclaw_active_session:v1:main:tenant-scope';
+            localStorage.setItem(storageKey, 'candidate-chat-key');
+            global.fetch
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        agent_id: 'main',
+                        session_scope: 'tenant-scope',
+                        active_session_key: null
+                    })
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        agent_id: 'main',
+                        session_scope: 'tenant-scope',
+                        active_session_key: 'candidate-chat-key'
+                    })
+                });
+
+            const { initializeIntegrationChatSession, getSessionKey } = await import(
+                '../../app/frontend/scripts/session-manager.js'
+            );
+            await initializeIntegrationChatSession(surface);
+
+            expect(getSessionKey()).toBe('candidate-chat-key');
+            expect(localStorage.getItem(storageKey)).toBe('candidate-chat-key');
+            const validationBody = JSON.parse(global.fetch.mock.calls[1][1].body);
+            expect(validationBody.candidate_session_key).toBe('candidate-chat-key');
+            expect(localStorage.length).toBe(1);
+        });
+
+        test('creates scoped threads and always creates a new one on explicit new chat', async () => {
+            global.fetch
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        agent_id: 'main',
+                        session_scope: 'tenant-scope',
+                        active_session_key: null
+                    })
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({ session_key: 'first-chat-key' })
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        agent_id: 'main',
+                        session_scope: 'tenant-scope',
+                        active_session_key: 'first-chat-key'
+                    })
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({ session_key: 'second-chat-key' })
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        agent_id: 'main',
+                        session_scope: 'tenant-scope',
+                        active_session_key: 'second-chat-key'
+                    })
+                });
+
+            const {
+                initializeIntegrationChatSession,
+                initSession,
+                setSessionHasMessages,
+                startNewSession
+            } = await import('../../app/frontend/scripts/session-manager.js');
+            await initializeIntegrationChatSession(surface);
+            await initSession();
+            setSessionHasMessages(false);
+
+            await expect(startNewSession()).resolves.toBe('second-chat-key');
+            const createBodies = global.fetch.mock.calls
+                .filter(([url]) => String(url).endsWith('/api/sessions/threads'))
+                .map(([, options]) => JSON.parse(options.body));
+            expect(createBodies).toHaveLength(2);
+            expect(createBodies[0]).toMatchObject({
+                agent_id: 'main',
+                account_id: 'tenant-scope',
+                channel: 'web',
+                chat_type: 'dm'
+            });
+        });
+
+        test('rejects an unvalidated localStorage candidate instead of restoring it', async () => {
+            const storageKey = 'atlasclaw_active_session:v1:main:tenant-scope';
+            localStorage.setItem(storageKey, 'other-user-chat-key');
+            global.fetch
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        agent_id: 'main',
+                        session_scope: 'tenant-scope',
+                        active_session_key: null
+                    })
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        agent_id: 'main',
+                        session_scope: 'tenant-scope',
+                        active_session_key: null
+                    })
+                });
+
+            const { initializeIntegrationChatSession, getSessionKey } = await import(
+                '../../app/frontend/scripts/session-manager.js'
+            );
+            await initializeIntegrationChatSession(surface);
+
+            expect(getSessionKey()).toBeNull();
+            expect(localStorage.getItem(storageKey)).toBeNull();
+        });
+
+        test('validates a storage-event candidate before switching cross-Surface Chat Active Session', async () => {
+            const storageKey = 'atlasclaw_active_session:v1:main:tenant-scope';
+            global.fetch
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        agent_id: 'main',
+                        session_scope: 'tenant-scope',
+                        active_session_key: null
+                    })
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({ session_key: 'current-chat-key' })
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        agent_id: 'main',
+                        session_scope: 'tenant-scope',
+                        active_session_key: 'current-chat-key'
+                    })
+                });
+            const sessionManager = await import('../../app/frontend/scripts/session-manager.js');
+            await sessionManager.initializeIntegrationChatSession(surface);
+            await sessionManager.initSession();
+
+            const changed = jest.fn();
+            window.addEventListener('atlasclaw:active-chat-session-changed', changed, { once: true });
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({
+                    agent_id: 'main',
+                    session_scope: 'tenant-scope',
+                    active_session_key: 'next-chat-key'
+                })
+            });
+            localStorage.setItem(storageKey, 'next-chat-key');
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: storageKey,
+                oldValue: 'current-chat-key',
+                newValue: 'next-chat-key',
+                storageArea: localStorage
+            }));
+            await new Promise((resolve) => setTimeout(resolve, 0));
+
+            expect(sessionManager.getSessionKey()).toBe('next-chat-key');
+            expect(changed).toHaveBeenCalledWith(expect.objectContaining({
+                detail: expect.objectContaining({ sessionKey: 'next-chat-key' })
+            }));
+            const validation = JSON.parse(global.fetch.mock.calls.at(-1)[1].body);
+            expect(validation.candidate_session_key).toBe('next-chat-key');
+        });
+
+        test('clears the other Surface when the active session pointer is removed', async () => {
+            const storageKey = 'atlasclaw_active_session:v1:main:tenant-scope';
+            global.fetch
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        agent_id: 'main',
+                        session_scope: 'tenant-scope',
+                        active_session_key: null
+                    })
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({ session_key: 'current-chat-key' })
+                })
+                .mockResolvedValueOnce({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        agent_id: 'main',
+                        session_scope: 'tenant-scope',
+                        active_session_key: 'current-chat-key'
+                    })
+                });
+            const sessionManager = await import('../../app/frontend/scripts/session-manager.js');
+            await sessionManager.initializeIntegrationChatSession(surface);
+            await sessionManager.initSession();
+
+            const changed = jest.fn();
+            window.addEventListener('atlasclaw:active-chat-session-changed', changed, { once: true });
+            localStorage.removeItem(storageKey);
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: storageKey,
+                oldValue: 'current-chat-key',
+                newValue: null,
+                storageArea: localStorage
+            }));
+
+            expect(sessionManager.getSessionKey()).toBeNull();
+            expect(changed).toHaveBeenCalledWith(expect.objectContaining({
+                detail: { sessionKey: null, previousKey: 'current-chat-key' }
+            }));
+        });
+
     });
 });

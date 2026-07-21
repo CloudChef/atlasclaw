@@ -116,6 +116,56 @@ export async function createThreadSession(params = {}) {
 }
 
 /**
+ * Bootstrap one AtlasClaw Embed surface. The shared Host Cookie authenticates
+ * the request; a candidate Chat Active Session is only a localStorage pointer
+ * and is trusted only when this endpoint returns it as active_session_key.
+ *
+ * @param {object} params - Embed bootstrap fields.
+ * @returns {Promise<object>} Validated Embed profile and active chat key.
+ */
+export async function bootstrapEmbedIntegration(params) {
+    const response = await fetch(buildApiUrl('/api/embed/bootstrap'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+            surface: params.surface,
+            nonce: params.nonce || null,
+            candidate_session_key: params.candidateSessionKey || null
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Failed to bootstrap embed integration: ${response.status}`);
+    }
+    return response.json();
+}
+
+/**
+ * Resolve a normalized Host path to a server-owned context snapshot.
+ *
+ * @param {object} params - Surface, generation and normalized path.
+ * @returns {Promise<object>} Public Context object and action projection.
+ */
+export async function resolveEmbedContext(params) {
+    const response = await fetch(buildApiUrl('/api/embed/context/resolve'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+            surface_id: params.surfaceId,
+            generation: params.generation,
+            path: params.path
+        })
+    });
+
+    if (!response.ok) {
+        throw new Error(`Failed to resolve embed context: ${response.status}`);
+    }
+    return response.json();
+}
+
+/**
  * Get session info
  * @param {string} sessionKey - Session key
  * @returns {Promise<object>} Session info
@@ -259,6 +309,8 @@ export default {
     listSessions,
     createSession,
     createThreadSession,
+    bootstrapEmbedIntegration,
+    resolveEmbedContext,
     getSession,
     getSessionHistory,
     resetSession,

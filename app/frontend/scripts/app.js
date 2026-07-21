@@ -16,7 +16,9 @@ import { initI18n, updatePageTranslations, updateContainerTranslations } from '.
 import { renderSidebar, updateSidebarActive } from './components/sidebar.js'
 import { renderHeader, updateHeaderTitle, updateHeaderTitleText } from './components/header.js'
 import { showToast } from './components/toast.js'
-import { getAgentInfo } from './api-client.js'
+import { getAgentInfo } from './api-client.js?v=31'
+import { parseEmbedSurface, applySurfaceClasses } from './embed/surface.js?v=31'
+import { initializeIntegrationChatSession, startNewSession } from './session-manager.js?v=36'
 import {
   canAccessChannelManagement,
   canAccessModelManagement,
@@ -24,7 +26,7 @@ import {
   canAccessUserManagement
 } from './permissions.js'
 
-const SCRIPT_VERSION = '21'
+const SCRIPT_VERSION = '36'
 
 /**
  * Route table - lazy loaded page modules
@@ -152,6 +154,10 @@ export async function initApp() {
     // 3. Load runtime config
     await loadConfig()
 
+    // 3.1 Bootstrap the integration-scoped Chat Active Session. Authentication
+    // remains the existing shared Host Cookie and is not stored by this flow.
+    await initializeEmbedIntegration()
+
     // 4. Initialize i18n (non-blocking)
     try {
       await initI18n()
@@ -270,7 +276,6 @@ function setupLinkInterception() {
 
 async function handleNewChatClick() {
   try {
-    const { startNewSession } = await import(`./session-manager.js?v=${SCRIPT_VERSION}`)
     const nextSessionKey = await startNewSession(true, { channel: 'web', chatType: 'dm' })
     if (stripBasePath(window.location.pathname) === '/') {
       const { activateChatSession } = await import(`./pages/chat.js?v=${SCRIPT_VERSION}`)
@@ -286,11 +291,37 @@ async function handleNewChatClick() {
 
 function applyEmbeddedMode() {
   const embeddedMode = isEmbeddedMode()
+  const surface = parseEmbedSurface(window.location)
+  window.__atlasclawEmbedSurface = surface
   window.__atlasclawEmbeddedMode = embeddedMode
   document.documentElement.classList.toggle('atlas-embedded-mode', embeddedMode)
   document.body.classList.toggle('atlas-embedded-mode', embeddedMode)
+  applySurfaceClasses(surface, document.documentElement)
+  applySurfaceClasses(surface, document.body)
   applyEmbeddedRouteMode(window.location.pathname, embeddedMode)
   return embeddedMode
+}
+
+async function initializeEmbedIntegration() {
+  const surface = window.__atlasclawEmbedSurface
+  if (!surface?.integrationMode) return
+  try {
+    const profile = await initializeIntegrationChatSession(surface)
+    window.__atlasclawEmbedSurface = Object.freeze({
+      ...surface,
+      bootstrapValidated: !!profile,
+      agentId: profile?.agent_id || null,
+      sessionScope: profile?.session_scope || null
+    })
+  } catch (error) {
+    // Preserve Chat availability but do not start Context messaging or trust a
+    // scoped Chat Active Session when bootstrap rejects this integration.
+    window.__atlasclawEmbedSurface = Object.freeze({
+      ...surface,
+      bootstrapValidated: false
+    })
+    console.warn('[App] Embed integration bootstrap failed:', error)
+  }
 }
 
 function applyEmbeddedRouteMode(path, embeddedMode = isEmbeddedMode()) {

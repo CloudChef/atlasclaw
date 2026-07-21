@@ -119,11 +119,24 @@ initializeConfiguration manager
         
         # 6. Expand environment variable placeholders in config dict
         config_dict = self._expand_env_vars(config_dict)
+
+        if "embed_integrations" in config_dict:
+            raise ValueError(
+                "embed_integrations is not supported; configure the single "
+                "embed_integration Provider binding instead"
+            )
         
         # 7. Create configuration object
         try:
             self._config = AtlasClawConfig(**config_dict)
         except ValidationError as e:
+            embed_errors = [
+                error
+                for error in e.errors()
+                if error.get("loc") and error["loc"][0] == "embed_integration"
+            ]
+            if embed_errors:
+                raise ValueError(f"Embed integration configuration is invalid: {e}") from e
             # Config validation failed, use defaults
             print(f"[ConfigManager] Config validation failed, using defaults: {e}")
             self._config = AtlasClawConfig()
