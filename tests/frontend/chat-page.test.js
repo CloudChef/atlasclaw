@@ -10,6 +10,7 @@ beforeEach(() => {
     <div id="page-root"></div>
   `
   sessionStorage.clear()
+  delete window.__atlasclawEmbedSurface
   global.fetch = jest.fn((url, options = {}) => {
     const target = String(url)
     if (target.endsWith('/api/sessions/threads')) {
@@ -84,6 +85,41 @@ const sessionStorageMock = (() => {
 Object.defineProperty(global, 'sessionStorage', { value: sessionStorageMock })
 
 describe('chat page', () => {
+  test('menu keeps legacy Chat DOM while floating reuses one DeepChat with Context slots', async () => {
+    window.__atlasclawEmbedSurface = Object.freeze({
+      surface: 'menu',
+      bootstrapValidated: true
+    })
+    const chatPage = await import('../../app/frontend/scripts/pages/chat.js')
+    const container = document.getElementById('page-root')
+
+    await chatPage.mount(container)
+
+    expect(container.querySelector('deep-chat')).not.toBeNull()
+    expect(container.querySelector('.embed-context-extension')).toBeNull()
+    expect(container.querySelector('#embed-object-action-slot')).toBeNull()
+    expect(container.querySelector('.floating-assistant-toolbar')).toBeNull()
+    await chatPage.unmount()
+
+    window.__atlasclawEmbedSurface = Object.freeze({
+      surface: 'floating',
+      hostOrigin: 'https://host.example',
+      nonce: 'abcdefghijklmnopqrstuvwxyz123456',
+      bootstrapValidated: true
+    })
+    await chatPage.mount(container)
+
+    expect(container.querySelectorAll('deep-chat')).toHaveLength(1)
+    expect(container.querySelector('#embed-object-context-slot').hidden).toBe(true)
+    expect(container.querySelector('#embed-object-action-slot').hidden).toBe(true)
+    expect(container.querySelector('#floating-open-full')).toBeNull()
+    const closeButton = container.querySelector('#floating-close')
+    expect(closeButton).not.toBeNull()
+    expect(closeButton.getAttribute('aria-label')).toBe('Close')
+    expect(closeButton.getAttribute('title')).toBe('Close')
+    await chatPage.unmount()
+  })
+
   test('mount reuses loaded i18n state for chat labels and inline delete confirmation', async () => {
     jest.resetModules()
     jest.spyOn(Date, 'now').mockReturnValue(new Date('2026-05-03T12:00:00Z').getTime())
@@ -425,7 +461,8 @@ describe('chat page', () => {
       abortCurrentStream: jest.fn(),
       getCurrentAgentInfo: jest.fn(() => ({ name: 'AtlasClaw Enterprise AI Assistant' })),
       focusChatInput,
-      cancelChatInputFocusRetry
+      cancelChatInputFocusRetry,
+      renderContextObjectActions: jest.fn()
     }))
 
     const chatPage = await import('../../app/frontend/scripts/pages/chat.js')
@@ -443,7 +480,31 @@ describe('chat page', () => {
     expect(cancelChatInputFocusRetry).toHaveBeenCalledTimes(1)
   })
 
-  test('user turn hides empty state immediately before assistant response returns', async () => {
+  test('activateChatSession reports a rejected scoped session without changing focus', async () => {
+    const chatPage = await import('../../app/frontend/scripts/pages/chat.js')
+    const sessionManager = await import('../../app/frontend/scripts/session-manager.js?v=36')
+    const container = document.getElementById('page-root')
+    await chatPage.mount(container)
+
+    global.fetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ agent_id: 'main', session_scope: 'tenant-scope', active_session_key: null })
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ agent_id: 'main', session_scope: 'tenant-scope', active_session_key: null })
+      })
+    await sessionManager.initializeIntegrationChatSession({
+      integrationMode: true,
+      surface: 'menu'
+    })
+
+    await expect(chatPage.activateChatSession('out-of-scope-session')).resolves.toBe(false)
+    expect(sessionManager.getSessionKey()).toBeNull()
+  })
+
+  test('empty state follows visible messages and current-session run activity', async () => {
     jest.resetModules()
 
     let capturedCallbacks = null
@@ -456,7 +517,8 @@ describe('chat page', () => {
       abortCurrentStream: jest.fn(),
       getCurrentAgentInfo: jest.fn(() => ({ name: 'AtlasClaw Enterprise AI Assistant' })),
       focusChatInput: jest.fn(),
-      cancelChatInputFocusRetry: jest.fn()
+      cancelChatInputFocusRetry: jest.fn(),
+      renderContextObjectActions: jest.fn()
     }))
 
     const chatPage = await import('../../app/frontend/scripts/pages/chat.js')
@@ -475,6 +537,27 @@ describe('chat page', () => {
     const emptyState = container.querySelector('#chat-empty-state')
     expect(emptyState.classList.contains('hidden')).toBe(false)
 
+    capturedCallbacks.onRunActivityChange({
+      sessionKey: 'session-a',
+      active: true,
+      activeCount: 1
+    })
+    expect(emptyState.classList.contains('hidden')).toBe(true)
+
+    capturedCallbacks.onRunActivityChange({
+      sessionKey: 'session-a',
+      active: false,
+      activeCount: 0
+    })
+    expect(emptyState.classList.contains('hidden')).toBe(false)
+
+    capturedCallbacks.onRunActivityChange({
+      sessionKey: 'session-b',
+      active: true,
+      activeCount: 1
+    })
+    expect(emptyState.classList.contains('hidden')).toBe(false)
+
     capturedCallbacks.onUserTurnStarted({
       sessionKey: 'session-a',
       messageText: '你好'
@@ -482,5 +565,21 @@ describe('chat page', () => {
 
     expect(emptyState.classList.contains('hidden')).toBe(true)
     expect(container.classList.contains('chat-empty-mode')).toBe(false)
+
+    capturedCallbacks.onRunActivityChange({
+      sessionKey: 'session-a',
+      active: false,
+      activeCount: 0
+    })
+    expect(emptyState.classList.contains('hidden')).toBe(true)
+
+    capturedCallbacks.onConversationStateChange({
+      hasMessages: false,
+      agentInfo: {
+        name: 'AtlasClaw Enterprise AI Assistant',
+        welcome_message: 'Welcome'
+      }
+    })
+    expect(emptyState.classList.contains('hidden')).toBe(false)
   })
 })

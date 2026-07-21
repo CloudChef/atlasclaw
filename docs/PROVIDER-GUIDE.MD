@@ -362,6 +362,44 @@ Skills return structured responses:
 | `data` | Structured result data |
 | `error` | Error details (if failed) |
 
+### Object Actions
+
+Providers may attach an optional `object_actions` list to any object metadata
+returned by a Skill Tool. This is the only executable object-control contract;
+Core does not infer controls from a Tool inventory or from URL-like fields.
+
+```json
+{
+  "object_type": "ticket",
+  "object_id": "INC-42",
+  "object_name": "Database unavailable",
+  "object_actions": [
+    {
+      "action_id": "open_detail",
+      "kind": "open_url",
+      "display_label": {
+        "default": "Open",
+        "translations": {"zh-CN": "打开"}
+      },
+      "href": "https://tickets.example/incidents/INC-42",
+      "effect": "navigate",
+      "tone": "default"
+    }
+  ]
+}
+```
+
+The Domain Skill that returns an object owns its action builder and derives the
+available actions from the validated object state and current user capability.
+When the same object is exposed through an Embed Context resolver, the resolver
+must call that same builder and return the resulting `object_actions` beside the
+resolved object. Chat and Context then use the same Core validation and frontend
+renderer.
+
+Do not maintain a Provider-wide fixed `object_type -> actions` table. Do not
+render every Tool owned by the matched Skill. Returning an empty action list is
+valid when the object has no current operations.
+
 ---
 
 ## Jira Provider Example

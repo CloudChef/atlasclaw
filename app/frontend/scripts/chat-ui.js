@@ -7,12 +7,12 @@
  * Configure DeepChat component integration with AtlasClaw API
  */
 
-import { getSessionKey, initSession, setSessionKey, setSessionHasMessages } from './session-manager.js?v=21'
-import { buildWorkspaceFileDownloadUrl, getAgentInfo, getSessionHistory } from './api-client.js?v=21'
-import { createStreamHandler } from './stream-handler.js?v=21'
-import { buildApiUrl } from './config.js?v=21'
+import { getSessionKey, initSession, setSessionKey, setSessionHasMessages } from './session-manager.js?v=36'
+import { buildWorkspaceFileDownloadUrl, getAgentInfo, getSessionHistory } from './api-client.js?v=31'
+import { createStreamHandler } from './stream-handler.js?v=27'
+import { buildApiUrl } from './config.js?v=27'
 import { translateIfExists, getCurrentLocale } from './i18n.js'
-import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=21'
+import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=27'
 
 let chatElement = null
 let currentStreamHandler = null
@@ -28,6 +28,7 @@ let blockNextEnterAfterComposition = false
 let blockNextEnterStartedAt = 0
 let focusRetryGeneration = 0
 let sessionActivationGeneration = 0
+const activeRunActivityCounts = new Map()
 
 const IME_ENTER_GUARD_MS = 150
 const SCROLL_THRESHOLD = 50
@@ -836,6 +837,8 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     currentSessionKey = sessionKey
   }
 
+  const settleRunActivity = beginRunActivity(sessionKey)
+
   if (options.visibleUserTurn !== false) {
     notifyUserTurnStarted(sessionKey, messageText)
   }
@@ -851,6 +854,32 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     }
     if (options.visibleUserTurn === false) {
       requestContext.visible_user_turn = false
+    }
+    const explicitTurnContext = normalizeEmbedActionTurnContext(options.turnContext)
+    if (explicitTurnContext) {
+      Object.assign(requestContext, explicitTurnContext)
+    } else if (typeof chatCallbacks.getTurnContext === 'function') {
+      try {
+        const turnContext = await chatCallbacks.getTurnContext()
+        if (
+          turnContext?.embed_context_id &&
+          Number.isSafeInteger(turnContext.context_generation)
+        ) {
+          requestContext.embed_context_id = turnContext.embed_context_id
+          requestContext.context_generation = turnContext.context_generation
+        }
+      } catch (error) {
+        console.warn('[ChatUI] Send-time Embed context unavailable:', error)
+        const errorMessage = [
+          'EMBED_CONTEXT_PENDING',
+          'EMBED_CONTEXT_UNAVAILABLE'
+        ].includes(error?.code)
+          ? error.message
+          : 'Page context is unavailable. Please try again.'
+        reportRunCreationError(signals, errorMessage, options.onRunCreationError)
+        settleRunActivity()
+        return false
+      }
     }
     const response = await fetch(buildApiUrl('/api/agent/run'), {
       method: 'POST',
@@ -873,22 +902,26 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
       } catch (_) {
         // Keep the HTTP status fallback when the response body is not JSON.
       }
-      signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(errorMessage)}</p>` })
-      signals.onClose()
+      reportRunCreationError(signals, errorMessage, options.onRunCreationError)
+      settleRunActivity()
       return false
     }
 
     const data = await response.json()
     runId = data.run_id || data.runId || data.id
     if (!runId) {
-      signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(data.detail || 'Error: No run_id')}</p>` })
-      signals.onClose()
+      reportRunCreationError(
+        signals,
+        data.detail || 'Error: No run_id',
+        options.onRunCreationError
+      )
+      settleRunActivity()
       return false
     }
   } catch (err) {
     console.error('[ChatUI] API call failed:', err)
-    signals.onResponse({ html: `<p style="color: #d32f2f;">Error: ${escapeHtml(err.message)}</p>` })
-    signals.onClose()
+    reportRunCreationError(signals, `Error: ${err.message}`, options.onRunCreationError)
+    settleRunActivity()
     return false
   }
 
@@ -906,8 +939,34 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     })
   }
 
-  await handleStreamWithSignals(runId, signals, { sessionKey, messageText })
-  return true
+  try {
+    await handleStreamWithSignals(runId, signals, { sessionKey, messageText })
+    return true
+  } finally {
+    settleRunActivity()
+  }
+}
+
+function reportRunCreationError(signals, message, onRunCreationError = null) {
+  const text = String(message || 'Unable to submit action. Please try again.')
+  if (typeof onRunCreationError === 'function') {
+    onRunCreationError(text)
+  } else {
+    signals.onResponse({ html: `<p style="color: #d32f2f;">${escapeHtml(text)}</p>` })
+  }
+  signals.onClose()
+}
+
+function normalizeEmbedActionTurnContext(value) {
+  const contextId = String(value?.embed_context_id || '').trim()
+  const generation = value?.context_generation
+  if (!contextId || !Number.isSafeInteger(generation) || generation < 0) {
+    return null
+  }
+  return Object.freeze({
+    embed_context_id: contextId,
+    context_generation: generation
+  })
 }
 
 function extractMessageFromBody(body) {
@@ -1011,6 +1070,34 @@ function notifyUserTurnStarted(sessionKey, messageText) {
   if (typeof chatCallbacks.onUserTurnStarted === 'function') {
     chatCallbacks.onUserTurnStarted({ sessionKey, messageText })
   }
+}
+
+function beginRunActivity(sessionKey) {
+  const key = String(sessionKey || '')
+  activeRunActivityCounts.set(key, (activeRunActivityCounts.get(key) || 0) + 1)
+  notifyRunActivityChange(key)
+  let settled = false
+  return () => {
+    if (settled) return
+    settled = true
+    const remaining = Math.max(0, (activeRunActivityCounts.get(key) || 1) - 1)
+    if (remaining) {
+      activeRunActivityCounts.set(key, remaining)
+    } else {
+      activeRunActivityCounts.delete(key)
+    }
+    notifyRunActivityChange(key)
+  }
+}
+
+function notifyRunActivityChange(sessionKey) {
+  if (typeof chatCallbacks.onRunActivityChange !== 'function') return
+  const activeCount = activeRunActivityCounts.get(sessionKey) || 0
+  chatCallbacks.onRunActivityChange({
+    sessionKey,
+    active: activeCount > 0,
+    activeCount
+  })
 }
 
 async function notifyRunCompleted(sessionKey) {
@@ -1846,7 +1933,7 @@ function buildObjectActionInputControl(input) {
   return label
 }
 
-function buildObjectActionConfirmationCard(action, actionGroup) {
+function buildObjectActionConfirmationCard(action, actionGroup, submissionContext = {}) {
   const card = document.createElement('div')
   card.className = 'object-action-confirmation-card'
   card.setAttribute('role', 'group')
@@ -1934,13 +2021,17 @@ function buildObjectActionConfirmationCard(action, actionGroup) {
       return
     }
 
-    if (!submitObjectActionPrompt(resolvedAction.prompt, {
-      onRunCreationFailed: () => {
-        restoreSubmissionState(
-          getTranslatedChatLabel('chat.objectActionSubmitFailed', 'Unable to submit action. Please try again.')
-        )
-      }
-    })) {
+    if (!submitObjectActionPrompt(
+      resolvedAction.prompt,
+      {
+        onRunCreationFailed: () => {
+          restoreSubmissionState(
+            getTranslatedChatLabel('chat.objectActionSubmitFailed', 'Unable to submit action. Please try again.')
+          )
+        }
+      },
+      submissionContext
+    )) {
       restoreSubmissionState(
         getTranslatedChatLabel('chat.objectActionSubmitFailed', 'Unable to submit action. Please try again.')
       )
@@ -1952,13 +2043,13 @@ function buildObjectActionConfirmationCard(action, actionGroup) {
   return card
 }
 
-function showObjectActionInlineInteraction(target, action) {
+function showObjectActionInlineInteraction(target, action, submissionContext = {}) {
   const actionGroup = target.closest('.object-actions')
   const parent = actionGroup?.parentElement
   if (!actionGroup || !parent) return false
   removeObjectActionConfirmationCards(parent)
   setObjectActionGroupConfirming(actionGroup, true)
-  const card = buildObjectActionConfirmationCard(action, actionGroup)
+  const card = buildObjectActionConfirmationCard(action, actionGroup, submissionContext)
   actionGroup.insertAdjacentElement('afterend', card)
   const firstField = card.querySelector('.object-action-textarea,.object-action-input')
   const focusTarget = firstField || card.querySelector('button.object-action-button')
@@ -1991,13 +2082,32 @@ function createObjectActionSignals(element) {
   }
 }
 
-function submitObjectActionDirectly(message, callbacks = {}) {
+function submitObjectActionDirectly(message, callbacks = {}, submissionContext = {}) {
   const element = chatElement || document.querySelector('deep-chat')
   if (!canSubmitObjectActionDirectly(element)) return false
   window.setTimeout(() => {
+    const signals = createObjectActionSignals(element)
+    const turnContext = normalizeEmbedActionTurnContext(submissionContext.turnContext)
+    const isContextCurrent = typeof submissionContext.isContextCurrent === 'function'
+      ? submissionContext.isContextCurrent
+      : null
+    if (turnContext && isContextCurrent && !isContextCurrent(turnContext)) {
+      reportRunCreationError(
+        signals,
+        getTranslatedChatLabel(
+          'chat.objectActionContextChanged',
+          'The page context changed. Please use the current page actions.'
+        ),
+        submissionContext.onRunCreationError
+      )
+      callbacks.onRunCreationFailed?.()
+      return
+    }
     // Object actions are follow-up commands, not new visible user turns in the conversation history.
-    void runAgentMessage(message, null, createObjectActionSignals(element), {
-      visibleUserTurn: false
+    void runAgentMessage(message, null, signals, {
+      visibleUserTurn: false,
+      turnContext,
+      onRunCreationError: submissionContext.onRunCreationError
     }).then((created) => {
       if (created === false && typeof callbacks.onRunCreationFailed === 'function') {
         callbacks.onRunCreationFailed()
@@ -2012,10 +2122,67 @@ function submitObjectActionDirectly(message, callbacks = {}) {
   return true
 }
 
-function submitObjectActionPrompt(prompt, callbacks = {}) {
+function submitObjectActionPrompt(prompt, callbacks = {}, submissionContext = {}) {
   const message = String(prompt || '').trim()
   if (!message) return false
-  return submitObjectActionDirectly(message, callbacks)
+  return submitObjectActionDirectly(message, callbacks, submissionContext)
+}
+
+/**
+ * Render provider-declared Context actions through the shared Chat action component.
+ *
+ * @param {HTMLElement|null} container - Floating Context action slot.
+ * @param {object|null} reference - Object identity and provider-declared actions.
+ * @param {object} submissionContext - Immutable page identity and current-page callback.
+ * @returns {boolean} Whether at least one valid action was rendered.
+ */
+export function renderContextObjectActions(container, reference, submissionContext = {}) {
+  if (!container) return false
+  if (container._contextObjectActionHandler) {
+    container.removeEventListener('click', container._contextObjectActionHandler, true)
+    container._contextObjectActionHandler = null
+  }
+  container.replaceChildren()
+  const normalized = normalizeObjectActionReference(reference || {})
+  if (!normalized) {
+    container.hidden = true
+    return false
+  }
+  container.innerHTML = buildObjectActionControls(normalized)
+  container.hidden = !container.firstElementChild
+  if (container.hidden) return false
+  const handler = (event) => {
+    const target = event.target instanceof Element
+      ? event.target.closest('button[data-object-action-payload]')
+      : null
+    if (!(target instanceof HTMLButtonElement)) return
+    event.preventDefault()
+    handleObjectActionButton(target, submissionContext)
+  }
+  container._contextObjectActionHandler = handler
+  container.addEventListener('click', handler, true)
+  return true
+}
+
+function handleObjectActionButton(target, submissionContext = {}) {
+  const encoded = target.getAttribute('data-object-action-payload') || ''
+  try {
+    const payload = JSON.parse(decodeURIComponent(encoded))
+    const action = payload.action || {}
+    if (objectActionNeedsInlineInteraction(action)) {
+      if (!showObjectActionInlineInteraction(target, action, submissionContext)) {
+        console.warn('[ChatUI] Failed to render object action confirmation')
+      }
+      return
+    }
+    const { prompt } = resolveObjectActionPrompt(action)
+    if (!prompt) return
+    if (!submitObjectActionPrompt(prompt, {}, submissionContext)) {
+      console.warn('[ChatUI] Failed to submit object action prompt')
+    }
+  } catch (error) {
+    console.warn('[ChatUI] Invalid object action payload:', error)
+  }
 }
 
 function bindObjectActionHandlers(element = chatElement) {
@@ -2041,24 +2208,7 @@ function bindObjectActionHandlers(element = chatElement) {
       : null
     if (!(target instanceof HTMLButtonElement)) return
     event.preventDefault()
-    const encoded = target.getAttribute('data-object-action-payload') || ''
-    try {
-      const payload = JSON.parse(decodeURIComponent(encoded))
-      const action = payload.action || {}
-      if (objectActionNeedsInlineInteraction(action)) {
-        if (!showObjectActionInlineInteraction(target, action)) {
-          console.warn('[ChatUI] Failed to render object action confirmation')
-        }
-        return
-      }
-      const { prompt } = resolveObjectActionPrompt(action)
-      if (!prompt) return
-      if (!submitObjectActionPrompt(prompt)) {
-        console.warn('[ChatUI] Failed to submit object action prompt')
-      }
-    } catch (error) {
-      console.warn('[ChatUI] Invalid object action payload:', error)
-    }
+    handleObjectActionButton(target)
   }, true)
   element._objectActionContainer = container
   return true

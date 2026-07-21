@@ -49,6 +49,7 @@ from app.atlasclaw.agent.tool_gate_models import (
     ToolPolicyMode,
 )
 from app.atlasclaw.core.deps import SkillDeps
+from app.atlasclaw.core.provider_skill_capability import provider_skill_capability_name
 from app.atlasclaw.memory.access import MEMORY_TOOL_NAMES
 from app.atlasclaw.tools.providers.instance_tools import (
     PROVIDER_INSTANCE_SELECTIONS_KEY,
@@ -147,6 +148,12 @@ def build_user_selected_tool_intent_plan(deps: SkillDeps) -> ToolIntentPlan | No
     """Translate a validated slash capability into a runtime tool plan."""
     selected = get_selected_capability_from_deps(deps)
     if not selected:
+        return None
+    extra = getattr(deps, "extra", None)
+    request_context = extra.get("context") if isinstance(extra, dict) else None
+    if isinstance(request_context, dict) and isinstance(
+        request_context.get("embed_scope"), dict
+    ):
         return None
 
     targets = selected_capability_targets(selected)
@@ -2042,7 +2049,89 @@ class RunnerExecutionPreparePhaseMixin:
             selected_tool_intent_plan = build_user_selected_tool_intent_plan(deps)
             capability_selector_intent_plan: ToolIntentPlan | None = None
             active_capability_route: str | None = None
-            if selected_tool_intent_plan is not None:
+            server_page_skill_scope = False
+            server_page_skill_refs: list[str] = []
+            server_page_provider_type = ""
+            server_page_provider_instance = ""
+            if isinstance(getattr(deps, "extra", None), dict):
+                request_context = deps.extra.get("context")
+                embed_scope = (
+                    request_context.get("embed_scope")
+                    if isinstance(request_context, dict)
+                    else None
+                )
+                page_skill_refs = (
+                    request_context.get("allowed_page_skill_refs")
+                    if isinstance(request_context, dict)
+                    else None
+                )
+                if isinstance(embed_scope, dict):
+                    server_page_skill_scope = True
+                    server_page_skill_refs = unique_capability_values(
+                        page_skill_refs if isinstance(page_skill_refs, list) else []
+                    )
+                    server_page_provider_type = str(
+                        embed_scope.get("provider_type", "") or ""
+                    ).strip().lower()
+                    server_page_provider_instance = str(
+                        embed_scope.get("provider_instance", "") or ""
+                    ).strip()
+            if server_page_skill_scope:
+                # The server-restored page projection is authoritative for this
+                # turn. Keep transcript text for the main model, but do not
+                # carry an earlier skill's internal workflow trace onto the
+                # newly resolved page object.
+                target_md_skill_workflow_context = None
+                provider_skill_targets = [
+                    provider_skill_capability_name(
+                        provider_name=server_page_provider_instance,
+                        provider_type=server_page_provider_type,
+                        qualified_skill_name=skill_ref,
+                    )
+                    for skill_ref in server_page_skill_refs
+                ]
+                provider_skill_targets = unique_capability_values(provider_skill_targets)
+                provider_targets = []
+                if (
+                    provider_skill_targets
+                    and server_page_provider_type
+                    and server_page_provider_instance
+                ):
+                    provider_targets.append(
+                        f"{server_page_provider_type}.{server_page_provider_instance}"
+                    )
+                provider_types = (
+                    [server_page_provider_type]
+                    if provider_targets
+                    else []
+                )
+                capability_selector_intent_plan = ToolIntentPlan(
+                    action=ToolIntentAction.DIRECT_ANSWER,
+                    target_provider_instances=provider_targets,
+                    target_provider_types=provider_types,
+                    target_provider_skill_names=provider_skill_targets,
+                    target_tool_names=[],
+                    reason="server_page_projection",
+                )
+                metadata_candidates = {
+                    "reason": "server_page_projection",
+                    "confidence": 1.0,
+                    "preferred_provider_instances": provider_targets,
+                    "preferred_provider_types": provider_types,
+                    "preferred_provider_skill_names": provider_skill_targets,
+                    "preferred_group_ids": [],
+                    "preferred_capability_classes": [],
+                    "preferred_tool_names": [],
+                    "preferred_skill_names": [],
+                }
+                _log_step(
+                    "capability_selector_skipped",
+                    reason="server_page_projection",
+                    target_provider_instances=provider_targets,
+                    target_provider_skill_names=provider_skill_targets,
+                    target_tool_names=[],
+                )
+            elif selected_tool_intent_plan is not None:
                 if _selected_plan_matches_active_capability(
                     intent_plan=selected_tool_intent_plan,
                     active_provider_skill=transcript_active_provider_skill,
@@ -2360,7 +2449,11 @@ class RunnerExecutionPreparePhaseMixin:
                     ),
                 )
             ranking_trace = {
-                "status": "capability_selector",
+                "status": (
+                    "server_page_projection"
+                    if metadata_candidates.get("reason") == "server_page_projection"
+                    else "capability_selector"
+                ),
                 "reason": str(metadata_candidates.get("reason", "") or "capability_selector"),
                 "confidence": float(metadata_candidates.get("confidence", 0.0) or 0.0),
                 "preferred_provider_instances": list(
@@ -2386,7 +2479,11 @@ class RunnerExecutionPreparePhaseMixin:
                 deps.extra["tool_metadata_candidates"] = dict(metadata_candidates)
                 deps.extra["tool_ranking_trace"] = dict(ranking_trace)
             _log_step(
-                "capability_selector_recorded",
+                (
+                    "server_page_projection_recorded"
+                    if metadata_candidates.get("reason") == "server_page_projection"
+                    else "capability_selector_recorded"
+                ),
                 confidence=float(metadata_candidates.get("confidence", 0.0) or 0.0),
                 preferred_provider_instances=list(
                     metadata_candidates.get("preferred_provider_instances", []) or []
@@ -2407,7 +2504,9 @@ class RunnerExecutionPreparePhaseMixin:
                     metadata_candidates.get("preferred_tool_names", []) or []
                 ),
             )
-            if selected_tool_intent_plan is not None:
+            if metadata_candidates.get("reason") == "server_page_projection":
+                metadata_tool_intent_plan = capability_selector_intent_plan
+            elif selected_tool_intent_plan is not None:
                 metadata_tool_intent_plan = selected_tool_intent_plan
             else:
                 metadata_tool_intent_plan = capability_selector_intent_plan
@@ -2454,7 +2553,11 @@ class RunnerExecutionPreparePhaseMixin:
                     )
             if metadata_tool_intent_plan is not None:
                 _log_step(
-                    "capability_selector_plan_resolved",
+                    (
+                        "server_page_projection_plan_resolved"
+                        if metadata_candidates.get("reason") == "server_page_projection"
+                        else "capability_selector_plan_resolved"
+                    ),
                     action=metadata_tool_intent_plan.action.value,
                     target_provider_instances=list(
                         metadata_tool_intent_plan.target_provider_instances

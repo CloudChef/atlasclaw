@@ -30,6 +30,10 @@ ACTION_LOCALIZED_TEXT_FIELDS: tuple[str, ...] = (
     "agent_prompt_template",
     "confirmation_message",
 )
+MAX_OBJECT_ACTIONS = 32
+MAX_ACTION_INPUTS = 16
+MAX_ACTION_TEXT_LENGTH = 4096
+MAX_ACTION_TRANSLATIONS = 16
 
 
 def is_safe_action_href(value: Any) -> bool:
@@ -75,6 +79,11 @@ def collect_object_action_references(
     seen = seen_keys if seen_keys is not None else set()
     _collect_object_action_references(payload, references=references, seen_keys=seen)
     return references
+
+
+def normalize_object_actions(raw_actions: Any) -> list[dict[str, Any]]:
+    """Validate and deduplicate one provider-declared object action list."""
+    return _normalize_actions(raw_actions)
 
 
 def collect_object_action_references_from_payloads(
@@ -178,6 +187,8 @@ def _normalize_actions(raw_actions: Any) -> list[dict[str, Any]]:
     actions: list[dict[str, Any]] = []
     seen_action_keys: set[str] = set()
     for raw_action in raw_actions:
+        if len(actions) >= MAX_OBJECT_ACTIONS:
+            break
         action = _normalize_action(raw_action)
         if not action:
             continue
@@ -192,14 +203,15 @@ def _normalize_actions(raw_actions: Any) -> list[dict[str, Any]]:
 def _normalize_action(raw_action: Any) -> dict[str, Any] | None:
     if not isinstance(raw_action, dict):
         return None
-    action_id = _string_value(raw_action.get("action_id"))
-    kind = _string_value(raw_action.get("kind"))
+    action_id = _string_value(raw_action.get("action_id"), max_length=128)
+    kind = _string_value(raw_action.get("kind"), max_length=32)
     if not action_id or kind not in SUPPORTED_ACTION_KINDS:
         return None
 
     action: dict[str, Any] = {"action_id": action_id, "kind": kind}
     for field in ACTION_STRING_FIELDS:
-        value = _string_value(raw_action.get(field))
+        max_length = 2048 if field == "href" else 128
+        value = _string_value(raw_action.get(field), max_length=max_length)
         if value:
             action[field] = value
     for field in ACTION_LOCALIZED_TEXT_FIELDS:
@@ -208,7 +220,7 @@ def _normalize_action(raw_action: Any) -> dict[str, Any] | None:
             action[field] = value
 
     if kind == "open_url":
-        href = _string_value(raw_action.get("href"))
+        href = _string_value(raw_action.get("href"), max_length=2048)
         if not is_safe_action_href(href):
             return None
         action["href"] = href
@@ -231,9 +243,11 @@ def _normalize_inputs(raw_inputs: Any) -> list[dict[str, Any]]:
         return []
     inputs: list[dict[str, Any]] = []
     for raw_input in raw_inputs:
+        if len(inputs) >= MAX_ACTION_INPUTS:
+            break
         if not isinstance(raw_input, dict):
             continue
-        name = _string_value(raw_input.get("name"))
+        name = _string_value(raw_input.get("name"), max_length=128)
         if not name:
             continue
         item: dict[str, Any] = {"name": name}
@@ -272,11 +286,11 @@ def _context_value(key: str, value: Any) -> Any:
     return None
 
 
-def _string_value(value: Any) -> str:
+def _string_value(value: Any, *, max_length: int = MAX_ACTION_TEXT_LENGTH) -> str:
     if value is None or isinstance(value, bool):
         return ""
     normalized = str(value).strip()
-    return normalized
+    return normalized if len(normalized) <= max_length else ""
 
 
 def _localized_text_value(value: Any) -> dict[str, Any]:
@@ -292,7 +306,9 @@ def _localized_text_value(value: Any) -> dict[str, Any]:
     if isinstance(raw_translations, dict):
         translations: dict[str, str] = {}
         for locale, text in raw_translations.items():
-            locale_key = _string_value(locale)
+            if len(translations) >= MAX_ACTION_TRANSLATIONS:
+                break
+            locale_key = _string_value(locale, max_length=32)
             localized_text = _string_value(text)
             if locale_key and localized_text:
                 translations[locale_key] = localized_text

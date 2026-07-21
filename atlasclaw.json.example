@@ -154,6 +154,12 @@
     }
   },
 
+  "_comment_embed_integration": "Optional default Provider for the single embedded UI. AtlasClaw matches Host page URLs only against this Provider's assistant_context/routes.json to select the page Skill. Omit this section to disable context-aware URL matching.",
+  "embed_integration": {
+    "provider_type": "smartcmp",
+    "provider_instance": "default"
+  },
+
   "webhook": {
     "_comment": "Inbound webhook dispatch for provider-qualified markdown skills already loaded from providers_root.",
     "enabled": true,

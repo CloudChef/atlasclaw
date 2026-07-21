@@ -161,6 +161,25 @@ class TestConfigWorkspaceLoading:
         assert isinstance(config, AtlasClawConfig)
         assert not hasattr(config, "channels_root")
 
+    def test_legacy_embed_integrations_is_rejected(self, tmp_path):
+        """The removed multi-integration shape must not silently disable Embed."""
+        config_path = tmp_path / "legacy_embed_config.json"
+        with open(config_path, "w") as f:
+            json.dump(
+                {
+                    "embed_integrations": {
+                        "example-assistant": {
+                            "provider_type": "example",
+                            "provider_instance": "default",
+                        }
+                    }
+                },
+                f,
+            )
+
+        with pytest.raises(ValueError, match="single embed_integration"):
+            ConfigManager(config_path=str(config_path)).load()
+
     def test_webhook_sk_env_placeholder_expands_secret(self, tmp_path, monkeypatch):
         """Webhook sk_env supports ${VAR} placeholders in atlasclaw.json."""
         config_path = tmp_path / "config.json"

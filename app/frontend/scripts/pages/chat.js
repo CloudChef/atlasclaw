@@ -6,12 +6,13 @@
  * chat.js - Chat Page Module
  */
 
-import { initSession, getSessionKey, setSessionKey } from '../session-manager.js?v=21'
-import { initChat, activateSession, abortCurrentStream, getCurrentAgentInfo, focusChatInput, cancelChatInputFocusRetry } from '../chat-ui.js?v=21'
-import { listSessions, deleteSession } from '../api-client.js?v=21'
+import { initSession, getSessionKey, setSessionKey, validateChatSessionCandidate } from '../session-manager.js?v=36'
+import { initChat, activateSession, abortCurrentStream, getCurrentAgentInfo, focusChatInput, cancelChatInputFocusRetry } from '../chat-ui.js?v=36'
+import { listSessions, deleteSession } from '../api-client.js?v=31'
 import { translateIfExists } from '../i18n.js'
-import { updateHeaderTitleText } from '../components/header.js?v=21'
-import { restoreInputFocus } from '../dom-utils.js?v=21'
+import { updateHeaderTitleText } from '../components/header.js?v=27'
+import { restoreInputFocus } from '../dom-utils.js?v=27'
+import { EmbedContextController } from '../embed/context-controller.js?v=36'
 
 let chatElement = null
 let mounted = false
@@ -21,6 +22,21 @@ let searchQuery = ''
 let pageContainer = null
 let currentAgentName = 'AtlasClaw'
 let pendingDeleteSessionKey = null
+let embedContextController = null
+let floatingToolbar = null
+let conversationHasVisibleMessages = false
+const activeRunCountsBySession = new Map()
+
+const handleExternalChatSessionChange = (event) => {
+  const nextKey = event.detail?.sessionKey
+  if (!mounted || nextKey === currentSessionKey) return
+  if (nextKey) {
+    void switchActiveSession(nextKey)
+    return
+  }
+  currentSessionKey = null
+  void activateSession(null)
+}
 
 function getTranslatedText(key, fallback) {
   return translateIfExists(key) || fallback
@@ -58,9 +74,20 @@ function buildSessionDraftTitle(messageText) {
 
 export async function mount(container) {
   pageContainer = container
+  conversationHasVisibleMessages = false
+  activeRunCountsBySession.clear()
+  const embedSurface = window.__atlasclawEmbedSurface
+  const floatingEnabled = embedSurface?.surface === 'floating' && embedSurface?.bootstrapValidated === true
+  const floatingExtension = floatingEnabled ? `
+    <div class="embed-context-extension" aria-live="polite">
+      <div id="embed-object-context-slot" hidden></div>
+      <div id="embed-object-action-slot" hidden></div>
+    </div>
+  ` : ''
 
   container.innerHTML = `
     <div class="chat-page-shell">
+      ${floatingExtension}
       <div class="chat-canvas-shell">
         <div id="chat-empty-state" class="chat-empty-state hidden">
           <div class="chat-empty-inner">
@@ -89,19 +116,45 @@ export async function mount(container) {
   }
 
   chatElement = container.querySelector('#chat')
+  if (floatingEnabled) {
+    floatingToolbar = document.createElement('div')
+    floatingToolbar.className = 'floating-assistant-toolbar'
+    floatingToolbar.setAttribute('aria-label', 'Floating assistant controls')
+    floatingToolbar.innerHTML = `
+      <button id="floating-close" class="floating-assistant-control floating-assistant-close" type="button" aria-label="Close" title="Close"><span aria-hidden="true">×</span></button>
+    `
+    const toolbarHost = document.querySelector('#app-header .chat-header-leading') ||
+      container.querySelector('.chat-page-shell')
+    toolbarHost?.appendChild(floatingToolbar)
+    embedContextController = new EmbedContextController({
+      surface: embedSurface,
+      contextSlot: container.querySelector('#embed-object-context-slot'),
+      actionSlot: container.querySelector('#embed-object-action-slot'),
+      closeButton: floatingToolbar.querySelector('#floating-close')
+    })
+    embedContextController.start()
+  }
   await initChat(chatElement, {
     onConversationStateChange: handleConversationStateChange,
     onUserTurnStarted: handleUserTurnStarted,
-    onRunCompleted: handleRunCompleted
+    onRunActivityChange: handleRunActivityChange,
+    onRunCompleted: handleRunCompleted,
+    getTurnContext: () => embedContextController?.getTurnContext() || null
   })
 
   currentAgentName = getCurrentAgentInfo()?.name || currentAgentName
   await loadSessions()
   mounted = true
+  window.addEventListener('atlasclaw:active-chat-session-changed', handleExternalChatSessionChange)
   focusChatInput()
 }
 
 export async function unmount() {
+  window.removeEventListener('atlasclaw:active-chat-session-changed', handleExternalChatSessionChange)
+  embedContextController?.destroy()
+  embedContextController = null
+  floatingToolbar?.remove()
+  floatingToolbar = null
   cancelChatInputFocusRetry()
   abortCurrentStream()
   const sidebarContent = document.getElementById('sidebar-dynamic-content')
@@ -112,12 +165,14 @@ export async function unmount() {
   sessionsCache = []
   searchQuery = ''
   pendingDeleteSessionKey = null
+  conversationHasVisibleMessages = false
+  activeRunCountsBySession.clear()
   mounted = false
 }
 
 export async function activateChatSession(nextKey) {
   if (!mounted || !nextKey) return false
-  await switchActiveSession(nextKey)
+  if (!await switchActiveSession(nextKey)) return false
   focusChatInput()
   return true
 }
@@ -257,13 +312,16 @@ async function handleSessionClick(event) {
 }
 
 async function switchActiveSession(nextKey) {
+  const validatedKey = await validateChatSessionCandidate(nextKey)
+  if (!validatedKey) return false
   abortCurrentStream()
   pendingDeleteSessionKey = null
-  setSessionKey(nextKey)
-  currentSessionKey = nextKey
-  await activateSession(nextKey)
+  setSessionKey(validatedKey)
+  currentSessionKey = validatedKey
+  await activateSession(validatedKey)
   ensureActiveSessionEntry()
   renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
+  return true
 }
 
 function handleUserTurnStarted({ sessionKey, messageText }) {
@@ -271,13 +329,21 @@ function handleUserTurnStarted({ sessionKey, messageText }) {
   pendingDeleteSessionKey = null
   const draftTitle = buildSessionDraftTitle(messageText)
   upsertSession({ session_key: sessionKey, title: draftTitle, title_status: 'draft' })
-  const emptyState = pageContainer?.querySelector('#chat-empty-state')
-  if (emptyState) {
-    emptyState.classList.add('hidden')
-  }
-  pageContainer?.classList.remove('chat-empty-mode')
+  conversationHasVisibleMessages = true
+  updateEmptyStateVisibility()
   renderSidebarContent(document.getElementById('sidebar-dynamic-content'))
   syncHeaderTitle()
+}
+
+function handleRunActivityChange({ sessionKey, activeCount }) {
+  if (activeCount > 0) {
+    activeRunCountsBySession.set(sessionKey, activeCount)
+  } else {
+    activeRunCountsBySession.delete(sessionKey)
+  }
+  if (sessionKey === currentSessionKey) {
+    updateEmptyStateVisibility()
+  }
 }
 
 async function handleRunCompleted() {
@@ -289,6 +355,7 @@ function handleConversationStateChange({ hasMessages, agentInfo }) {
   if (!emptyState) return
 
   currentAgentName = agentInfo?.name || currentAgentName
+  conversationHasVisibleMessages = !!hasMessages
   const emptyTitle = emptyState.querySelector('.chat-empty-title')
   const emptyCopy = emptyState.querySelector('.chat-empty-copy')
   if (emptyTitle) {
@@ -298,9 +365,17 @@ function handleConversationStateChange({ hasMessages, agentInfo }) {
     emptyCopy.textContent = agentInfo?.welcome_message || ''
   }
 
-  emptyState.classList.toggle('hidden', hasMessages)
-  pageContainer.classList.toggle('chat-empty-mode', !hasMessages)
+  updateEmptyStateVisibility()
   syncHeaderTitle(hasMessages)
+}
+
+function updateEmptyStateVisibility() {
+  const emptyState = pageContainer?.querySelector('#chat-empty-state')
+  if (!emptyState) return
+  const hasActiveRun = (activeRunCountsBySession.get(currentSessionKey) || 0) > 0
+  const showEmptyState = !conversationHasVisibleMessages && !hasActiveRun
+  emptyState.classList.toggle('hidden', !showEmptyState)
+  pageContainer.classList.toggle('chat-empty-mode', showEmptyState)
 }
 
 function syncHeaderTitle(hasMessages = true) {
@@ -344,10 +419,18 @@ async function deleteCurrentSession(sessionKey) {
     await deleteSession(sessionKey)
     sessionsCache = sessionsCache.filter((session) => session.session_key !== sessionKey)
     if (sessionKey === currentSessionKey) {
-      const nextSession = sessionsCache[0]
-      currentSessionKey = nextSession?.session_key || null
-      setSessionKey(currentSessionKey)
-      await activateSession(currentSessionKey)
+      let switched = false
+      for (const nextSession of sessionsCache) {
+        if (await switchActiveSession(nextSession.session_key)) {
+          switched = true
+          break
+        }
+      }
+      if (!switched) {
+        currentSessionKey = null
+        setSessionKey(null)
+        await activateSession(null)
+      }
     }
     syncHeaderTitle()
   } catch (error) {

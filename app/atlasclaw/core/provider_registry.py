@@ -366,6 +366,23 @@ class ServiceProviderRegistry:
     def get_template(self, provider_type: str) -> Optional[ProviderTemplate]:
         return self._templates.get(provider_type)
 
+    def get_template_for_provider_type(self, provider_type: str) -> Optional[ProviderTemplate]:
+        """Return a provider template by declared type or legacy directory name."""
+        normalized = str(provider_type or "").strip().lower()
+        if not normalized:
+            return None
+        direct = self._templates.get(provider_type) or self._templates.get(normalized)
+        if direct is not None:
+            return direct
+        context = self._contexts.get(normalized)
+        if context is None:
+            return None
+        for template in self._templates.values():
+            parsed = self._parse_provider_context(template.md_path, template.name)
+            if parsed and str(parsed.provider_type or "").strip().lower() == normalized:
+                return template
+        return None
+
     def register_skills_to(self, skill_registry: "SkillRegistry") -> int:
         """Load and register provider skills with provider-aware wrappers."""
         from app.atlasclaw.skills.registry import SkillMetadata

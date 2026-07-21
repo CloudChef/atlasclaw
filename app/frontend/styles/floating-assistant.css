@@ -1,0 +1,415 @@
+/*
+ *  Copyright 2026  Qianyun, Inc., www.cloudchef.io, All rights reserved.
+ */
+
+/* Every rule is floating-scoped so the fixed menu URL and legacy /atlasclaw/
+ * retain their existing DOM geometry and visual treatment. */
+html.atlas-surface-floating,
+body.atlas-surface-floating {
+  background: #ffffff;
+}
+
+body.atlas-surface-floating .chat-header {
+  min-height: 54px;
+  padding: 8px 14px;
+  border-bottom: 1px solid #eef1f6;
+}
+
+body.atlas-surface-floating .embedded-new-chat-btn {
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+}
+
+body.atlas-surface-floating .chat-page-shell {
+  position: relative;
+}
+
+body.atlas-surface-floating .floating-assistant-toolbar {
+  display: flex;
+  gap: 6px;
+}
+
+body.atlas-surface-floating .chat-header-leading {
+  gap: 6px;
+}
+
+body.atlas-surface-floating .floating-assistant-control {
+  width: 32px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #475569;
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+body.atlas-surface-floating .floating-assistant-control:hover {
+  border-color: #a5b4fc;
+  color: #4f46e5;
+  background: #f8faff;
+}
+
+body.atlas-surface-floating .floating-assistant-control.floating-assistant-close,
+body.atlas-surface-floating .floating-assistant-control.floating-assistant-close:hover {
+  background: transparent;
+}
+
+body.atlas-surface-floating .floating-assistant-control:focus-visible {
+  outline: 2px solid rgba(79, 70, 229, 0.35);
+  outline-offset: 2px;
+}
+
+body.atlas-surface-floating .embed-context-extension {
+  flex: 0 0 auto;
+  padding: 0 14px;
+  background: #ffffff;
+}
+
+body.atlas-surface-floating .embed-object-context-bar {
+  min-width: 0;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 11px;
+  border: 1px solid #e3e8f1;
+  border-radius: 11px;
+  background: #f8fafc;
+  color: #334155;
+}
+
+body.atlas-surface-floating .embed-object-context-marker {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 50%;
+  background: #6366f1;
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.12);
+}
+
+body.atlas-surface-floating .embed-object-context-summary {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+body.atlas-surface-floating .embed-object-context-id {
+  margin-left: auto;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+body.atlas-surface-floating #embed-object-action-slot > .object-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-start;
+  gap: 8px;
+  width: fit-content;
+  max-width: 100%;
+  margin-top: 7px;
+  padding: 7px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+body.atlas-surface-floating #embed-object-action-slot a.object-action-link,
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  gap: 5px;
+  max-width: 100%;
+  height: 28px;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #fff;
+  color: #334155;
+  box-shadow: 0 1px 1px rgba(15, 23, 42, 0.04);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1;
+  vertical-align: baseline;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, box-shadow 0.14s ease,
+    color 0.14s ease, transform 0.14s ease;
+}
+
+body.atlas-surface-floating #embed-object-action-slot a.object-action-link:hover,
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
+  box-shadow: 0 3px 8px rgba(15, 23, 42, 0.08);
+  text-decoration: none;
+  transform: translateY(-1px);
+}
+
+body.atlas-surface-floating #embed-object-action-slot a.object-action-link:active,
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button:active {
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+  transform: translateY(0);
+}
+
+body.atlas-surface-floating #embed-object-action-slot a.object-action-link:focus-visible,
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button:focus-visible {
+  outline: 2px solid rgba(37, 99, 235, 0.38);
+  outline-offset: 2px;
+}
+
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  flex: 0 0 6px;
+  border-radius: 999px;
+  background: #64748b;
+  box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.12);
+}
+
+body.atlas-surface-floating #embed-object-action-slot a.object-action-link,
+body.atlas-surface-floating #embed-object-action-slot button.object-action-open-button {
+  border-color: rgba(20, 184, 166, 0.28);
+  background: #f0fdfa;
+  color: #0f766e;
+}
+
+body.atlas-surface-floating #embed-object-action-slot a.object-action-link:hover,
+body.atlas-surface-floating #embed-object-action-slot button.object-action-open-button:hover {
+  border-color: rgba(13, 148, 136, 0.46);
+  background: #ccfbf1;
+  color: #0f766e;
+}
+
+body.atlas-surface-floating #embed-object-action-slot button.object-action-open-button::before,
+body.atlas-surface-floating #embed-object-action-slot button.object-action-cancel-button::before {
+  content: none;
+}
+
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button.tone-success {
+  border-color: rgba(22, 163, 74, 0.28);
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button.tone-success::before {
+  background: #16a34a;
+  box-shadow: 0 0 0 3px rgba(22, 163, 74, 0.13);
+}
+
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button.tone-success:hover {
+  border-color: rgba(22, 163, 74, 0.46);
+  background: #dcfce7;
+  color: #166534;
+}
+
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button.tone-warning {
+  border-color: rgba(217, 119, 6, 0.32);
+  background: #fffbeb;
+  color: #b45309;
+}
+
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button.tone-warning::before {
+  background: #d97706;
+  box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.14);
+}
+
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button.tone-warning:hover {
+  border-color: rgba(217, 119, 6, 0.5);
+  background: #fef3c7;
+  color: #92400e;
+}
+
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button.tone-danger {
+  border-color: rgba(220, 38, 38, 0.28);
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button.tone-danger::before {
+  background: #dc2626;
+  box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.13);
+}
+
+body.atlas-surface-floating #embed-object-action-slot button.object-action-button.tone-danger:hover {
+  border-color: rgba(220, 38, 38, 0.48);
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-actions.is-confirming button {
+  opacity: 0.52;
+  pointer-events: none;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-confirmation-card {
+  box-sizing: border-box;
+  width: min(100%, 420px);
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid #dbe3ee;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+  color: #1f2937;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-confirmation-title {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-confirmation-help {
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-confirmation-inputs {
+  display: grid;
+  gap: 8px;
+  margin-top: 9px;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-input-label {
+  display: grid;
+  gap: 5px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-input,
+body.atlas-surface-floating #embed-object-action-slot .object-action-textarea {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #fff;
+  color: #0f172a;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  outline: none;
+  transition: border-color 0.14s ease, box-shadow 0.14s ease;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-input {
+  height: 32px;
+  padding: 0 9px;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-textarea {
+  min-height: 72px;
+  padding: 8px 9px;
+  resize: vertical;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-input:focus,
+body.atlas-surface-floating #embed-object-action-slot .object-action-textarea:focus {
+  border-color: #7c83fd;
+  box-shadow: 0 0 0 3px rgba(124, 131, 253, 0.14);
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-confirmation-error {
+  display: none;
+  margin-top: 7px;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.4;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-confirmation-card.has-error
+  .object-action-confirmation-error {
+  display: block;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-confirmation-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 10px;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-confirmation-buttons
+  button.object-action-button {
+  height: 30px;
+  min-height: 30px;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-confirmation-card.is-submitting
+  .object-action-input,
+body.atlas-surface-floating #embed-object-action-slot .object-action-confirmation-card.is-submitting
+  .object-action-textarea,
+body.atlas-surface-floating #embed-object-action-slot .object-action-confirmation-card.is-submitting
+  button {
+  opacity: 0.58;
+  pointer-events: none;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-icon {
+  width: 11px;
+  height: 11px;
+  flex: 0 0 11px;
+}
+
+body.atlas-surface-floating #embed-object-action-slot .object-action-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.atlas-surface-floating .object-action-submit-alert {
+  margin-top: 5px;
+  color: #b91c1c;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+body.atlas-surface-floating .chat-canvas-shell {
+  padding: 8px 10px 14px;
+}
+
+body.atlas-surface-floating .chat-empty-title {
+  font-size: clamp(34px, 9vw, 52px);
+  margin-bottom: 18px;
+}
+
+body.atlas-surface-floating .chat-empty-copy {
+  font-size: 15px;
+  line-height: 1.55;
+}
+
+@media (max-width: 420px) {
+  body.atlas-surface-floating .embed-context-extension {
+    padding-inline: 10px;
+  }
+
+  body.atlas-surface-floating .embed-object-context-id {
+    display: none;
+  }
+}

@@ -2,12 +2,13 @@
  *  Copyright 2026  Qianyun, Inc., www.cloudchef.io, All rights reserved.
  */
 
-import { listAgentCapabilities } from './api-client.js?v=21'
-import { getAuthToken } from './auth.js?v=21'
+import { listAgentCapabilities } from './api-client.js?v=27'
+import { getAuthToken } from './auth.js?v=27'
 
 const CACHE_MS = 10000
 
 let currentController = null
+let pageCapabilityScopeActive = false
 let sharedCapabilities = []
 let sharedLoadedAt = 0
 let sharedLoadPromise = null
@@ -565,6 +566,20 @@ class SlashCapabilityPicker {
 
 export function setupSlashCapabilityPicker(chatElement) {
   if (!(chatElement instanceof HTMLElement)) return null
+  // A resolved page Context is scoped by a server-owned Snapshot. The current
+  // slash catalog API has no Snapshot binding, so its global catalog must be
+  // unavailable only while that authoritative page scope is active. Ordinary
+  // menu/legacy embeds and pages with no resolved Context keep legacy behavior.
+  if (pageCapabilityScopeActive) {
+    const controller = chatElement._slashCapabilityPickerController || currentController
+    controller?.destroy()
+    if (controller?.chatElement) {
+      delete controller.chatElement._slashCapabilityPickerController
+    }
+    currentController = null
+    delete chatElement._slashCapabilityPickerController
+    return null
+  }
   if (chatElement._slashCapabilityPickerController) {
     const controller = chatElement._slashCapabilityPickerController
     // DeepChat can replace its shadow input after history changes; rebuild the controller for the new input.
@@ -584,6 +599,20 @@ export function setupSlashCapabilityPicker(chatElement) {
   }
   setTimeout(() => setupSlashCapabilityPicker(chatElement), 500)
   return null
+}
+
+/**
+ * Apply the server-resolved page capability state to the slash catalog.
+ *
+ * @param {boolean} active - Whether a current page Context owns the Tool scope.
+ * @param {HTMLElement|null} chatElement - Chat element whose picker is refreshed.
+ */
+export function setSlashCapabilityPageScopeActive(active, chatElement = null) {
+  pageCapabilityScopeActive = active === true
+  const target = chatElement instanceof HTMLElement
+    ? chatElement
+    : currentController?.chatElement
+  if (target) setupSlashCapabilityPicker(target)
 }
 
 export function prepareSlashCapabilityMessage(messageText) {

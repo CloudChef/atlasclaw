@@ -134,6 +134,7 @@ class PromptBuilder:
         mode_override: Optional[PromptMode] = None,
         transcript_skill_hint: Optional[str] = None,
         current_follow_up_context: Optional[str] = None,
+        current_host_page_context: Optional[dict] = None,
         memory_available: bool = False,
     ) -> str:
         """
@@ -145,6 +146,7 @@ class PromptBuilder:
             tools: Tool metadata exposed to the current agent.
             md_skills: Optional Markdown skill snapshot for prompt injection.
             provider_contexts: Optional provider LLM context for skill discovery.
+            current_host_page_context: Server-validated current Host object data.
 
         Returns:
             The assembled system prompt text.
@@ -194,6 +196,8 @@ class PromptBuilder:
 
         if current_follow_up_context:
             parts.append(self._build_current_follow_up_context(current_follow_up_context))
+        if current_host_page_context:
+            parts.append(prompt_sections.build_current_host_page_context(current_host_page_context))
 
         if effective_mode == PromptMode.FULL:
             # 4. Markdown skill index (HIGHEST PRIORITY - check these first!)

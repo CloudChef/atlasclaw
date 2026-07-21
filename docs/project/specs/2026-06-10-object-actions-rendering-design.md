@@ -202,6 +202,24 @@ Provider 负责业务语义：
 3. 为 mutate action 设置清晰 `display_label`、`agent_prompt` / `agent_prompt_template`、`confirmation_message` 和输入项。
 4. 输出标准 Markdown table 作为用户可读列表，结构化 metadata 放在 sidecar 中。
 
+### Chat 与 Context 使用同一动作来源
+
+`object_actions` 的所有权属于产生业务对象的 Domain Skill，而不是页面路由、Core
+或前端。Domain Skill 应提供一个可复用的纯动作 builder，根据已经校验的对象身份、
+状态和当前用户能力返回当次可用操作：
+
+1. 普通 Chat Tool 结果把 builder 返回值放到对象 metadata 的 `object_actions`。
+2. Embed Context resolver 完成只读对象解析后，调用同一个 builder，并在成功响应顶层
+   返回相同的 `object_actions`。
+3. Core 对两种来源调用同一个规范化与安全校验逻辑；前端调用同一个动作渲染组件。
+4. 对象状态变化时，builder 可以增加、移除或调整动作。Core 不缓存固定的
+   `object_type -> actions` 映射。
+5. 未提供动作或当次没有可用动作时返回空列表。Context 不得把 Skill 的完整 Tool
+   inventory 降级渲染为按钮，也不得根据 Tool 名称自行推断对象动作。
+
+新增 Provider 或对象类型时，只要遵循相同的对象身份字段和 `object_actions` contract
+即可接入 Chat 与 Context；Core/UI 不包含 Provider 名称、对象类型或业务动作分支。
+
 ## Testing
 
 Backend tests cover:

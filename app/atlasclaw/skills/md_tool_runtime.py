@@ -8,9 +8,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib.util
+import inspect
 import json
-import subprocess
+import os
 import sys
+from functools import wraps
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -30,6 +32,9 @@ class ScriptInvocationConfig:
     positional_args: tuple[str, ...] = ()
     split_args: tuple[str, ...] = ()
     flag_name_overrides: dict[str, str] = field(default_factory=dict)
+    timeout_seconds: float = 120
+    max_output_bytes: int = 2 * 1024 * 1024
+    request_cookie_only: bool = False
 
 
 def parse_entrypoint(entrypoint: str) -> tuple[str, str]:
@@ -103,7 +108,11 @@ def load_handler_from_file(
 
         handler = getattr(module, attr_name, None)
         if handler is not None and callable(handler):
-            return handler
+            return _wrap_function_handler_with_provider_guard(
+                handler,
+                provider_type=provider_type,
+                tool_name=tool_name or py_file.stem,
+            )
         return create_script_wrapper(
             py_file,
             provider_type,
@@ -118,6 +127,36 @@ def load_handler_from_file(
                 sys.path.remove(scripts_dir)
             except ValueError:
                 pass
+
+
+def _wrap_function_handler_with_provider_guard(
+    handler: Callable,
+    *,
+    provider_type: Optional[str],
+    tool_name: str,
+) -> Callable:
+    """Revalidate Embed scope before a function-style Provider Tool executes."""
+    if not str(provider_type or "").strip():
+        return handler
+
+    @wraps(handler)
+    async def guarded_handler(*args: Any, **kwargs: Any) -> Any:
+        ctx = kwargs.get("ctx")
+        if ctx is None and args and hasattr(args[0], "deps"):
+            ctx = args[0]
+        deps = getattr(ctx, "deps", None) if ctx is not None else None
+        extra = getattr(deps, "extra", None)
+        provider_io_guard = (
+            extra.get("_provider_io_guard") if isinstance(extra, dict) else None
+        )
+        if callable(provider_io_guard):
+            guard_result = provider_io_guard(str(tool_name or "").strip())
+            if inspect.isawaitable(guard_result):
+                await guard_result
+        result = handler(*args, **kwargs)
+        return await result if inspect.isawaitable(result) else result
+
+    return guarded_handler
 
 
 def create_script_wrapper(
@@ -165,22 +204,51 @@ def create_script_wrapper(
             or not isinstance(provider_instance, dict)
         ):
             return {}
+        selected_instance = dict(provider_instance)
+        if config.request_cookie_only:
+            selected_instance = {
+                key: selected_instance[key]
+                for key in ("base_url", "timeout")
+                if key in selected_instance
+            }
         return {
             provider_type_name: {
-                instance_name: dict(provider_instance),
+                instance_name: selected_instance,
             }
         }
 
     async def script_handler(ctx=None, **kwargs) -> dict:
-        import os
-
         runtime_kwargs = dict(kwargs)
-        env = os.environ.copy()
+        if config.request_cookie_only:
+            # Resolver processes receive a deliberately small, provider-neutral
+            # environment. This is an authorization boundary, so unknown future
+            # credential variables must not pass through by default.
+            inherited_keys = (
+                "PATH",
+                "LANG",
+                "LC_ALL",
+                "LC_CTYPE",
+                "PYTHONPATH",
+                "PYTHONHOME",
+                "VIRTUAL_ENV",
+                "TMPDIR",
+                "SSL_CERT_FILE",
+                "SSL_CERT_DIR",
+                "REQUESTS_CA_BUNDLE",
+            )
+            env = {
+                key: os.environ[key]
+                for key in inherited_keys
+                if key in os.environ
+            }
+        else:
+            env = os.environ.copy()
         # Request context must not inherit a service-level display timezone.
         env.pop("ATLASCLAW_TIMEZONE", None)
         env.setdefault("PYTHONIOENCODING", "utf-8")
         env.setdefault("PYTHONUTF8", "1")
         deps = getattr(ctx, "deps", None) if ctx is not None else None
+        extra = deps.extra if deps is not None and isinstance(getattr(deps, "extra", None), dict) else {}
         normalized_tool_name = str(tool_name or py_file.stem).strip()
         user_info = getattr(deps, "user_info", None)
         user_id = str(getattr(user_info, "user_id", "") or "").strip()
@@ -266,7 +334,11 @@ def create_script_wrapper(
             if robot_profile_meta:
                 env["ATLASCLAW_ROBOT_PROFILE"] = robot_profile_meta
 
-            provider_sso_token = str(extra.get("provider_sso_token", "") or "").strip()
+            provider_sso_token = (
+                ""
+                if config.request_cookie_only
+                else str(extra.get("provider_sso_token", "") or "").strip()
+            )
             provider_sso_available = bool(extra.get("provider_sso_available")) and bool(
                 provider_sso_token
             )
@@ -275,7 +347,11 @@ def create_script_wrapper(
                 env["ATLASCLAW_PROVIDER_SSO_TOKEN"] = provider_sso_token
                 print("[DEBUG] Set env var: ATLASCLAW_PROVIDER_SSO_TOKEN=***...")
 
-            provider_cookie_token = str(extra.get("provider_cookie_token", "") or "").strip()
+            provider_cookie_token = (
+                ""
+                if config.request_cookie_only
+                else str(extra.get("provider_cookie_token", "") or "").strip()
+            )
             provider_cookie_available = bool(extra.get("provider_cookie_available")) and bool(
                 provider_cookie_token
             )
@@ -287,7 +363,7 @@ def create_script_wrapper(
                 print("[DEBUG] Set env var: ATLASCLAW_PROVIDER_COOKIE_TOKEN=***...")
 
             provider_instance = extra.get("provider_instance")
-            if provider_instance:
+            if provider_instance and not config.request_cookie_only:
                 safe_provider_instance = sanitize_log_value(
                     provider_instance,
                     redacted_text="***...",
@@ -336,19 +412,75 @@ def create_script_wrapper(
         cmd.extend(_build_script_command_arguments(kwargs=runtime_kwargs, config=config))
 
         try:
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=120,
+            provider_io_guard = (
+                extra.get("_provider_io_guard")
+                if isinstance(extra, dict)
+                else None
+            )
+            if callable(provider_io_guard):
+                guard_result = provider_io_guard(normalized_tool_name)
+                if inspect.isawaitable(guard_result):
+                    await guard_result
+
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
                 env=env,
                 cwd=str(py_file.parent),
             )
-            output = result.stdout
+            output_size = 0
+
+            async def read_limited(stream: asyncio.StreamReader) -> bytes:
+                nonlocal output_size
+                chunks: list[bytes] = []
+                while True:
+                    chunk = await stream.read(64 * 1024)
+                    if not chunk:
+                        return b"".join(chunks)
+                    output_size += len(chunk)
+                    if output_size > int(config.max_output_bytes):
+                        raise OverflowError("Script output exceeded the configured limit")
+                    chunks.append(chunk)
+
+            stdout_task = asyncio.create_task(read_limited(process.stdout))
+            stderr_task = asyncio.create_task(read_limited(process.stderr))
+            wait_task = asyncio.create_task(process.wait())
+
+            async def stop_process() -> None:
+                for task in (stdout_task, stderr_task, wait_task):
+                    if not task.done():
+                        task.cancel()
+                if process.returncode is None:
+                    process.kill()
+                await asyncio.gather(
+                    stdout_task,
+                    stderr_task,
+                    wait_task,
+                    return_exceptions=True,
+                )
+                if process.returncode is None:
+                    await process.wait()
+
+            try:
+                stdout_bytes, stderr_bytes, _ = await asyncio.wait_for(
+                    asyncio.gather(stdout_task, stderr_task, wait_task),
+                    timeout=float(config.timeout_seconds),
+                )
+            except asyncio.TimeoutError:
+                await stop_process()
+                return {"success": False, "error": "Script execution timed out"}
+            except OverflowError as exc:
+                await stop_process()
+                return {"success": False, "error": str(exc)}
+            except asyncio.CancelledError:
+                await stop_process()
+                raise
+
+            output = stdout_bytes.decode("utf-8", errors="replace")
+            stderr_text = stderr_bytes.decode("utf-8", errors="replace")
             _internal_meta = ""
-            if result.stderr:
+            if stderr_text:
                 # Separate META blocks from error messages in stderr.
                 # META blocks (##xxx_META_START## ... ##xxx_META_END##) are
                 # placed in a separate "_internal" field so the LLM can
@@ -359,7 +491,7 @@ def create_script_wrapper(
                 _other_stderr: list[str] = []
                 _in_meta = False
                 _meta_buf: list[str] = []
-                for _line in result.stderr.splitlines():
+                for _line in stderr_text.splitlines():
                     if _re.match(r"^##\w+_META_START##$", _line.strip()):
                         _in_meta = True
                         _meta_buf = []
@@ -379,8 +511,8 @@ def create_script_wrapper(
                 if _other_stderr:
                     output += f"\n[STDERR] {''.join(_other_stderr)}"
             result_dict = {
-                "success": result.returncode == 0,
-                "returncode": result.returncode,
+                "success": process.returncode == 0,
+                "returncode": process.returncode,
                 "output": output,
             }
             if _internal_meta:
@@ -394,8 +526,6 @@ def create_script_wrapper(
                 result=result_dict,
             )
             return result_dict
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "Script execution timed out"}
         except Exception as exc:
             return {"success": False, "error": str(exc)}
 
@@ -616,6 +746,7 @@ def _register_md_tool_entry(
         success_contract=success_contract,
     )
     registry.register(meta, handler)
+    registry._md_tool_owners[tool_name] = entry.qualified_name
     registered.add(tool_name)
 
 

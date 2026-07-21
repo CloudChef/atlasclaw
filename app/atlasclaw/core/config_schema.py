@@ -176,6 +176,20 @@ class SkillsConfig(BaseModel):
     )
 
 
+class EmbedIntegrationConfig(BaseModel):
+    """Select the default Provider used by the single embedded UI.
+
+    Host page paths are matched only inside this Provider's conventional
+    ``assistant_context/routes.json`` manifest. The path never selects a
+    Provider and this configuration does not store browser credentials.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider_type: str = Field(min_length=1, max_length=128)
+    provider_instance: str = Field(min_length=1, max_length=128)
+
+
 class HookScriptHandlerConfig(BaseModel):
     """Config-driven local command script hook handler."""
 
@@ -509,6 +523,10 @@ class AtlasClawConfig(BaseModel):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     security: SecurityPolicyConfig = Field(default_factory=SecurityPolicyConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
+    embed_integration: Optional[EmbedIntegrationConfig] = Field(
+        default=None,
+        description="Default Provider binding for the single embedded UI; absent preserves legacy behavior",
+    )
     reset: ResetConfig = Field(default_factory=ResetConfig)
     webhook: WebhookConfig = Field(default_factory=WebhookConfig)
     hooks_runtime: HooksRuntimeConfig = Field(default_factory=HooksRuntimeConfig)
