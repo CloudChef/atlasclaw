@@ -10,15 +10,15 @@ body.atlas-surface-floating {
 }
 
 body.atlas-surface-floating .chat-header {
-  min-height: 54px;
-  padding: 8px 14px;
+  min-height: 48px;
+  padding: 6px 10px;
   border-bottom: 1px solid #eef1f6;
 }
 
 body.atlas-surface-floating .embedded-new-chat-btn {
-  width: 34px;
-  height: 34px;
-  border-radius: 11px;
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
 }
 
 body.atlas-surface-floating .chat-page-shell {
@@ -27,11 +27,11 @@ body.atlas-surface-floating .chat-page-shell {
 
 body.atlas-surface-floating .floating-assistant-toolbar {
   display: flex;
-  gap: 6px;
+  gap: 4px;
 }
 
 body.atlas-surface-floating .chat-header-leading {
-  gap: 6px;
+  gap: 4px;
 }
 
 body.atlas-surface-floating .floating-assistant-control {
@@ -69,19 +69,19 @@ body.atlas-surface-floating .floating-assistant-control:focus-visible {
 
 body.atlas-surface-floating .embed-context-extension {
   flex: 0 0 auto;
-  padding: 0 14px;
+  padding: 0 8px;
   background: #ffffff;
 }
 
 body.atlas-surface-floating .embed-object-context-bar {
   min-width: 0;
-  height: 38px;
+  height: 34px;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 11px;
+  gap: 6px;
+  padding: 0 9px;
   border: 1px solid #e3e8f1;
-  border-radius: 11px;
+  border-radius: 9px;
   background: #f8fafc;
   color: #334155;
 }
@@ -116,16 +116,22 @@ body.atlas-surface-floating .embed-object-context-id {
 
 body.atlas-surface-floating #embed-object-action-slot > .object-actions {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-start;
-  gap: 8px;
-  width: fit-content;
+  gap: 6px;
+  width: 100%;
   max-width: 100%;
-  margin-top: 7px;
-  padding: 7px;
+  margin-top: 5px;
+  padding: 6px;
+  overflow-x: auto;
   border: 1px solid #e2e8f0;
   border-radius: 8px;
   background: #f8fafc;
+  scrollbar-width: none;
+}
+
+body.atlas-surface-floating #embed-object-action-slot > .object-actions::-webkit-scrollbar {
+  display: none;
 }
 
 body.atlas-surface-floating #embed-object-action-slot a.object-action-link,
@@ -391,7 +397,7 @@ body.atlas-surface-floating .object-action-submit-alert {
 }
 
 body.atlas-surface-floating .chat-canvas-shell {
-  padding: 8px 10px 14px;
+  padding: 4px 6px 8px;
 }
 
 body.atlas-surface-floating .chat-empty-title {
