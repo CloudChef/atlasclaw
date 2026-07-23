@@ -38,6 +38,39 @@ const USER_MESSAGE_COPY_RETRY_DELAY_MS = 250
 const USER_MESSAGE_COPY_RESET_MS = 1200
 const OBJECT_ACTION_BIND_RETRY_DELAY_MS = 250
 
+const CHAT_DENSITY = Object.freeze({
+  comfortable: Object.freeze({
+    bubblePadding: '10px 18px',
+    bubbleFontSize: '16px',
+    bubbleLineHeight: '1.75',
+    bubbleBorderRadius: '24px',
+    messageMargin: '8px',
+    sideGutter: '10%',
+    messageBottomSpace: '112px',
+    inputBorderRadius: '32px',
+    inputPadding: '12px 20px',
+    inputBorder: 'none',
+    inputShadow: '0 22px 60px rgba(15, 23, 42, 0.08)',
+    inputFontSize: '18px',
+    inputLineHeight: '1.45'
+  }),
+  compact: Object.freeze({
+    bubblePadding: '7px 12px',
+    bubbleFontSize: '15px',
+    bubbleLineHeight: '1.55',
+    bubbleBorderRadius: '18px',
+    messageMargin: '4px',
+    sideGutter: '12px',
+    messageBottomSpace: '80px',
+    inputBorderRadius: '22px',
+    inputPadding: '8px 14px',
+    inputBorder: '1px solid #e6ebf3',
+    inputShadow: '0 12px 32px rgba(15, 23, 42, 0.07)',
+    inputFontSize: '16px',
+    inputLineHeight: '1.4'
+  })
+})
+
 const COPY_MESSAGE_ICON = `
 <svg class="atlas-user-message-copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
   <rect x="8" y="8" width="11" height="11" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"></rect>
@@ -651,6 +684,37 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 @media (hover:none){.atlas-user-message-copy-btn{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}}
 `
 
+const FLOATING_CHAT_STYLES = `
+:host(.atlas-chat-compact){--atlas-chat-side-gutter:12px}
+:host(.atlas-chat-compact) #messages,:host(.atlas-chat-compact) .messages,:host(.atlas-chat-compact) .messages-container{padding-bottom:80px!important;scroll-padding-bottom:80px!important}
+:host(.atlas-chat-compact) details.runtime-panel{min-width:min(210px,100%);margin-bottom:8px;padding:7px 10px;border-radius:10px;background:rgba(248,250,252,.84)}
+:host(.atlas-chat-compact) details.runtime-panel>summary{gap:8px}
+:host(.atlas-chat-compact) .runtime-summary-left{gap:6px}
+:host(.atlas-chat-compact) .runtime-summary-right{gap:7px}
+:host(.atlas-chat-compact) .runtime-state-icon{min-width:16px;height:16px;font-size:13px}
+:host(.atlas-chat-compact) .runtime-title{font-size:13px}
+:host(.atlas-chat-compact) .runtime-title-elapsed{font-size:12px}
+:host(.atlas-chat-compact) .runtime-toggle{font-size:11px}
+:host(.atlas-chat-compact) .runtime-body{gap:8px;padding-top:6px}
+:host(.atlas-chat-compact) .runtime-statuses{gap:6px}
+:host(.atlas-chat-compact) .runtime-chip{gap:5px;padding:4px 8px;font-size:12px}
+:host(.atlas-chat-compact) .runtime-log{gap:6px}
+:host(.atlas-chat-compact) .runtime-log-item{gap:8px;font-size:13px;line-height:1.45}
+:host(.atlas-chat-compact) .runtime-log-label{min-width:104px}
+:host(.atlas-chat-compact) .runtime-log-time{min-width:40px;font-size:11px}
+:host(.atlas-chat-compact) .thinking-body{padding-top:6px;font-size:13px;line-height:1.55}
+:host(.atlas-chat-compact) .thinking-caption{margin-bottom:4px;font-size:11px}
+:host(.atlas-chat-compact) .response-content p{margin-bottom:8px;line-height:1.58}
+:host(.atlas-chat-compact) .response-content ul,:host(.atlas-chat-compact) .response-content ol{margin-bottom:8px;margin-left:18px}
+:host(.atlas-chat-compact) .response-content li{margin:3px 0;line-height:1.55}
+:host(.atlas-chat-compact) .response-content h1,:host(.atlas-chat-compact) .response-content h2,:host(.atlas-chat-compact) .response-content h3{margin-bottom:8px;line-height:1.35}
+:host(.atlas-chat-compact) .response-content pre{margin-bottom:8px;padding:12px 14px;border-radius:10px}
+:host(.atlas-chat-compact) .message-wrapper{gap:8px}
+:host(.atlas-chat-compact) .outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .inner-message-container{box-sizing:border-box!important;padding-right:34px}
+:host(.atlas-chat-compact) .outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .inner-message-container::after{right:0;width:34px;min-height:38px}
+:host(.atlas-chat-compact) .outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .atlas-user-message-copy-btn{right:3px;top:5px;width:26px;height:26px;flex-basis:26px}
+`
+
 export async function initChat(element, callbacks = {}) {
   chatElement = element
   chatCallbacks = callbacks || {}
@@ -982,19 +1046,22 @@ function extractMessageFromBody(body) {
 }
 
 function configureI18nAttributes(element) {
+  const compact = window.__atlasclawEmbedSurface?.surface === 'floating'
+  const density = compact ? CHAT_DENSITY.compact : CHAT_DENSITY.comfortable
+  element.classList?.toggle('atlas-chat-compact', compact)
   element.chatStyle = { backgroundColor: 'transparent' }
   element.messageStyles = {
     default: {
       shared: {
         bubble: {
-          padding: '10px 18px',
-          fontSize: '16px',
-          lineHeight: '1.75',
-          borderRadius: '24px'
+          padding: density.bubblePadding,
+          fontSize: density.bubbleFontSize,
+          lineHeight: density.bubbleLineHeight,
+          borderRadius: density.bubbleBorderRadius
         },
         outerContainer: {
-          marginTop: '8px',
-          marginBottom: '8px'
+          marginTop: density.messageMargin,
+          marginBottom: density.messageMargin
         }
       },
       user: {
@@ -1005,8 +1072,8 @@ function configureI18nAttributes(element) {
         },
         outerContainer: {
           justifyContent: 'flex-end',
-          paddingLeft: '10%',
-          paddingRight: '10%'
+          paddingLeft: density.sideGutter,
+          paddingRight: density.sideGutter
         }
       },
       ai: {
@@ -1020,8 +1087,8 @@ function configureI18nAttributes(element) {
         },
         outerContainer: {
           justifyContent: 'flex-start',
-          paddingLeft: '10%',
-          paddingRight: '10%'
+          paddingLeft: density.sideGutter,
+          paddingRight: density.sideGutter
         }
       }
     }
@@ -1029,8 +1096,9 @@ function configureI18nAttributes(element) {
   element.auxiliaryStyle = `
     :host { border: none !important; background: transparent !important; box-shadow: none !important; }
     #container, #chat-view, #messages, .messages, .messages-container { border: none !important; background: transparent !important; box-shadow: none !important; }
-    #messages, .messages, .messages-container { box-sizing: border-box !important; padding-bottom: 112px !important; scroll-padding-bottom: 112px !important; }
+    #messages, .messages, .messages-container { box-sizing: border-box !important; padding-bottom: ${density.messageBottomSpace} !important; scroll-padding-bottom: ${density.messageBottomSpace} !important; }
     ${THINKING_STYLES}
+    ${compact ? FLOATING_CHAT_STYLES : ''}
   `
 
   const placeholder = translateIfExists('chat.placeholder') || 'Enter your question...'
@@ -1043,15 +1111,15 @@ function configureI18nAttributes(element) {
       container: {
         width: '100%',
         boxSizing: 'border-box',
-        borderRadius: '32px',
-        border: 'none',
-        padding: '12px 20px',
+        borderRadius: density.inputBorderRadius,
+        border: density.inputBorder,
+        padding: density.inputPadding,
         backgroundColor: '#ffffff',
-        boxShadow: '0 22px 60px rgba(15, 23, 42, 0.08)'
+        boxShadow: density.inputShadow
       },
       text: {
-        fontSize: '18px',
-        lineHeight: '1.45',
+        fontSize: density.inputFontSize,
+        lineHeight: density.inputLineHeight,
         color: '#1f2937'
       }
     }

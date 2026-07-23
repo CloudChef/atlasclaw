@@ -49,6 +49,7 @@ jest.mock('../../app/frontend/scripts/i18n.js', () => ({
 beforeEach(() => {
     globalThis.__atlasclawTestTranslations = { ...defaultMockTranslations };
     globalThis.__atlasclawTestLocale = 'en-US';
+    delete window.__atlasclawEmbedSurface;
     jest.resetModules();
     global.fetch = jest.fn(() => Promise.resolve({
         ok: true,
@@ -469,7 +470,8 @@ describe('chat-ui.js handler mode', () => {
         expect(element.auxiliaryStyle).not.toContain('#input { background: transparent !important; }');
     });
 
-    test('initChat keeps chat input and user history bubbles compact', async () => {
+    test('initChat preserves comfortable density for the menu surface', async () => {
+        window.__atlasclawEmbedSurface = Object.freeze({ surface: 'menu' });
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const element = createChatElement();
 
@@ -495,6 +497,40 @@ describe('chat-ui.js handler mode', () => {
         expect(element.auxiliaryStyle).toContain('details.runtime-panel{box-sizing:border-box;width:fit-content;min-width:min(260px,100%);max-width:100%;margin-bottom:12px;padding:10px 14px;');
         expect(element.auxiliaryStyle).toContain('border-radius:14px');
         expect(element.auxiliaryStyle).toContain('.runtime-body{display:flex;flex-direction:column;gap:10px;padding-top:8px}');
+        expect(element.auxiliaryStyle).not.toContain(':host(.atlas-chat-compact)');
+    });
+
+    test('initChat applies compact density only to the floating surface', async () => {
+        window.__atlasclawEmbedSurface = Object.freeze({ surface: 'floating' });
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = Object.assign(document.createElement('deep-chat'), createChatElement());
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+
+        expect(element.messageStyles.default.shared.bubble.padding).toBe('7px 12px');
+        expect(element.messageStyles.default.shared.bubble.fontSize).toBe('15px');
+        expect(element.messageStyles.default.shared.bubble.lineHeight).toBe('1.55');
+        expect(element.messageStyles.default.shared.outerContainer.marginTop).toBe('4px');
+        expect(element.messageStyles.default.user.outerContainer.paddingLeft).toBe('12px');
+        expect(element.messageStyles.default.ai.outerContainer.paddingRight).toBe('12px');
+        expect(element.textInput.styles.container.padding).toBe('8px 14px');
+        expect(element.textInput.styles.container.borderRadius).toBe('22px');
+        expect(element.textInput.styles.text.fontSize).toBe('16px');
+        expect(element.textInput.styles.text.lineHeight).toBe('1.4');
+        expect(element.classList.contains('atlas-chat-compact')).toBe(true);
+        expect(element.auxiliaryStyle).toContain('padding-bottom: 80px !important');
+        expect(element.auxiliaryStyle).toContain(':host(.atlas-chat-compact)');
+        expect(element.auxiliaryStyle).toContain('min-width:min(210px,100%)');
+        expect(element.auxiliaryStyle).toContain('padding-right:34px');
+        expect(element.auxiliaryStyle).toContain('right:3px;top:5px;width:26px;height:26px');
     });
 
     test('initChat targets actual DeepChat message classes for alignment styles', async () => {
