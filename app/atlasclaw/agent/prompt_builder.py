@@ -132,7 +132,6 @@ class PromptBuilder:
         provider_auth_diagnostics: Optional[dict[str, dict]] = None,
         context_window_tokens: Optional[int] = None,
         mode_override: Optional[PromptMode] = None,
-        transcript_skill_hint: Optional[str] = None,
         current_follow_up_context: Optional[str] = None,
         current_host_page_context: Optional[dict] = None,
         memory_available: bool = False,
@@ -190,9 +189,6 @@ class PromptBuilder:
         
         if target_md_skill:
             parts.append(self._build_target_md_skill(target_md_skill))
-
-        if transcript_skill_hint:
-            parts.append(self._build_skill_continuation_hint(transcript_skill_hint))
 
         if current_follow_up_context:
             parts.append(self._build_current_follow_up_context(current_follow_up_context))
@@ -262,9 +258,6 @@ class PromptBuilder:
 
     def _build_target_md_skill(self, target_md_skill: dict[str, str]) -> str:
         return prompt_sections.build_target_md_skill(target_md_skill)
-
-    def _build_skill_continuation_hint(self, hint_skill: str) -> str:
-        return prompt_sections.build_skill_continuation_hint(hint_skill)
 
     def _build_current_follow_up_context(self, context: str) -> str:
         return prompt_sections.build_current_follow_up_context(context)

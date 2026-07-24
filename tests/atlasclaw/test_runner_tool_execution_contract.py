@@ -236,7 +236,8 @@ def test_no_runtime_capability_uses_unique_missing_user_token_diagnostic() -> No
         },
         intent_plan=ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
-            reason="no_authorized_runtime_capability",
+            unavailable_runtime_capability=True,
+            reason="The requested provider capability is unavailable.",
         ),
     )
 
@@ -295,7 +296,8 @@ def test_no_runtime_capability_can_scope_provider_auth_diagnostic_by_instance() 
         intent_plan=ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
             target_provider_instances=["providerx.secondary"],
-            reason="no_authorized_runtime_capability",
+            unavailable_runtime_capability=True,
+            reason="The selected provider instance requires user authentication.",
         ),
     )
 
@@ -751,6 +753,17 @@ async def test_tool_required_missing_tool_after_retry_asks_llm_for_unsupported_t
     assert len(runner.unsupported_calls) == 1
     assert runner.unsupported_calls[0]["allowed_tool_names"] == []
     assert "item_operation" in runner.unsupported_calls[0]["user_message"]
+    assert (
+        '"availability_status": "matching_tool_available_but_not_executed"'
+        in runner.unsupported_calls[0]["user_message"]
+    )
+    assert (
+        "matching_tool_available_but_not_executed means a matching tool was available"
+        in runner.unsupported_calls[0]["system_prompt"]
+    )
+    assert "never describe it as unsupported or unavailable" in (
+        runner.unsupported_calls[0]["system_prompt"]
+    )
     assert '"enable"' in runner.unsupported_calls[0]["user_message"]
     assert '"disable"' in runner.unsupported_calls[0]["user_message"]
     await runner._await_background_post_success_tasks()

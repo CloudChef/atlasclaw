@@ -9,9 +9,6 @@ from typing import Any, Optional
 from pydantic import BaseModel, Field
 
 
-NO_RUNTIME_CAPABILITY_REASON = "no_authorized_runtime_capability"
-
-
 class ToolPolicyMode(str, Enum):
     """Policy mode returned by the runtime tool gate."""
 
@@ -27,6 +24,16 @@ class ToolIntentAction(str, Enum):
     ASK_CLARIFICATION = "ask_clarification"
     USE_TOOLS = "use_tools"
     CREATE_ARTIFACT = "create_artifact"
+
+
+class CapabilitySelectorOutcome(str, Enum):
+    """Provider-agnostic outcome returned by the capability selector model."""
+
+    ORDINARY_CONVERSATION = "ordinary_conversation"
+    AUTHORIZED_CAPABILITY = "authorized_capability"
+    AUTHORIZED_CONTEXT = "authorized_context"
+    UNAVAILABLE_CAPABILITY = "unavailable_capability"
+    ASK_CLARIFICATION = "ask_clarification"
 
 
 class ToolCandidate(BaseModel):
@@ -57,6 +64,7 @@ class ToolIntentPlan(BaseModel):
     """Structured planning result used to derive the minimal toolset for a turn."""
 
     action: ToolIntentAction = ToolIntentAction.DIRECT_ANSWER
+    selector_outcome: Optional[CapabilitySelectorOutcome] = None
     target_provider_instances: list[str] = Field(default_factory=list)
     target_provider_types: list[str] = Field(default_factory=list)
     target_provider_skill_names: list[str] = Field(default_factory=list)
@@ -65,6 +73,7 @@ class ToolIntentPlan(BaseModel):
     target_capability_classes: list[str] = Field(default_factory=list)
     target_tool_names: list[str] = Field(default_factory=list)
     missing_inputs: list[str] = Field(default_factory=list)
+    unavailable_runtime_capability: bool = False
     reason: str = ""
 
 

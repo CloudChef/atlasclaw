@@ -49,7 +49,6 @@ def build_system_prompt(
         "provider_auth_diagnostics": collect_provider_auth_diagnostics(deps),
         "context_window_tokens": context_window_tokens,
         "mode_override": prompt_mode,
-        "transcript_skill_hint": collect_transcript_skill_hint(deps),
         "current_follow_up_context": collect_current_follow_up_context(deps),
         "current_host_page_context": collect_current_host_page_context(deps),
         "memory_available": collect_memory_available(deps),
@@ -567,20 +566,6 @@ def collect_target_md_skill(deps) -> Optional[dict]:
     extra = deps.extra if isinstance(deps.extra, dict) else {}
     value = extra.get("target_md_skill")
     return value if isinstance(value, dict) else None
-
-
-def collect_transcript_skill_hint(deps) -> Optional[str]:
-    """Read the transcript-based skill continuation hint from `deps.extra`.
-
-    This is a non-binding hint produced by transcript analysis.  It is
-    injected into the prompt as advisory context — the LLM decides whether
-    to follow it.
-    """
-    extra = deps.extra if isinstance(deps.extra, dict) else {}
-    hint = extra.get("transcript_skill_continuation_hint")
-    if isinstance(hint, str) and hint.strip():
-        return hint.strip()
-    return None
 
 
 def collect_current_follow_up_context(deps) -> Optional[str]:

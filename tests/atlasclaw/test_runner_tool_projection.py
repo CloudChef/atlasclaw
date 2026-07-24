@@ -8,7 +8,11 @@ from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
     tool_required_turn_has_real_execution,
     turn_action_requires_tool_execution,
 )
-from app.atlasclaw.agent.tool_gate_models import ToolIntentAction, ToolIntentPlan
+from app.atlasclaw.agent.tool_gate_models import (
+    CapabilitySelectorOutcome,
+    ToolIntentAction,
+    ToolIntentPlan,
+)
 
 
 def _allowed_tools() -> list[dict]:
@@ -181,6 +185,66 @@ def test_project_minimal_toolset_hides_tools_for_direct_answer_without_targets()
     assert filtered == []
     assert trace["enabled"] is True
     assert trace["reason"] == "projection_empty"
+
+
+def test_project_minimal_toolset_narrows_context_only_standalone_skill() -> None:
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.DIRECT_ANSWER,
+        target_skill_names=["xlsx"],
+        reason="The selected skill context is sufficient for the current reply.",
+    )
+    allowed_tools = [
+        *_allowed_tools(),
+        {
+            "name": "xlsx_create",
+            "description": "Create a spreadsheet.",
+            "skill_name": "xlsx",
+            "qualified_skill_name": "xlsx",
+            "capability_class": "artifact:xlsx",
+        },
+        {
+            "name": "pptx_create",
+            "description": "Create a presentation.",
+            "skill_name": "pptx",
+            "qualified_skill_name": "pptx",
+            "capability_class": "artifact:pptx",
+        },
+    ]
+
+    filtered, trace = project_minimal_toolset(
+        allowed_tools=allowed_tools,
+        intent_plan=plan,
+    )
+
+    assert [tool["name"] for tool in filtered] == ["xlsx_create"]
+    assert trace["reason"] == "projection_applied"
+
+
+def test_project_minimal_toolset_hides_tools_for_authorized_context() -> None:
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.DIRECT_ANSWER,
+        selector_outcome=CapabilitySelectorOutcome.AUTHORIZED_CONTEXT,
+        target_skill_names=["item-workflow"],
+        target_tool_names=["item_update"],
+        reason="The current turn only supplies workflow input.",
+    )
+    allowed_tools = [
+        {
+            "name": "item_update",
+            "description": "Update an external item.",
+            "skill_name": "item-workflow",
+            "qualified_skill_name": "item-workflow",
+        }
+    ]
+
+    filtered, trace = project_minimal_toolset(
+        allowed_tools=allowed_tools,
+        intent_plan=plan,
+    )
+
+    assert filtered == []
+    assert trace["enabled"] is True
+    assert trace["reason"] == "projection_context_only"
 
 
 def test_project_minimal_toolset_does_not_add_same_named_standalone_skill_for_provider_skill() -> None:

@@ -275,25 +275,50 @@ class ActiveMemoryRecallService:
         if not candidates:
             return "", 0
 
+        section_line_ranges: dict[str, tuple[int, int]] = {}
+        for section, line_number, _ in candidates:
+            current_range = section_line_ranges.get(section)
+            if current_range is None:
+                section_line_ranges[section] = (line_number, line_number)
+                continue
+            section_line_ranges[section] = (
+                min(current_range[0], line_number),
+                max(current_range[1], line_number),
+            )
+
         lines: list[str] = []
         remaining = max(32, max_chars)
         current_section = ""
         content_count = 0
-        for section, line_number, text in candidates:
+        for section, _line_number, text in candidates:
             if section != current_section:
+                start_line, end_line = section_line_ranges[section]
+                citation = (
+                    f"{display_path}#L{start_line}-L{end_line}"
+                    if display_path
+                    else ""
+                )
                 heading = f"{section}:"
+                if citation:
+                    heading = f"{heading} ({citation})"
                 if len(heading) > remaining and lines:
                     break
-                lines.append(heading)
-                remaining -= len(heading) + 1
+                first_line_remaining = remaining - len(heading) - 1
+                first_line = (
+                    f"- {self._compact_text(text, max(16, first_line_remaining - 2))}"
+                )
+                if first_line_remaining <= 0 or len(first_line) > first_line_remaining:
+                    break
+                lines.extend([heading, first_line])
+                remaining -= len(heading) + len(first_line) + 2
                 current_section = section
+                content_count += 1
                 if remaining <= 0:
                     break
-            citation = f"{display_path}#L{line_number}-L{line_number}" if display_path else ""
+                continue
             prefix = "- "
-            suffix = f" ({citation})" if citation else ""
-            budget = max(16, remaining - len(prefix) - len(suffix))
-            line = f"{prefix}{self._compact_text(text, budget)}{suffix}"
+            budget = max(16, remaining - len(prefix))
+            line = f"{prefix}{self._compact_text(text, budget)}"
             if len(line) > remaining and lines:
                 break
             lines.append(line)

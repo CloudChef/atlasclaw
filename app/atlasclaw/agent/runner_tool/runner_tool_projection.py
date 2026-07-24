@@ -5,7 +5,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.atlasclaw.agent.tool_gate_models import ToolIntentAction, ToolIntentPlan
+from app.atlasclaw.agent.tool_gate_models import (
+    CapabilitySelectorOutcome,
+    ToolIntentAction,
+    ToolIntentPlan,
+)
 from app.atlasclaw.core.provider_skill_capability import (
     provider_names_from_instance_refs,
     provider_skill_target_match_keys,
@@ -61,6 +65,17 @@ def project_minimal_toolset(
     }
     if intent_plan is None:
         return normalized_tools, trace
+    if intent_plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT:
+        trace.update(
+            {
+                "enabled": True,
+                "reason": "projection_context_only",
+                "after_count": 0,
+                "steps": [],
+                "explicit_target_mode": True,
+            }
+        )
+        return [], trace
     if (
         intent_plan.action in {
             ToolIntentAction.DIRECT_ANSWER,
@@ -91,10 +106,12 @@ def project_minimal_toolset(
     has_provider_skill_targets = any(
         str(item).strip() for item in intent_plan.target_provider_skill_names
     )
+    has_skill_targets = any(str(item).strip() for item in intent_plan.target_skill_names)
     if (
         intent_plan.action is not ToolIntentAction.USE_TOOLS
         and not _artifact_turn_has_explicit_targets(intent_plan)
         and not has_provider_skill_targets
+        and not has_skill_targets
     ):
         return normalized_tools, trace
 

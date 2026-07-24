@@ -74,6 +74,31 @@ class _PromptOnlyNoToolAgent:
 
     async def run(self, user_message, *, deps):
         self.run_calls.append({"user_message": user_message, "deps": deps})
+        prompt_text = str(user_message or "")
+        if "Classify the latest turn when no runtime capability is available." in prompt_text:
+            raise AssertionError("A valid capability selector outcome must skip the fallback classifier")
+        if "Select authorized capability targets for this turn." in prompt_text:
+            request_text = prompt_text.split("User request:\n", 1)[-1].split(
+                "\n\nRecent history:",
+                1,
+            )[0]
+            needs_runtime = any(
+                marker in request_text
+                for marker in ("申请", "确定", "VM", "vm")
+            )
+            return SimpleNamespace(
+                output=json.dumps(
+                    {
+                        "outcome": (
+                            "unavailable_capability"
+                            if needs_runtime
+                            else "ordinary_conversation"
+                        ),
+                        "targets": [],
+                        "reason": "Deterministic no-provider selector outcome.",
+                    }
+                )
+            )
         return SimpleNamespace(output="direct recovery was not expected")
 
     @asynccontextmanager
@@ -318,6 +343,7 @@ def test_no_provider_no_skill_role_uses_prompt_policy_without_hard_block(
             headers=user_headers,
         )
         _assert_unavailable_capability_message(first_text)
+        assert "当前没有可用的 provider、skill 或工具，AtlasClaw 不能执行或验证该操作。" in first_text
         assert not any(event_name == "error" for event_name, _ in first_events)
         for fake_evidence in _FAKE_EVIDENCE:
             assert fake_evidence not in first_text
@@ -335,6 +361,7 @@ def test_no_provider_no_skill_role_uses_prompt_policy_without_hard_block(
             headers=user_headers,
         )
         _assert_unavailable_capability_message(follow_up_text)
+        assert "当前没有可用的 provider、skill 或工具，AtlasClaw 不能执行或验证该操作。" in follow_up_text
         for fake_evidence in _FAKE_EVIDENCE:
             assert fake_evidence not in follow_up_text
 

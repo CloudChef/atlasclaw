@@ -607,33 +607,6 @@ def _extract_selector_user_request(prompt_text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def _extract_active_route_user_request(prompt_text: str) -> str:
-    """Extract the latest turn from an internal active-capability router prompt."""
-    match = re.search(
-        r"Latest user input:\s*(.*?)\s*Recent conversation:",
-        prompt_text,
-        flags=re.DOTALL,
-    )
-    return match.group(1).strip() if match else ""
-
-
-def _active_route_response_for_prompt(messages: list[ModelMessage]) -> Optional[str]:
-    """Answer active workflow routing prompts without requiring runtime tools."""
-    prompt_text = _extract_latest_request_text(messages)
-    if "Classify the latest turn against the current active workflow." not in prompt_text:
-        return None
-
-    user_text = _extract_active_route_user_request(prompt_text)
-    decision = "select_capability" if "PPT" in user_text.upper() else "continue_current"
-    return json.dumps(
-        {
-            "decision": decision,
-            "reason": "deterministic e2e active workflow route",
-        },
-        ensure_ascii=False,
-    )
-
-
 def _extract_authorized_capabilities(prompt_text: str) -> list[tuple[str, str]]:
     """Return selector capability ids paired with their lower-cased prompt line."""
     capabilities: list[tuple[str, str]] = []
@@ -694,7 +667,7 @@ def _selector_response_for_prompt(messages: list[ModelMessage], instructions: st
     if target:
         return json.dumps(
             {
-                "action": "use_tools",
+                "outcome": "authorized_capability",
                 "targets": [target],
                 "reason": "deterministic e2e selector target",
             },
@@ -702,7 +675,7 @@ def _selector_response_for_prompt(messages: list[ModelMessage], instructions: st
         )
     return json.dumps(
         {
-            "action": "direct_answer",
+            "outcome": "ordinary_conversation",
             "targets": [],
             "reason": "deterministic e2e direct answer",
         },
@@ -797,10 +770,6 @@ def _direct_park_answer() -> str:
 
 def _decide_model_action(messages: list[ModelMessage], agent_info: AgentInfo) -> tuple[str, Any]:
     """Return either ('text', text) or ('tool', name, args, call_id)."""
-    active_route_response = _active_route_response_for_prompt(messages)
-    if active_route_response is not None:
-        return "text", active_route_response
-
     selector_response = _selector_response_for_prompt(messages, agent_info.instructions or "")
     if selector_response is not None:
         return "text", selector_response
@@ -925,10 +894,21 @@ class _FakeCmpHandler(BaseHTTPRequestHandler):
             state["approvals_requests"] += 1
             self._write_json({"content": PENDING_APPROVALS, "totalElements": len(PENDING_APPROVALS)})
             return
-        if parsed.path.endswith("/catalogs/published"):
+        if parsed.path.endswith(("/catalogs/published", "/catalogs/published/simples")):
             state["catalog_requests"] += 1
             self._write_json({"content": SERVICE_CATALOGS, "totalElements": len(SERVICE_CATALOGS)})
             return
+        catalog_prefix = "/platform-api/catalogs/"
+        if parsed.path.startswith(catalog_prefix):
+            catalog_id = parsed.path.removeprefix(catalog_prefix)
+            catalog = next(
+                (item for item in SERVICE_CATALOGS if item["id"] == catalog_id),
+                None,
+            )
+            if catalog is not None:
+                state["catalog_requests"] += 1
+                self._write_json({**catalog, "status": "PUBLISHED"})
+                return
         self.send_response(404)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.end_headers()
