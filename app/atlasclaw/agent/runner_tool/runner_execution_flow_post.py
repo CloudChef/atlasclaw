@@ -22,7 +22,6 @@ from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     select_provider_auth_diagnostic,
 )
 from app.atlasclaw.agent.runner_tool.runner_llm_routing import messages_satisfy_artifact_goal
-from app.atlasclaw.agent.tool_gate_models import NO_RUNTIME_CAPABILITY_REASON
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import has_hidden_lookup_result_content
 from app.atlasclaw.agent.runner_tool.runner_tool_messages import overlay_synthetic_tool_messages
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
@@ -905,8 +904,7 @@ class RunnerExecutionFlowPostMixin:
 
         if (
             tool_intent_plan is not None
-            and str(getattr(tool_intent_plan, "reason", "") or "").strip()
-            == NO_RUNTIME_CAPABILITY_REASON
+            and bool(tool_intent_plan.unavailable_runtime_capability)
             and not state.get("available_tools")
         ):
             provider_auth_diagnostic = select_no_runtime_provider_auth_diagnostic(
@@ -1231,6 +1229,14 @@ class RunnerExecutionFlowPostMixin:
                         ),
                         "relevant_tools": relevant_tools,
                     }
+                    if relevant_tools:
+                        facts["availability_status"] = (
+                            "matching_tool_available_but_not_executed"
+                        )
+                    elif facts["available_tool_count"]:
+                        facts["availability_status"] = "no_matching_tool"
+                    else:
+                        facts["availability_status"] = "no_runtime_tools"
                     run_single = getattr(self, "run_single", None)
                     if callable(run_single):
                         raw_output = await run_single(
@@ -1244,12 +1250,14 @@ class RunnerExecutionFlowPostMixin:
                                 "You are the assistant. The runtime could not execute the "
                                 "tool-backed operation requested in this turn. Write a concise "
                                 "final answer in the user's language. Use only the structured "
-                                "facts. State clearly that no action was executed. Explain that "
-                                "the requested operation is not supported by the available "
-                                "runtime tool, or that no matching runtime tool is available "
-                                "when available_tool_count is zero. If enum values in a tool "
-                                "schema show supported options, mention them. Do not claim a "
-                                "tool ran or that any external object changed state."
+                                "facts. State clearly that no action was executed. Follow "
+                                "availability_status exactly: matching_tool_available_but_not_executed "
+                                "means a matching tool was available but was not successfully invoked; "
+                                "never describe it as unsupported or unavailable. no_matching_tool "
+                                "means runtime tools exist but none matches the requested operation. "
+                                "no_runtime_tools means no runtime tool is available. If enum values "
+                                "in a tool schema show supported options, mention them. Do not claim "
+                                "a tool ran or that any external object changed state."
                             ),
                             agent=state.get("runtime_agent") or getattr(self, "agent", None),
                             allowed_tool_names=[],

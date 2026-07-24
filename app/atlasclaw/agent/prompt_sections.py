@@ -154,22 +154,6 @@ def build_user_context(user_info) -> str:
     return "\n".join(lines)
 
 
-def build_skill_continuation_hint(hint_skill: str) -> str:
-    """Build a non-binding hint about the likely active skill from transcript.
-
-    This section is purely advisory.  The LLM decides whether to continue
-    the hinted workflow based on the actual user intent.
-    """
-    lines = [
-        "## Skill Continuation Hint",
-        "",
-        f"Recent transcript analysis suggests this turn may be continuing the **{hint_skill}** workflow.",
-        "If the current user input is part of that workflow, continue within that skill's instructions.",
-        "This is a non-binding hint — evaluate the user's actual intent before deciding.",
-    ]
-    return "\n".join(lines)
-
-
 def build_current_follow_up_context(context: str) -> str:
     """Build a focused section for interpreting low-information current replies."""
     text = str(context or "").strip()
@@ -355,6 +339,22 @@ def build_tool_policy(
     elif mode == "ask_clarification":
         lines.append("Ask one focused clarification question and wait for the user response.")
         lines.append("Do not call unrelated tools and do not fabricate missing inputs.")
+    elif mode == "context_only":
+        lines.append(
+            "Use the selected skill or provider workflow instructions only as context for this turn."
+        )
+        lines.append(
+            "No tool execution is authorized in this turn. Respond with the next clarification, "
+            "input summary, draft, or confirmation request required by the workflow."
+        )
+        lines.append(
+            "The selected provider, skill, and its tool family remain active; executable tools are "
+            "paused only for this turn. Do not claim that provider, skill, or tool capability is "
+            "missing or unavailable."
+        )
+        lines.append(
+            "Do not emit tool-call markup or a pseudo tool invocation while execution is paused."
+        )
     elif mode == "create_artifact":
         lines.append("This turn is an artifact-generation request.")
         lines.append(

@@ -829,7 +829,7 @@ Phase 1 is classifier-first, not keyword-first:
 - if no classifier is available, the gate falls back to a neutral direct-answer default
 - hard-coded business keyword tables are intentionally not the platform contract
 
-The runtime emits tool-gate and enforcement events into Hook Runtime so downstream consumers can inspect why a turn was allowed to answer directly, required tools, or was blocked for missing grounding. The gate does not own the main turn-intent decision and does not introduce a separate planner call on the hot path.
+The runtime emits tool-gate and enforcement events into Hook Runtime so downstream consumers can inspect why a turn was allowed to answer directly, required tools, or was blocked for missing grounding. A single capability-selector pass owns natural-language capability selection, including active-workflow continuation and unavailable-capability outcomes. The Tool Necessity Gate consumes that typed result and does not add another planner call.
 ## 11. Data Storage Model
 
 ### 11.1 Sessions

@@ -18,7 +18,7 @@ from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
 )
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import normalize_tool_result_mode
 from app.atlasclaw.agent.tool_gate_models import (
-    NO_RUNTIME_CAPABILITY_REASON,
+    CapabilitySelectorOutcome,
     ToolGateDecision,
     ToolIntentAction,
     ToolIntentPlan,
@@ -82,8 +82,6 @@ class _ModelToolGateClassifier:
 class RunnerToolGateModelMixin:
     """Resolve model-assisted capability routing and tool-intent decisions."""
 
-    ACTIVE_CAPABILITY_CONTINUE = "continue_current"
-    ACTIVE_CAPABILITY_SELECT = "select_capability"
     NO_CAPABILITY_RUNTIME_REQUEST = "runtime_capability_request"
     NO_CAPABILITY_DIRECT_CONVERSATION = "ordinary_conversation"
 
@@ -155,64 +153,6 @@ class RunnerToolGateModelMixin:
             history_lines.append(f"- {role}: {content}")
         return "\n".join(history_lines) if history_lines else "- none"
 
-    async def _select_active_capability_route_with_model(
-        self,
-        *,
-        agent: Any,
-        deps: SkillDeps,
-        user_message: str,
-        recent_history: list[dict[str, Any]],
-        active_provider_skill: str = "",
-        active_skill: str = "",
-    ) -> Optional[str]:
-        """Ask the model whether this turn continues the active capability."""
-        if agent is None:
-            return None
-        active_capability = self._format_active_capability_name(
-            active_provider_skill=active_provider_skill,
-            active_skill=active_skill,
-        )
-        if not active_capability:
-            return None
-
-        selector_prompt = self._build_active_capability_route_prompt(
-            active_capability=active_capability,
-        )
-        selector_message = self._build_active_capability_route_message(
-            user_message=user_message,
-            recent_history=recent_history,
-        )
-        try:
-            raw_output = await self._run_single_with_optional_override(
-                agent=agent,
-                user_message=selector_message,
-                deps=deps,
-                system_prompt=selector_prompt,
-                purpose="active_capability_route_model_pass",
-                allowed_tool_names=[],
-            )
-        except Exception as exc:
-            logger.warning("active_capability_route_failed: %s", exc)
-            return None
-
-        parsed = self._extract_json_object(raw_output)
-        if not parsed:
-            return None
-        try:
-            payload = json.loads(parsed)
-        except Exception:
-            return None
-        if not isinstance(payload, dict):
-            return None
-
-        decision = str(payload.get("decision", "") or "").strip().lower()
-        if decision in {
-            self.ACTIVE_CAPABILITY_CONTINUE,
-            self.ACTIVE_CAPABILITY_SELECT,
-        }:
-            return decision
-        return None
-
     @staticmethod
     def _format_active_capability_name(
         *,
@@ -226,61 +166,6 @@ class RunnerToolGateModelMixin:
         if skill:
             return f"skill:{skill}"
         return ""
-
-    @staticmethod
-    def _build_active_capability_route_prompt(*, active_capability: str) -> str:
-        """Build the small model prompt that gates active workflow continuation."""
-        return (
-            "You are AtlasClaw's internal active-capability router.\n"
-            "Do not answer the user and do not call tools. Return one JSON object only.\n\n"
-            "Task:\n"
-            "Decide whether the latest user turn continues the current active workflow, "
-            "or whether AtlasClaw should run the full capability selector again.\n\n"
-            f"Current active capability: {active_capability}\n\n"
-            "Rules:\n"
-            "- Choose continue_current when the latest turn is an answer, correction, "
-            "confirmation, cancellation, parameter update, status/detail follow-up, or next step "
-            "for the current workflow shown in recent history.\n"
-            "- Short or fragment-like values should continue_current when the recent assistant "
-            "message is asking for workflow input or showing a draft awaiting updates.\n"
-            "- Field-value style messages should continue_current when they can fill, correct, "
-            "or confirm data requested by the current workflow, even if they are not a complete "
-            "standalone request.\n"
-            "- If the latest assistant prompt asked the user to choose from options, choose "
-            "continue_current when the latest turn gives an option label, related attribute, "
-            "field-value update, or other value that may map to one of those options.\n"
-            "- Choose select_capability when the latest turn asks for a different task, a different "
-            "provider or skill, a new artifact/output workflow, or is general chat unrelated to the "
-            "current workflow.\n"
-            "- Choose select_capability only after considering whether the latest turn can be "
-            "interpreted as part of the current workflow from recent history.\n"
-            "- Use the recent conversation semantics, not fixed keywords.\n"
-            "- If unsure and recent history shows an active workflow waiting for user input, choose "
-            "continue_current; otherwise choose select_capability so the full authorized capability "
-            "selector can analyze the turn.\n\n"
-            "Return JSON fields exactly:\n"
-            "{\n"
-            '  "decision": "continue_current" | "select_capability",\n'
-            '  "reason": string\n'
-            "}\n"
-        )
-
-    def _build_active_capability_route_message(
-        self,
-        *,
-        user_message: str,
-        recent_history: list[dict[str, Any]],
-    ) -> str:
-        history_text = self._format_recent_history_lines(
-            recent_history=recent_history,
-            max_items=8,
-            max_content_chars=420,
-        )
-        return (
-            "Classify the latest turn against the current active workflow.\n\n"
-            f"Latest user input:\n{user_message}\n\n"
-            f"Recent conversation:\n{history_text}\n"
-        )
 
     async def _classify_no_capability_route_with_model(
         self,
@@ -463,22 +348,34 @@ class RunnerToolGateModelMixin:
             "and provider_skill: IDs.\n"
             "- Provider-bound skills must use provider_skill:<provider_name>.<skill_name>; "
             "do not select bare provider:, provider_instance:, or provider-bound skill: IDs.\n"
-            "- Use direct_answer when the request does not need an authorized runtime capability.\n"
+            "- Use ordinary_conversation when the request does not need an authorized runtime "
+            "capability.\n"
             "- Use ask_clarification when the user intent or required target is ambiguous.\n"
-            "- Use use_tools when the request needs provider data, private context, artifact creation, "
-            "or an authorized skill/tool.\n"
+            "- Use authorized_capability when this turn must execute an authorized skill/tool, "
+            "read live or private data, perform an external operation, or create an artifact. "
+            "Include at least one listed target.\n"
+            "- Use authorized_context when this turn needs an authorized skill's instructions or "
+            "provider workflow context, but can answer, clarify, collect input, or revise a draft "
+            "without executing a tool now. Include at least one skill: or provider_skill: target; "
+            "never use authorized_context with only a tool: target.\n"
+            "- Use unavailable_capability when the request needs a runtime capability but none of "
+            "the listed capabilities can handle it. Return an empty targets array.\n"
             "- When a current active workflow candidate is shown below, select that capability "
             "if the latest turn is an answer, correction, confirmation, parameter update, or next "
             "step for it; select a different listed capability only when the latest turn asks for "
             "a different task, provider, skill, or artifact workflow.\n"
-            "- If no authorized capabilities are listed and the latest turn asks to perform, "
-            "verify, query, or continue a provider/private-system/runtime operation, return "
-            "use_tools with an empty targets array. This records that the request needs an "
-            "unavailable runtime capability instead of treating it as ordinary chat.\n"
-            "- Use use_tools for questions about a platform/product/system's supported features, "
-            "configuration, usage, integration, runbooks, documentation, or knowledge-base content "
-            "when an authorized documentation, knowledge-base, retrieval, or search capability is "
-            "listed. Do not answer those from general model knowledge.\n"
+            "- For an active workflow, use authorized_context only when no tool execution is needed "
+            "for the current reply. Use authorized_capability when the current step must execute a "
+            "lookup, submission, update, verification, or other tool operation.\n"
+            "- When the assistant asked the user for missing input, treat the user's answer as "
+            "authorized_context, even when that answer completes the required fields. Supplying "
+            "requested input does not itself authorize an external side effect. Select "
+            "authorized_capability only when the current user turn explicitly authorizes or requests "
+            "the operation that must execute now.\n"
+            "- Use authorized_capability for questions about a platform/product/system's supported "
+            "features, configuration, usage, integration, runbooks, documentation, or "
+            "knowledge-base content when an authorized documentation, knowledge-base, retrieval, "
+            "or search capability is listed. Do not answer those from general model knowledge.\n"
             "- For those documentation or knowledge-base questions, do not include operational "
             "provider capabilities unless the latest turn asks to read live provider data, verify "
             "current external state, or perform an external operation.\n"
@@ -506,7 +403,8 @@ class RunnerToolGateModelMixin:
             f"{usage_context}\n\n"
             "Return JSON fields exactly:\n"
             "{\n"
-            '  "action": "direct_answer" | "use_tools" | "ask_clarification",\n'
+            '  "outcome": "ordinary_conversation" | "authorized_capability" | '
+            '"authorized_context" | "unavailable_capability" | "ask_clarification",\n'
             '  "targets": string[],\n'
             '  "reason": string\n'
             "}\n"
@@ -561,18 +459,15 @@ class RunnerToolGateModelMixin:
                 continue
             allowed_targets[capability_id] = (prefix, raw_name, entry)
 
-        action_raw = str(payload.get("action", "") or "").strip().lower()
-        action_map = {
-            ToolIntentAction.DIRECT_ANSWER.value: ToolIntentAction.DIRECT_ANSWER,
-            ToolIntentAction.USE_TOOLS.value: ToolIntentAction.USE_TOOLS,
-            ToolIntentAction.ASK_CLARIFICATION.value: ToolIntentAction.ASK_CLARIFICATION,
-        }
-        action = action_map.get(action_raw)
-        if action is None:
+        outcome_raw = str(payload.get("outcome", "") or "").strip().lower()
+        try:
+            outcome = CapabilitySelectorOutcome(outcome_raw)
+        except ValueError:
             return None
-
         raw_targets = payload.get("targets", [])
-        if not isinstance(raw_targets, list):
+        if not isinstance(raw_targets, list) or any(
+            not isinstance(item, str) for item in raw_targets
+        ):
             return None
 
         target_skill_names: list[str] = []
@@ -583,8 +478,6 @@ class RunnerToolGateModelMixin:
         target_provider_types: list[str] = []
 
         for raw_target in raw_targets:
-            if not isinstance(raw_target, str):
-                continue
             normalized = raw_target.strip()
             if not normalized:
                 continue
@@ -645,31 +538,45 @@ class RunnerToolGateModelMixin:
                 target_provider_types,
             ]
         )
-        if action is ToolIntentAction.USE_TOOLS and not has_targets:
-            raw_target_values = [
-                item.strip() for item in raw_targets if isinstance(item, str) and item.strip()
-            ]
-            if not allowed_targets and not raw_target_values:
-                return ToolIntentPlan(
-                    action=ToolIntentAction.DIRECT_ANSWER,
-                    reason=NO_RUNTIME_CAPABILITY_REASON,
-                )
+        raw_target_values = [item.strip() for item in raw_targets if item.strip()]
+        targeted_outcomes = {
+            CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY,
+            CapabilitySelectorOutcome.AUTHORIZED_CONTEXT,
+        }
+        if outcome in targeted_outcomes and not has_targets:
             return None
-        if has_targets and action is not ToolIntentAction.USE_TOOLS:
+        if (
+            outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT
+            and not target_skill_names
+            and not target_provider_skill_names
+        ):
+            return None
+        if outcome not in targeted_outcomes and raw_target_values:
             return None
 
         reason = str(payload.get("reason", "") or "").strip()
         if not reason:
             reason = "LLM capability selector produced a routing decision."
 
+        action_map = {
+            CapabilitySelectorOutcome.ORDINARY_CONVERSATION: ToolIntentAction.DIRECT_ANSWER,
+            CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY: ToolIntentAction.USE_TOOLS,
+            CapabilitySelectorOutcome.AUTHORIZED_CONTEXT: ToolIntentAction.DIRECT_ANSWER,
+            CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY: ToolIntentAction.DIRECT_ANSWER,
+            CapabilitySelectorOutcome.ASK_CLARIFICATION: ToolIntentAction.ASK_CLARIFICATION,
+        }
         return ToolIntentPlan(
-            action=action,
+            action=action_map[outcome],
+            selector_outcome=outcome,
             target_provider_instances=target_provider_instances,
             target_provider_types=target_provider_types,
             target_provider_skill_names=target_provider_skill_names,
             target_skill_names=target_skill_names,
             target_capability_classes=target_capability_classes,
             target_tool_names=target_tool_names,
+            unavailable_runtime_capability=(
+                outcome is CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY
+            ),
             reason=reason,
         )
 
@@ -824,6 +731,12 @@ class RunnerToolGateModelMixin:
         plan: ToolIntentPlan,
         available_tools: Optional[list[dict[str, Any]]] = None,
     ) -> ToolGateDecision:
+        if plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT:
+            return ToolGateDecision(
+                reason=plan.reason or "Planner selected authorized workflow context.",
+                confidence=0.7,
+                policy=ToolPolicyMode.ANSWER_DIRECT,
+            )
         selected_tools = self._resolve_selected_tools(
             available_tools=list(available_tools or []),
             target_provider_instances=list(plan.target_provider_instances or []),

@@ -22,7 +22,6 @@ from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
     _infer_active_skill_from_transcript,
     _selected_plan_matches_active_capability,
     apply_provider_instance_selection_policy,
-    build_transcript_skill_prompt_intent_plan,
     filter_implicit_memory_tools,
     persist_provider_instance_targets_from_intent_plan,
     prune_auto_selected_provider_instance_tools,
@@ -39,7 +38,7 @@ from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
 )
 from app.atlasclaw.agent.tool_gate import CapabilityMatcher
 from app.atlasclaw.agent.tool_gate_models import (
-    NO_RUNTIME_CAPABILITY_REASON,
+    CapabilitySelectorOutcome,
     ToolGateDecision,
     ToolIntentAction,
     ToolIntentPlan,
@@ -253,17 +252,13 @@ def test_embed_prepare_skips_selectors_and_preserves_server_page_projection(
         transcript=[{"role": "assistant", "content": "Continue the previous request workflow."}]
     )
     runner = _build_prepare_runner(manager)
-    selector_calls = {"active": 0, "capability": 0}
-
-    async def _forbid_active_selector(**kwargs):
-        selector_calls["active"] += 1
-        raise AssertionError("Embed page projection must skip the active-capability selector")
+    selector_calls = 0
 
     async def _forbid_capability_selector(**kwargs):
-        selector_calls["capability"] += 1
+        nonlocal selector_calls
+        selector_calls += 1
         raise AssertionError("Embed page projection must skip the capability selector")
 
-    runner._select_active_capability_route_with_model = _forbid_active_selector
     runner._select_capability_intent_plan_with_model = _forbid_capability_selector
     deps = SkillDeps(
         session_key="embed-session",
@@ -283,7 +278,7 @@ def test_embed_prepare_skips_selectors_and_preserves_server_page_projection(
 
     logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
 
-    assert selector_calls == {"active": 0, "capability": 0}
+    assert selector_calls == 0
     assert deps.extra["runtime_allowed_tool_names"] == [
         "example_read_item",
         "example_update_item",
@@ -327,6 +322,285 @@ def test_ordinary_menu_prepare_still_calls_capability_selector_once(
     assert selector_calls == 1
     assert deps.extra["runtime_allowed_tool_names"] == ["example_update_item"]
     assert state["tool_intent_plan"].reason == "ordinary_menu_selector"
+
+
+def test_ordinary_conversation_prepare_skips_no_capability_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: [])
+    monkeypatch.setattr(prepare_module, "collect_capability_index_snapshot", lambda **kwargs: [])
+    runner = _build_prepare_runner(_PrepareSessionManager())
+
+    async def _select_capability(**kwargs):
+        return ToolIntentPlan(
+            action=ToolIntentAction.DIRECT_ANSWER,
+            reason="ordinary_conversation",
+        )
+
+    async def _forbid_no_capability_fallback(**kwargs):
+        raise AssertionError("A valid selector outcome must not trigger the fallback classifier")
+
+    runner._select_capability_intent_plan_with_model = _select_capability
+    runner._classify_no_capability_route_with_model = _forbid_no_capability_fallback
+    deps = SkillDeps(session_key="ordinary-session", channel="api", extra={})
+    state = _prepare_phase_state(deps=deps)
+
+    logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert state["tool_intent_plan"].reason == "ordinary_conversation"
+    assert not any(step == "no_capability_fallback_resolved" for step, _ in logs)
+
+
+def test_invalid_selector_uses_no_capability_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: [])
+    monkeypatch.setattr(prepare_module, "collect_capability_index_snapshot", lambda **kwargs: [])
+    runner = _build_prepare_runner(_PrepareSessionManager())
+    fallback_calls = 0
+
+    async def _invalid_selector(**kwargs):
+        return None
+
+    async def _classify_no_capability(**kwargs):
+        nonlocal fallback_calls
+        fallback_calls += 1
+        return runner.NO_CAPABILITY_RUNTIME_REQUEST
+
+    runner._select_capability_intent_plan_with_model = _invalid_selector
+    runner._classify_no_capability_route_with_model = _classify_no_capability
+    deps = SkillDeps(session_key="selector-fallback-session", channel="api", extra={})
+    state = _prepare_phase_state(deps=deps)
+
+    logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert fallback_calls == 1
+    assert state["tool_intent_plan"].unavailable_runtime_capability is True
+    assert any(step == "no_capability_fallback_resolved" for step, _ in logs)
+
+
+def test_invalid_selector_does_not_report_unavailable_when_runtime_tools_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools = [{"name": "example_update_item", "provider_type": "example"}]
+    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: list(tools))
+    monkeypatch.setattr(prepare_module, "collect_capability_index_snapshot", lambda **kwargs: [])
+    runner = _build_prepare_runner(_PrepareSessionManager())
+
+    async def _invalid_selector(**kwargs):
+        return None
+
+    async def _forbid_no_capability_fallback(**kwargs):
+        raise AssertionError(
+            "Projection must not turn a selector failure into unavailable capability"
+        )
+
+    runner._select_capability_intent_plan_with_model = _invalid_selector
+    runner._classify_no_capability_route_with_model = _forbid_no_capability_fallback
+    deps = SkillDeps(session_key="selector-with-tools-session", channel="api", extra={})
+    state = _prepare_phase_state(deps=deps)
+
+    logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert state["tool_intent_plan"].unavailable_runtime_capability is False
+    assert not any(step == "no_capability_fallback_resolved" for step, _ in logs)
+
+
+def test_authorized_context_prepare_loads_skill_without_exposing_mutating_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "# Item workflow\n\nCollect the requested fields and present a draft before any update.",
+        encoding="utf-8",
+    )
+    tools = [
+        {
+            "name": "example_update_item",
+            "provider_type": "example",
+            "qualified_skill_name": "example:item",
+            "skill_name": "item",
+        }
+    ]
+    provider_skill_entry = {
+        "capability_id": "provider_skill:primary.item",
+        "kind": "provider_skill",
+        "name": "primary.item",
+        "provider_type": "example",
+        "provider_name": "primary",
+        "instance_name": "primary",
+        "qualified_skill_name": "example:item",
+        "target_provider_instances": ["example.primary"],
+        "target_provider_types": ["example"],
+        "target_provider_skill_names": ["primary.item"],
+        "declared_tool_names": ["example_update_item"],
+        "locator": str(skill_path),
+    }
+    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: list(tools))
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_capability_index_snapshot",
+        lambda **kwargs: [dict(provider_skill_entry)],
+    )
+    runner = _build_prepare_runner(_PrepareSessionManager())
+
+    async def _select_context_only(**kwargs):
+        return ToolIntentPlan(
+            action=ToolIntentAction.DIRECT_ANSWER,
+            selector_outcome=CapabilitySelectorOutcome.AUTHORIZED_CONTEXT,
+            target_provider_instances=["example.primary"],
+            target_provider_types=["example"],
+            target_provider_skill_names=["primary.item"],
+            reason="The current turn supplies requested workflow input.",
+        )
+
+    runner._select_capability_intent_plan_with_model = _select_context_only
+    deps = SkillDeps(session_key="context-only-session", channel="api", extra={})
+    state = _prepare_phase_state(deps=deps)
+
+    asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert deps.extra["runtime_allowed_tool_names"] == []
+    assert deps.extra["tool_policy"]["mode"] == "context_only"
+    assert deps.extra["target_md_skill"]["qualified_name"] == "example:item"
+    assert "present a draft before any update" in deps.extra["target_md_skill"]["instructions"]
+    assert state["tool_execution_required"] is False
+    assert state["tool_projection_trace"]["reason"] == "projection_context_only"
+
+
+def test_authorized_context_does_not_inject_standalone_skill_runtime_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "# Draft workflow\n\nSummarize collected input and ask for confirmation.",
+        encoding="utf-8",
+    )
+    skill_entry = {
+        "capability_id": "skill:draft-workflow",
+        "kind": "md_skill",
+        "name": "draft-workflow",
+        "qualified_skill_name": "draft-workflow",
+        "description": "Prepare a draft from user input.",
+        "locator": str(skill_path),
+        "metadata": {},
+    }
+    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: [])
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_capability_index_snapshot",
+        lambda **kwargs: [dict(skill_entry)],
+    )
+    runner = _build_prepare_runner(_PrepareSessionManager())
+
+    async def _select_context_only(**kwargs):
+        return ToolIntentPlan(
+            action=ToolIntentAction.DIRECT_ANSWER,
+            selector_outcome=CapabilitySelectorOutcome.AUTHORIZED_CONTEXT,
+            target_skill_names=["draft-workflow"],
+            reason="The current turn supplies requested workflow input.",
+        )
+
+    runner._select_capability_intent_plan_with_model = _select_context_only
+    deps = SkillDeps(
+        session_key="standalone-context-only-session",
+        channel="api",
+        extra={
+            "md_skills_snapshot": [dict(skill_entry)],
+            "internal_runtime_tools_snapshot": [
+                {
+                    "name": "internal_file_write",
+                    "description": "Write a generated file.",
+                    "capability_class": "skill_runtime:exec",
+                }
+            ],
+        },
+    )
+    state = _prepare_phase_state(deps=deps)
+
+    asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert deps.extra["runtime_allowed_tool_names"] == []
+    assert deps.extra["tool_policy"]["mode"] == "context_only"
+    assert deps.extra["target_md_skill"]["qualified_name"] == "draft-workflow"
+    assert "ask for confirmation" in deps.extra["target_md_skill"]["instructions"]
+    assert deps.extra["standard_skill_runtime_trace"]["enabled"] is False
+    assert (
+        deps.extra["standard_skill_runtime_trace"]["reason"]
+        == "execution_not_authorized"
+    )
+    assert "standard_skill_runtime_enabled" not in deps.extra
+    assert "standard_skill_runtime_tools_visible" not in deps.extra
+
+
+def test_active_transcript_uses_single_selector_to_switch_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools = [
+        {"name": "example_update_item", "provider_type": "example"},
+        {"name": "example_create_report", "provider_type": "example"},
+    ]
+    active_provider_skill_entry = {
+        "capability_id": "provider_skill:example:item",
+        "kind": "provider_skill",
+        "name": "example:item",
+        "description": "Read and update provider items.",
+        "provider_type": "example",
+        "provider_name": "example",
+        "provider_skill_name": "item",
+        "tool_names": ["example_update_item"],
+    }
+    report_provider_skill_entry = {
+        "capability_id": "provider_skill:example:report",
+        "kind": "provider_skill",
+        "name": "example:report",
+        "description": "Create reports from provider data.",
+        "provider_type": "example",
+        "provider_name": "example",
+        "provider_skill_name": "report",
+        "tool_names": ["example_create_report"],
+    }
+    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: list(tools))
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_capability_index_snapshot",
+        lambda **kwargs: [
+            dict(active_provider_skill_entry),
+            dict(report_provider_skill_entry),
+        ],
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "_infer_active_provider_skill_from_transcript",
+        lambda **kwargs: "example:item",
+    )
+    manager = _PrepareSessionManager(
+        transcript=[{"role": "assistant", "content": "Which item should I update?"}]
+    )
+    runner = _build_prepare_runner(manager)
+    selector_calls = 0
+
+    async def _select_capability(**kwargs):
+        nonlocal selector_calls
+        selector_calls += 1
+        assert kwargs["active_capability_context"] == "provider_skill:example:item"
+        return ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_skill_names=["example:report"],
+            reason="switch_to_report_workflow",
+        )
+
+    runner._select_capability_intent_plan_with_model = _select_capability
+    deps = SkillDeps(session_key="active-session", channel="api", extra={})
+    state = _prepare_phase_state(deps=deps)
+
+    asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert selector_calls == 1
+    assert state["tool_intent_plan"].reason == "switch_to_report_workflow"
+    assert state["tool_intent_plan"].target_provider_skill_names == ["example:report"]
 
 
 def test_coordination_only_toolset_is_not_executable_runtime_capability() -> None:
@@ -396,7 +670,7 @@ def test_capability_selector_uses_authorized_xlsx_skill_without_pptx_substitutio
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
-            "action": "use_tools",
+            "outcome": "authorized_capability",
             "targets": ["skill:xlsx"],
             "reason": "User requested a spreadsheet artifact.",
         }
@@ -440,7 +714,7 @@ def test_capability_selector_carries_executable_md_skill_targets() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
-            "action": "use_tools",
+            "outcome": "authorized_capability",
             "targets": ["skill:pptx"],
             "reason": "User requested a PowerPoint artifact.",
         }
@@ -523,93 +797,6 @@ def test_capability_selector_prompt_routes_authorized_knowledge_questions_to_too
     assert "only because its domain words match" in prompt
 
 
-def test_active_capability_router_prompt_uses_current_capability_only() -> None:
-    runner = _GateRunner()
-
-    prompt = runner._build_active_capability_route_prompt(
-        active_capability="provider_skill:cmp.request"
-    )
-
-    assert "provider_skill:cmp.request" in prompt
-    assert "full authorized capability selector" in prompt
-    assert "Short or fragment-like values should continue_current" in prompt
-    assert "Field-value style messages should continue_current" in prompt
-    assert "Authorized capabilities:" not in prompt
-
-
-def test_active_capability_route_message_preserves_tool_result_tail() -> None:
-    runner = _GateRunner()
-    long_tool_result = (
-        "Found 2 resource pool(s): 1) aliyun资源池 2) vSphere资源池 "
-        + ("x" * 700)
-        + " facets=['FACET_ENV:dev']"
-    )
-
-    message = runner._build_active_capability_route_message(
-        user_message="资源环境：开发",
-        recent_history=[
-            {"role": "user", "content": "我要申请 Linux VM"},
-            {"role": "tool", "content": {"output": long_tool_result}},
-            {"role": "assistant", "content": "请选择资源池：1 aliyun资源池，2 vSphere资源池"},
-        ],
-    )
-
-    assert "资源环境：开发" in message
-    assert "FACET_ENV:dev" in message
-
-
-def test_active_capability_router_can_continue_current_workflow() -> None:
-    runner = _GateRunner()
-    selector = _SelectorAgent(
-        {
-            "decision": "continue_current",
-            "reason": "The latest message answers the active workflow prompt.",
-        }
-    )
-
-    decision = asyncio.run(
-        runner._select_active_capability_route_with_model(
-            agent=selector,
-            deps=SimpleNamespace(extra={}),
-            user_message="使用测试部",
-            recent_history=[
-                {"role": "user", "content": "我要申请 Linux VM"},
-                {"role": "assistant", "content": "请选择业务组。"},
-            ],
-            active_provider_skill="cmp.request",
-        )
-    )
-
-    assert decision == "continue_current"
-    assert "使用测试部" in selector.messages[0]
-    assert "请选择业务组" in selector.messages[0]
-
-
-def test_active_capability_router_can_request_full_skill_reselection() -> None:
-    runner = _GateRunner()
-    selector = _SelectorAgent(
-        {
-            "decision": "select_capability",
-            "reason": "The latest message asks for a different output workflow.",
-        }
-    )
-
-    decision = asyncio.run(
-        runner._select_active_capability_route_with_model(
-            agent=selector,
-            deps=SimpleNamespace(extra={}),
-            user_message="把刚才的信息生成 PPT",
-            recent_history=[
-                {"role": "user", "content": "我要申请 Linux VM"},
-                {"role": "assistant", "content": "请选择业务组。"},
-            ],
-            active_provider_skill="cmp.request",
-        )
-    )
-
-    assert decision == "select_capability"
-
-
 def test_capability_selector_receives_active_workflow_candidate() -> None:
     runner = _GateRunner()
 
@@ -635,8 +822,54 @@ def test_capability_selector_receives_active_workflow_candidate() -> None:
     assert "Current active workflow candidate:" in prompt
     assert "provider_skill:cmp.request" in prompt
     assert "current active workflow candidate" in prompt
+    assert "authorized_context" in prompt
+    assert "when no tool execution is needed" in prompt
+    assert "Supplying requested input does not itself authorize an external side effect" in prompt
+    assert "explicitly authorizes or requests the operation that must execute now" in prompt
     assert "Current active workflow candidate:" in message
     assert "provider_skill:cmp.request" in message
+
+
+def test_capability_selector_preserves_authorized_context_without_tool_requirement() -> None:
+    runner = _GateRunner()
+
+    plan = runner._coerce_capability_selector_payload(
+        payload={
+            "outcome": "authorized_context",
+            "targets": ["provider_skill:prod.request"],
+            "reason": "The current workflow only needs another required field.",
+        },
+        capability_index=[
+            {
+                "capability_id": "provider_skill:prod.request",
+                "kind": "provider_skill",
+                "name": "prod.request",
+                "target_provider_instances": ["prod.primary"],
+                "target_provider_types": ["prod"],
+                "target_provider_skill_names": ["prod.request"],
+            }
+        ],
+    )
+
+    assert plan is not None
+    assert plan.action is ToolIntentAction.DIRECT_ANSWER
+    assert plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT
+    assert plan.target_provider_skill_names == ["prod.request"]
+    assert turn_action_requires_tool_execution(plan) is False
+    decision = runner._build_tool_gate_decision_from_intent_plan(
+        plan,
+        available_tools=[],
+    )
+    normalized = runner._normalize_tool_gate_decision(decision)
+    match_result = CapabilityMatcher(available_tools=[]).match(
+        normalized.suggested_tool_classes
+    )
+
+    assert normalized.policy is ToolPolicyMode.ANSWER_DIRECT
+    assert normalized.needs_tool is False
+    assert normalized.needs_external_system is False
+    assert normalized.suggested_tool_classes == []
+    assert match_result.missing_capabilities == []
 
 
 def test_active_capability_continuation_context_does_not_require_prompt_markers() -> None:
@@ -670,7 +903,7 @@ def test_capability_selector_preserves_no_capability_runtime_request() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
-            "action": "use_tools",
+            "outcome": "unavailable_capability",
             "targets": [],
             "reason": "The user asks to create a provider resource, but no capability is visible.",
         }
@@ -682,13 +915,91 @@ def test_capability_selector_preserves_no_capability_runtime_request() -> None:
             deps=SimpleNamespace(extra={}),
             user_message="申请云资源",
             recent_history=[],
-            capability_index=[],
+            capability_index=[
+                {
+                    "capability_id": "tool:unrelated_search",
+                    "kind": "tool",
+                    "name": "unrelated_search",
+                    "description": "Search an unrelated public data source.",
+                }
+            ],
         )
     )
 
     assert plan is not None
     assert plan.action is ToolIntentAction.DIRECT_ANSWER
-    assert plan.reason == NO_RUNTIME_CAPABILITY_REASON
+    assert plan.unavailable_runtime_capability is True
+
+
+@pytest.mark.parametrize(
+    ("payload", "capability_index"),
+    [
+        (
+            {
+                "outcome": "authorized_capability",
+                "targets": [],
+                "reason": "Authorized capability outcome requires a target.",
+            },
+            [],
+        ),
+        (
+            {
+                "outcome": "authorized_context",
+                "targets": [],
+                "reason": "Authorized context requires a selected target.",
+            },
+            [],
+        ),
+        (
+            {
+                "outcome": "authorized_context",
+                "targets": ["tool:search"],
+                "reason": "A bare tool cannot provide skill workflow context.",
+            },
+            [
+                {
+                    "capability_id": "tool:search",
+                    "kind": "tool",
+                    "name": "search",
+                }
+            ],
+        ),
+        (
+            {
+                "outcome": "ordinary_conversation",
+                "targets": ["tool:search"],
+                "reason": "Ordinary conversation cannot carry execution targets.",
+            },
+            [
+                {
+                    "capability_id": "tool:search",
+                    "kind": "tool",
+                    "name": "search",
+                }
+            ],
+        ),
+        (
+            {
+                "outcome": "ordinary_conversation",
+                "targets": [1],
+                "reason": "Selector targets must follow the string-array contract.",
+            },
+            [],
+        ),
+    ],
+)
+def test_capability_selector_rejects_inconsistent_outcome_targets(
+    payload: dict,
+    capability_index: list[dict],
+) -> None:
+    runner = _GateRunner()
+
+    plan = runner._coerce_capability_selector_payload(
+        payload=payload,
+        capability_index=capability_index,
+    )
+
+    assert plan is None
 
 
 def test_no_capability_router_classifies_runtime_request() -> None:
@@ -719,7 +1030,7 @@ def test_capability_selector_can_select_provider_skill_and_standard_skill_target
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
-            "action": "use_tools",
+            "outcome": "authorized_capability",
             "targets": ["provider_skill:prod.request", "skill:xlsx"],
             "reason": "Fetch provider data and export as spreadsheet.",
         }
@@ -770,7 +1081,7 @@ def test_capability_selector_preserves_no_target_direct_answer() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
-            "action": "direct_answer",
+            "outcome": "ordinary_conversation",
             "targets": [],
             "reason": "Selector chose not to target a capability.",
         }
@@ -815,7 +1126,7 @@ def test_capability_selector_rejects_provider_level_target() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
-            "action": "use_tools",
+            "outcome": "authorized_capability",
             "targets": ["provider:smartcmp"],
             "reason": "Provider target was not listed in the authorized capability index.",
         }
@@ -852,7 +1163,7 @@ def test_capability_selector_rejects_bare_provider_instance_target() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
-            "action": "use_tools",
+            "outcome": "authorized_capability",
             "targets": ["provider_instance:smartcmp.prod"],
             "reason": "Provider instances are not natural-language selector targets.",
         }
@@ -889,7 +1200,7 @@ def test_capability_selector_rejects_provider_bound_bare_skill_target() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
-            "action": "use_tools",
+            "outcome": "authorized_capability",
             "targets": ["skill:smartcmp:request"],
             "reason": "Provider-bound skills must use provider_skill targets.",
         }
@@ -921,7 +1232,7 @@ def test_capability_selector_rejects_provider_skill_without_internal_targets() -
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
-            "action": "use_tools",
+            "outcome": "authorized_capability",
             "targets": ["provider_skill:prod.request"],
             "reason": "Provider skill entry is missing validated execution targets.",
         }
@@ -1052,7 +1363,7 @@ def test_capability_selector_rejects_group_and_capability_targets() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
-            "action": "use_tools",
+            "outcome": "authorized_capability",
             "targets": ["group:atlasclaw", "capability:catalog"],
             "reason": "Group and capability targets are not valid natural-language targets.",
         }
@@ -1090,7 +1401,7 @@ def test_capability_selector_drops_unauthorized_targets() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
-            "action": "use_tools",
+            "outcome": "authorized_capability",
             "targets": ["skill:xlsx", "tool:pptx_create_deck"],
             "reason": "One requested target is not authorized.",
         }
@@ -2106,29 +2417,6 @@ def test_resolve_contextual_tool_request_preserves_selection_chain_for_third_num
     assert "User reply to that prompt:\n1" in resolved
     assert "Resolved latest visible selection:" not in resolved
     assert used_follow_up_context is True
-
-
-def test_transcript_skill_prompt_plan_targets_provider_skill_instructions() -> None:
-    plan = build_transcript_skill_prompt_intent_plan(
-        active_skill=None,
-        active_provider_skill="cmp.request",
-        target_provider_instances=["smartcmp.cmp"],
-        target_provider_types=["smartcmp"],
-    )
-
-    assert plan is not None
-    assert plan.action is ToolIntentAction.DIRECT_ANSWER
-    assert plan.target_provider_skill_names == ["cmp.request"]
-    assert plan.target_skill_names == []
-    assert plan.target_provider_types == ["smartcmp"]
-    assert plan.target_provider_instances == ["smartcmp.cmp"]
-    assert plan.target_group_ids == []
-    assert plan.target_tool_names == []
-    assert plan.reason == "transcript_provider_skill_continuation_prompt_only"
-
-
-def test_transcript_skill_prompt_plan_ignores_missing_hint() -> None:
-    assert build_transcript_skill_prompt_intent_plan(active_skill="") is None
 
 
 def test_transcript_active_provider_skill_infers_from_assistant_tool_calls() -> None:

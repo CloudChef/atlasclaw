@@ -25,6 +25,7 @@ let pendingDeleteSessionKey = null
 let embedContextController = null
 let floatingToolbar = null
 let conversationHasVisibleMessages = false
+let sessionsLoadGeneration = 0
 const activeRunCountsBySession = new Map()
 
 const handleExternalChatSessionChange = (event) => {
@@ -163,6 +164,7 @@ export async function unmount() {
   chatElement = null
   currentSessionKey = null
   sessionsCache = []
+  sessionsLoadGeneration += 1
   searchQuery = ''
   pendingDeleteSessionKey = null
   conversationHasVisibleMessages = false
@@ -180,14 +182,18 @@ export async function activateChatSession(nextKey) {
 async function loadSessions() {
   const sidebarContent = document.getElementById('sidebar-dynamic-content')
   if (!sidebarContent) return
+  const loadGeneration = ++sessionsLoadGeneration
 
+  let nextSessions
   try {
-    sessionsCache = await listSessions()
+    nextSessions = await listSessions()
   } catch (error) {
     console.error('[ChatPage] Failed to load sessions:', error)
-    sessionsCache = []
+    nextSessions = []
   }
+  if (loadGeneration !== sessionsLoadGeneration) return
 
+  sessionsCache = nextSessions
   pendingDeleteSessionKey = null
   ensureActiveSessionEntry()
   renderSidebarContent(sidebarContent)

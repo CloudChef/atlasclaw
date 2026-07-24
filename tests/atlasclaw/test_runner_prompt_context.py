@@ -1251,7 +1251,7 @@ def test_resolve_selected_md_skill_target_loads_selected_skill_instructions(tmp_
         agent=SimpleNamespace(tools=[]),
         deps=deps,
         intent_plan=ToolIntentPlan(
-            action=ToolIntentAction.CREATE_ARTIFACT,
+            action=ToolIntentAction.DIRECT_ANSWER,
             target_skill_names=["pptx"],
             target_capability_classes=["artifact:pptx"],
             target_tool_names=["pptx_create_deck"],
@@ -1794,6 +1794,23 @@ def test_no_tools_prompt_policy_forbids_external_system_success_claims() -> None
     assert "logs, timestamps, statuses" in prompt
     assert "User-experience preference memory requests are direct conversation requests" not in prompt
     assert "no visible memory write tool is available" not in prompt
+
+
+def test_context_only_prompt_policy_forbids_tool_execution() -> None:
+    prompt = prompt_sections.build_tool_policy(
+        {
+            "mode": "context_only",
+            "preferred_tools": [],
+            "target_skill_names": ["item-workflow"],
+        }
+    )
+
+    assert "Turn mode: context_only" in prompt
+    assert "No tool execution is authorized in this turn" in prompt
+    assert "clarification, input summary, draft, or confirmation request" in prompt
+    assert "provider, skill, and its tool family remain active" in prompt
+    assert "Do not claim that provider, skill, or tool capability is missing" in prompt
+    assert "Do not emit tool-call markup or a pseudo tool invocation" in prompt
 
 
 def test_no_tools_prompt_policy_allows_memory_exception_only_when_available() -> None:

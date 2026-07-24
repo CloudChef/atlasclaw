@@ -659,6 +659,12 @@ capabilities can satisfy required grounding, and whether the final answer must b
 
 **Core models**:
 - `ToolPolicyMode` - `answer_direct`, `prefer_tool`, `must_use_tool`
+- `CapabilitySelectorOutcome` - provider-agnostic selector result:
+  `ordinary_conversation`, `authorized_capability`, `authorized_context`,
+  `unavailable_capability`, or `ask_clarification`
+- `ToolIntentPlan` - selected targets plus execution intent;
+  `unavailable_runtime_capability` records a typed unavailable-capability result
+  instead of relying on a reason string
 - `ToolGateDecision` - normalized classifier output describing whether tools are required
 - `ToolCandidate` - concrete matched runtime tool/provider candidate
 - `CapabilityMatchResult` - resolved tool candidates plus missing capabilities
@@ -687,6 +693,20 @@ capabilities can satisfy required grounding, and whether the final answer must b
 - `hooks_context`
 
 **Runtime integration**:
+- one capability-selector pass handles ordinary routing and active-workflow
+  continuation for natural-language turns
+- `authorized_capability` requires current-turn execution, while
+  `authorized_context` loads the selected skill/provider context without
+  exposing execution tools; context-only selection requires a `skill:` or
+  `provider_skill:` target and preserves that target only for instruction and
+  workflow-context loading. The Tool Necessity Gate treats this intentional
+  pause as direct-answer mode, not as a missing or unavailable capability
+- replying to a workflow's missing-input prompt remains `authorized_context`
+  even when the reply completes all required fields; input completion is not
+  authorization for an external side effect
+- `unavailable_capability` is returned by the same selector; the smaller
+  no-capability classifier runs only as a fail-open fallback when selector
+  output is invalid and no runtime capability is visible
 - `AgentRunner` calls the gate after the prompt and capability surface are prepared
 - explicit injected classifiers may provide the `ToolGateDecision`
 - model-backed classification is available as an opt-in runtime capability and is disabled by default
@@ -720,7 +740,9 @@ capabilities can satisfy required grounding, and whether the final answer must b
 **Prompt Surface**:
 - `Available Capabilities` is rendered from the filtered capability index, not the raw registry.
 - Recent follow-up context is preserved by default so phrases like "these", "above", and "that list" can resolve against the active conversation.
-- `Routing Contract` asks the model to choose one of `direct_answer`, `ask_clarification`, `use_tools`, or `create_artifact` instead of calling a separate planner.
+- The internal capability selector produces the provider-agnostic routing
+  outcome before the main model runs; the main `Routing Contract` enforces the
+  selected direct, clarification, context-only, or execution path.
 
 **Capability Index Entry**:
 
@@ -1324,6 +1346,8 @@ memory is enabled, RBAC allows memory, and the chat type is allowed.
 - Normal active recall injects `Preferences` and `Usage Profile` as hidden,
   untrusted context. Preferences may adapt response UX; Usage Profile may answer
   direct questions about familiar work context but is not a routing instruction.
+- Active recall uses one source-range citation per included section so repeated
+  citation paths do not crowd later preference lines out of the bounded summary.
 - Routing usage recall reads only `Usage Profile` and injects it into the
   capability selector as low-priority hints. These hints can break ties among
   authorized, currently available provider/skill capabilities, but cannot

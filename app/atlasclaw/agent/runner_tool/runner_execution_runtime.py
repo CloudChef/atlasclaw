@@ -174,7 +174,7 @@ class RunnerExecutionRuntimeMixin:
         system_prompt: str,
     ):
 
-        """Run `agent.iter()` with optional system-prompt overrides."""
+        """Run `agent.iter()` with optional prompt and tool overrides."""
         override_factory = getattr(agent, "override", None)
         extra = getattr(deps, "extra", {})
         run_id = str(extra.get("run_id", "") or "") if isinstance(extra, dict) else ""

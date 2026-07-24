@@ -582,4 +582,85 @@ describe('chat page', () => {
     })
     expect(emptyState.classList.contains('hidden')).toBe(false)
   })
+
+  test('completion refresh ignores an older session-list response that finishes last', async () => {
+    jest.resetModules()
+
+    let capturedCallbacks = null
+    jest.unstable_mockModule('../../app/frontend/scripts/chat-ui.js', () => ({
+      initChat: jest.fn(async (_element, callbacks = {}) => {
+        capturedCallbacks = callbacks
+      }),
+      activateSession: jest.fn(async () => false),
+      abortCurrentStream: jest.fn(),
+      getCurrentAgentInfo: jest.fn(() => ({ name: 'AtlasClaw Enterprise AI Assistant' })),
+      focusChatInput: jest.fn(),
+      cancelChatInputFocusRetry: jest.fn(),
+      renderContextObjectActions: jest.fn()
+    }))
+
+    const pendingSessionLists = []
+    global.fetch = jest.fn((url, options = {}) => {
+      const target = String(url)
+      if (target.endsWith('/api/sessions/threads')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ session_key: 'session-a' })
+        })
+      }
+      if (target.endsWith('/api/sessions') && options.method !== 'POST') {
+        if (pendingSessionLists.length === 0) {
+          pendingSessionLists.push(null)
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve([{
+              session_key: 'session-a',
+              title: 'Initial title',
+              title_status: 'final'
+            }])
+          })
+        }
+        let resolveList
+        const listPromise = new Promise((resolve) => {
+          resolveList = resolve
+        })
+        pendingSessionLists.push(resolveList)
+        return Promise.resolve({
+          ok: true,
+          json: () => listPromise
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({})
+      })
+    })
+
+    const chatPage = await import('../../app/frontend/scripts/pages/chat.js')
+    const container = document.getElementById('page-root')
+    await chatPage.mount(container)
+
+    const olderRefresh = capturedCallbacks.onRunCompleted()
+    await Promise.resolve()
+    const newerRefresh = capturedCallbacks.onRunCompleted()
+    await Promise.resolve()
+
+    pendingSessionLists[2]([{
+      session_key: 'session-a',
+      title: 'Newest title',
+      title_status: 'final'
+    }])
+    await newerRefresh
+    expect(document.getElementById('sidebar-dynamic-content').textContent).toContain('Newest title')
+
+    pendingSessionLists[1]([{
+      session_key: 'session-a',
+      title: 'Stale title',
+      title_status: 'final'
+    }])
+    await olderRefresh
+    const sidebarText = document.getElementById('sidebar-dynamic-content').textContent
+    expect(sidebarText).toContain('Newest title')
+    expect(sidebarText).not.toContain('Stale title')
+  })
 })

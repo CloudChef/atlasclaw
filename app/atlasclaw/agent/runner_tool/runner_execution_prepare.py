@@ -42,7 +42,7 @@ from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.agent.thinking_stream import ThinkingStreamEmitter
 from app.atlasclaw.agent.tool_gate import CapabilityMatcher
 from app.atlasclaw.agent.tool_gate_models import (
-    NO_RUNTIME_CAPABILITY_REASON,
+    CapabilitySelectorOutcome,
     ToolGateDecision,
     ToolIntentAction,
     ToolIntentPlan,
@@ -285,90 +285,6 @@ def select_explicit_tool_execution_target(
     return dict(target_tool)
 
 
-def build_transcript_skill_prompt_intent_plan(
-    *,
-    active_skill: Optional[str],
-    active_provider_skill: Optional[str] = None,
-    target_provider_instances: Optional[list[str]] = None,
-    target_provider_types: Optional[list[str]] = None,
-) -> ToolIntentPlan | None:
-    """Build a non-forcing skill continuation plan from transcript tool evidence.
-
-    The plan carries the active Markdown skill into low-information follow-up
-    turns without requiring a tool call. The main model still decides whether
-    the next step is a tool call, a preview, or another clarification.
-    """
-    normalized_provider_skill = _normalize_text(active_provider_skill)
-    provider_instances = unique_capability_values(target_provider_instances or [])
-    provider_types = unique_capability_values(target_provider_types or [])
-    if normalized_provider_skill:
-        if not provider_instances or not provider_types:
-            return None
-        return ToolIntentPlan(
-            action=ToolIntentAction.DIRECT_ANSWER,
-            target_provider_instances=provider_instances,
-            target_provider_types=provider_types,
-            target_provider_skill_names=[normalized_provider_skill],
-            reason="transcript_provider_skill_continuation_prompt_only",
-        )
-
-    normalized = _normalize_text(active_skill)
-    if not normalized:
-        return None
-    return ToolIntentPlan(
-        action=ToolIntentAction.DIRECT_ANSWER,
-        target_skill_names=[normalized],
-        reason="transcript_skill_continuation_prompt_only",
-    )
-
-
-def _provider_targets_for_provider_skill(
-    *,
-    capability_index: list[dict[str, Any]],
-    active_provider_skill: Optional[str],
-) -> tuple[list[str], list[str]]:
-    normalized_provider_skill = _normalize_text(active_provider_skill).lower()
-    if not normalized_provider_skill:
-        return [], []
-    for entry in capability_index or []:
-        if not isinstance(entry, dict):
-            continue
-        if _normalize_text(entry.get("kind", "")).lower() != "provider_skill":
-            continue
-        if _normalize_text(entry.get("name", "")).lower() != normalized_provider_skill:
-            continue
-        return (
-            unique_capability_values(entry.get("target_provider_instances")),
-            unique_capability_values(entry.get("target_provider_types")),
-        )
-    return [], []
-
-
-def _build_transcript_active_skill_intent_plan(
-    *,
-    capability_index: list[dict[str, Any]],
-    transcript_active_skill: Optional[str],
-    transcript_active_provider_skill: Optional[str],
-) -> ToolIntentPlan | None:
-    """Build a transcript-scoped plan after the model chooses to continue it."""
-    transcript_provider_instances: list[str] = []
-    transcript_provider_types: list[str] = []
-    if transcript_active_provider_skill:
-        (
-            transcript_provider_instances,
-            transcript_provider_types,
-        ) = _provider_targets_for_provider_skill(
-            capability_index=capability_index,
-            active_provider_skill=transcript_active_provider_skill,
-        )
-    return build_transcript_skill_prompt_intent_plan(
-        active_skill=transcript_active_skill,
-        active_provider_skill=transcript_active_provider_skill,
-        target_provider_instances=transcript_provider_instances,
-        target_provider_types=transcript_provider_types,
-    )
-
-
 def toolset_has_only_coordination_support_tools(tools: list[dict[str, Any]]) -> bool:
     """Return whether the projected set contains only non-executing support tools."""
     normalized_tools = [
@@ -572,10 +488,10 @@ def _infer_active_skill_from_transcript(
 ) -> Optional[str]:
     """Scan recent transcript tool calls to infer the currently active md skill.
 
-    Returns the qualified_name of the md_skill whose declared tools appear
-    most recently in the conversation.  This is used ONLY for SKILL.md
-    documentation loading during follow-up turns — it does NOT affect routing
-    or tool visibility.
+    Returns the qualified name of the Markdown skill whose declared tools
+    appear most recently in the conversation. The capability selector receives
+    this as a non-binding active-workflow candidate; the model still decides
+    whether to continue it, switch capabilities, or use ordinary conversation.
     """
     if not message_history or not md_skills_snapshot:
         return None
@@ -1681,18 +1597,27 @@ def inject_standard_skill_runtime_tools(
     available_tools: list[dict[str, Any]],
     deps: SkillDeps,
     target_md_skill: dict[str, Any] | None,
+    execution_allowed: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any] | None]:
     """Append internal runtime helpers for docs-only standard markdown skills.
 
     Provider-bound skills and skills that declare AtlasClaw executable metadata
     use their own registered tools. The internal runtime is reserved for
     selected standard markdown skills that otherwise only provide instructions.
+    When execution is not authorized, instructions remain available but no
+    internal runtime helper is exposed.
     """
     trace: dict[str, Any] = {
         "enabled": False,
         "reason": "no_target_md_skill",
         "tool_names": [],
     }
+    if not execution_allowed:
+        trace["reason"] = "execution_not_authorized"
+        if isinstance(getattr(deps, "extra", None), dict):
+            deps.extra.pop("standard_skill_runtime_enabled", None)
+            deps.extra.pop("standard_skill_runtime_tools_visible", None)
+        return list(available_tools or []), trace, target_md_skill
     if not isinstance(target_md_skill, dict):
         if isinstance(getattr(deps, "extra", None), dict):
             deps.extra.pop("standard_skill_runtime_enabled", None)
@@ -2044,11 +1969,9 @@ class RunnerExecutionPreparePhaseMixin:
                         else None
                     ),
                 )
-            if isinstance(deps.extra, dict):
-                deps.extra.pop("transcript_skill_continuation_hint", None)
             selected_tool_intent_plan = build_user_selected_tool_intent_plan(deps)
             capability_selector_intent_plan: ToolIntentPlan | None = None
-            active_capability_route: str | None = None
+            capability_selector_failed = False
             server_page_skill_scope = False
             server_page_skill_refs: list[str] = []
             server_page_provider_type = ""
@@ -2153,6 +2076,7 @@ class RunnerExecutionPreparePhaseMixin:
                     selected_tool_intent_plan = selected_tool_intent_plan.model_copy(
                         update={
                             "action": ToolIntentAction.DIRECT_ANSWER,
+                            "selector_outcome": CapabilitySelectorOutcome.AUTHORIZED_CONTEXT,
                             "reason": "user_selected_capability_active_continuation",
                         }
                     )
@@ -2219,72 +2143,14 @@ class RunnerExecutionPreparePhaseMixin:
                     transcript_active_provider_skill or transcript_active_skill
                 )
                 if has_transcript_active_capability:
-                    active_capability_route = await self._select_active_capability_route_with_model(
-                        agent=runtime_agent or self.agent,
-                        deps=deps,
-                        user_message=user_message,
-                        recent_history=message_history,
-                        active_provider_skill=transcript_active_provider_skill or "",
-                        active_skill=transcript_active_skill or "",
-                    )
-                    if not active_capability_route:
-                        active_capability_route = self.ACTIVE_CAPABILITY_SELECT
-                    _log_step(
-                        "active_capability_route_resolved",
-                        enabled=bool(active_capability_route),
-                        decision=active_capability_route or "",
-                        active_provider_skill=transcript_active_provider_skill or "",
-                        active_skill=transcript_active_skill or "",
-                    )
-                if active_capability_route == self.ACTIVE_CAPABILITY_CONTINUE:
-                    resolved_tool_request, resolved_follow_up_context = (
-                        self._build_active_capability_continuation_request(
-                            user_message=user_message,
-                            recent_history=message_history,
-                        )
-                    )
-                    tool_request_message = resolved_tool_request
-                    used_follow_up_context = resolved_follow_up_context
-                    model_user_message = (
-                        tool_request_message
-                        if resolved_follow_up_context and tool_request_message != user_message
-                        else user_message
-                    )
-                    transcript_skill_intent_plan = _build_transcript_active_skill_intent_plan(
-                        capability_index=capability_index,
-                        transcript_active_skill=transcript_active_skill,
-                        transcript_active_provider_skill=transcript_active_provider_skill,
-                    )
-                    if transcript_skill_intent_plan is not None:
-                        capability_selector_intent_plan = transcript_skill_intent_plan
-                        transcript_hint = (
-                            transcript_active_provider_skill or transcript_active_skill
-                        )
-                        if isinstance(deps.extra, dict) and transcript_hint:
-                            deps.extra["transcript_skill_continuation_hint"] = transcript_hint
-                        _log_step(
-                            "active_capability_continuation_applied",
-                            reason=transcript_skill_intent_plan.reason,
-                            target_provider_instances=list(
-                                transcript_skill_intent_plan.target_provider_instances
-                            ),
-                            target_provider_types=list(
-                                transcript_skill_intent_plan.target_provider_types
-                            ),
-                            target_provider_skill_names=list(
-                                transcript_skill_intent_plan.target_provider_skill_names
-                            ),
-                            target_skill_names=list(
-                                transcript_skill_intent_plan.target_skill_names
-                            ),
-                        )
-                elif has_transcript_active_capability:
                     tool_request_message = user_message
                     model_user_message = user_message
                     used_follow_up_context = False
                     _log_step(
-                        "follow_up_context_released_for_capability_reselection",
-                        reason="active_capability_router_selected_full_capability_analysis",
+                        "active_capability_context_forwarded",
+                        reason="single_capability_selector_pass",
+                        active_provider_skill=transcript_active_provider_skill or "",
+                        active_skill=transcript_active_skill or "",
                     )
                 else:
                     tool_request_message, used_follow_up_context = (
@@ -2339,11 +2205,7 @@ class RunnerExecutionPreparePhaseMixin:
                             ),
                             elapsed_ms=int(getattr(usage_profile_result, "elapsed_ms", 0) or 0),
                         )
-                    selector_user_message = (
-                        user_message
-                        if active_capability_route == self.ACTIVE_CAPABILITY_SELECT
-                        else tool_request_message
-                    )
+                    selector_user_message = tool_request_message
                     active_capability_context = (
                         self._format_active_capability_name(
                             active_provider_skill=transcript_active_provider_skill or "",
@@ -2362,16 +2224,13 @@ class RunnerExecutionPreparePhaseMixin:
                         active_capability_context=active_capability_context,
                     )
                     if capability_selector_intent_plan is None:
+                        capability_selector_failed = True
                         capability_selector_intent_plan = ToolIntentPlan(
                             action=ToolIntentAction.DIRECT_ANSWER,
                             reason="capability_selector_returned_no_valid_target",
                         )
                 metadata_candidates = {
-                    "reason": (
-                        "active_capability_continuation"
-                        if active_capability_route == self.ACTIVE_CAPABILITY_CONTINUE
-                        else "llm_capability_selector"
-                    ),
+                    "reason": "llm_capability_selector",
                     "confidence": (
                         1.0
                         if capability_selector_intent_plan.reason
@@ -2421,6 +2280,10 @@ class RunnerExecutionPreparePhaseMixin:
                         capability_selector_intent_plan.action.value
                         if capability_selector_intent_plan is not None
                         else ""
+                    ),
+                    unavailable_runtime_capability=bool(
+                        capability_selector_intent_plan
+                        and capability_selector_intent_plan.unavailable_runtime_capability
                     ),
                     target_provider_instances=(
                         list(capability_selector_intent_plan.target_provider_instances)
@@ -2666,6 +2529,9 @@ class RunnerExecutionPreparePhaseMixin:
                         policy=ToolPolicyMode.ANSWER_DIRECT,
                     )
                 )
+            pre_projection_has_executable_tools = bool(
+                available_tools
+            ) and not toolset_has_only_coordination_support_tools(available_tools)
             available_tools, tool_projection_trace = project_minimal_toolset(
                 allowed_tools=available_tools,
                 intent_plan=tool_intent_plan,
@@ -2723,15 +2589,11 @@ class RunnerExecutionPreparePhaseMixin:
             )
             target_md_skill = None
             # ── SKILL.md resolution ──────────────────────────────────────
-            # SKILL.md loading follows the routing plan as-is.  Runtime does
-            # not force tool execution from transcript alone. When recent tool
-            # evidence identifies the active skill for a low-information
-            # follow-up, it is carried as a non-forcing skill target so the
-            # main model can continue the same workflow instead of losing the
-            # selected skill.
+            # SKILL.md loading follows the selected routing plan as-is. Runtime
+            # does not force tool execution from transcript evidence alone.
             #
             # Webhook-selected skills are an authenticated routing decision, so
-            # they take precedence over classifier/transcript skill hints.
+            # they take precedence over the model-selected routing plan.
             preselected_md_skill_plan = build_preselected_md_skill_intent_plan(deps)
             if preselected_md_skill_plan is not None:
                 _log_step(
@@ -2749,38 +2611,9 @@ class RunnerExecutionPreparePhaseMixin:
             routed_skill_resolution_plan = (
                 tool_intent_plan if should_resolve_target_md_skill(tool_intent_plan) else None
             )
-            transcript_skill_resolution_plan = None
-            if (
-                active_capability_route == self.ACTIVE_CAPABILITY_CONTINUE
-                and preselected_md_skill_plan is None
-                and routed_skill_resolution_plan is None
-            ):
-                transcript_skill_resolution_plan = _build_transcript_active_skill_intent_plan(
-                    capability_index=capability_index,
-                    transcript_active_skill=transcript_active_skill,
-                    transcript_active_provider_skill=transcript_active_provider_skill,
-                )
-                if transcript_skill_resolution_plan is not None:
-                    _log_step(
-                        "target_md_skill_from_transcript",
-                        reason=transcript_skill_resolution_plan.reason,
-                        target_provider_instances=list(
-                            transcript_skill_resolution_plan.target_provider_instances
-                        ),
-                        target_provider_types=list(
-                            transcript_skill_resolution_plan.target_provider_types
-                        ),
-                        target_provider_skill_names=list(
-                            transcript_skill_resolution_plan.target_provider_skill_names
-                        ),
-                        target_skill_names=list(
-                            transcript_skill_resolution_plan.target_skill_names
-                        ),
-                    )
             skill_resolution_plan = (
                 preselected_md_skill_plan
                 or routed_skill_resolution_plan
-                or transcript_skill_resolution_plan
             )
             if should_resolve_target_md_skill(skill_resolution_plan):
                 target_md_skill = resolve_selected_md_skill_target(
@@ -2817,6 +2650,11 @@ class RunnerExecutionPreparePhaseMixin:
                     available_tools=available_tools,
                     deps=deps,
                     target_md_skill=target_md_skill,
+                    execution_allowed=not (
+                        tool_intent_plan is not None
+                        and tool_intent_plan.selector_outcome
+                        is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT
+                    ),
                 )
             )
             runtime_allowed_tool_names = [
@@ -2882,6 +2720,7 @@ class RunnerExecutionPreparePhaseMixin:
                 available_tools = []
                 tool_intent_plan = ToolIntentPlan(
                     action=ToolIntentAction.DIRECT_ANSWER,
+                    unavailable_runtime_capability=True,
                     reason=(
                         "No executable provider, skill, or tool is available; "
                         "coordination-only helpers are not enough to perform this request."
@@ -2902,13 +2741,12 @@ class RunnerExecutionPreparePhaseMixin:
                     reason="no_executable_runtime_capability",
                 )
             if (
-                not available_tools
+                capability_selector_failed
+                and not pre_projection_has_executable_tools
                 and tool_intent_plan is not None
                 and tool_intent_plan.action
                 in {ToolIntentAction.DIRECT_ANSWER, ToolIntentAction.ASK_CLARIFICATION}
                 and not _intent_plan_has_explicit_targets(tool_intent_plan)
-                and str(getattr(tool_intent_plan, "reason", "") or "").strip()
-                != NO_RUNTIME_CAPABILITY_REASON
             ):
                 no_capability_route = await self._classify_no_capability_route_with_model(
                     agent=runtime_agent or self.agent,
@@ -2919,19 +2757,17 @@ class RunnerExecutionPreparePhaseMixin:
                 if no_capability_route == self.NO_CAPABILITY_RUNTIME_REQUEST:
                     tool_intent_plan = ToolIntentPlan(
                         action=ToolIntentAction.DIRECT_ANSWER,
-                        reason=NO_RUNTIME_CAPABILITY_REASON,
+                        unavailable_runtime_capability=True,
+                        reason="fallback_classifier_detected_unavailable_runtime_capability",
                     )
                     tool_gate_decision = self._build_tool_gate_decision_from_intent_plan(
                         tool_intent_plan,
                         available_tools=available_tools,
                     )
                 _log_step(
-                    "no_capability_route_resolved",
+                    "no_capability_fallback_resolved",
                     decision=no_capability_route or "",
-                    applied=(
-                        str(getattr(tool_intent_plan, "reason", "") or "").strip()
-                        == NO_RUNTIME_CAPABILITY_REASON
-                    ),
+                    applied=bool(tool_intent_plan.unavailable_runtime_capability),
                 )
             tool_match_result = CapabilityMatcher(available_tools=available_tools).match(
                 tool_gate_decision.suggested_tool_classes

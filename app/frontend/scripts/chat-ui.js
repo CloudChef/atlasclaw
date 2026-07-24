@@ -1173,7 +1173,15 @@ async function notifyRunCompleted(sessionKey) {
   if (typeof chatCallbacks.onRunCompleted === 'function') {
     await chatCallbacks.onRunCompleted({ sessionKey, hasHistory })
   }
-  notifyConversationState(hasHistory)
+  if (currentSessionKey === sessionKey) {
+    notifyConversationState(hasHistory)
+  }
+}
+
+function notifyRunCompletedInBackground(sessionKey) {
+  void notifyRunCompleted(sessionKey).catch((error) => {
+    console.warn('[ChatUI] Failed to refresh completed run:', error)
+  })
 }
 
 const RUNTIME_STATE_LABELS = {
@@ -1303,7 +1311,8 @@ function buildMessageContent(
 ) {
   const runtimeHtml = buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs, isThinking, panelOpen, isComplete)
   const downloadHtml = buildGeneratedWorkspaceDownloadsHtml(workspaceDownloadReferences, responseContent)
-  const objectActionContext = createObjectActionRenderContext(objectActionReferences)
+  const visibleObjectActionReferences = isComplete ? objectActionReferences : []
+  const objectActionContext = createObjectActionRenderContext(visibleObjectActionReferences)
   const markdownHtml = responseContent ? renderAssistantMarkdown(responseContent, objectActionContext) : ''
   const objectActionActionsHtml = buildGeneratedObjectActionActionsHtml(objectActionContext)
   const responseBodyHtml = `${markdownHtml}${downloadHtml}${objectActionActionsHtml}`
@@ -3402,7 +3411,7 @@ async function handleStreamWithSignals(runId, signals, context) {
         updateUI()
       },
       onEnd: () => {
-        const doFinalRender = async () => {
+        const doFinalRender = () => {
           if (streamSettled) return
           streamSettled = true
           thinkingFinalized = true
@@ -3415,29 +3424,27 @@ async function handleStreamWithSignals(runId, signals, context) {
             }
           }
           updateUI()
-          await notifyRunCompleted(context.sessionKey)
           signals.onClose()
           clearActiveStreamHandler()
           resolve()
+          notifyRunCompletedInBackground(context.sessionKey)
         }
-        setTimeout(() => {
-          void doFinalRender()
-        }, 200)
+        doFinalRender()
       },
       onAbort: () => {
         settleAbortedStream()
       },
-      onError: async (error) => {
+      onError: (error) => {
         if (streamSettled) return
         streamSettled = true
         thinkingFinalized = true
         cleanupStreamTimers()
         pushRuntimeEntry('failed', error?.message || 'Unknown error', { phase: 'error' })
         updateUI()
-        await notifyRunCompleted(context.sessionKey)
         signals.onClose()
         clearActiveStreamHandler()
         resolve()
+        notifyRunCompletedInBackground(context.sessionKey)
       }
     })
 

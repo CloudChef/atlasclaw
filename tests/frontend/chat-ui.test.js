@@ -208,6 +208,11 @@ async function startStreamingAssistant(runId = 'run-streaming-assistant') {
     };
 }
 
+async function completeStreamingAssistant(stream, handlerPromise) {
+    stream.simulateEvent('lifecycle', { phase: 'end' });
+    await handlerPromise;
+}
+
 function latestHtml(signals) {
     return signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
 }
@@ -326,10 +331,12 @@ function parseRenderedElapsedSeconds(value) {
 
 function createDeferred() {
     let resolve;
-    const promise = new Promise((promiseResolve) => {
+    let reject;
+    const promise = new Promise((promiseResolve, promiseReject) => {
         resolve = promiseResolve;
+        reject = promiseReject;
     });
-    return { promise, resolve };
+    return { promise, resolve, reject };
 }
 
 describe('chat-ui.js handler mode', () => {
@@ -1051,6 +1058,68 @@ describe('chat-ui.js handler mode', () => {
         await handlerPromise;
 
         expect(signals.onClose).toHaveBeenCalled();
+    });
+
+    test('handler renders the final delta and closes before a failed refresh finishes', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+        const refresh = createDeferred();
+        const onRunCompleted = jest.fn(() => refresh.promise);
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+        const closeOrder = [];
+        signals.onResponse.mockImplementation((payload) => {
+            closeOrder.push({ type: 'response', html: payload.html || '' });
+        });
+        signals.onClose.mockImplementation(() => {
+            closeOrder.push({ type: 'close' });
+        });
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-refresh' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element, { onRunCompleted });
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-refresh' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'hello', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances[0];
+        stream.simulateEvent('assistant', { text: 'Final answer.', is_delta: true });
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+
+        expect(signals.onClose).toHaveBeenCalledTimes(1);
+        expect(closeOrder.at(-2)).toEqual(expect.objectContaining({
+            type: 'response',
+            html: expect.stringContaining('Final answer.')
+        }));
+        expect(closeOrder.at(-1)).toEqual({ type: 'close' });
+        await handlerPromise;
+
+        expect(onRunCompleted).toHaveBeenCalledWith({
+            sessionKey: 'session-refresh',
+            hasHistory: true
+        });
+
+        refresh.reject(new Error('refresh failed'));
+        await new Promise(r => setTimeout(r, 0));
+        expect(warn).toHaveBeenCalledWith(
+            '[ChatUI] Failed to refresh completed run:',
+            expect.objectContaining({ message: 'refresh failed' })
+        );
+        warn.mockRestore();
     });
 
     test('handler binds send-time Embed context without changing visible user text', async () => {
@@ -1900,7 +1969,7 @@ describe('chat-ui.js handler mode', () => {
         await handlerPromise;
     });
 
-    test('handler renders live tool-end object_action content as open actions', async () => {
+    test('handler renders completed tool-end object_action content as open actions', async () => {
         const { signals, stream, handlerPromise } = await startStreamingAssistant('run-tool-object-action');
 
         stream.simulateEvent('assistant', {
@@ -1923,6 +1992,7 @@ describe('chat-ui.js handler mode', () => {
             })
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         const link = dom.querySelector('a.object-action-link');
@@ -1934,8 +2004,6 @@ describe('chat-ui.js handler mode', () => {
         expect(link.textContent).not.toContain('Approval REQ-001');
         expect(link.getAttribute('aria-label')).toBe('Open Approval REQ-001');
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler extracts object_action from tool-end internal metadata strings', async () => {
@@ -1965,6 +2033,7 @@ describe('chat-ui.js handler mode', () => {
             })
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         const link = dom.querySelector('a.object-action-link');
@@ -1972,8 +2041,6 @@ describe('chat-ui.js handler mode', () => {
         expect(link.getAttribute('href')).toBe('https://cmp.example.com/requests/REQ-002');
         expect(link.getAttribute('aria-label')).toBe('Open Approval REQ-002');
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler renders runtime metadata object_actions as open actions', async () => {
@@ -1991,6 +2058,7 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 120));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         const link = dom.querySelector('.object-actions a.object-action-link');
@@ -2000,11 +2068,9 @@ describe('chat-ui.js handler mode', () => {
         expect(link.textContent).not.toContain('Runtime resource');
         expect(link.getAttribute('aria-label')).toBe('Open Runtime resource');
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
-    test('handler keeps single detail object_action in the rendered DOM when metadata arrives before answer', async () => {
+    test('handler keeps object actions hidden until a run with early metadata completes', async () => {
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const { element, messages } = createDomChatElementWithMessages();
         const signals = createDomSignals(messages);
@@ -2045,7 +2111,7 @@ describe('chat-ui.js handler mode', () => {
         });
         await new Promise(r => setTimeout(r, 120));
 
-        expect(messages.querySelector('.object-actions a.object-action-link')).not.toBeNull();
+        expect(messages.querySelector('.object-actions a.object-action-link')).toBeNull();
 
         stream.simulateEvent('assistant', {
             text: [
@@ -2059,6 +2125,12 @@ describe('chat-ui.js handler mode', () => {
         });
         await new Promise(r => setTimeout(r, 160));
 
+        expect(messages.querySelector('.object-actions a.object-action-link')).toBeNull();
+        expect(messages.textContent).toContain('Disk 1: 100');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+
         const links = messages.querySelectorAll('.object-actions a.object-action-link');
         expect(links).toHaveLength(1);
         expect(links[0].getAttribute('href')).toBe('https://cmp.example.com/resources/vm-46499/details');
@@ -2067,9 +2139,38 @@ describe('chat-ui.js handler mode', () => {
         expect(links[0].getAttribute('aria-label')).toBe('Open Linux-test-mysqlds');
         expect(messages.querySelectorAll('.response-table-action a.object-action-link')).toHaveLength(0);
         expect(messages.textContent).toContain('Disk 1: 100');
+    });
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
+    test('handler does not reveal buffered object actions when the run fails', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant(
+            'run-failed-buffered-object-action'
+        );
+
+        stream.simulateEvent('runtime', {
+            state: 'artifact',
+            message: 'Object actions ready.',
+            phase: 'object_actions',
+            object_actions: [
+                objectActionReference({
+                    href: 'https://provider.example.com/resources/res-failed',
+                    object_id: 'res-failed',
+                    object_name: 'Failed resource'
+                })
+            ]
+        });
+        await new Promise(r => setTimeout(r, 120));
+
+        expect(parseHtml(latestHtml(signals)).querySelector('.object-actions')).toBeNull();
+
+        stream.simulateEvent('lifecycle', {
+            phase: 'error',
+            error: 'Provider request failed.'
+        });
         await handlerPromise;
+
+        const failedDom = parseHtml(latestHtml(signals));
+        expect(failedDom.querySelector('.object-actions')).toBeNull();
+        expect(failedDom.textContent).toContain('Provider request failed.');
     });
 
     test('initChat restores assistant object_action controls from persisted history metadata', async () => {
@@ -2250,13 +2351,12 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         expect(dom.querySelectorAll('.object-actions *')).toHaveLength(0);
         expect(dom.textContent).toContain('Provider returned a reserved direct execution action.');
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler ignores ordinary url and href fields for object open actions', async () => {
@@ -2317,6 +2417,7 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         const rows = dom.querySelectorAll('.response-table tbody tr');
@@ -2326,8 +2427,6 @@ describe('chat-ui.js handler mode', () => {
         expect(rows[1].querySelector('.response-table-action a')?.getAttribute('href')).toBe('https://cmp.example.com/resources/web');
         expect(dom.querySelectorAll('.response-content > .object-actions a.object-action-link')).toHaveLength(0);
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler appends provider resource table object actions on the right', async () => {
@@ -2362,6 +2461,7 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         const rows = dom.querySelectorAll('.response-table tbody tr');
@@ -2370,8 +2470,6 @@ describe('chat-ui.js handler mode', () => {
         expect(rows[1].querySelector('.response-table-action a')?.getAttribute('href')).toBe('https://cmp.example.com/#/main/virtual-machines/vm-2/details');
         expect(dom.querySelectorAll('.response-content > .object-actions a.object-action-link')).toHaveLength(0);
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler appends provider all-resource table object actions on the right', async () => {
@@ -2406,6 +2504,7 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         const rows = dom.querySelectorAll('.response-table tbody tr');
@@ -2414,8 +2513,6 @@ describe('chat-ui.js handler mode', () => {
         expect(rows[1].querySelector('.response-table-action a')?.getAttribute('href')).toBe('https://cmp.example.com/#/main/cloud-resource/res-2/details');
         expect(dom.querySelectorAll('.response-content > .object-actions a.object-action-link')).toHaveLength(0);
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler appends approval table object actions on the right by index', async () => {
@@ -2469,6 +2566,7 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         const rows = dom.querySelectorAll('.response-table tbody tr');
@@ -2478,8 +2576,6 @@ describe('chat-ui.js handler mode', () => {
         expect(rows[1].querySelector('.response-table-action a')?.getAttribute('href')).toBe('https://cmp.example.com/#/main/service-request/my-approval');
         expect(dom.querySelectorAll('.response-content > .object-actions a.object-action-link')).toHaveLength(0);
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler renders inline confirmation card from approval table row actions', async () => {
@@ -2723,6 +2819,7 @@ describe('chat-ui.js handler mode', () => {
             is_delta: true
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const actionGroup = messages.querySelector('.response-content > .object-actions');
         expect(actionGroup).not.toBeNull();
@@ -2811,9 +2908,6 @@ describe('chat-ui.js handler mode', () => {
             window.prompt = originalPrompt;
             window.alert = originalAlert;
         }
-
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler resolves approval action prompts from the current locale', async () => {
@@ -2904,6 +2998,7 @@ describe('chat-ui.js handler mode', () => {
             is_delta: true
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const actionGroup = messages.querySelector('.response-content > .object-actions');
         expect(Array.from(actionGroup.children).map((node) => node.textContent.trim())).toEqual([
@@ -2944,9 +3039,6 @@ describe('chat-ui.js handler mode', () => {
             window.confirm = originalConfirm;
             window.prompt = originalPrompt;
         }
-
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('object action opens confirmed URLs only after inline confirmation', async () => {
@@ -3006,6 +3098,7 @@ describe('chat-ui.js handler mode', () => {
             is_delta: true
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const actionGroup = messages.querySelector('.response-content > .object-actions');
         expect(actionGroup.querySelector('a.object-action-link')).toBeNull();
@@ -3050,9 +3143,6 @@ describe('chat-ui.js handler mode', () => {
         } finally {
             HTMLAnchorElement.prototype.click = originalAnchorClick;
         }
-
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('input-only object actions use input wording instead of confirmation wording', async () => {
@@ -3116,6 +3206,7 @@ describe('chat-ui.js handler mode', () => {
             is_delta: true
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         messages.querySelector('.response-content > .object-actions button').click();
         await new Promise(r => setTimeout(r, 0));
@@ -3126,9 +3217,6 @@ describe('chat-ui.js handler mode', () => {
             'Provide information for Comment'
         );
         expect(card.querySelector('.object-action-confirmation-help')).toBeNull();
-
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('object action card recovers when run creation fails after submit', async () => {
@@ -3190,6 +3278,7 @@ describe('chat-ui.js handler mode', () => {
             is_delta: true
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const actionGroup = messages.querySelector('.response-content > .object-actions');
         actionGroup.querySelector('button.tone-success').click();
@@ -3223,9 +3312,6 @@ describe('chat-ui.js handler mode', () => {
         card.querySelector('.object-action-cancel-button').click();
         await new Promise(r => setTimeout(r, 0));
         expect(actionGroup.querySelector('button.tone-success').disabled).toBe(false);
-
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('object action prompt fails closed when direct submit is unavailable', async () => {
@@ -3284,6 +3370,7 @@ describe('chat-ui.js handler mode', () => {
             is_delta: true
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const originalConfirm = window.confirm;
         const originalWarn = console.warn;
@@ -3309,9 +3396,6 @@ describe('chat-ui.js handler mode', () => {
             window.confirm = originalConfirm;
             console.warn = originalWarn;
         }
-
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('object action direct submit does not append the resolved prompt as a user message', async () => {
@@ -3465,6 +3549,7 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         expect(dom.querySelectorAll('.response-table-action')).toHaveLength(0);
@@ -3474,8 +3559,6 @@ describe('chat-ui.js handler mode', () => {
             'Analyze'
         ]);
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler does not attach object actions by row order on a single unrelated table', async () => {
@@ -3505,13 +3588,12 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         expect(dom.querySelectorAll('.response-table-action a')).toHaveLength(0);
         expect(dom.querySelectorAll('.object-actions a.object-action-link')).toHaveLength(0);
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler does not use row-order fallback on unrelated tables before the object table', async () => {
@@ -3548,6 +3630,7 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         const tables = dom.querySelectorAll('.response-table');
@@ -3557,8 +3640,6 @@ describe('chat-ui.js handler mode', () => {
         expect(tables[1].querySelectorAll('.response-table-action a')[0].getAttribute('href')).toBe('https://cmp.example.com/resources/db');
         expect(tables[1].querySelectorAll('.response-table-action a')[1].getAttribute('href')).toBe('https://cmp.example.com/resources/web');
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler hides raw object_actions markdown table columns', async () => {
@@ -3585,6 +3666,7 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         expect(Array.from(dom.querySelectorAll('.response-table th')).map((cell) => cell.textContent)).toEqual([
@@ -3596,8 +3678,6 @@ describe('chat-ui.js handler mode', () => {
         expect(dom.textContent).not.toContain(objectAction);
         expect(dom.querySelector('.response-table-action a')?.getAttribute('href')).toBe(objectAction);
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler keeps raw object_actions markdown visible without sidecar metadata', async () => {
@@ -3648,6 +3728,8 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        expect(parseHtml(latestHtml(signals)).querySelectorAll('.object-actions a.object-action-link')).toHaveLength(0);
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         const actions = dom.querySelectorAll('.object-actions a.object-action-link');
@@ -3659,8 +3741,6 @@ describe('chat-ui.js handler mode', () => {
         expect(dom.textContent).not.toContain(objectAction);
         expect(dom.textContent).toContain('Status: Pending');
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler suppresses multiple unmatched object_actions instead of putting them at the bottom', async () => {
@@ -3685,13 +3765,13 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        expect(parseHtml(latestHtml(signals)).querySelectorAll('.object-actions a.object-action-link')).toHaveLength(0);
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         const actions = dom.querySelectorAll('.object-actions a.object-action-link');
         expect(actions).toHaveLength(0);
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler replaces list object actions with the latest detail object action metadata', async () => {
@@ -3740,6 +3820,8 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        expect(parseHtml(latestHtml(signals)).querySelectorAll('.object-actions a.object-action-link')).toHaveLength(0);
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         const actions = dom.querySelectorAll('.object-actions a.object-action-link');
@@ -3747,8 +3829,6 @@ describe('chat-ui.js handler mode', () => {
         expect(actions[0].getAttribute('href')).toBe('https://cmp.example.com/resources/vm-1');
         expect(actions[0].getAttribute('aria-label')).toBe('Open vm-1');
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler clears object actions when replacement metadata is empty', async () => {
@@ -3771,7 +3851,7 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
-        expect(parseHtml(latestHtml(signals)).querySelectorAll('.object-actions a.object-action-link')).toHaveLength(1);
+        expect(parseHtml(latestHtml(signals)).querySelectorAll('.object-actions a.object-action-link')).toHaveLength(0);
 
         stream.simulateEvent('runtime', {
             state: 'artifact',
@@ -3780,13 +3860,12 @@ describe('chat-ui.js handler mode', () => {
             object_actions: []
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         expect(dom.querySelectorAll('.object-actions a.object-action-link')).toHaveLength(0);
         expect(dom.textContent).toContain('vm-1 detail');
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler does not show raw object_actions values as table or detail text', async () => {
@@ -3820,6 +3899,7 @@ describe('chat-ui.js handler mode', () => {
             ]
         });
         await new Promise(r => setTimeout(r, 160));
+        await completeStreamingAssistant(stream, handlerPromise);
 
         const dom = parseHtml(latestHtml(signals));
         expect(dom.textContent).not.toContain(tableHref);
@@ -3827,8 +3907,6 @@ describe('chat-ui.js handler mode', () => {
         expect(dom.querySelector(`a[href="${tableHref}"]`)).not.toBeNull();
         expect(dom.querySelector(`a[href="${detailHref}"]`)).not.toBeNull();
 
-        stream.simulateEvent('lifecycle', { phase: 'end' });
-        await handlerPromise;
     });
 
     test('handler does not linkify unsafe local markdown links', async () => {

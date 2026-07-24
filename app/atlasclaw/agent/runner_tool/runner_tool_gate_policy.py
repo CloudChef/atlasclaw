@@ -9,6 +9,7 @@ from typing import Any, Optional
 
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.agent.tool_gate_models import (
+    CapabilitySelectorOutcome,
     CapabilityMatchResult,
     ToolGateDecision,
     ToolIntentAction,
@@ -53,7 +54,9 @@ class RunnerToolGatePolicyMixin:
         target_group_ids: list[str] = []
         target_capability_classes: list[str] = []
         if intent_plan is not None:
-            if intent_plan.action is ToolIntentAction.CREATE_ARTIFACT:
+            if intent_plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT:
+                policy_mode = "context_only"
+            elif intent_plan.action is ToolIntentAction.CREATE_ARTIFACT:
                 policy_mode = intent_plan.action.value
             elif intent_plan.action is ToolIntentAction.USE_TOOLS:
                 policy_mode = intent_plan.action.value

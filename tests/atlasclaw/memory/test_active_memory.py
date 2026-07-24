@@ -188,7 +188,7 @@ def test_capability_selector_rejects_usage_profile_unavailable_provider() -> Non
 
     plan = mixin._coerce_capability_selector_payload(
         payload={
-            "action": "use_tools",
+            "outcome": "authorized_capability",
             "targets": ["provider:smartcmp"],
             "reason": "Usage Profile says smartcmp was used before.",
         },
@@ -224,6 +224,36 @@ async def test_active_memory_gives_assistant_nickname_identity_priority(tmp_path
     assert "MomoY" in result.context
     assert "highest-priority user-facing assistant name" in result.context
     assert "self-introductions" in result.context
+
+
+@pytest.mark.asyncio
+async def test_active_memory_keeps_multiple_preferences_within_summary_budget(
+    tmp_path: Path,
+) -> None:
+    manager = MemoryManager(workspace=str(tmp_path), user_id="alice")
+    preferences = [
+        "User prefers replies in Chinese.",
+        "User prefers concise responses.",
+        "The assistant's nickname is MomoY.",
+    ]
+    for preference in preferences:
+        await manager.write_long_term(preference, section="Preferences")
+    await manager.write_long_term(
+        "User has used provider: example.",
+        section="Usage Profile",
+    )
+    service = ActiveMemoryRecallService()
+
+    result = await service.recall(
+        deps=_deps(manager, permissions=_memory_permissions()),
+        session_key=_session_key(),
+        user_message="hello",
+    )
+
+    assert result.status == "ok"
+    assert all(preference in result.context for preference in preferences)
+    assert result.result_count >= len(preferences)
+    assert result.context.count("users/alice/memory/MEMORY.md#L") == 1
 
 
 @pytest.mark.asyncio
