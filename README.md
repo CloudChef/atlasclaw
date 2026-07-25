@@ -37,6 +37,10 @@ The framework is built to help teams add agent capabilities to existing enterpri
 - Provider-based integration model that lets developers add new system capabilities quickly
 - Thin-core architecture that keeps platform-specific logic in Providers and reusable agent logic in the core
 - Embeddable agent foundation for enterprise application developers
+- Context-aware floating assistant that follows Enterprise System navigation and binds the current page
+  object to the appropriate Provider Skill
+- Core-matched, Provider-defined dynamic Context routes and object actions without
+  page-specific business mappings in AtlasClaw Core
 - API-first interaction model with interactive APIs, WebSocket streaming, and webhook entry points
 - Flexible LLM backend support through external model providers
 
@@ -49,9 +53,32 @@ AtlasClaw supports two practical usage modes for enterprise software teams.
 AtlasClaw can be embedded into an existing enterprise system as a module inside that system. In this mode, the AI Agent becomes part of the product itself, serving that system's own users, data, and business scenarios.
 
 - Embedded as an in-product AI module
+- Provides two independent embedded surfaces that can be deployed together:
+  a full menu UI and a compact floating UI
+- Uses the same Enterprise System Cookie authentication context for both
+  surfaces, so they share the signed-in user's existing system access and
+  upstream permissions
+- Keeps menu integration minimal: the Enterprise System only adds a menu entry and
+  embeds the Agent with `embedded=1&surface=menu`
+- Adds a generic page bridge for floating mode: the Enterprise System manages
+  the launcher/iframe and reports normalized page paths with a nonce and a
+  monotonically increasing generation
+- Lets the two surfaces share a bootstrap-validated active Chat Session without
+  turning one surface into the other
+- Re-resolves Context when the Enterprise System page changes, so the assistant
+  follows the current business object in the floating UI instead of keeping
+  stale page state
+- Lets Core match Provider-owned route manifests, while Provider resolvers load
+  a minimal object projection and present state-aware actions
 - Supports both user-facing interaction interfaces and agent-style automation
-- Uses Skills to define scenarios and system-specific actions inside the host application
+- Uses Skills to define scenarios and system-specific actions inside the existing system
 - Fits teams that want to add AI Agent capability to an existing enterprise product quickly
+
+The formal integration component is the configured **HostApp Provider** inside
+AtlasClaw. It maps Enterprise System pages to business objects, Domain Skills,
+and state-aware actions without requiring a new service in the Enterprise
+System. See [Embedded Integration](docs/EMBED-INTEGRATION.md) for the Cookie,
+surface, Context, and message contracts.
 
 ### Standalone Agent Mode
 
@@ -76,7 +103,7 @@ AtlasClaw is organized around a thin core plus rich providers.
 
 ![AtlasClaw overall architecture](docs/images/architecture/v4-01-overall-architecture.png)
 
-At a high level, requests enter through one of the supported channels, pass through the AtlasClaw Core, and are executed against enterprise systems through Providers. In embedded mode, the entry point can be an AI panel or module inside an existing enterprise application. In standalone mode, AtlasClaw exposes an independent AI Agent interface that sits above multiple enterprise systems. In both cases, the core remains lightweight and reusable, while each Provider contains the system-specific integration logic.
+At a high level, requests enter through one of the supported channels, pass through the AtlasClaw Core, and are executed against enterprise systems through Providers. Embedded mode exposes two independent entry points inside an existing Enterprise System: a full menu UI for ordinary conversations and a compact floating UI for page-scoped assistance. Both receive the same Enterprise System Cookie authentication context, so they represent the same signed-in user and reuse that user's existing permissions. The menu requires only a nested Agent entry. The floating UI additionally requires the Enterprise System to manage its launcher/iframe and provide a secure page-change bridge, but Enterprise System code does not resolve objects or invoke Agent and Tool APIs. The surfaces can also share a bootstrap-validated active Chat Session, while only the floating UI consumes page changes. For each change, Core deterministically matches the normalized path against the configured HostApp Provider's Context routes, and that Provider resolves the visible business object and its current actions. The resulting Context is bound to the matching existing Skill and the authenticated user's permissions before it enters the normal Chat and Tool execution path. In standalone mode, AtlasClaw exposes an independent AI Agent interface that sits above multiple enterprise systems. In both cases, the core remains lightweight and reusable, while each Provider contains the system-specific integration logic.
 
 ### Core Architecture
 
@@ -242,7 +269,7 @@ If you are integrating AtlasClaw into a host service, start by wiring the API la
 
 ## Further Reading
 
-- [Architecture Concepts](docs/concepts/architecture.md)
-- [Tooling Documentation](docs/tools/index.md)
-- [Channel Documentation](docs/channels/index.md)
+- [Architecture Concepts](docs/ARCHITECTURE.MD)
+- [Tooling Documentation](docs/UNIFIED_PROVIDER_TOOL_CONTRACT.md)
+- [Channel Documentation](docs/CHANNEL-GUIDE.MD)
 - [Automation Documentation](docs/automation/webhook.md)
