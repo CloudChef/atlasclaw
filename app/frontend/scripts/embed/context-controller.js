@@ -6,7 +6,7 @@ import { resolveEmbedContext } from '../api-client.js?v=31'
 import { EmbedContextBridge } from './context-bridge.js?v=36'
 import { EmbedContextStore } from './context-store.js?v=33'
 import { renderObjectContextBar } from './components/object-context-bar.js'
-import { renderContextObjectActions } from '../chat-ui.js?v=37'
+import { renderContextObjectActions } from '../chat-ui.js?v=39'
 import { setSlashCapabilityPageScopeActive } from '../slash-picker.js?v=27'
 
 /**

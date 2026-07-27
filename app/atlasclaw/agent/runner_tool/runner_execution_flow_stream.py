@@ -132,6 +132,8 @@ def collect_object_action_reference_update_from_tool_results(
 
 
 class RunnerExecutionFlowStreamMixin:
+    """Stream model and tool nodes while maintaining finalization evidence."""
+
     def _stash_tool_only_answer_for_loop_stop(
         self,
         *,
@@ -154,6 +156,44 @@ class RunnerExecutionFlowStreamMixin:
         looks_raw = getattr(self, "_looks_like_raw_tool_payload_dump", None)
         if callable(looks_raw) and looks_raw(answer):
             return
+        state["tool_only_answer_override"] = answer
+        state["force_tool_only_finalize"] = True
+
+    def _stash_final_user_output_for_finalize(
+        self,
+        *,
+        state: dict[str, Any],
+        messages: list[dict[str, Any]],
+        start_index: int,
+        target_tool_names: list[str],
+        previous_result_count: int,
+        artifact_goal: dict[str, Any] | None = None,
+    ) -> None:
+        """Keep an explicitly contracted output from the current tool dispatch."""
+        previous_output = str(state.pop("final_user_output_override", "") or "")
+        if state.get("tool_only_answer_override") == previous_output:
+            state.pop("tool_only_answer_override", None)
+        if artifact_goal:
+            return
+        build_answer = getattr(
+            self,
+            "_build_final_user_output_from_messages",
+            None,
+        )
+        if not callable(build_answer):
+            return
+        answer = str(
+            build_answer(
+                messages=messages,
+                start_index=start_index,
+                target_tool_names=target_tool_names,
+                previous_result_count=previous_result_count,
+            )
+            or ""
+        ).strip()
+        if not answer:
+            return
+        state["final_user_output_override"] = answer
         state["tool_only_answer_override"] = answer
         state["force_tool_only_finalize"] = True
 
@@ -653,7 +693,16 @@ class RunnerExecutionFlowStreamMixin:
                     artifact_goal=state.get("artifact_goal"),
                     workspace_path=workspace_path,
                     user_id=user_id,
+                    previous_result_count=tool_result_count_before_dispatch,
                 ):
+                    self._stash_final_user_output_for_finalize(
+                        state=state,
+                        messages=latest_messages,
+                        start_index=persist_run_output_start_index,
+                        target_tool_names=current_node_tool_names,
+                        previous_result_count=tool_result_count_before_dispatch,
+                        artifact_goal=state.get("artifact_goal"),
+                    )
                     state["force_tool_only_finalize"] = True
                     yield StreamEvent.runtime_update(
                         "reasoning",
@@ -920,18 +969,37 @@ class RunnerExecutionFlowStreamMixin:
         artifact_goal: dict[str, Any] | None = None,
         workspace_path: str | Path | None = None,
         user_id: str | None = None,
+        previous_result_count: int = 0,
     ) -> bool:
         normalized_planned = [
             str(name).strip()
             for name in planned_tool_names
             if str(name).strip()
         ]
-        if not normalized_planned:
+        if len(normalized_planned) != 1:
             return False
+        current_payloads = _iter_tool_result_payloads(
+            messages=messages,
+            start_index=start_index,
+            target_tool_names=normalized_planned,
+        )[max(0, int(previous_result_count)):]
+        if len(current_payloads) != 1:
+            return False
+        current_result_messages = [
+            {
+                "role": "tool",
+                "tool_name": tool_name,
+                "content": payload,
+                "is_error": bool(
+                    isinstance(payload, dict) and payload.get("is_error") is True
+                ),
+            }
+            for tool_name, payload in current_payloads
+        ]
         if artifact_goal:
             return messages_satisfy_artifact_goal(
-                messages=messages,
-                start_index=start_index,
+                messages=current_result_messages,
+                start_index=0,
                 target_tool_names=normalized_planned,
                 artifact_goal=artifact_goal,
                 workspace_path=workspace_path,
@@ -952,8 +1020,8 @@ class RunnerExecutionFlowStreamMixin:
             if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
         }
         if self._tool_results_are_terminal_no_evidence(
-            messages=messages,
-            start_index=start_index,
+            messages=current_result_messages,
+            start_index=0,
             target_tool_names=normalized_planned,
         ):
             repeated_no_progress = self._detect_repeated_tool_no_progress(
@@ -973,8 +1041,8 @@ class RunnerExecutionFlowStreamMixin:
         if callable(collect_successful):
             successful_tool_names = set(
                 collect_successful(
-                    messages=messages,
-                    start_index=start_index,
+                    messages=current_result_messages,
+                    start_index=0,
                     available_tools=available_tools,
                 )
                 or set()

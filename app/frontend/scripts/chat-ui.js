@@ -405,9 +405,36 @@ function decorateUserMessagesWithCopy(container) {
     bubble.insertAdjacentElement('afterend', button)
     bubble.dataset.copyEnhanced = 'true'
   })
+  decorateAssistantCodeBlocksWithCopy(container)
 }
 
-function createUserMessageCopyButton(messageBubble) {
+function decorateAssistantCodeBlocksWithCopy(container) {
+  const codeBlocks = container.querySelectorAll('.response-content pre > code')
+  codeBlocks.forEach((codeBlock) => {
+    const pre = codeBlock.parentElement
+    if (!pre || pre.dataset?.copyEnhanced === 'true') {
+      refreshUserMessageCopyButtonLabels(
+        pre?.parentElement?.querySelector('.atlas-code-copy-btn')
+      )
+      return
+    }
+
+    pre.dataset.copyEnhanced = 'true'
+    const wrapper = document.createElement('div')
+    wrapper.className = 'response-code-copy-block'
+    pre.insertAdjacentElement('beforebegin', wrapper)
+    wrapper.appendChild(pre)
+
+    const actions = document.createElement('div')
+    actions.className = 'response-code-copy-actions'
+    const button = createUserMessageCopyButton(codeBlock, readAssistantCodeBlockText)
+    button.classList.add('atlas-code-copy-btn')
+    actions.appendChild(button)
+    wrapper.appendChild(actions)
+  })
+}
+
+function createUserMessageCopyButton(messageBubble, readText = readUserMessageText) {
   const button = document.createElement('button')
   button.type = 'button'
   button.className = 'atlas-user-message-copy-btn'
@@ -418,8 +445,8 @@ function createUserMessageCopyButton(messageBubble) {
     event.preventDefault()
     event.stopPropagation()
 
-    const text = readUserMessageText(messageBubble)
-    if (!text) return
+    const text = readText(messageBubble)
+    if (typeof text !== 'string') return
 
     const copied = await copyTextToClipboard(text)
     if (copied) {
@@ -446,6 +473,19 @@ function readUserMessageText(messageBubble) {
     ? messageBubble.innerText
     : messageBubble?.textContent || ''
   return String(renderedText).replace(/\r?\n$/, '')
+}
+
+function readAssistantCodeBlockText(codeBlock) {
+  const encoded = codeBlock?.getAttribute?.('data-copy-content')
+  if (encoded !== null && encoded !== undefined) {
+    try {
+      return decodeURIComponent(encoded)
+    } catch (_) {
+      // Fall back to rendered text when legacy or malformed markup lacks a
+      // valid encoded source payload.
+    }
+  }
+  return String(codeBlock?.textContent || '')
 }
 
 async function copyTextToClipboard(text) {
@@ -622,6 +662,10 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .response-table tr:last-child td{border-bottom:0}
 .response-table tbody tr:nth-child(even) td{background:#fbfdff}
 .response-content pre{margin:0 0 12px 0;padding:18px 20px;overflow-x:auto;border-radius:16px;background:#1e293b;color:#e2e8f0}
+.response-content .response-code-copy-block{margin:0 0 12px 0}
+.response-content .response-code-copy-block>pre{margin-bottom:0}
+.response-content .response-code-copy-actions{display:flex;justify-content:flex-end;min-height:30px;padding-top:8px}
+.response-content .response-code-copy-actions .atlas-user-message-copy-btn{margin:0}
 .response-content code{padding:2px 6px;border-radius:6px;background:#eef2f7;font-size:.95em}
 .response-content pre code{display:block;padding:0;border-radius:0;background:transparent;color:inherit;font-size:13px;line-height:1.7;white-space:pre;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace}
 .response-content a{color:#2563eb;text-decoration:none}
@@ -681,6 +725,7 @@ details.runtime-panel[open] .runtime-toggle{transform:rotate(90deg)}
 .atlas-user-message-copy-btn.copied{color:#16a34a;border-color:rgba(22,163,74,.30);background:#ecfdf5}
 .atlas-user-message-copy-icon{width:15px;height:15px;display:block}
 .inner-message-container:hover>.atlas-user-message-copy-btn,.atlas-user-message-copy-btn:hover,.atlas-user-message-copy-btn:focus-visible,.atlas-user-message-copy-btn.copied{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}
+.response-code-copy-block:hover .atlas-code-copy-btn{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}
 @media (hover:none){.atlas-user-message-copy-btn{opacity:1;pointer-events:auto;transform:translateY(0) scale(1)}}
 `
 
@@ -709,6 +754,8 @@ const FLOATING_CHAT_STYLES = `
 :host(.atlas-chat-compact) .response-content li{margin:3px 0;line-height:1.55}
 :host(.atlas-chat-compact) .response-content h1,:host(.atlas-chat-compact) .response-content h2,:host(.atlas-chat-compact) .response-content h3{margin-bottom:8px;line-height:1.35}
 :host(.atlas-chat-compact) .response-content pre{margin-bottom:8px;padding:12px 14px;border-radius:10px}
+:host(.atlas-chat-compact) .response-content .response-code-copy-block{margin-bottom:8px}
+:host(.atlas-chat-compact) .response-content .response-code-copy-block>pre{margin-bottom:0}
 :host(.atlas-chat-compact) .message-wrapper{gap:8px}
 :host(.atlas-chat-compact) .outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .inner-message-container{box-sizing:border-box!important;padding-right:34px}
 :host(.atlas-chat-compact) .outer-message-container:has(.message-bubble.user-message,.message-bubble.user-message-text) .inner-message-container::after{right:0;width:34px;min-height:38px}
@@ -2668,8 +2715,76 @@ function renderMarkdownTable(headerCells, bodyRows, objectActionContext = null) 
   return `<div class="response-table-wrap ${tableSizeClass}"><table class="response-table"><thead><tr>${headerHtml}</tr></thead><tbody>${rowsHtml}</tbody></table></div>`
 }
 
+function splitRawLines(value) {
+  const text = String(value || '')
+  const lines = []
+  let lineStart = 0
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]
+    if (character !== '\r' && character !== '\n') continue
+    const ending = character === '\r' && text[index + 1] === '\n' ? '\r\n' : character
+    lines.push({
+      text: text.slice(lineStart, index),
+      start: lineStart,
+      ending
+    })
+    index += ending.length - 1
+    lineStart = index + 1
+  }
+
+  lines.push({ text: text.slice(lineStart), start: lineStart, ending: '' })
+  return lines
+}
+
+function extractFencedCodeBodies(value) {
+  const text = String(value || '')
+  const lines = splitRawLines(text)
+  const bodies = []
+  let fenceCharacter = ''
+  let fenceLength = 0
+  let bodyStart = 0
+
+  lines.forEach((line) => {
+    const trimmed = line.text.trim()
+    if (!fenceCharacter) {
+      const opening = /^(`{3,}|~{3,})(.*)$/.exec(trimmed)
+      if (!opening) return
+      fenceCharacter = opening[1][0]
+      fenceLength = opening[1].length
+      bodyStart = line.start + line.text.length + line.ending.length
+      return
+    }
+
+    const closing = /^(`{3,}|~{3,})\s*$/.exec(trimmed)
+    if (
+      closing &&
+      closing[1][0] === fenceCharacter &&
+      closing[1].length >= fenceLength
+    ) {
+      bodies.push(text.slice(bodyStart, line.start))
+      fenceCharacter = ''
+      fenceLength = 0
+    }
+  })
+
+  if (fenceCharacter) {
+    bodies.push(text.slice(bodyStart))
+  }
+  return bodies
+}
+
+function sanitizeFencedCodeLanguage(infoString) {
+  const language = String(infoString || '').trim().split(/\s+/, 1)[0].toLowerCase()
+  return language
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+}
+
 function renderAssistantMarkdown(text, objectActionContext = null) {
-  const cleaned = stripWrapperHeading(text || '')
+  const rawText = String(text || '')
+  const fencedCodeBodies = extractFencedCodeBodies(rawText)
+  const cleaned = stripWrapperHeading(rawText)
   const escaped = escapeHtml(cleaned).replace(/\r\n/g, '\n')
   if (!escaped.trim()) return ''
 
@@ -2679,8 +2794,11 @@ function renderAssistantMarkdown(text, objectActionContext = null) {
   let paragraph = []
   let listType = null
   let insideFencedCodeBlock = false
+  let fencedCodeFenceCharacter = ''
+  let fencedCodeFenceLength = 0
   let fencedCodeLanguage = ''
   let fencedCodeLines = []
+  let fencedCodeIndex = 0
 
   const flushParagraph = () => {
     if (!paragraph.length) return
@@ -2699,8 +2817,18 @@ function renderAssistantMarkdown(text, objectActionContext = null) {
     const languageClass = fencedCodeLanguage
       ? ` class="language-${fencedCodeLanguage}"`
       : ''
-    htmlParts.push(`<pre><code${languageClass}>${fencedCodeLines.join('\n')}</code></pre>`)
+    const renderedCode = fencedCodeLines.join('\n')
+    const copyContent = fencedCodeBodies[fencedCodeIndex]
+    const copyAttribute = typeof copyContent === 'string'
+      ? ` data-copy-content="${encodeURIComponent(copyContent)}"`
+      : ''
+    htmlParts.push(
+      `<pre><code${languageClass}${copyAttribute}>${renderedCode}</code></pre>`
+    )
+    fencedCodeIndex += 1
     insideFencedCodeBlock = false
+    fencedCodeFenceCharacter = ''
+    fencedCodeFenceLength = 0
     fencedCodeLanguage = ''
     fencedCodeLines = []
   }
@@ -2710,7 +2838,13 @@ function renderAssistantMarkdown(text, objectActionContext = null) {
     const line = (rawLine || '').trim()
 
     if (insideFencedCodeBlock) {
-      if (/^```/.test(line)) {
+      const closingFenceMatch = /^(`{3,}|~{3,})\s*$/.exec(line)
+      const closesCurrentFence = (
+        closingFenceMatch &&
+        closingFenceMatch[1][0] === fencedCodeFenceCharacter &&
+        closingFenceMatch[1].length >= fencedCodeFenceLength
+      )
+      if (closesCurrentFence) {
         flushCodeBlock()
       } else {
         fencedCodeLines.push(rawLine || '')
@@ -2718,12 +2852,14 @@ function renderAssistantMarkdown(text, objectActionContext = null) {
       continue
     }
 
-    const fencedCodeMatch = /^```([a-zA-Z0-9_-]+)?\s*$/.exec(line)
+    const fencedCodeMatch = /^(`{3,}|~{3,})(.*)$/.exec(line)
     if (fencedCodeMatch) {
       flushParagraph()
       flushList()
       insideFencedCodeBlock = true
-      fencedCodeLanguage = (fencedCodeMatch[1] || '').toLowerCase()
+      fencedCodeFenceCharacter = fencedCodeMatch[1][0]
+      fencedCodeFenceLength = fencedCodeMatch[1].length
+      fencedCodeLanguage = sanitizeFencedCodeLanguage(fencedCodeMatch[2])
       fencedCodeLines = []
       continue
     }

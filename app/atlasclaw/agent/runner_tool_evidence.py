@@ -482,6 +482,88 @@ class RunnerToolEvidenceMixin:
             return ""
         return formatted
 
+    def _build_final_user_output_from_messages(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        start_index: int,
+        target_tool_names: list[str],
+        previous_result_count: int,
+    ) -> str:
+        """Return the explicit final output from the current single-tool dispatch.
+
+        ``final_user_output`` is a provider-agnostic result contract. It is accepted
+        only beside ``success: true`` and never inferred from generic ``output``,
+        ``text``, or ``message`` fields. The dispatch result offset prevents a
+        previous successful invocation from satisfying a later empty or failed one.
+        """
+        normalized_targets = [
+            str(name).strip()
+            for name in target_tool_names
+            if str(name).strip()
+        ]
+        if len(normalized_targets) != 1:
+            return ""
+
+        target_names = set(normalized_targets)
+        matching_results: list[Any] = []
+        safe_start = max(0, min(int(start_index), len(messages)))
+        for message in messages[safe_start:]:
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role", "") or "").strip().lower()
+            if role in {"tool", "toolresult", "tool_result"}:
+                tool_name = str(
+                    message.get("tool_name", "") or message.get("name", "")
+                ).strip()
+                if tool_name in target_names:
+                    matching_results.append(
+                        message
+                        if message.get("is_error") is True
+                        else message.get("content", message)
+                    )
+
+            tool_results = message.get("tool_results")
+            if not isinstance(tool_results, list):
+                continue
+            for result in tool_results:
+                if not isinstance(result, dict):
+                    continue
+                tool_name = str(
+                    result.get("tool_name", "") or result.get("name", "")
+                ).strip()
+                if tool_name not in target_names:
+                    continue
+                matching_results.append(
+                    result
+                    if result.get("is_error") is True
+                    else result.get("content", result)
+                )
+
+        safe_previous_count = max(0, int(previous_result_count))
+        current_results = matching_results[safe_previous_count:]
+        if len(current_results) != 1:
+            return ""
+        return self._extract_final_user_output(current_results[0])
+
+    @staticmethod
+    def _extract_final_user_output(payload: Any) -> str:
+        """Validate and extract the explicit complete user-output contract."""
+        if isinstance(payload, str):
+            text = payload.strip()
+            if not text.startswith("{"):
+                return ""
+            try:
+                payload = json.loads(text)
+            except (TypeError, ValueError):
+                return ""
+        if not isinstance(payload, dict) or payload.get("success") is not True:
+            return ""
+        final_user_output = payload.get("final_user_output")
+        if not isinstance(final_user_output, str):
+            return ""
+        return final_user_output.strip()
+
     @staticmethod
     def _looks_like_raw_tool_payload_dump(text: str) -> bool:
         """Return whether text is a raw provider/tool payload rather than a user answer."""
