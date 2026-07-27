@@ -56,6 +56,11 @@ export class EmbedContextController {
     return this.store.getTurnContext(500)
   }
 
+  /** Clear transient confirmation/submission UI while preserving current page actions. */
+  resetActionInteraction() {
+    this._render(this.store.current, this.store.status)
+  }
+
   async _handlePageChanged({ generation, path }) {
     // beginResolve clears the visible object synchronously; an older async
     // response can therefore never repopulate actions after navigation.

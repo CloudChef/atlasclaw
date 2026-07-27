@@ -1047,6 +1047,55 @@ def enrich_target_md_skill_with_workflow_context(
     return enriched
 
 
+_EMBED_SCOPE_IDENTITY_KEYS = (
+    "context_id",
+    "generation",
+    "provider_type",
+    "provider_instance",
+    "object_type",
+    "object_id",
+)
+
+
+def _normalize_embed_scope_identity(value: Any) -> Optional[tuple[str, ...]]:
+    """Return a stable identity for a server-restored embed context."""
+    if not isinstance(value, dict):
+        return None
+    identity = tuple(
+        "" if value.get(key) is None else str(value.get(key)).strip()
+        for key in _EMBED_SCOPE_IDENTITY_KEYS
+    )
+    if not identity[0] or not identity[1]:
+        return None
+    return identity
+
+
+def _embed_scope_workflow_history(
+    message_history: list[dict[str, Any]],
+    *,
+    embed_scope: dict[str, Any],
+) -> Optional[list[dict[str, Any]]]:
+    """Return messages after the latest hidden action when its page identity still matches."""
+    if not isinstance(message_history, list):
+        return None
+    current_identity = _normalize_embed_scope_identity(embed_scope)
+    if current_identity is None:
+        return None
+    for index in range(len(message_history) - 1, -1, -1):
+        message = message_history[index]
+        if not isinstance(message, dict):
+            continue
+        if str(message.get("role", "") or "").strip().lower() != "user":
+            continue
+        metadata = message.get("metadata")
+        if not isinstance(metadata, dict) or metadata.get("visible_user_turn") is not False:
+            continue
+        if _normalize_embed_scope_identity(metadata.get("embed_scope")) != current_identity:
+            return None
+        return message_history[index + 1 :]
+    return None
+
+
 def _parse_target_md_skill_workflow_metadata(value: Any) -> Any:
     """Normalize runtime-only metadata into a compact prompt-safe structure."""
     if value is None:
@@ -1976,6 +2025,7 @@ class RunnerExecutionPreparePhaseMixin:
             server_page_skill_refs: list[str] = []
             server_page_provider_type = ""
             server_page_provider_instance = ""
+            server_page_action_start = False
             if isinstance(getattr(deps, "extra", None), dict):
                 request_context = deps.extra.get("context")
                 embed_scope = (
@@ -1990,6 +2040,10 @@ class RunnerExecutionPreparePhaseMixin:
                 )
                 if isinstance(embed_scope, dict):
                     server_page_skill_scope = True
+                    server_page_action_start = bool(
+                        isinstance(request_context, dict)
+                        and request_context.get("visible_user_turn") is False
+                    )
                     server_page_skill_refs = unique_capability_values(
                         page_skill_refs if isinstance(page_skill_refs, list) else []
                     )
@@ -2001,10 +2055,24 @@ class RunnerExecutionPreparePhaseMixin:
                     ).strip()
             if server_page_skill_scope:
                 # The server-restored page projection is authoritative for this
-                # turn. Keep transcript text for the main model, but do not
-                # carry an earlier skill's internal workflow trace onto the
-                # newly resolved page object.
-                target_md_skill_workflow_context = None
+                # turn. A hidden object action starts a new page workflow, so
+                # discard an earlier trace then. A visible follow-up may reuse
+                # only metadata produced after the latest hidden action when it
+                # was bound to this exact server-owned context identity.
+                if server_page_action_start:
+                    target_md_skill_workflow_context = None
+                else:
+                    scoped_workflow_history = _embed_scope_workflow_history(
+                        message_history,
+                        embed_scope=embed_scope,
+                    )
+                    target_md_skill_workflow_context = (
+                        build_target_md_skill_workflow_context(
+                            recent_history=scoped_workflow_history,
+                        )
+                        if scoped_workflow_history is not None
+                        else None
+                    )
                 provider_skill_targets = [
                     provider_skill_capability_name(
                         provider_name=server_page_provider_instance,
