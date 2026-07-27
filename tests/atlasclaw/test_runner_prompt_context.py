@@ -1619,6 +1619,8 @@ def test_build_target_md_skill_sanitizes_workflow_only_lookup_text() -> None:
     assert "Silent backend lookup for request workflow." not in rendered
     assert "next user-facing question or confirmation" in rendered
     assert "Never repeat lookup scaffolding" in rendered
+    assert "does not prohibit exact complete content" in rendered
+    assert "without ellipses, abbreviation, or replacement summaries" in rendered
     assert "raw user-facing reply" in rendered
     assert sanitize_workflow_only_text(
         "Silent backend lookup for request workflow. Continue with the next natural-language follow-up."

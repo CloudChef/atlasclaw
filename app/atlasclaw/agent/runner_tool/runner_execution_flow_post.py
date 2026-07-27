@@ -754,8 +754,17 @@ class RunnerExecutionFlowPostMixin:
             and not artifact_completion_missing
         )
         preferred_tool_only_answer = ""
-        stored_tool_only_answer = str(state.get("tool_only_answer_override") or "").strip()
-        if stored_tool_only_answer and not self._looks_like_raw_tool_payload_dump(
+        final_user_output = str(
+            state.get("final_user_output_override") or ""
+        ).strip()
+        stored_tool_only_answer = str(
+            state.get("tool_only_answer_override") or ""
+        ).strip()
+        if final_user_output:
+            preferred_tool_only_answer = final_user_output
+            if bool(state.get("force_tool_only_finalize")):
+                final_assistant = preferred_tool_only_answer
+        elif stored_tool_only_answer and not self._looks_like_raw_tool_payload_dump(
             stored_tool_only_answer
         ):
             preferred_tool_only_answer = stored_tool_only_answer
@@ -959,6 +968,7 @@ class RunnerExecutionFlowPostMixin:
 
         if (
             final_assistant
+            and final_assistant != final_user_output
             and self._looks_like_raw_lookup_dump(final_assistant)
             and not self._looks_like_raw_tool_payload_dump(final_assistant)
             and (
@@ -1010,7 +1020,11 @@ class RunnerExecutionFlowPostMixin:
                     "lookup_dump_recovery_done",
                     answered=bool(final_assistant.strip()),
                 )
-        if final_assistant and self._looks_like_raw_tool_payload_dump(final_assistant):
+        if (
+            final_assistant
+            and final_assistant != final_user_output
+            and self._looks_like_raw_tool_payload_dump(final_assistant)
+        ):
             _log_step("raw_provider_payload_final_answer_blocked")
             final_assistant = ""
 
@@ -1442,7 +1456,10 @@ class RunnerExecutionFlowPostMixin:
                             final_assistant,
                             state.get("workspace_download_reference_keys") or [],
                         )
-                        if self._looks_like_raw_tool_payload_dump(final_assistant):
+                        if (
+                            final_assistant != final_user_output
+                            and self._looks_like_raw_tool_payload_dump(final_assistant)
+                        ):
                             _log_step("raw_provider_payload_tool_only_answer_blocked")
                             final_assistant = ""
                         else:

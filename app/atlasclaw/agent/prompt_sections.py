@@ -81,6 +81,12 @@ def build_target_md_skill(target_md_skill: dict[str, Any]) -> str:
         "such as 'Found N ...', numbered raw dumps, JSON blobs, or unlabeled UUID/ID dumps as the reply."
     )
     lines.append(
+        "This lookup-scaffolding rule does not prohibit exact complete content such as JSON, source "
+        "code, configuration, or documents when the user explicitly requests it or the selected "
+        "Skill requires it. In that case, return the complete validated result without ellipses, "
+        "abbreviation, or replacement summaries."
+    )
+    lines.append(
         "Do not announce intermediate tool calls or expose their internal metadata as a raw "
         "user-facing reply."
     )

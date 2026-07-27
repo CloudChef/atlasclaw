@@ -714,6 +714,184 @@ describe('chat-ui.js handler mode', () => {
         }
     });
 
+    test('adds the existing chat copy action below every assistant code block', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const { initChat, cancelChatInputFocusRetry } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ messages: [] })
+            });
+
+        try {
+            await initChat(element);
+            appendRenderedMessage(
+                messages,
+                'ai',
+                [
+                    '<div class="response-content">',
+                    '<pre><code class="language-json">{&quot;name&quot;: &quot;test-form&quot;}</code></pre>',
+                    '<pre><code class="language-python">print(&quot;unchanged&quot;)</code></pre>',
+                    '</div>'
+                ].join('')
+            );
+            await waitForMutationObserver();
+
+            const wrappers = messages.querySelectorAll('.response-code-copy-block');
+            const jsonWrapper = wrappers[0];
+            const pythonWrapper = wrappers[1];
+            const button = jsonWrapper?.querySelector('.atlas-code-copy-btn');
+            expect(jsonWrapper?.querySelector('pre code.language-json')).not.toBeNull();
+            expect(pythonWrapper?.querySelector('pre code.language-python')).not.toBeNull();
+            expect(button).not.toBeNull();
+            expect(button.classList.contains('atlas-user-message-copy-btn')).toBe(true);
+            expect(button.title).toBe('Copy message');
+            expect(button.getAttribute('aria-label')).toBe('Copy message');
+            expect(messages.querySelectorAll('.atlas-code-copy-btn')).toHaveLength(2);
+        } finally {
+            cancelChatInputFocusRetry();
+        }
+    });
+
+    test('code copy action copies only the code body and uses the existing success feedback', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const writeText = jest.fn(() => Promise.resolve());
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText }
+        });
+
+        const { initChat, cancelChatInputFocusRetry } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ messages: [] })
+            });
+
+        try {
+            await initChat(element);
+            appendRenderedMessage(
+                messages,
+                'ai',
+                '<div class="response-content"><pre><code class="language-python">import time\n\ntime.sleep(60)</code></pre></div>'
+            );
+            await waitForMutationObserver();
+
+            const button = messages.querySelector('.atlas-code-copy-btn');
+            expect(button).not.toBeNull();
+
+            jest.useFakeTimers();
+            button.click();
+            await Promise.resolve();
+            await Promise.resolve();
+
+            expect(writeText).toHaveBeenCalledWith('import time\n\ntime.sleep(60)');
+            expect(button.classList.contains('copied')).toBe(true);
+            expect(button.innerHTML).toContain('<path');
+
+            await jest.advanceTimersByTimeAsync(1200);
+
+            expect(button.classList.contains('copied')).toBe(false);
+            expect(button.innerHTML).toContain('<rect');
+        } finally {
+            jest.useRealTimers();
+            cancelChatInputFocusRetry();
+        }
+    });
+
+    test('code copy preserves terminal LF and CRLF and remains idempotent', async () => {
+        sessionStorage.setItem('atlasclaw_session_key', 'session-123');
+
+        const writeText = jest.fn(() => Promise.resolve());
+        Object.defineProperty(navigator, 'clipboard', {
+            configurable: true,
+            value: { writeText }
+        });
+
+        const { initChat, cancelChatInputFocusRetry } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        const signals = createDomSignals(messages);
+
+        global.fetch
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ session_key: 'session-123' })
+            })
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({})
+            });
+
+        try {
+            await initChat(element);
+            global.fetch.mockClear();
+            global.fetch.mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({ run_id: 'run-exact-code-copy' })
+            });
+
+            const handlerPromise = element.handler(
+                { messages: [{ text: 'show exact scripts', role: 'user' }] },
+                signals
+            );
+            await new Promise(r => setTimeout(r, 100));
+
+            const stream = MockEventSource.instances.at(-1);
+            stream.simulateEvent('assistant', {
+                text: [
+                    '```python\n',
+                    'print("lf")\n',
+                    '```\n\n',
+                    '~~~powershell\r\n',
+                    'Write-Host "crlf"\r\n',
+                    '~~~'
+                ].join(''),
+                is_delta: true
+            });
+            await new Promise(r => setTimeout(r, 160));
+            await waitForMutationObserver();
+
+            const buttons = messages.querySelectorAll('.atlas-code-copy-btn');
+            expect(buttons).toHaveLength(2);
+
+            const observerProbe = document.createElement('span');
+            messages.appendChild(observerProbe);
+            await waitForMutationObserver();
+            expect(messages.querySelectorAll('.atlas-code-copy-btn')).toHaveLength(2);
+
+            jest.useFakeTimers();
+            buttons[0].click();
+            buttons[1].click();
+            await Promise.resolve();
+            await Promise.resolve();
+
+            expect(writeText.mock.calls).toEqual([
+                ['print("lf")\n'],
+                ['Write-Host "crlf"\r\n']
+            ]);
+
+            stream.simulateEvent('lifecycle', { phase: 'end' });
+            await handlerPromise;
+        } finally {
+            jest.useRealTimers();
+            cancelChatInputFocusRetry();
+        }
+    });
+
     test('initChat focuses the chat input when it is ready', async () => {
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const { element, input } = createDomChatElement();
@@ -4103,13 +4281,97 @@ describe('chat-ui.js handler mode', () => {
         await new Promise(r => setTimeout(r, 160));
 
         const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
-        expect(htmlPayload).toContain('<pre><code class="language-json">');
+        expect(htmlPayload).toContain('<pre><code class="language-json" data-copy-content="');
         expect(htmlPayload).toContain('&quot;name&quot;: &quot;test-linux-vm-01&quot;');
         expect(htmlPayload).toContain('</code></pre>');
         expect(htmlPayload).not.toContain('<p>```json');
 
         stream.simulateEvent('lifecycle', { phase: 'end' });
         await handlerPromise;
+    });
+
+    test('handler keeps shorter and different-character fences inside a longer code block', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-long-fence-preview' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'show script preview', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 100));
+        const stream = MockEventSource.instances[0];
+        stream.simulateEvent('assistant', {
+            text: [
+                'Script preview:',
+                '',
+                '````javascript',
+                'const markdownFence = "```";',
+                '```',
+                '~~~~',
+                'const stillInside = true;',
+                '`````',
+                '',
+                'Ready to copy.'
+            ].join('\n'),
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
+        expect(htmlPayload).toContain('<pre><code class="language-javascript" data-copy-content="');
+        expect(htmlPayload).toContain('const markdownFence = &quot;```&quot;;');
+        expect(htmlPayload).toContain('\n```\n~~~~\nconst stillInside = true;');
+        expect(htmlPayload).toContain('</code></pre><p>Ready to copy.</p>');
+
+        stream.simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
+    });
+
+    test('handler renders common and extended fenced code info strings', async () => {
+        const htmlPayload = await renderAssistantHtml(
+            [
+                '~~~c++',
+                'int main() {}',
+                '~~~',
+                '',
+                '```c#',
+                'Console.WriteLine("ok");',
+                '```',
+                '',
+                '```python title=example.py',
+                'print("ok")',
+                '```'
+            ].join('\n'),
+            'run-extended-code-info'
+        );
+        const dom = parseHtml(htmlPayload);
+        const codeBlocks = dom.querySelectorAll('pre > code');
+
+        expect(codeBlocks).toHaveLength(3);
+        expect(codeBlocks[0].classList.contains('language-c')).toBe(true);
+        expect(codeBlocks[0].textContent).toBe('int main() {}');
+        expect(codeBlocks[1].classList.contains('language-c')).toBe(true);
+        expect(codeBlocks[1].textContent).toContain('Console.WriteLine');
+        expect(codeBlocks[2].classList.contains('language-python')).toBe(true);
+        expect(codeBlocks[2].textContent).toBe('print("ok")');
     });
 
     test('handler preserves thinking content and runtime states after final answer arrives', async () => {

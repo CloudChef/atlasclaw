@@ -1051,6 +1051,121 @@ async def test_tool_only_finalize_prefers_structured_tool_answer_over_model_plai
 
 
 @pytest.mark.asyncio
+async def test_explicit_final_user_output_keeps_complete_generated_content() -> None:
+    runner = _PostRunner()
+    session_manager = _SessionManager()
+    tool_name = "example_generate_configuration"
+    expected = "\n".join(
+        [
+            "Generated configuration:",
+            "```json",
+            "{",
+            '  "results": [],',
+            '  "tool_name": "generated_helper",',
+            '  "returncode": 0,',
+            '  "artifact_path": "generated/report.json"',
+            "}",
+            "```",
+        ]
+    )
+    assert runner._looks_like_raw_tool_payload_dump(expected) is True
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-complete-output",
+        "session_manager": session_manager,
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-complete-output",
+        "user_message": "按要求生成完整配置",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=True,
+            needs_external_system=True,
+            reason="provider request",
+            policy=ToolPolicyMode.PREFER_TOOL,
+        ),
+        "tool_match_result": SimpleNamespace(
+            missing_capabilities=[],
+            tool_candidates=[],
+        ),
+        "available_tools": [
+            {
+                "name": tool_name,
+                "capability_class": "content:configuration",
+                "result_mode": "tool_only_ok",
+            }
+        ],
+        "tool_execution_required": True,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 0,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [{"name": tool_name, "args": {}}],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 1,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_tool_names=[tool_name],
+            reason="generate complete configuration",
+        ),
+        "executed_tool_names": [tool_name],
+        "final_user_output_override": expected,
+        "tool_only_answer_override": expected,
+        "force_tool_only_finalize": True,
+    }
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(
+            [
+                {"role": "user", "content": "按要求生成完整配置"},
+                {
+                    "role": "assistant",
+                    "content": "模型草稿不应覆盖最终 Tool 输出",
+                    "tool_calls": [
+                        {
+                            "id": "design-1",
+                            "name": tool_name,
+                            "args": {},
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_name": tool_name,
+                    "content": {
+                        "success": True,
+                        "output": "internal summary",
+                        "final_user_output": expected,
+                    },
+                },
+            ]
+        ),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+
+    final_chunk = "".join(
+        event.content for event in events if event.type == "assistant"
+    )
+    assert final_chunk == expected
+
+
+@pytest.mark.asyncio
 async def test_run_loop_phase_preserves_explicit_empty_runtime_history() -> None:
     runner = _LoopRunner()
     state = {
@@ -1136,6 +1251,338 @@ def test_repeated_tool_loop_stashes_tool_only_answer_before_stop() -> None:
     assert state["force_tool_only_finalize"] is True
     assert "OA 系统对接" in str(state["tool_only_answer_override"])
     assert '"results"' not in str(state["tool_only_answer_override"])
+
+
+def test_final_user_output_uses_only_latest_dispatch_result() -> None:
+    runner = _StreamRunnerWithEvidence()
+    state: dict[str, object] = {}
+    schema_json = json.dumps(
+        {
+            "type": "object",
+            "properties": {
+                f"field_{index}": {
+                    "type": "string",
+                    "description": f"Complete field {index}",
+                }
+                for index in range(100)
+            },
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    expected = f"Schema JSON:\n```json\n{schema_json}\n```"
+
+    runner._stash_final_user_output_for_finalize(
+        state=state,
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "example_generate_configuration",
+                "content": {
+                    "success": True,
+                    "final_user_output": "Stale generated configuration.",
+                },
+            },
+            {
+                "role": "tool",
+                "tool_name": "example_generate_configuration",
+                "content": json.dumps(
+                    {
+                        "success": True,
+                        "output": "internal summary",
+                        "final_user_output": expected,
+                    }
+                ),
+            },
+        ],
+        start_index=0,
+        target_tool_names=["example_generate_configuration"],
+        previous_result_count=1,
+    )
+
+    assert state["force_tool_only_finalize"] is True
+    assert state["final_user_output_override"] == expected
+    assert state["tool_only_answer_override"] == expected
+    assert "Stale generated configuration" not in str(
+        state["tool_only_answer_override"]
+    )
+    assert "field_99" in str(state["tool_only_answer_override"])
+    assert "\n..." not in str(state["tool_only_answer_override"])
+
+
+@pytest.mark.parametrize(
+    "raw_marker",
+    [
+        '"results": [',
+        '"tool_name": "generated_helper"',
+        '"returncode": 0',
+        '"artifact_path": "generated/report.json"',
+    ],
+)
+def test_explicit_final_user_output_keeps_generated_raw_payload_markers(
+    raw_marker: str,
+) -> None:
+    runner = _StreamRunnerWithEvidence()
+    state: dict[str, object] = {}
+    expected = f"Generated content:\n```json\n{{{raw_marker}}}\n```"
+
+    runner._stash_final_user_output_for_finalize(
+        state=state,
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "example_generate_configuration",
+                "content": {
+                    "success": True,
+                    "final_user_output": expected,
+                },
+            }
+        ],
+        start_index=0,
+        target_tool_names=["example_generate_configuration"],
+        previous_result_count=0,
+    )
+
+    assert state["force_tool_only_finalize"] is True
+    assert state["final_user_output_override"] == expected
+    assert state["tool_only_answer_override"] == expected
+
+
+def test_tool_only_output_does_not_opt_into_complete_final_output() -> None:
+    runner = _StreamRunnerWithEvidence()
+    state: dict[str, object] = {}
+
+    runner._stash_final_user_output_for_finalize(
+        state=state,
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "example_query_records",
+                "content": json.dumps(
+                    {
+                        "success": True,
+                        "results": [{"id": "provider-record"}],
+                    }
+                ),
+            }
+        ],
+        start_index=0,
+        target_tool_names=["example_query_records"],
+        previous_result_count=0,
+    )
+
+    assert state == {}
+
+
+@pytest.mark.parametrize(
+    "current_payload",
+    [
+        {"success": False, "final_user_output": "Do not use failed output."},
+        {"success": True, "final_user_output": ""},
+        {"success": True, "output": "Ordinary result only."},
+    ],
+)
+def test_latest_failed_or_empty_result_clears_stale_final_user_output(
+    current_payload: dict[str, object],
+) -> None:
+    runner = _StreamRunnerWithEvidence()
+    state: dict[str, object] = {
+        "final_user_output_override": "Stale generated output.",
+        "tool_only_answer_override": "Stale generated output.",
+    }
+
+    runner._stash_final_user_output_for_finalize(
+        state=state,
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "example_generate_configuration",
+                "content": {
+                    "success": True,
+                    "final_user_output": "Stale generated output.",
+                },
+            },
+            {
+                "role": "tool",
+                "tool_name": "example_generate_configuration",
+                "content": current_payload,
+            },
+        ],
+        start_index=0,
+        target_tool_names=["example_generate_configuration"],
+        previous_result_count=1,
+    )
+
+    assert "final_user_output_override" not in state
+    assert "tool_only_answer_override" not in state
+
+
+def test_final_user_output_rejects_multi_tool_and_artifact_dispatches() -> None:
+    runner = _StreamRunnerWithEvidence()
+    state: dict[str, object] = {}
+    messages = [
+        {
+            "role": "tool",
+            "tool_name": "example_generate_configuration",
+            "content": {
+                "success": True,
+                "final_user_output": "Generated configuration.",
+            },
+        },
+        {
+            "role": "tool",
+            "tool_name": "example_validate_configuration",
+            "content": {
+                "success": True,
+                "final_user_output": "Validated configuration.",
+            },
+        },
+    ]
+
+    runner._stash_final_user_output_for_finalize(
+        state=state,
+        messages=messages,
+        start_index=0,
+        target_tool_names=[
+            "example_generate_configuration",
+            "example_validate_configuration",
+        ],
+        previous_result_count=0,
+    )
+    assert state == {}
+
+    runner._stash_final_user_output_for_finalize(
+        state=state,
+        messages=messages[:1],
+        start_index=0,
+        target_tool_names=["example_generate_configuration"],
+        previous_result_count=0,
+        artifact_goal={"kind": "json", "label": "configuration"},
+    )
+    assert state == {}
+
+
+def test_duplicate_same_tool_calls_cannot_finalize_from_last_success() -> None:
+    runner = _StreamRunnerWithEvidence()
+    tool_name = "example_generate_configuration"
+    available_tools = [
+        {
+            "name": tool_name,
+            "capability_class": "content:configuration",
+            "result_mode": "tool_only_ok",
+        }
+    ]
+    messages = [
+        {
+            "role": "tool",
+            "tool_name": tool_name,
+            "content": {
+                "success": False,
+                "error": "First invocation failed.",
+            },
+        },
+        {
+            "role": "tool",
+            "tool_name": tool_name,
+            "content": {
+                "success": True,
+                "final_user_output": "Second invocation succeeded.",
+            },
+        },
+    ]
+
+    for planned_tool_names in ([tool_name, tool_name], [tool_name]):
+        state: dict[str, object] = {}
+        runner._stash_final_user_output_for_finalize(
+            state=state,
+            messages=messages,
+            start_index=0,
+            target_tool_names=planned_tool_names,
+            previous_result_count=0,
+        )
+        assert state == {}
+        assert runner._should_finalize_from_tool_results(
+            messages=messages,
+            start_index=0,
+            planned_tool_names=planned_tool_names,
+            available_tools=available_tools,
+            previous_result_count=0,
+        ) is False
+
+
+def test_terminal_no_progress_cannot_reuse_previous_final_user_output() -> None:
+    runner = _StreamRunnerWithEvidence()
+    state: dict[str, object] = {
+        "final_user_output_override": "Stale generated output.",
+        "tool_only_answer_override": "Stale generated output.",
+    }
+
+    runner._stash_final_user_output_for_finalize(
+        state=state,
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "example_generate_configuration",
+                "content": {"success": True, "final_user_output": "Stale generated output."},
+            }
+        ],
+        start_index=0,
+        target_tool_names=["example_generate_configuration"],
+        previous_result_count=1,
+    )
+
+    assert "final_user_output_override" not in state
+    assert "tool_only_answer_override" not in state
+
+
+def test_tool_only_finalize_uses_current_dispatch_instead_of_prior_success() -> None:
+    runner = _StreamRunnerWithEvidence()
+    tool_name = "example_generate_configuration"
+    available_tools = [
+        {
+            "name": tool_name,
+            "capability_class": "content:configuration",
+            "result_mode": "tool_only_ok",
+        }
+    ]
+    messages = [
+        {
+            "role": "tool",
+            "tool_name": tool_name,
+            "content": {
+                "success": True,
+                "final_user_output": "Stale generated output.",
+            },
+        },
+        {
+            "role": "tool",
+            "tool_name": tool_name,
+            "content": {
+                "success": False,
+                "error": "Current generation failed.",
+            },
+        },
+    ]
+
+    assert runner._should_finalize_from_tool_results(
+        messages=messages,
+        start_index=0,
+        planned_tool_names=[tool_name],
+        available_tools=available_tools,
+        previous_result_count=1,
+    ) is False
+
+    messages[-1]["content"] = {
+        "success": True,
+        "final_user_output": "Current generated output.",
+    }
+    assert runner._should_finalize_from_tool_results(
+        messages=messages,
+        start_index=0,
+        planned_tool_names=[tool_name],
+        available_tools=available_tools,
+        previous_result_count=1,
+    ) is True
 
 
 def test_merge_runtime_messages_with_session_prefix_restores_full_turn_view() -> None:
@@ -2704,6 +3151,7 @@ def test_should_finalize_from_repeated_terminal_no_results_tool_payload() -> Non
                 "capability_class": "web_search",
             }
         ],
+        previous_result_count=1,
     )
 
     assert should_finalize is True
