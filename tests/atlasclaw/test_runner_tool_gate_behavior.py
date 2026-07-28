@@ -196,9 +196,11 @@ class _SelectorAgent:
         return SimpleNamespace(output=json.dumps(self.payload))
 
 
-def test_embed_prepare_skips_selectors_and_preserves_server_page_projection(
+@pytest.mark.parametrize("restore_workflow", [False, True])
+def test_embed_prepare_skips_selectors_and_scopes_page_workflow_context(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    restore_workflow: bool,
 ) -> None:
     skill_path = tmp_path / "SKILL.md"
     skill_path.write_text(
@@ -237,6 +239,18 @@ def test_embed_prepare_skips_selectors_and_preserves_server_page_projection(
         ],
         "locator": str(skill_path),
     }
+    embed_scope = {
+        "context_id": "ctx-generation-zero",
+        "generation": 0,
+        "provider_type": "example",
+        "provider_instance": "primary",
+        "object_type": "item",
+        "object_id": "item-1",
+    }
+    workflow_metadata = {
+        "internal_request_trace_id": "trace-generation-zero",
+        "selected_item_id": "item-1",
+    }
     monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: list(tools))
     monkeypatch.setattr(
         prepare_module,
@@ -249,7 +263,26 @@ def test_embed_prepare_skips_selectors_and_preserves_server_page_projection(
         lambda **kwargs: "example:other",
     )
     manager = _PrepareSessionManager(
-        transcript=[{"role": "assistant", "content": "Continue the previous request workflow."}]
+        transcript=(
+            [
+                {
+                    "role": "user",
+                    "content": "Inspect the current item",
+                    "metadata": {
+                        "visible_user_turn": False,
+                        "embed_scope": dict(embed_scope),
+                    },
+                },
+                {
+                    "role": "tool",
+                    "tool_name": "example_read_item",
+                    "content": {"_internal": dict(workflow_metadata)},
+                },
+                {"role": "assistant", "content": "Item details loaded."},
+            ]
+            if restore_workflow
+            else [{"role": "assistant", "content": "Continue the previous request workflow."}]
+        )
     )
     runner = _build_prepare_runner(manager)
     selector_calls = 0
@@ -266,10 +299,7 @@ def test_embed_prepare_skips_selectors_and_preserves_server_page_projection(
         extra={
             "active_internal_request_trace_id": "old-request-trace",
             "context": {
-                "embed_scope": {
-                    "provider_type": "example",
-                    "provider_instance": "primary",
-                },
+                "embed_scope": dict(embed_scope),
                 "allowed_page_skill_refs": ["example:item"],
             },
         },
@@ -286,10 +316,22 @@ def test_embed_prepare_skips_selectors_and_preserves_server_page_projection(
     assert state["tool_intent_plan"].target_tool_names == []
     assert state["tool_intent_plan"].action is ToolIntentAction.DIRECT_ANSWER
     assert state["tool_execution_required"] is False
-    assert "active_internal_request_trace_id" not in deps.extra
     assert deps.extra["target_md_skill"]["qualified_name"] == "example:item"
     assert "declared item tools" in deps.extra["target_md_skill"]["instructions"]
-    assert "workflow_context" not in deps.extra["target_md_skill"]
+    if restore_workflow:
+        assert deps.extra["active_internal_request_trace_id"] == "trace-generation-zero"
+        assert deps.extra["target_md_skill"]["workflow_context"] == {
+            "internal_request_trace_id": "trace-generation-zero",
+            "recent_tool_metadata": [
+                {
+                    "tool_name": "example_read_item",
+                    "metadata": workflow_metadata,
+                }
+            ],
+        }
+    else:
+        assert "active_internal_request_trace_id" not in deps.extra
+        assert "workflow_context" not in deps.extra["target_md_skill"]
     assert any(step == "server_page_projection_plan_resolved" for step, _ in logs)
     assert not any(step == "capability_selector_plan_resolved" for step, _ in logs)
 

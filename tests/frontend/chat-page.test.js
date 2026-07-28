@@ -433,6 +433,43 @@ describe('chat page', () => {
     expect(sidebar.querySelector('[data-session-key="session-b"]')).toBeNull()
   })
 
+  test('deleting the last session clears a pending floating action interaction', async () => {
+    window.__atlasclawEmbedSurface = Object.freeze({
+      surface: 'floating',
+      hostOrigin: 'https://host.example',
+      nonce: 'abcdefghijklmnopqrstuvwxyz123456',
+      bootstrapValidated: true
+    })
+
+    const chatPage = await import('../../app/frontend/scripts/pages/chat.js')
+    const container = document.getElementById('page-root')
+    await chatPage.mount(container)
+
+    const actionSlot = container.querySelector('#embed-object-action-slot')
+    const staleConfirmation = document.createElement('div')
+    staleConfirmation.className = 'object-action-confirmation-card'
+    actionSlot.appendChild(staleConfirmation)
+    actionSlot.hidden = false
+
+    const sidebar = document.getElementById('sidebar-dynamic-content')
+    const confirmDelete = async (sessionKey) => {
+      sidebar.querySelector(`[data-delete-session="${sessionKey}"]`).click()
+      sidebar.querySelector(`[data-delete-session="${sessionKey}"]`).click()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    }
+
+    await confirmDelete('session-b')
+    expect(staleConfirmation.isConnected).toBe(true)
+
+    await confirmDelete('session-a')
+
+    expect(global.fetch).toHaveBeenCalledWith(
+      expect.stringContaining('/api/sessions/session-a'),
+      expect.objectContaining({ method: 'DELETE' })
+    )
+    expect(staleConfirmation.isConnected).toBe(false)
+  })
+
   test('activateChatSession switches the mounted chat page to a fresh empty session', async () => {
     const chatPage = await import('../../app/frontend/scripts/pages/chat.js')
     const container = document.getElementById('page-root')

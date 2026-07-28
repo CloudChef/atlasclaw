@@ -25,6 +25,7 @@ from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     select_no_runtime_provider_auth_diagnostic,
     select_provider_auth_diagnostic,
 )
+from app.atlasclaw.agent.runner_tool.runner_execution_prepare import _embed_scope_workflow_history
 from app.atlasclaw.agent.runner_tool.runner_execution_retry import RunnerExecutionRetryMixin
 from app.atlasclaw.agent.runner_tool.runner_tool_messages import (
     extract_synthetic_tool_messages_from_next_node,
@@ -1679,6 +1680,92 @@ def test_sanitize_turn_messages_for_persistence_attaches_user_metadata() -> None
         },
         {"role": "assistant", "content": "Detail answer"},
     ]
+
+
+def test_embed_scope_workflow_history_restores_generation_zero() -> None:
+    runner = _PostRunner()
+    embed_scope = {
+        "context_id": "ctx-1",
+        "generation": 0,
+        "provider_type": "smartcmp",
+        "provider_instance": "default",
+        "object_type": "catalog",
+        "object_id": "catalog-1",
+    }
+    persisted_metadata = runner._persist_user_message_metadata_from_deps(
+        SimpleNamespace(
+            extra={
+                "context": {
+                    "visible_user_turn": False,
+                    "embed_scope": embed_scope,
+                }
+            }
+        )
+    )
+    workflow_message = {
+        "role": "assistant",
+        "content": "Catalog workflow result",
+    }
+
+    restored = _embed_scope_workflow_history(
+        [
+            {
+                "role": "user",
+                "content": "Run catalog action",
+                "metadata": persisted_metadata,
+            },
+            workflow_message,
+        ],
+        embed_scope=embed_scope,
+    )
+
+    assert restored == [workflow_message]
+
+
+def test_embed_scope_workflow_history_rejects_latest_mismatching_hidden_action() -> None:
+    matching_scope = {
+        "context_id": "ctx-1",
+        "generation": 0,
+        "provider_type": "example",
+        "provider_instance": "primary",
+        "object_type": "item",
+        "object_id": "item-1",
+    }
+    newer_scope = {
+        **matching_scope,
+        "generation": 1,
+        "object_id": "item-2",
+    }
+
+    def hidden_action(scope: dict, trace_id: str) -> list[dict]:
+        return [
+            {
+                "role": "user",
+                "content": "Run a page action",
+                "metadata": {
+                    "visible_user_turn": False,
+                    "embed_scope": scope,
+                },
+            },
+            {
+                "role": "tool",
+                "content": {
+                    "_internal": {
+                        "internal_request_trace_id": trace_id,
+                    }
+                },
+            },
+        ]
+
+    restored = _embed_scope_workflow_history(
+        [
+            *hidden_action(matching_scope, "matching-trace"),
+            *hidden_action(newer_scope, "newer-trace"),
+        ],
+        embed_scope=matching_scope,
+    )
+
+    assert restored is None
 
 
 @pytest.mark.asyncio

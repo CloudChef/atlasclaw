@@ -2346,6 +2346,10 @@ function buildObjectActionConfirmationCard(action, actionGroup, submissionContex
           restoreSubmissionState(
             getTranslatedChatLabel('chat.objectActionSubmitFailed', 'Unable to submit action. Please try again.')
           )
+        },
+        onRunCompleted: () => {
+          card.remove()
+          setObjectActionGroupConfirming(actionGroup, false)
         }
       },
       submissionContext
@@ -2430,6 +2434,8 @@ function submitObjectActionDirectly(message, callbacks = {}, submissionContext =
     }).then((created) => {
       if (created === false && typeof callbacks.onRunCreationFailed === 'function') {
         callbacks.onRunCreationFailed()
+      } else if (created === true && typeof callbacks.onRunCompleted === 'function') {
+        callbacks.onRunCompleted()
       }
     }).catch((error) => {
       console.warn('[ChatUI] Object action submit failed:', error)

@@ -36,6 +36,7 @@ const handleExternalChatSessionChange = (event) => {
     return
   }
   currentSessionKey = null
+  embedContextController?.resetActionInteraction()
   void activateSession(null)
 }
 
@@ -320,6 +321,7 @@ async function handleSessionClick(event) {
 async function switchActiveSession(nextKey) {
   const validatedKey = await validateChatSessionCandidate(nextKey)
   if (!validatedKey) return false
+  embedContextController?.resetActionInteraction()
   abortCurrentStream()
   pendingDeleteSessionKey = null
   setSessionKey(validatedKey)
@@ -434,6 +436,7 @@ async function deleteCurrentSession(sessionKey) {
       }
       if (!switched) {
         currentSessionKey = null
+        embedContextController?.resetActionInteraction()
         setSessionKey(null)
         await activateSession(null)
       }

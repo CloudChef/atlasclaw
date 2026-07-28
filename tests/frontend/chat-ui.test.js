@@ -3848,6 +3848,74 @@ describe('chat-ui.js handler mode', () => {
         expect(actionGroup.querySelector('button.tone-success').disabled).toBe(false);
     });
 
+    test('context action confirmation clears after the submitted run completes', async () => {
+        const { initChat, renderContextObjectActions } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element } = createDomChatElementWithMessages();
+        const deepChatContainer = document.createElement('div');
+        deepChatContainer.id = 'container';
+        element.shadowRoot.appendChild(deepChatContainer);
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+
+        const actionSlot = document.createElement('div');
+        document.body.appendChild(actionSlot);
+        renderContextObjectActions(
+            actionSlot,
+            objectActionReference({
+                object_id: 'RES20260427000004',
+                object_name: 'Linux-test-agent',
+                actions: [
+                    {
+                        action_id: 'approve',
+                        kind: 'agent_prompt',
+                        display_label: localizedText('Approve'),
+                        agent_prompt: localizedText('Approve RES20260427000004'),
+                        confirmation_message: localizedText('Confirm approving RES20260427000004?'),
+                        requires_confirmation: true,
+                        tone: 'success'
+                    }
+                ]
+            })
+        );
+
+        const actionButton = actionSlot.querySelector('button.tone-success');
+        actionButton.click();
+        await new Promise(r => setTimeout(r, 0));
+
+        const card = actionSlot.querySelector('.object-action-confirmation-card');
+        expect(card).not.toBeNull();
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-context-action-complete' })
+        });
+
+        card.querySelector('.tone-success').click();
+        await new Promise(r => setTimeout(r, 60));
+
+        expect(card.classList.contains('is-submitting')).toBe(true);
+        expect(actionButton.disabled).toBe(true);
+        const actionStream = MockEventSource.instances.at(-1);
+        actionStream.simulateEvent('assistant', {
+            text: 'Approval completed.',
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+        actionStream.simulateEvent('lifecycle', { phase: 'end' });
+        await new Promise(r => setTimeout(r, 0));
+
+        expect(card.isConnected).toBe(false);
+        expect(actionButton.disabled).toBe(false);
+    });
+
     test('object action prompt fails closed when direct submit is unavailable', async () => {
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const { element, input, messages } = createDomChatElementWithMessages();
