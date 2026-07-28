@@ -151,6 +151,13 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
+For development and test execution, install the development manifest instead;
+it includes all runtime dependencies plus the test runner:
+
+```bash
+pip install -r requirements-dev.txt
+```
+
 ### Configure Environment
 
 AtlasClaw uses `atlasclaw.json` for configuration. Create a configuration file in the project root:
