@@ -8,8 +8,14 @@
  */
 
 import { getSessionKey, initSession, setSessionKey, setSessionHasMessages } from './session-manager.js?v=36'
-import { buildWorkspaceFileDownloadUrl, getAgentInfo, getSessionHistory } from './api-client.js?v=31'
-import { createStreamHandler } from './stream-handler.js?v=27'
+import {
+  abortAgentRun,
+  buildWorkspaceFileDownloadUrl,
+  getAgentInfo,
+  getAgentStatus,
+  getSessionHistory
+} from './api-client.js?v=31'
+import { createStreamHandler } from './stream-handler.js?v=29'
 import { buildApiUrl } from './config.js?v=27'
 import { translateIfExists, getCurrentLocale } from './i18n.js'
 import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=27'
@@ -37,6 +43,19 @@ const CHAT_INPUT_FOCUS_RETRY_DELAY_MS = 100
 const USER_MESSAGE_COPY_RETRY_DELAY_MS = 250
 const USER_MESSAGE_COPY_RESET_MS = 1200
 const OBJECT_ACTION_BIND_RETRY_DELAY_MS = 250
+const STOP_ABORT_MAX_ATTEMPTS = 2
+const RUN_RECONCILE_INTERVAL_MS = 250
+const ACTIVE_SUBMIT_ICON_FILTER = 'brightness(0) invert(1)'
+const DISABLED_SUBMIT_ICON_FILTER = [
+  'brightness(0)',
+  'saturate(100%)',
+  'invert(72%)',
+  'sepia(8%)',
+  'saturate(384%)',
+  'hue-rotate(179deg)',
+  'brightness(92%)',
+  'contrast(88%)'
+].join(' ')
 
 const CHAT_DENSITY = Object.freeze({
   comfortable: Object.freeze({
@@ -548,6 +567,16 @@ function getLatestRuntimePanel(container) {
   return panels[panels.length - 1]
 }
 
+function getRuntimePanelForRun(container, runId) {
+  const normalizedRunId = String(runId || '').trim()
+  if (!container || !normalizedRunId) return null
+  const panels = container.querySelectorAll('details.runtime-panel')
+  return Array.from(panels).find((panel) => (
+    panel.getAttribute('data-run-id') === normalizedRunId ||
+    panel.closest('.message-wrapper')?.getAttribute('data-run-id') === normalizedRunId
+  )) || null
+}
+
 function setupScrollListener() {
   const container = getMessageContainer()
   if (!container || container._scrollListenerAttached) return
@@ -608,6 +637,10 @@ details.runtime-panel>summary::marker{display:none}
 .runtime-state-icon{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;font-size:14px;color:#7c889d}
 .runtime-state-icon.live{animation:thinking-pulse-minimal 1.5s ease-in-out infinite}
 .runtime-state-icon.done{color:#16a34a}
+.runtime-state-icon.stopped{color:#64748b}
+.runtime-state-icon.failed{color:#dc2626;font-weight:700}
+.runtime-state-icon.stop-failed{color:#dc2626;font-weight:700}
+.runtime-stop-mark{display:block;width:8px;height:8px;border-radius:2px;background:currentColor}
 .runtime-state-icon .thinking-dots{margin-left:0}
 .runtime-title{font-size:15px;font-weight:500;letter-spacing:0;color:#7c889d}
 .runtime-title-elapsed{font-size:13px;font-weight:500;color:#94a3b8;font-variant-numeric:tabular-nums}
@@ -871,6 +904,26 @@ async function restoreSessionHistory(element, sessionKey, activationGeneration) 
   }
 }
 
+async function replaceActiveSessionWithAuthoritativeHistory(sessionKey) {
+  const payload = await getSessionHistory(sessionKey)
+  const messages = Array.isArray(payload?.messages) ? payload.messages : []
+  const lastVisibleMessage = [...messages].reverse().find((message) => (
+    message?.role === 'user' || message?.role === 'assistant'
+  ))
+  if (lastVisibleMessage?.role !== 'assistant') {
+    return false
+  }
+  if (currentSessionKey !== sessionKey || !chatElement) {
+    return false
+  }
+  const history = messages
+    .map((message) => mapTranscriptMessageToHistory(message))
+    .filter(Boolean)
+  applyHistoryToElement(chatElement, history)
+  bindObjectActionHandlers()
+  return true
+}
+
 function applyHistoryToElement(element, history) {
   if (!element) return
   clearRenderedMessages(element)
@@ -1041,7 +1094,14 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     '',
     '',
     0,
-    true
+    true,
+    null,
+    false,
+    0,
+    [],
+    [],
+    false,
+    runId
   )
   if (initialPayload.html) {
     signals.onResponse({
@@ -1095,8 +1155,73 @@ function extractMessageFromBody(body) {
 function configureI18nAttributes(element) {
   const compact = window.__atlasclawEmbedSurface?.surface === 'floating'
   const density = compact ? CHAT_DENSITY.compact : CHAT_DENSITY.comfortable
+  const submitButtonSize = compact ? '36px' : '40px'
   element.classList?.toggle('atlas-chat-compact', compact)
   element.chatStyle = { backgroundColor: 'transparent' }
+  element.validateInput = validateChatInput
+  element.submitButtonStyles = {
+    submit: {
+      container: {
+        default: {
+          width: submitButtonSize,
+          height: submitButtonSize,
+          boxSizing: 'border-box',
+          borderRadius: '999px',
+          marginBottom: '2px',
+          backgroundColor: '#1f2328',
+          cursor: 'pointer'
+        },
+        hover: {
+          backgroundColor: '#343a40'
+        },
+        click: {
+          backgroundColor: '#111418'
+        }
+      },
+      svg: {
+        styles: {
+          default: {
+            filter: ACTIVE_SUBMIT_ICON_FILTER
+          }
+        }
+      }
+    },
+    loading: {
+      container: {
+        default: {
+          cursor: 'default'
+        }
+      }
+    },
+    stop: {
+      container: {
+        default: {
+          cursor: 'pointer'
+        },
+        hover: {
+          backgroundColor: '#343a40'
+        },
+        click: {
+          backgroundColor: '#111418'
+        }
+      }
+    },
+    disabled: {
+      container: {
+        default: {
+          cursor: 'default',
+          backgroundColor: '#eef1f5'
+        }
+      },
+      svg: {
+        styles: {
+          default: {
+            filter: DISABLED_SUBMIT_ICON_FILTER
+          }
+        }
+      }
+    }
+  }
   element.messageStyles = {
     default: {
       shared: {
@@ -1144,6 +1269,27 @@ function configureI18nAttributes(element) {
     :host { border: none !important; background: transparent !important; box-shadow: none !important; }
     #container, #chat-view, #messages, .messages, .messages-container { border: none !important; background: transparent !important; box-shadow: none !important; }
     #messages, .messages, .messages-container { box-sizing: border-box !important; padding-bottom: ${density.messageBottomSpace} !important; scroll-padding-bottom: ${density.messageBottomSpace} !important; }
+    /* DeepChat positions inside buttons and their icons for its native 1.65em
+       button. Keep the native states while centering the enlarged AtlasClaw
+       button and its state indicators within the composer. */
+    .input-button.inside-end {
+      inset-block-start: 50% !important;
+      inset-block-end: auto !important;
+      transform: translateY(-50%) !important;
+    }
+    #stop-icon {
+      inset: 0 !important;
+      margin: auto !important;
+      background-color: #ffffff !important;
+    }
+    .loading-submit-button {
+      position: absolute !important;
+      inset-inline-start: calc(-9990px + 50% - .51em) !important;
+      inset-block-start: 50% !important;
+      inset-block-end: auto !important;
+      transform: translateY(-50%) !important;
+      filter: brightness(0) invert(1);
+    }
     ${THINKING_STYLES}
     ${compact ? FLOATING_CHAT_STYLES : ''}
   `
@@ -1202,6 +1348,24 @@ function beginRunActivity(sessionKey) {
       activeRunActivityCounts.delete(key)
     }
     notifyRunActivityChange(key)
+    refreshSubmitButtonState()
+  }
+}
+
+function hasActiveRun(sessionKey) {
+  const key = String(sessionKey || '')
+  return (activeRunActivityCounts.get(key) || 0) > 0
+}
+
+function validateChatInput(text, files) {
+  const sessionKey = currentSessionKey || getSessionKey()
+  if (hasActiveRun(sessionKey)) return false
+  return Boolean(String(text || '').trim() || (Array.isArray(files) && files.length > 0))
+}
+
+function refreshSubmitButtonState() {
+  if (typeof chatElement?.disableSubmitButton === 'function') {
+    chatElement.disableSubmitButton(false)
   }
 }
 
@@ -1288,7 +1452,16 @@ function getRuntimeDisplayEntries(runtimeEntries) {
   ))
 }
 
-function buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs = null, isThinking = false, panelOpen = null, isComplete = false) {
+function buildRuntimePanel(
+  runtimeEntries,
+  thinkingContent,
+  elapsedMs = null,
+  isThinking = false,
+  panelOpen = null,
+  isComplete = false,
+  isAborted = false,
+  runId = ''
+) {
   const entries = Array.isArray(runtimeEntries) ? runtimeEntries : []
   const hasThinkingText = !!(thinkingContent && thinkingContent.trim())
   if (!entries.length && !hasThinkingText) {
@@ -1297,19 +1470,20 @@ function buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs = null, is
   const hasAnswered = !!isComplete
   const displayEntries = getRuntimeDisplayEntries(entries)
   const hasFailed = displayEntries.some((entry) => entry.state === 'failed')
+  const hasTerminalState = hasAnswered || hasFailed || isAborted
   const chipEntries = displayEntries.filter((entry, index) => {
     if (index === 0) return true
     return entry.state !== displayEntries[index - 1].state
   })
   const chips = chipEntries.map((entry, index) => {
     const label = getRuntimeStateLabel(entry.state)
-    const activeClass = index === chipEntries.length - 1 ? ' active' : ''
+    const activeClass = !hasTerminalState && index === chipEntries.length - 1 ? ' active' : ''
     return `<span class="runtime-chip ${entry.state || ''}${activeClass}">${escapeHtml(label)}</span>`
   }).join('')
   const logs = displayEntries.map((entry, index) => {
     const label = getRuntimeStateLabel(entry.state)
     const message = entry.message ? escapeHtml(entry.message) : ''
-    const isActiveEntry = !hasAnswered && !hasFailed && index === displayEntries.length - 1
+    const isActiveEntry = !hasTerminalState && index === displayEntries.length - 1
     const effectiveElapsedMs = (
       isActiveEntry && typeof elapsedMs === 'number' && !Number.isNaN(elapsedMs)
     )
@@ -1321,7 +1495,9 @@ function buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs = null, is
     return `<div class="runtime-log-item${activeClass}"><span class="runtime-log-time">${escapeHtml(time)}</span><span class="runtime-log-label">${liveBadge}${escapeHtml(label)}</span><span class="runtime-log-message">${message}</span></div>`
   }).join('')
   const thinkingHtml = buildThinkingHtml(thinkingContent, elapsedMs, isThinking)
-  const titleIcon = hasAnswered
+  const titleIcon = isAborted
+    ? '<span class="runtime-state-icon stopped" aria-hidden="true"><span class="runtime-stop-mark"></span></span>'
+    : hasAnswered
     ? '<span class="runtime-state-icon done">✓</span>'
     : !hasFailed
     ? '<span class="thinking-dots thinking-title-dots"><span>.</span><span>.</span><span>.</span></span>'
@@ -1331,8 +1507,12 @@ function buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs = null, is
     ? `<span class="runtime-title-elapsed">${escapeHtml(titleElapsed)}</span>`
     : ''
   const shouldOpen = typeof panelOpen === 'boolean' ? panelOpen : false
-  const detailsAttrs = shouldOpen ? ' open' : ''
-  const title = translateIfExists('chat.runtimeThinking') || 'Thinking'
+  const detailsAttrs = `${shouldOpen ? ' open' : ''}${
+    runId ? ` data-run-id="${escapeHtml(String(runId))}"` : ''
+  }`
+  const title = isAborted
+    ? translateIfExists('chat.runtimeStopped') || (getCurrentLocale() === 'zh-CN' ? '已停止' : 'Stopped')
+    : translateIfExists('chat.runtimeThinking') || 'Thinking'
   return `<details class="runtime-panel"${detailsAttrs}><summary><div class="runtime-summary-left"><span class="runtime-title">${escapeHtml(title)}</span>${titleIcon}${titleElapsedHtml}</div><div class="runtime-summary-right"><span class="runtime-toggle">></span></div></summary><div class="runtime-body">${chips ? `<div class="runtime-statuses">${chips}</div>` : ''}${logs ? `<div class="runtime-log">${logs}</div>` : ''}${thinkingHtml}</div></details>`
 }
 
@@ -1354,9 +1534,20 @@ function buildMessageContent(
   isComplete = false,
   renderRevision = 0,
   workspaceDownloadReferences = [],
-  objectActionReferences = []
+  objectActionReferences = [],
+  isAborted = false,
+  runId = ''
 ) {
-  const runtimeHtml = buildRuntimePanel(runtimeEntries, thinkingContent, elapsedMs, isThinking, panelOpen, isComplete)
+  const runtimeHtml = buildRuntimePanel(
+    runtimeEntries,
+    thinkingContent,
+    elapsedMs,
+    isThinking,
+    panelOpen,
+    isComplete,
+    isAborted,
+    runId
+  )
   const downloadHtml = buildGeneratedWorkspaceDownloadsHtml(workspaceDownloadReferences, responseContent)
   const visibleObjectActionReferences = isComplete ? objectActionReferences : []
   const objectActionContext = createObjectActionRenderContext(visibleObjectActionReferences)
@@ -1369,8 +1560,11 @@ function buildMessageContent(
   if (!runtimeHtml && !responseHtml) {
     return { html: '' }
   }
+  const runIdAttribute = runId
+    ? ` data-run-id="${escapeHtml(String(runId))}"`
+    : ''
   return {
-    html: `<div class="message-wrapper" data-render-revision="${renderRevision}">${runtimeHtml}${responseHtml}</div>`
+    html: `<div class="message-wrapper" data-render-revision="${renderRevision}"${runIdAttribute}>${runtimeHtml}${responseHtml}</div>`
   }
 }
 
@@ -2201,6 +2395,7 @@ function createObjectActionSignals(element) {
       })
       aiMessageStarted = true
     },
+    onOpen: () => {},
     onClose: () => {},
     stopClicked: { listener: null }
   }
@@ -3014,12 +3209,16 @@ async function handleStreamWithSignals(runId, signals, context) {
   let runtimePanelSuppressClickUntil = 0
   let runtimeEntries = [{ state: 'reasoning', message: 'Starting response analysis.' }]
   let finalAnswerReady = false
+  let runAborted = false
   let serverRuntimeSeen = false
   let localRuntimeSeedTimers = []
   let assistantUpdateTimer = null
   let thinkingScrollTimer = null
   let streamSettled = false
   let streamHandler = null
+  let abortRequestPending = false
+  let runReconciliationStarted = false
+  let stopClickedListener = null
   let renderRevision = 0
   let lastRenderedMessageSnapshot = null
   let lastRenderedMessageSignature = null
@@ -3033,6 +3232,12 @@ async function handleStreamWithSignals(runId, signals, context) {
       return Math.max(0, Date.now() - runStartTime)
     }
     return 0
+  }
+
+  function waitForRunReconciliation() {
+    return new Promise((resolve) => {
+      setTimeout(resolve, RUN_RECONCILE_INTERVAL_MS)
+    })
   }
 
   function pushRuntimeEntry(state, message, metadata = {}, options = {}) {
@@ -3091,6 +3296,12 @@ async function handleStreamWithSignals(runId, signals, context) {
   function clearActiveStreamHandler() {
     if (currentStreamHandler === streamHandler) {
       currentStreamHandler = null
+    }
+  }
+
+  function clearStopClickedListener() {
+    if (signals.stopClicked?.listener === stopClickedListener) {
+      signals.stopClicked.listener = () => {}
     }
   }
 
@@ -3202,6 +3413,7 @@ async function handleStreamWithSignals(runId, signals, context) {
       aiMessageContent,
       thinkingFinalized,
       finalAnswerReady,
+      runAborted,
       panelOpen: !!panelShouldOpen,
       workspaceDownloads: workspaceDownloadReferences.map((reference) => ({
         path: reference.path || '',
@@ -3241,13 +3453,15 @@ async function handleStreamWithSignals(runId, signals, context) {
       runtimePanelSyncTimer = null
       const container = getMessageContainer()
       if (!container) return
-      const details = getLatestRuntimePanel(container)
+      const details = getRuntimePanelForRun(container, runId)
       applyRuntimePanelState(details, shouldOpen)
     }, 0)
   }
 
   function captureRenderedRuntimePanelState() {
-    const renderedPanelOpen = readRenderedRuntimePanelOpen()
+    const container = getMessageContainer()
+    const details = getRuntimePanelForRun(container, runId)
+    const renderedPanelOpen = details ? !!details.open : null
     if (typeof renderedPanelOpen !== 'boolean') return
     if (runtimePanelUserOverride) return
     const autoPanelOpen = autoPanelShouldOpen()
@@ -3274,7 +3488,7 @@ async function handleStreamWithSignals(runId, signals, context) {
   function refreshRenderedElapsed(elapsedMs) {
     const container = getMessageContainer()
     if (!container) return
-    const panel = getLatestRuntimePanel(container)
+    const panel = getRuntimePanelForRun(container, runId)
     if (!panel) return
     const wrapper = panel.closest('.message-wrapper')
     if (!wrapper || wrapper.getAttribute('data-render-revision') !== String(renderRevision)) return
@@ -3363,7 +3577,9 @@ async function handleStreamWithSignals(runId, signals, context) {
         finalAnswerReady,
         renderRevision,
         workspaceDownloadReferences,
-        objectActionReferences
+        objectActionReferences,
+        runAborted,
+        runId
       )
       if (content.html) {
         lastRenderedMessageSnapshot = nextMessageSnapshot
@@ -3378,6 +3594,91 @@ async function handleStreamWithSignals(runId, signals, context) {
     } catch (e) {
       console.warn('[ChatUI] Failed to update UI:', e)
     }
+  }
+
+  function finalizeRenderedRuntimePanel({
+    titleText,
+    iconClass,
+    buildIconContent
+  }) {
+    const container = getMessageContainer()
+    const panel = getRuntimePanelForRun(container, runId)
+    if (!panel) return
+
+    const title = panel.querySelector('.runtime-title')
+    if (title) {
+      title.textContent = titleText
+    }
+    panel.querySelector('.thinking-title-dots')?.remove()
+    for (const stateIcon of panel.querySelectorAll('.runtime-state-icon')) {
+      stateIcon.remove()
+    }
+    if (title) {
+      const terminalIcon = document.createElement('span')
+      terminalIcon.className = `runtime-state-icon ${iconClass}`
+      terminalIcon.setAttribute('aria-hidden', 'true')
+      buildIconContent(terminalIcon)
+      title.insertAdjacentElement('afterend', terminalIcon)
+    }
+    const titleElapsed = panel.querySelector('.runtime-title-elapsed')
+    if (titleElapsed) {
+      titleElapsed.textContent = formatRuntimeHeaderElapsed(currentElapsedMs())
+    }
+    for (const activeElement of panel.querySelectorAll('.runtime-chip.active, .runtime-log-item.active')) {
+      activeElement.classList.remove('active')
+    }
+    for (const liveDot of panel.querySelectorAll('.runtime-log-live-dot')) {
+      liveDot.remove()
+    }
+  }
+
+  function finalizeRenderedRuntimePanelAsAborted() {
+    // DeepChat stops accepting handler responses immediately after its native
+    // Stop button is clicked. Finalize only this run's panel directly so the
+    // confirmed abort cannot remain visually active or mutate another run.
+    finalizeRenderedRuntimePanel({
+      titleText: translateIfExists('chat.runtimeStopped') ||
+        (getCurrentLocale() === 'zh-CN' ? '已停止' : 'Stopped'),
+      iconClass: 'stopped',
+      buildIconContent: (icon) => {
+        const stopMark = document.createElement('span')
+        stopMark.className = 'runtime-stop-mark'
+        icon.appendChild(stopMark)
+      }
+    })
+  }
+
+  function finalizeRenderedRuntimePanelAsStopFailed() {
+    finalizeRenderedRuntimePanel({
+      titleText: translateIfExists('chat.runtimeStopFailed') ||
+        (getCurrentLocale() === 'zh-CN' ? '停止失败' : 'Stop failed'),
+      iconClass: 'stop-failed',
+      buildIconContent: (icon) => {
+        icon.textContent = '!'
+      }
+    })
+  }
+
+  function finalizeRenderedRuntimePanelAsCompleted() {
+    finalizeRenderedRuntimePanel({
+      titleText: translateIfExists('chat.runtimeCompleted') ||
+        (getCurrentLocale() === 'zh-CN' ? '已完成' : 'Completed'),
+      iconClass: 'done',
+      buildIconContent: (icon) => {
+        icon.textContent = '✓'
+      }
+    })
+  }
+
+  function finalizeRenderedRuntimePanelAsFailed() {
+    finalizeRenderedRuntimePanel({
+      titleText: translateIfExists('chat.runtimeFailed') ||
+        (getCurrentLocale() === 'zh-CN' ? '失败' : 'Failed'),
+      iconClass: 'failed',
+      buildIconContent: (icon) => {
+        icon.textContent = '!'
+      }
+    })
   }
 
   function startThinkingTimer() {
@@ -3439,13 +3740,93 @@ async function handleStreamWithSignals(runId, signals, context) {
       if (streamSettled) return
       streamSettled = true
       thinkingFinalized = true
+      runAborted = true
+      updateUI()
+      finalizeRenderedRuntimePanelAsAborted()
       cleanupStreamTimers()
       clearActiveStreamHandler()
+      clearStopClickedListener()
       signals.onClose()
       resolve()
     }
+    const showStopFailureWhileReconciling = () => {
+      if (streamSettled) return
+      thinkingFinalized = true
+      const stopFailedLabel = translateIfExists('chat.runtimeStopFailed') ||
+        (getCurrentLocale() === 'zh-CN' ? '停止失败' : 'Stop failed')
+      pushRuntimeEntry('failed', stopFailedLabel, { phase: 'abort_failed' })
+      updateUI()
+      finalizeRenderedRuntimePanelAsStopFailed()
+      cleanupStreamTimers()
+      streamHandler?.close?.()
+    }
+    const settleAlreadyTerminalRun = async (status) => {
+      if (streamSettled) return
+      streamSettled = true
+      thinkingFinalized = true
+      const normalizedStatus = String(status || '').trim().toLowerCase()
+      if (normalizedStatus === 'completed') {
+        finalAnswerReady = true
+      } else {
+        pushRuntimeEntry(
+          'failed',
+          translateIfExists('chat.runtimeFailed') || 'Failed',
+          { phase: normalizedStatus || 'error' }
+        )
+      }
+      updateUI()
+      if (normalizedStatus === 'completed') {
+        finalizeRenderedRuntimePanelAsCompleted()
+      } else {
+        finalizeRenderedRuntimePanelAsFailed()
+      }
+      cleanupStreamTimers()
+      streamHandler?.close?.()
+      if (normalizedStatus === 'completed') {
+        while (currentSessionKey === context.sessionKey) {
+          try {
+            if (await replaceActiveSessionWithAuthoritativeHistory(context.sessionKey)) {
+              break
+            }
+          } catch (_) {
+            // Keep the session locked until its authoritative final answer can be restored.
+          }
+          await waitForRunReconciliation()
+        }
+      }
+      clearActiveStreamHandler()
+      clearStopClickedListener()
+      signals.onClose()
+      resolve()
+      notifyRunCompletedInBackground(context.sessionKey)
+    }
+    const reconcileRunUntilTerminal = async () => {
+      if (runReconciliationStarted || streamSettled) return
+      runReconciliationStarted = true
+      while (!streamSettled) {
+        try {
+          const result = await getAgentStatus(runId)
+          const actualStatus = String(result?.status || '').trim().toLowerCase()
+          if (actualStatus === 'aborted') {
+            settleAbortedStream()
+            return
+          }
+          if (['completed', 'error', 'timeout'].includes(actualStatus)) {
+            await settleAlreadyTerminalRun(actualStatus)
+            return
+          }
+        } catch (_) {
+          // A failed status read is not terminal; keep the session non-submittable and retry.
+        }
+        await waitForRunReconciliation()
+      }
+    }
 
     streamHandler = createStreamHandler(runId, {
+      onOpen: () => {
+        if (streamSettled) return
+        signals.onOpen?.()
+      },
       onStart: () => {
         if (streamSettled) return
         updateUI()
@@ -3562,6 +3943,7 @@ async function handleStreamWithSignals(runId, signals, context) {
           updateUI()
           signals.onClose()
           clearActiveStreamHandler()
+          clearStopClickedListener()
           resolve()
           notifyRunCompletedInBackground(context.sessionKey)
         }
@@ -3579,11 +3961,42 @@ async function handleStreamWithSignals(runId, signals, context) {
         updateUI()
         signals.onClose()
         clearActiveStreamHandler()
+        clearStopClickedListener()
         resolve()
         notifyRunCompletedInBackground(context.sessionKey)
       }
     })
 
+    stopClickedListener = () => {
+      if (streamSettled || abortRequestPending) return
+      abortRequestPending = true
+      void (async () => {
+        let lastError = null
+        for (let attempt = 1; attempt <= STOP_ABORT_MAX_ATTEMPTS; attempt += 1) {
+          if (streamSettled) return
+          try {
+            const result = await abortAgentRun(runId)
+            const actualStatus = String(result?.status || 'aborted').trim().toLowerCase()
+            if (actualStatus === 'aborted') {
+              streamHandler?.abort()
+            } else if (['completed', 'error', 'timeout'].includes(actualStatus)) {
+              await settleAlreadyTerminalRun(actualStatus)
+            } else {
+              showStopFailureWhileReconciling()
+              void reconcileRunUntilTerminal()
+            }
+            return
+          } catch (error) {
+            lastError = error
+          }
+        }
+        abortRequestPending = false
+        console.error(`[ChatUI] Failed to abort agent run ${runId}:`, lastError)
+        showStopFailureWhileReconciling()
+        void reconcileRunUntilTerminal()
+      })()
+    }
+    signals.stopClicked.listener = stopClickedListener
     currentStreamHandler = streamHandler
     streamHandler.start()
   })

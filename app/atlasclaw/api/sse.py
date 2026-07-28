@@ -219,8 +219,9 @@ to
         
 """
         stream = self._streams.get(run_id)
-        if stream:
-            stream.closed = True
+        if not stream or stream.closed:
+            return
+        stream.closed = True
 
         # 
         queues = self._subscribers.get(run_id, [])
@@ -301,26 +302,40 @@ create SSE
             self._subscribers[run_id] = []
         self._subscribers[run_id].append(queue)
         was_closed_on_subscribe = stream.closed
-        sent_lifecycle_end = False
 
-        def _is_lifecycle_end(event: SSEEvent) -> bool:
+        def _is_terminal_lifecycle(event: SSEEvent) -> bool:
             return (
                 event.event_type == SSEEventType.LIFECYCLE
-                and event.data.get("phase") == "end"
+                and event.data.get("phase") in {"end", "aborted", "error", "timeout"}
             )
+
+        acknowledged_terminal_lifecycle = False
+        if last_event_id:
+            for buffered_event in stream.events:
+                acknowledged_terminal_lifecycle = (
+                    acknowledged_terminal_lifecycle
+                    or _is_terminal_lifecycle(buffered_event)
+                )
+                if buffered_event.event_id == last_event_id:
+                    break
+            else:
+                acknowledged_terminal_lifecycle = False
+        sent_terminal_lifecycle = acknowledged_terminal_lifecycle
 
         try:
             replay_events = self._get_missed_events(stream, last_event_id)
             for event in replay_events:
                 yield event.to_sse_format()
-                sent_lifecycle_end = sent_lifecycle_end or _is_lifecycle_end(event)
+                sent_terminal_lifecycle = (
+                    sent_terminal_lifecycle or _is_terminal_lifecycle(event)
+                )
                 # Maintain streaming effect for thinking delta events during replay
                 if (event.event_type == SSEEventType.THINKING
                         and event.data.get("phase") == "delta"):
                     await asyncio.sleep(0.015)
 
             if was_closed_on_subscribe:
-                if not sent_lifecycle_end:
+                if not sent_terminal_lifecycle:
                     yield SSEEvent(
                         event_type=SSEEventType.LIFECYCLE,
                         data={"phase": "end"}
@@ -348,7 +363,7 @@ create SSE
                     
                     if event is None:
                         # 
-                        if not sent_lifecycle_end:
+                        if not sent_terminal_lifecycle:
                             yield SSEEvent(
                                 event_type=SSEEventType.LIFECYCLE,
                                 data={"phase": "end"}
@@ -356,7 +371,9 @@ create SSE
                         break
                         
                     yield event.to_sse_format()
-                    sent_lifecycle_end = sent_lifecycle_end or _is_lifecycle_end(event)
+                    sent_terminal_lifecycle = (
+                        sent_terminal_lifecycle or _is_terminal_lifecycle(event)
+                    )
                     
                 except asyncio.TimeoutError:
                     # heartbeat
@@ -407,7 +424,7 @@ create SSE
         
         Args:
             run_id:run ID
-            phase:phase(start/end/error)
+            phase:phase(start/end/error/timeout/aborted)
             **kwargs:additional data
             
         Returns:

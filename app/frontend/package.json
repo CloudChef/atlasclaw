@@ -6,9 +6,11 @@
   "scripts": {
     "build": "esbuild scripts/main.js --bundle --minify --outfile=dist/app.min.js --format=esm",
     "build:dev": "esbuild scripts/main.js --bundle --outfile=dist/app.js --format=esm --sourcemap",
-    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js"
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js",
+    "vendor:deep-chat": "cp node_modules/deep-chat/dist/deepChat.bundle.js static/deepChat.bundle.js"
   },
   "devDependencies": {
+    "deep-chat": "2.5.0",
     "esbuild": "^0.28.1",
     "jest": "^30.4.2",
     "jest-environment-jsdom": "^30.4.1"

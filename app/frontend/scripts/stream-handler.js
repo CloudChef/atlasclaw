@@ -7,7 +7,7 @@
  * Handle streaming events from Agent runs
  *
  * Backend SSE event types:
- * - lifecycle: { phase: 'start' | 'end' | 'error' | 'timeout' }
+ * - lifecycle: { phase: 'start' | 'end' | 'error' | 'timeout' | 'aborted' }
  * - assistant: { text: string, is_delta: boolean }
  * - tool: { tool: string, phase: 'start' | 'update' | 'end', result?: string }
  * - error: { message: string, code?: string }
@@ -34,13 +34,14 @@ export const EventTypes = {
  * @param {string} runId - Agent run ID
  * @param {object} callbacks - Event callback functions. onAbort is called for caller-initiated
  * stream cancellation so UI owners can release local timers without treating it as a failure.
- * @returns {object} Controller { start, abort }
+ * @returns {object} Controller { start, close, abort }
  */
 export function createStreamHandler(runId, callbacks = {}) {
     let eventSource = null;
     let aborted = false;
 
     const {
+        onOpen = () => {},
         onStart = () => {},
         onDelta = () => {},
         onToolStart = () => {},
@@ -63,6 +64,7 @@ export function createStreamHandler(runId, callbacks = {}) {
 
         eventSource.onopen = () => {
             console.log('[Stream] Connected:', runId);
+            onOpen();
         };
 
         eventSource.onerror = (error) => {
@@ -82,6 +84,10 @@ export function createStreamHandler(runId, callbacks = {}) {
                 onStart(data);
             } else if (data.phase === 'end') {
                 onEnd(data);
+                close();
+            } else if (data.phase === 'aborted') {
+                aborted = true;
+                onAbort(data);
                 close();
             } else if (data.phase === 'error' || data.phase === 'timeout') {
                 onError({ message: data.error || 'Lifecycle error' });
@@ -174,6 +180,7 @@ export function createStreamHandler(runId, callbacks = {}) {
 
     return {
         start,
+        close,
         abort,
         isConnected: () => eventSource !== null && eventSource.readyState === EventSource.OPEN
     };

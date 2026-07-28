@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -88,6 +89,58 @@ class _StreamTestRunner(
             yield None
         for node in self._nodes:
             yield node
+
+
+class _BlockingFirstNodeRunner(RunnerExecutionFlowStreamMixin):
+    def __init__(self) -> None:
+        self.node_started = asyncio.Event()
+        self.node_cancelled = asyncio.Event()
+
+    async def _iter_agent_nodes(self, agent_run):
+        self.node_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.node_cancelled.set()
+        if False:
+            yield None
+
+
+@pytest.mark.asyncio
+async def test_first_model_node_task_is_cancelled_with_outer_stream() -> None:
+    runner = _BlockingFirstNodeRunner()
+    stream = runner._run_agent_node_stream(
+        agent_run=SimpleNamespace(),
+        state={
+            "deps": SimpleNamespace(is_aborted=lambda: False),
+            "start_time": 0.0,
+            "session": None,
+            "session_key": "agent:main:user:alice:main",
+            "session_manager": SimpleNamespace(),
+            "run_id": "run-cancel-first-node",
+            "user_message": "wait",
+            "system_prompt": "system",
+            "max_tool_calls": 1,
+            "runtime_context_window": None,
+            "session_message_history": [],
+            "runtime_base_history_len": 0,
+            "persist_run_output_start_index": 0,
+            "synthetic_tool_messages": [],
+        },
+        _log_step=lambda *args, **kwargs: None,
+    )
+
+    first_event = await stream.__anext__()
+    assert first_event.type == "runtime"
+
+    wait_for_node = asyncio.create_task(stream.__anext__())
+    await asyncio.wait_for(runner.node_started.wait(), timeout=1)
+    wait_for_node.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await wait_for_node
+
+    await asyncio.wait_for(runner.node_cancelled.wait(), timeout=1)
+    await stream.aclose()
 
 
 def test_collect_tool_calls_reads_tool_call_parts_from_model_response_node():

@@ -122,6 +122,18 @@ describe('stream-handler.js', () => {
             expect(onStart).toHaveBeenCalledWith({ phase: 'start' });
         });
 
+        test('should call onOpen callback when SSE connects', async () => {
+            const { createStreamHandler } = await import('../../app/frontend/scripts/stream-handler.js');
+
+            const onOpen = jest.fn();
+            const handler = createStreamHandler('run-123', { onOpen });
+            handler.start();
+
+            MockEventSource.instances[0].simulateOpen();
+
+            expect(onOpen).toHaveBeenCalledTimes(1);
+        });
+
         test('should call onDelta callback on assistant event', async () => {
             const { createStreamHandler } = await import('../../app/frontend/scripts/stream-handler.js');
             
@@ -202,6 +214,20 @@ describe('stream-handler.js', () => {
             es.simulateEvent('lifecycle', { phase: 'end' });
             
             expect(onEnd).toHaveBeenCalledWith({ phase: 'end' });
+            expect(es.readyState).toBe(EventSource.CLOSED);
+        });
+
+        test('should call onAbort callback and close on lifecycle aborted event', async () => {
+            const { createStreamHandler } = await import('../../app/frontend/scripts/stream-handler.js');
+
+            const onAbort = jest.fn();
+            const handler = createStreamHandler('run-123', { onAbort });
+            handler.start();
+
+            const es = MockEventSource.instances[0];
+            es.simulateEvent('lifecycle', { phase: 'aborted' });
+
+            expect(onAbort).toHaveBeenCalledWith({ phase: 'aborted' });
             expect(es.readyState).toBe(EventSource.CLOSED);
         });
 

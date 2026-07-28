@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, AsyncIterator
 
@@ -234,40 +235,52 @@ class RunnerExecutionFlowStreamMixin:
         node_iterator = self._iter_agent_nodes(agent_run).__aiter__()
         first_node: Any | None = None
         first_node_task = asyncio.create_task(node_iterator.__anext__())
-        while not first_node_seen:
-            done, _ = await asyncio.wait({first_node_task}, timeout=5.0)
-            if first_node_task not in done:
-                first_node_wait_tick += 1
-                yield StreamEvent.runtime_update(
-                    "reasoning",
-                    "Still waiting for model tool decision."
-                    if first_node_wait_tick >= 1
-                    else "Waiting for model tool decision.",
-                    metadata={
-                        "phase": (
-                            "agent_first_node_wait_progress"
-                            if first_node_wait_tick >= 1
-                            else "agent_first_node_wait"
-                        ),
-                        "elapsed": round(time.monotonic() - start_time, 1),
-                    },
-                )
-                continue
+        try:
+            while not first_node_seen:
+                done, _ = await asyncio.wait({first_node_task}, timeout=5.0)
+                if first_node_task not in done:
+                    first_node_wait_tick += 1
+                    yield StreamEvent.runtime_update(
+                        "reasoning",
+                        "Still waiting for model tool decision."
+                        if first_node_wait_tick >= 1
+                        else "Waiting for model tool decision.",
+                        metadata={
+                            "phase": (
+                                "agent_first_node_wait_progress"
+                                if first_node_wait_tick >= 1
+                                else "agent_first_node_wait"
+                            ),
+                            "elapsed": round(time.monotonic() - start_time, 1),
+                        },
+                    )
+                    continue
 
-            try:
-                first_node = first_node_task.result()
-                first_node_seen = True
-                _log_step(
-                    "agent_first_node_wait_done",
-                    node_type=type(first_node).__name__,
-                )
-            except StopAsyncIteration:
-                break
-
-        if not first_node_seen and not first_node_task.done():
-            first_node_task.cancel()
+                try:
+                    first_node = first_node_task.result()
+                    first_node_seen = True
+                    _log_step(
+                        "agent_first_node_wait_done",
+                        node_type=type(first_node).__name__,
+                    )
+                except StopAsyncIteration:
+                    break
+        except BaseException:
+            if not first_node_task.done():
+                first_node_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await first_node_task
+            close_iterator = getattr(node_iterator, "aclose", None)
+            if callable(close_iterator):
+                with suppress(asyncio.CancelledError):
+                    await close_iterator()
+            raise
 
         if not first_node_seen:
+            close_iterator = getattr(node_iterator, "aclose", None)
+            if callable(close_iterator):
+                with suppress(asyncio.CancelledError):
+                    await close_iterator()
             return
 
         async def _iter_nodes_with_first() -> AsyncIterator[Any]:

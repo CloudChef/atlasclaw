@@ -26,6 +26,9 @@ const defaultMockTranslations = {
     'chat.objectActionSubmitFailed': 'Unable to submit action. Please try again.',
     'chat.objectActionOpenFailed': 'Unable to open this action.',
     'chat.runtimeThinking': 'Thinking',
+    'chat.runtimeStopped': 'Stopped',
+    'chat.runtimeStopFailed': 'Stop failed',
+    'chat.runtimeCompleted': 'Completed',
     'chat.runtimeRetrying': 'Retrying',
     'chat.runtimeWaitingForTool': 'Waiting for tool',
     'chat.runtimeToolRunning': 'Running tool',
@@ -90,6 +93,11 @@ class MockEventSource {
         this.readyState = EventSource.CLOSED;
     }
 
+    simulateOpen() {
+        this.readyState = EventSource.OPEN;
+        if (this.onopen) this.onopen();
+    }
+
     simulateEvent(type, data) {
         const callbacks = this.listeners[type] || [];
         callbacks.forEach(cb => cb({ data: JSON.stringify(data) }));
@@ -109,6 +117,7 @@ global.EventSource = MockEventSource;
 function createMockSignals() {
     return {
         onResponse: jest.fn(),
+        onOpen: jest.fn(),
         onClose: jest.fn(),
         stopClicked: { listener: null }
     };
@@ -120,6 +129,7 @@ function createDomSignals(messages) {
             if (!payload.overwrite) return;
             messages.innerHTML = payload.html || '';
         }),
+        onOpen: jest.fn(),
         onClose: jest.fn(),
         stopClicked: { listener: null }
     };
@@ -497,6 +507,20 @@ describe('chat-ui.js handler mode', () => {
         expect(element.messageStyles.default.shared.outerContainer.marginBottom).toBe('8px');
         expect(element.textInput.styles.container.padding).toBe('12px 20px');
         expect(element.textInput.styles.text.lineHeight).toBe('1.45');
+        expect(element.submitButtonStyles.submit.container.default.width).toBe('40px');
+        expect(element.submitButtonStyles.submit.container.default.backgroundColor).toBe('#1f2328');
+        expect(element.submitButtonStyles.submit.container.default.cursor).toBe('pointer');
+        expect(element.submitButtonStyles.loading.container.default.cursor).toBe('default');
+        expect(element.submitButtonStyles.stop.container.default.cursor).toBe('pointer');
+        expect(element.submitButtonStyles.disabled.container.default.backgroundColor).toBe('#eef1f5');
+        expect(element.auxiliaryStyle).toContain('.input-button.inside-end {');
+        expect(element.auxiliaryStyle).toContain('inset-block-start: 50% !important;');
+        expect(element.auxiliaryStyle).toContain('transform: translateY(-50%) !important;');
+        expect(element.auxiliaryStyle).toContain('#stop-icon {');
+        expect(element.auxiliaryStyle).toContain('inset: 0 !important;');
+        expect(element.auxiliaryStyle).toContain('margin: auto !important;');
+        expect(element.auxiliaryStyle).toContain('.loading-submit-button {');
+        expect(element.auxiliaryStyle).toContain('inset-inline-start: calc(-9990px + 50% - .51em) !important;');
         expect(element.auxiliaryStyle).toContain('min-height:46px');
         expect(element.auxiliaryStyle).toContain('top:8px');
         expect(element.auxiliaryStyle).toContain('.atlas-user-message-copy-btn{width:30px;height:30px;');
@@ -532,6 +556,7 @@ describe('chat-ui.js handler mode', () => {
         expect(element.textInput.styles.container.borderRadius).toBe('22px');
         expect(element.textInput.styles.text.fontSize).toBe('16px');
         expect(element.textInput.styles.text.lineHeight).toBe('1.4');
+        expect(element.submitButtonStyles.submit.container.default.width).toBe('36px');
         expect(element.classList.contains('atlas-chat-compact')).toBe(true);
         expect(element.auxiliaryStyle).toContain('padding-bottom: 80px !important');
         expect(element.auxiliaryStyle).toContain(':host(.atlas-chat-compact)');
@@ -1236,6 +1261,337 @@ describe('chat-ui.js handler mode', () => {
         await handlerPromise;
 
         expect(signals.onClose).toHaveBeenCalled();
+    });
+
+    test('handler exposes native stop state and aborts the active run', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        expect(element.validateInput('draft', [])).toBe(true);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-stop-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ status: 'aborted', run_id: 'run-stop-123' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'hello', role: 'user' }] },
+            signals
+        );
+
+        await new Promise(r => setTimeout(r, 50));
+        const stream = MockEventSource.instances[0];
+        stream.simulateOpen();
+
+        expect(signals.onOpen).toHaveBeenCalledTimes(1);
+        expect(typeof signals.stopClicked.listener).toBe('function');
+        expect(element.validateInput('next draft', [])).toBe(false);
+
+        signals.stopClicked.listener();
+        await handlerPromise;
+
+        expect(global.fetch).toHaveBeenNthCalledWith(
+            2,
+            expect.stringMatching(/\/api\/agent\/runs\/run-stop-123\/abort$/),
+            expect.objectContaining({
+                method: 'POST',
+                credentials: 'include'
+            })
+        );
+        expect(signals.onClose).toHaveBeenCalledTimes(1);
+        expect(element.validateInput('next draft', [])).toBe(true);
+    });
+
+    test('handler retries a failed abort request before settling native stop state', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+        const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-stop-failed' })
+        }).mockRejectedValueOnce(new Error('network unavailable'))
+            .mockResolvedValueOnce({
+                ok: true,
+                json: () => Promise.resolve({
+                    status: 'aborted',
+                    run_id: 'run-stop-failed'
+                })
+            });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'hello', role: 'user' }] },
+            signals
+        );
+        await new Promise(r => setTimeout(r, 50));
+        const stream = MockEventSource.instances[0];
+        stream.simulateOpen();
+
+        signals.stopClicked.listener();
+        await handlerPromise;
+
+        expect(global.fetch).toHaveBeenCalledTimes(3);
+        expect(signals.onOpen).toHaveBeenCalledTimes(1);
+        expect(signals.onClose).toHaveBeenCalledTimes(1);
+        expect(element.validateInput('next draft', [])).toBe(true);
+        error.mockRestore();
+    });
+
+    test('handler finalizes the runtime panel when DeepChat ignores responses after native stop', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        const signals = createDomSignals(messages);
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-native-stop-panel' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({
+                status: 'aborted',
+                run_id: 'run-native-stop-panel'
+            })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'keep thinking until stopped', role: 'user' }] },
+            signals
+        );
+        await new Promise(r => setTimeout(r, 50));
+        const stream = MockEventSource.instances[0];
+        stream.simulateOpen();
+
+        expect(messages.innerHTML).toContain('<span class="runtime-title">Thinking</span>');
+        signals.onResponse.mockImplementation(() => {});
+        messages.insertAdjacentHTML('beforeend', `
+            <div class="message-wrapper" data-run-id="run-other-panel">
+                <details class="runtime-panel" data-run-id="run-other-panel">
+                    <summary>
+                        <span class="runtime-title">Other run thinking</span>
+                        <span class="thinking-dots thinking-title-dots"><span>.</span></span>
+                    </summary>
+                    <div class="runtime-chip reasoning active">Thinking</div>
+                </details>
+            </div>
+        `);
+        signals.stopClicked.listener();
+        await handlerPromise;
+
+        const ownedPanel = messages.querySelector(
+            'details.runtime-panel[data-run-id="run-native-stop-panel"]'
+        );
+        const otherPanel = messages.querySelector(
+            'details.runtime-panel[data-run-id="run-other-panel"]'
+        );
+        expect(ownedPanel.querySelector('.runtime-title').textContent).toBe('Stopped');
+        expect(ownedPanel.querySelector('.runtime-state-icon.stopped')).not.toBeNull();
+        expect(ownedPanel.querySelector('.thinking-title-dots')).toBeNull();
+        expect(ownedPanel.querySelector('.runtime-log-live-dot')).toBeNull();
+        expect(ownedPanel.querySelector('.runtime-chip.active')).toBeNull();
+        expect(otherPanel.querySelector('.runtime-title').textContent).toBe('Other run thinking');
+        expect(otherPanel.querySelector('.thinking-title-dots')).not.toBeNull();
+        expect(otherPanel.querySelector('.runtime-chip.active')).not.toBeNull();
+        expect(signals.onClose).toHaveBeenCalledTimes(1);
+    });
+
+    test('handler keeps the session locked until a failed abort is reconciled', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        const signals = createDomSignals(messages);
+        const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+        const statusResponse = createDeferred();
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockImplementation((url) => {
+            if (String(url).endsWith('/api/agent/run')) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ run_id: 'run-stop-exhausted' })
+                });
+            }
+            if (String(url).endsWith('/api/agent/runs/run-stop-exhausted/abort')) {
+                return Promise.reject(new Error('network unavailable'));
+            }
+            if (String(url).endsWith('/api/agent/runs/run-stop-exhausted')) {
+                return statusResponse.promise;
+            }
+            return Promise.resolve({
+                ok: true,
+                json: () => Promise.resolve({})
+            });
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'keep partial output', role: 'user' }] },
+            signals
+        );
+        await new Promise(r => setTimeout(r, 50));
+        const stream = MockEventSource.instances[0];
+        stream.simulateOpen();
+        stream.simulateEvent('assistant', {
+            text: 'Partial answer remains visible.',
+            is_delta: true
+        });
+        await new Promise(r => setTimeout(r, 160));
+
+        signals.onResponse.mockImplementation(() => {});
+        signals.stopClicked.listener();
+        await new Promise(r => setTimeout(r, 20));
+
+        const ownedPanel = messages.querySelector(
+            'details.runtime-panel[data-run-id="run-stop-exhausted"]'
+        );
+        const abortCalls = global.fetch.mock.calls.filter(([url]) => (
+            String(url).endsWith('/api/agent/runs/run-stop-exhausted/abort')
+        ));
+        expect(abortCalls).toHaveLength(2);
+        expect(ownedPanel.querySelector('.runtime-title').textContent).toBe('Stop failed');
+        expect(ownedPanel.querySelector('.runtime-state-icon.stop-failed').textContent).toBe('!');
+        expect(ownedPanel.querySelector('.thinking-title-dots')).toBeNull();
+        expect(ownedPanel.querySelector('.runtime-log-live-dot')).toBeNull();
+        expect(messages.textContent).toContain('Partial answer remains visible.');
+        expect(stream.readyState).toBe(EventSource.CLOSED);
+        expect(signals.onClose).not.toHaveBeenCalled();
+        expect(element.validateInput('retry draft', [])).toBe(false);
+
+        statusResponse.resolve({
+            ok: true,
+            json: () => Promise.resolve({
+                status: 'aborted',
+                run_id: 'run-stop-exhausted'
+            })
+        });
+        await handlerPromise;
+
+        expect(ownedPanel.querySelector('.runtime-title').textContent).toBe('Stopped');
+        expect(signals.onClose).toHaveBeenCalledTimes(1);
+        expect(element.validateInput('retry draft', [])).toBe(true);
+        error.mockRestore();
+    });
+
+    test('handler restores authoritative history when native stop races completion', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        const signals = createDomSignals(messages);
+        element.loadHistory = jest.fn((history) => {
+            messages.innerHTML = '';
+            history.forEach((message) => appendHistoryMessage(messages, message));
+        });
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockImplementation((url) => {
+            if (String(url).endsWith('/api/agent/run')) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({ run_id: 'run-stop-completed-race' })
+                });
+            }
+            if (String(url).endsWith('/api/agent/runs/run-stop-completed-race/abort')) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        status: 'completed',
+                        run_id: 'run-stop-completed-race'
+                    })
+                });
+            }
+            if (
+                String(url).includes('/api/sessions/') &&
+                String(url).endsWith('/history')
+            ) {
+                return Promise.resolve({
+                    ok: true,
+                    json: () => Promise.resolve({
+                        messages: [
+                            {
+                                role: 'user',
+                                content: 'complete while stopping'
+                            },
+                            {
+                                role: 'assistant',
+                                content: 'Authoritative final answer from history.'
+                            }
+                        ]
+                    })
+                });
+            }
+            return Promise.resolve({
+                ok: true,
+                json: () => Promise.resolve({})
+            });
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'complete while stopping', role: 'user' }] },
+            signals
+        );
+        await new Promise(r => setTimeout(r, 50));
+        MockEventSource.instances[0].simulateOpen();
+
+        signals.onResponse.mockImplementation(() => {});
+        signals.stopClicked.listener();
+        await handlerPromise;
+
+        const restoredHistory = element.loadHistory.mock.calls.at(-1)?.[0] || [];
+        expect(restoredHistory.at(-1)?.html).toContain(
+            'Authoritative final answer from history.'
+        );
+        expect(messages.textContent).toContain('Authoritative final answer from history.');
+        expect(messages.querySelector('details.runtime-panel')).toBeNull();
+        expect(signals.onClose).toHaveBeenCalledTimes(1);
+        expect(element.validateInput('next draft', [])).toBe(true);
     });
 
     test('handler renders the final delta and closes before a failed refresh finishes', async () => {
@@ -3668,6 +4024,7 @@ describe('chat-ui.js handler mode', () => {
         expect(element.addMessage.mock.calls.some(([message]) => message?.role === 'user')).toBe(false);
 
         const detailStream = MockEventSource.instances.at(-1);
+        expect(() => detailStream.simulateOpen()).not.toThrow();
         expect(element.addMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
             role: 'ai',
             overwrite: false
@@ -4913,6 +5270,50 @@ describe('chat-ui.js handler mode', () => {
         } finally {
             jest.useRealTimers();
         }
+    });
+
+    test('handler flushes the latest partial answer before an aborted stream settles', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const { element, messages } = createDomChatElementWithMessages();
+        const signals = createDomSignals(messages);
+
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ session_key: 'session-123' })
+        }).mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({})
+        });
+
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-partial-answer-abort' })
+        });
+
+        const handlerPromise = element.handler(
+            { messages: [{ text: 'start a partial response', role: 'user' }] },
+            signals
+        );
+        await new Promise(r => setTimeout(r, 100));
+
+        const stream = MockEventSource.instances[0];
+        stream.simulateEvent('assistant', {
+            text: 'Partial answer retained.',
+            is_delta: true
+        });
+        stream.simulateEvent('lifecycle', { phase: 'aborted' });
+        await handlerPromise;
+
+        expect(messages.innerHTML).toContain('Partial answer retained.');
+        expect(messages.innerHTML).toContain('<span class="runtime-title">Stopped</span>');
+        expect(messages.innerHTML).toContain('class="runtime-state-icon stopped"');
+        expect(messages.innerHTML).toContain('class="runtime-stop-mark"');
+        expect(messages.innerHTML).not.toContain('thinking-title-dots');
+        expect(messages.innerHTML).not.toContain('runtime-log-live-dot');
+        expect(messages.innerHTML).not.toContain('runtime-chip reasoning active');
+        expect(signals.onClose).toHaveBeenCalledTimes(1);
     });
 
     test('handler does not reload session history immediately after stream end', async () => {
