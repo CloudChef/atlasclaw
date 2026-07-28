@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -501,10 +502,25 @@ def build_scoped_deps(
     user_info: UserInfo,
     session_key: str,
     *,
+    abort_signal: Optional[asyncio.Event] = None,
     request_cookies: Optional[dict[str, str]] = None,
     provider_config: Optional[dict[str, Any]] = None,
     extra: Optional[dict[str, Any]] = None,
 ) -> SkillDeps:
+    """Build request-scoped dependencies for one authenticated agent run.
+
+    Args:
+        ctx: Active API dependency container.
+        user_info: Authenticated identity for permission and provider resolution.
+        session_key: Stable conversation key used to scope session state.
+        abort_signal: Shared cancellation event owned by the API run record.
+        request_cookies: Request cookies forwarded to provider resolution.
+        provider_config: Optional request-specific provider configuration.
+        extra: Additional validated runtime context.
+
+    Returns:
+        A fully resolved dependency container for the agent and its tools.
+    """
     _extra = extra or {}
     runtime_context_source = (
         dict(getattr(user_info, "extra", {}))
@@ -822,6 +838,7 @@ def build_scoped_deps(
     return SkillDeps(
         user_info=user_info,
         session_key=session_key,
+        abort_signal=abort_signal,
         session_manager=scoped_session_mgr,
         memory_manager=scoped_memory_mgr,
         cookies=request_cookies or {},

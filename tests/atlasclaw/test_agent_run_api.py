@@ -26,12 +26,14 @@ import asyncio
 import json
 from datetime import datetime, timezone
 
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.atlasclaw.agent.selected_capability import SELECTED_CAPABILITY_KEY
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
+from app.atlasclaw.api.services.run_service import abort_run, execute_agent_run, init_run
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
@@ -64,6 +66,40 @@ class _RecordingRunner(_StreamingRunner):
         self.last_deps = args[2] if len(args) > 2 else kwargs.get("deps")
         async for event in super().run(*args, **kwargs):
             yield event
+
+
+class _BlockingRunner:
+    """Runner fixture that exposes whether abort cancels its active await."""
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def run(self, session_key, user_message, deps, timeout_seconds=600, **kwargs):
+        """Yield a start event, then block until the consumer cancels iteration."""
+        yield StreamEvent.lifecycle_start()
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.cancelled.set()
+
+
+class _TerminalCleanupRunner:
+    """Runner fixture that records deterministic iterator closure after terminal output."""
+
+    def __init__(self):
+        self.closed = asyncio.Event()
+
+    async def run(self, session_key, user_message, deps, timeout_seconds=600, **kwargs):
+        """Yield a successful terminal sequence and record generator finalization."""
+        try:
+            yield StreamEvent.lifecycle_start()
+            yield StreamEvent.assistant_delta("done")
+            yield StreamEvent.runtime_update("answered", "Final answer ready.")
+            yield StreamEvent.lifecycle_end()
+        finally:
+            self.closed.set()
 
 
 def _build_client(tmp_path) -> TestClient:
@@ -382,3 +418,101 @@ def test_agent_run_abort_rejects_other_users_run_id_without_mutating(tmp_path):
 
     assert response.status_code == 404
     assert ctx.active_runs["run-alice"]["status"] == "running"
+
+
+def test_abort_completed_run_preserves_original_terminal_state(tmp_path):
+    client, ctx = _build_client_and_context(tmp_path, _StreamingRunner(), user_id="alice")
+    run_id = "run-already-completed"
+    session_key = "agent:main:user:alice:main"
+    init_run(ctx, run_id, session_key, "done", 30)
+    completed_at = datetime.now(timezone.utc)
+    ctx.active_runs[run_id]["status"] = "completed"
+    ctx.active_runs[run_id]["completed_at"] = completed_at
+    ctx.sse_manager.push_lifecycle(run_id, "end")
+    ctx.sse_manager.close_stream(run_id)
+
+    response = client.post(f"/api/agent/runs/{run_id}/abort")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "completed", "run_id": run_id}
+    assert ctx.active_runs[run_id]["status"] == "completed"
+    assert ctx.active_runs[run_id]["completed_at"] is completed_at
+    stream = ctx.sse_manager.get_stream(run_id)
+    assert stream is not None
+    terminal_phases = [
+        event.data.get("phase")
+        for event in stream.events
+        if event.data.get("phase") in {"end", "error", "timeout", "aborted"}
+    ]
+    assert terminal_phases == ["end"]
+
+
+@pytest.mark.asyncio
+async def test_terminal_lifecycle_closes_runner_iterator_before_return(tmp_path):
+    runner = _TerminalCleanupRunner()
+    ctx = APIContext(
+        session_manager=SessionManager(agents_dir=str(tmp_path / "agents")),
+        session_queue=SessionQueue(),
+        skill_registry=SkillRegistry(),
+        agent_runner=runner,
+    )
+    run_id = "run-terminal-cleanup"
+    session_key = "agent:main:user:alice:main"
+    init_run(ctx, run_id, session_key, "finish", 30)
+
+    await execute_agent_run(
+        ctx,
+        run_id,
+        session_key,
+        "finish",
+        30,
+        UserInfo(user_id="alice", display_name="Alice"),
+    )
+
+    assert runner.closed.is_set()
+    assert ctx.active_runs[run_id]["status"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_abort_run_cancels_active_runner_and_preserves_aborted_status(tmp_path):
+    runner = _BlockingRunner()
+    ctx = APIContext(
+        session_manager=SessionManager(agents_dir=str(tmp_path / "agents")),
+        session_queue=SessionQueue(),
+        skill_registry=SkillRegistry(),
+        agent_runner=runner,
+    )
+    run_id = "run-abort-active"
+    session_key = "agent:main:user:alice:main"
+    init_run(ctx, run_id, session_key, "wait", 30)
+
+    execution = asyncio.create_task(
+        execute_agent_run(
+            ctx,
+            run_id,
+            session_key,
+            "wait",
+            30,
+            UserInfo(user_id="alice", display_name="Alice"),
+        )
+    )
+    await asyncio.wait_for(runner.started.wait(), timeout=1)
+
+    abort_run(ctx, run_id)
+    await asyncio.wait_for(execution, timeout=1)
+    completed_at = ctx.active_runs[run_id]["completed_at"]
+    assert abort_run(ctx, run_id) == "aborted"
+
+    assert runner.cancelled.is_set()
+    assert ctx.active_runs[run_id]["abort_signal"].is_set()
+    assert ctx.active_runs[run_id]["status"] == "aborted"
+    assert ctx.active_runs[run_id]["completed_at"] is completed_at
+    stream = ctx.sse_manager.get_stream(run_id)
+    assert stream is not None
+    assert stream.closed is True
+    aborted_events = [
+        event
+        for event in stream.events
+        if event.data.get("phase") == "aborted"
+    ]
+    assert len(aborted_events) == 1

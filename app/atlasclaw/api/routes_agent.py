@@ -430,5 +430,5 @@ def register_agent_routes(router: APIRouter) -> None:
     ) -> dict[str, Any]:
         user_info: UserInfo = getattr(request_obj.state, "user_info", ANONYMOUS_USER)
         _get_owned_run_or_404(ctx, run_id, user_info)
-        abort_run(ctx, run_id)
-        return {"status": "aborted", "run_id": run_id}
+        actual_status = abort_run(ctx, run_id)
+        return {"status": actual_status, "run_id": run_id}

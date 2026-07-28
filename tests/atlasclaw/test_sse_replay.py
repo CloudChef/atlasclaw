@@ -2,6 +2,7 @@
 # Copyright 2026  Qianyun, Inc., www.cloudchef.io, All rights reserved.
 
 import asyncio
+import json
 
 import pytest
 
@@ -55,6 +56,51 @@ async def test_closed_stream_replay_emits_lifecycle_end_for_late_subscriber():
     assert '"text": "hello"' in second_event["data"]
     assert third_event["event"] == "lifecycle"
     assert '"phase": "end"' in third_event["data"]
+
+
+@pytest.mark.asyncio
+async def test_aborted_stream_emits_one_terminal_lifecycle_when_closed_twice():
+    manager = SSEManager(heartbeat_interval=0.01, stream_timeout=1.0)
+    run_id = "run-aborted"
+
+    manager.create_stream(run_id)
+    manager.push_lifecycle(run_id, "start")
+    generator = manager._event_generator(run_id)
+    first_event = await asyncio.wait_for(generator.__anext__(), timeout=0.1)
+
+    manager.push_lifecycle(run_id, "aborted")
+    manager.close_stream(run_id)
+    manager.close_stream(run_id)
+    second_event = await asyncio.wait_for(generator.__anext__(), timeout=0.1)
+
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(generator.__anext__(), timeout=0.1)
+
+    phases = [
+        json.loads(event["data"])["phase"]
+        for event in (first_event, second_event)
+    ]
+    assert phases == ["start", "aborted"]
+
+
+@pytest.mark.asyncio
+async def test_aborted_stream_reconnect_after_terminal_event_emits_no_end():
+    manager = SSEManager(heartbeat_interval=0.01, stream_timeout=1.0)
+    run_id = "run-aborted-reconnect"
+
+    stream = manager.create_stream(run_id)
+    manager.push_lifecycle(run_id, "start")
+    manager.push_lifecycle(run_id, "aborted")
+    manager.close_stream(run_id)
+    aborted_event_id = stream.events[-1].event_id
+
+    generator = manager._event_generator(
+        run_id,
+        last_event_id=aborted_event_id,
+    )
+
+    with pytest.raises(StopAsyncIteration):
+        await asyncio.wait_for(generator.__anext__(), timeout=0.1)
 
 
 def test_push_assistant_strips_tool_meta_block_contents():
