@@ -179,7 +179,7 @@ These fields help the LLM accurately select the right skill:
 | `use_when` | list[string] | Scenarios when to use this skill | `["User wants to create a bug report"]` |
 | `avoid_when` | list[string] | Scenarios when NOT to use this skill | `["User wants to search issues"]` |
 | `examples` | list[string] | Example user inputs | `["Create a Jira issue for login bug"]` |
-| `related` | list[string] | Related skill names | `["jira-search", "jira-bulk"]` |
+| `related` | list[string] | Related skill names | `["record-search", "record-bulk-update"]` |
 
 **Example with LLM Context:**
 
@@ -202,16 +202,17 @@ use_when:
   - User mentions bug reports or incident logging
 
 avoid_when:
-  - User wants to search multiple issues (use jira-search skill)
-  - User wants bulk operations (use jira-bulk skill)
+  - User wants to search multiple issues; use a provider search skill if available
+  - User wants bulk operations; use a provider bulk-operation skill if available
 
 examples:
   - "Create a Jira issue for the login bug"
   - "Get details for PROJ-123"
 
 related:
-  - jira-search
-  - jira-bulk
+  # Illustrative provider-neutral names; replace them with installed skills.
+  - record-search
+  - record-bulk-update
 ---
 ```
 

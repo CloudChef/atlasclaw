@@ -86,8 +86,8 @@ def validate_skill_name(
         return "name contains consecutive hyphens '--'"
     if not _NAME_PATTERN.match(name):
         return "name must match [a-z0-9] with single hyphens only"
-    # Note: parent directory name check is relaxed to allow flexible naming
-    # e.g., directory "jira-bulk" can contain skill named "jira-bulk-operations"
+    # Parent directory matching is relaxed for versioned or descriptive names;
+    # for example, "record-tools" may contain "record-tools-v2".
     return None
 
 
