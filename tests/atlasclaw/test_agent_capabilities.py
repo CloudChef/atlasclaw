@@ -34,7 +34,10 @@ def _build_context(tmp_path) -> APIContext:
         provider="smartcmp",
         qualified_name="smartcmp:linux-vm-request",
         location="workspace",
-        metadata={"provider_type": "smartcmp"},
+        metadata={
+            "provider_type": "smartcmp",
+            "routing_visibility": "internal",
+        },
     )
     registry._md_skill_tools["smartcmp:linux-vm-request"] = {"smartcmp_linux_vm_request"}
     registry.register(
@@ -93,7 +96,7 @@ def _authz(
     )
 
 
-def test_agent_capabilities_include_provider_skill_command_and_direct_skill(tmp_path):
+def test_agent_capabilities_include_explicit_internal_provider_skill_and_direct_skill(tmp_path):
     ctx = _build_context(tmp_path)
 
     payload = build_agent_capabilities(

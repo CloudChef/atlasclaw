@@ -154,68 +154,7 @@ class RunnerExecutionRetryMixin:
         if emit_lifecycle_bounds:
             yield StreamEvent.lifecycle_end()
         return
-    async def _retry_after_missing_tool_execution(
-        self,
-        *,
-        session_key: str,
-        user_message: str,
-        deps: SkillDeps,
-        release_slot: Optional[Any],
-        selected_token_id: Optional[str],
-        start_time: float,
-        max_tool_calls: int,
-        timeout_seconds: int,
-        token_failover_attempt: int,
-        emit_lifecycle_bounds: bool,
-        failure_message: str,
-        preferred_tools: list[str],
-        tool_execution_retry_count: int,
-        allow_retry: bool,
-    ) -> AsyncIterator[StreamEvent]:
-        """Retry once when a tool-required turn ended without any real tool execution."""
-        if not allow_retry:
-            return
-        if tool_execution_retry_count >= self.TOOL_POLICY_MAX_RETRIES:
-            return
 
-        if release_slot is not None:
-            release_slot()
-
-        if not isinstance(deps.extra, dict):
-            deps.extra = {}
-        deps.extra["_tool_execution_retry_count"] = tool_execution_retry_count + 1
-        deps.extra["tool_execution_retry_reason"] = "missing_tool_execution"
-        deps.extra["tool_execution_retry_missing_tools"] = list(preferred_tools)
-
-        yield StreamEvent.runtime_update(
-            "retrying",
-            (
-                "The model did not execute a real tool call in a tool-required turn. "
-                "Retrying once with stricter tool-execution guidance."
-            ),
-            metadata={
-                "phase": "tool_execution_retry",
-                "elapsed": round(time.monotonic() - start_time, 1),
-                "attempt": tool_execution_retry_count + 1,
-                "failed_token_id": selected_token_id,
-                "preferred_tools": list(preferred_tools),
-                "failure_message": failure_message,
-            },
-        )
-
-        async for event in self.run(
-            session_key=session_key,
-            user_message=user_message,
-            deps=deps,
-            max_tool_calls=max_tool_calls,
-            timeout_seconds=timeout_seconds,
-            _token_failover_attempt=token_failover_attempt,
-            _emit_lifecycle_bounds=False,
-        ):
-            yield event
-        if emit_lifecycle_bounds:
-            yield StreamEvent.lifecycle_end()
-        return
     def _is_hard_token_failure(self, error: Exception) -> bool:
         """Return true when an error indicates the current token should be evicted."""
         lowered = str(error).lower()

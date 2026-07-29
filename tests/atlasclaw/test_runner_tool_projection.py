@@ -220,6 +220,36 @@ def test_project_minimal_toolset_narrows_context_only_standalone_skill() -> None
     assert trace["reason"] == "projection_applied"
 
 
+def test_project_minimal_toolset_does_not_expand_skill_by_capability_class() -> None:
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_skill_names=["slides"],
+        target_capability_classes=["artifact:pptx"],
+    )
+    allowed_tools = [
+        {
+            "name": "slides_create",
+            "skill_name": "slides",
+            "qualified_skill_name": "slides",
+            "capability_class": "artifact:pptx",
+        },
+        {
+            "name": "other_pptx_export",
+            "skill_name": "other",
+            "qualified_skill_name": "other",
+            "capability_class": "artifact:pptx",
+        },
+    ]
+
+    filtered, trace = project_minimal_toolset(
+        allowed_tools=allowed_tools,
+        intent_plan=plan,
+    )
+
+    assert [tool["name"] for tool in filtered] == ["slides_create"]
+    assert trace["reason"] == "projection_applied"
+
+
 def test_project_minimal_toolset_hides_tools_for_authorized_context() -> None:
     plan = ToolIntentPlan(
         action=ToolIntentAction.DIRECT_ANSWER,

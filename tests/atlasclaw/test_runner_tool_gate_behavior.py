@@ -13,6 +13,9 @@ import pytest
 from app.atlasclaw.agent.runner import AgentRunner
 from app.atlasclaw.agent.runner_tool import runner_execution_prepare as prepare_module
 from app.atlasclaw.agent.runner_tool.runner_tool_gate_model import RunnerToolGateModelMixin
+from app.atlasclaw.agent.runner_tool.runner_tool_gate_policy import (
+    RunnerToolGatePolicyMixin,
+)
 from app.atlasclaw.agent.runner_tool.runner_execution_loop import (
     hydrate_session_provider_instance_selections,
 )
@@ -20,9 +23,11 @@ from app.atlasclaw.agent.runner_tool.runner_execution_prepare import RunnerExecu
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
     _infer_active_provider_skill_from_transcript,
     _infer_active_skill_from_transcript,
+    _selected_plan_has_mutation_tools,
     _selected_plan_matches_active_capability,
     apply_provider_instance_selection_policy,
-    filter_implicit_memory_tools,
+    build_user_selected_tool_intent_plan,
+    filter_implicit_only_tools,
     persist_provider_instance_targets_from_intent_plan,
     prune_auto_selected_provider_instance_tools,
     toolset_has_only_coordination_support_tools,
@@ -336,6 +341,124 @@ def test_embed_prepare_skips_selectors_and_scopes_page_workflow_context(
     assert not any(step == "capability_selector_plan_resolved" for step, _ in logs)
 
 
+def test_authenticated_webhook_authorizes_only_preselected_skill_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "# Automation\n\nHandle the authenticated event with the declared tools.",
+        encoding="utf-8",
+    )
+    tools = [
+        {
+            "name": "example_read_event",
+            "provider_type": "example",
+            "provider_skill_name": "primary.automation",
+            "qualified_skill_name": "example:automation",
+            "skill_name": "automation",
+        },
+        {
+            "name": "example_lookup_reference",
+            "provider_type": "example",
+            "provider_skill_name": "primary.automation",
+            "qualified_skill_name": "example:automation",
+            "skill_name": "automation",
+            "routing_visibility": "internal",
+        },
+        {
+            "name": "example_update_event",
+            "provider_type": "example",
+            "provider_skill_name": "primary.automation",
+            "qualified_skill_name": "example:automation",
+            "skill_name": "automation",
+            "group_ids": ["group:mutation"],
+        },
+        {
+            "name": "example_update_other",
+            "provider_type": "example",
+            "provider_skill_name": "primary.other",
+            "qualified_skill_name": "example:other",
+            "skill_name": "other",
+            "group_ids": ["group:mutation"],
+        },
+    ]
+    provider_skill_entry = {
+        "capability_id": "provider_skill:primary.automation",
+        "kind": "provider_skill",
+        "name": "primary.automation",
+        "provider_type": "example",
+        "provider_name": "primary",
+        "instance_name": "primary",
+        "qualified_skill_name": "example:automation",
+        "target_provider_instances": ["example.primary"],
+        "target_provider_types": ["example"],
+        "target_provider_skill_names": ["primary.automation"],
+        "declared_tool_names": [
+            "example_read_event",
+            "example_lookup_reference",
+            "example_update_event",
+        ],
+        "locator": str(skill_path),
+    }
+    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: list(tools))
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_capability_index_snapshot",
+        lambda **kwargs: [dict(provider_skill_entry)],
+    )
+    runner = _build_prepare_runner(_PrepareSessionManager())
+    selector_calls = 0
+
+    async def _forbid_capability_selector(**kwargs):
+        nonlocal selector_calls
+        selector_calls += 1
+        raise AssertionError("Authenticated webhook routing must not call the selector")
+
+    runner._select_capability_intent_plan_with_model = _forbid_capability_selector
+    deps = SkillDeps(
+        session_key="authenticated-webhook-session",
+        channel="webhook",
+        extra={
+            "authenticated_webhook_authority": True,
+            "webhook_skill": "primary.automation",
+            "webhook_qualified_skill": "example:automation",
+            "target_md_skill": {
+                "name": "automation",
+                "provider": "example",
+                "qualified_name": "example:automation",
+                "file_path": str(skill_path),
+                "target_provider_instances": ["example.primary"],
+                "target_provider_types": ["example"],
+                "target_provider_skill_names": ["primary.automation"],
+            },
+            "provider_type": "example",
+            "provider_instance_name": "primary",
+            "provider_instance": {"base_url": "https://example.invalid"},
+        },
+    )
+    state = _prepare_phase_state(deps=deps)
+    state["user_message"] = "Handle authenticated event"
+
+    logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert selector_calls == 0
+    assert state["selector_attempted"] is False
+    assert state["tool_intent_plan"].mutation_authorized is True
+    assert state["tool_execution_required"] is True
+    assert deps.extra["runtime_allowed_tool_names"] == [
+        "example_read_event",
+        "example_lookup_reference",
+        "example_update_event",
+    ]
+    assert deps.extra["tool_policy"]["mode"] == ToolIntentAction.USE_TOOLS.value
+    assert any(
+        step == "capability_selector_skipped"
+        and data["reason"] == "authenticated_webhook_skill"
+        for step, data in logs
+    )
+
+
 def test_ordinary_menu_prepare_still_calls_capability_selector_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -366,62 +489,7 @@ def test_ordinary_menu_prepare_still_calls_capability_selector_once(
     assert state["tool_intent_plan"].reason == "ordinary_menu_selector"
 
 
-def test_ordinary_conversation_prepare_skips_no_capability_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: [])
-    monkeypatch.setattr(prepare_module, "collect_capability_index_snapshot", lambda **kwargs: [])
-    runner = _build_prepare_runner(_PrepareSessionManager())
-
-    async def _select_capability(**kwargs):
-        return ToolIntentPlan(
-            action=ToolIntentAction.DIRECT_ANSWER,
-            reason="ordinary_conversation",
-        )
-
-    async def _forbid_no_capability_fallback(**kwargs):
-        raise AssertionError("A valid selector outcome must not trigger the fallback classifier")
-
-    runner._select_capability_intent_plan_with_model = _select_capability
-    runner._classify_no_capability_route_with_model = _forbid_no_capability_fallback
-    deps = SkillDeps(session_key="ordinary-session", channel="api", extra={})
-    state = _prepare_phase_state(deps=deps)
-
-    logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
-
-    assert state["tool_intent_plan"].reason == "ordinary_conversation"
-    assert not any(step == "no_capability_fallback_resolved" for step, _ in logs)
-
-
-def test_invalid_selector_uses_no_capability_fallback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: [])
-    monkeypatch.setattr(prepare_module, "collect_capability_index_snapshot", lambda **kwargs: [])
-    runner = _build_prepare_runner(_PrepareSessionManager())
-    fallback_calls = 0
-
-    async def _invalid_selector(**kwargs):
-        return None
-
-    async def _classify_no_capability(**kwargs):
-        nonlocal fallback_calls
-        fallback_calls += 1
-        return runner.NO_CAPABILITY_RUNTIME_REQUEST
-
-    runner._select_capability_intent_plan_with_model = _invalid_selector
-    runner._classify_no_capability_route_with_model = _classify_no_capability
-    deps = SkillDeps(session_key="selector-fallback-session", channel="api", extra={})
-    state = _prepare_phase_state(deps=deps)
-
-    logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
-
-    assert fallback_calls == 1
-    assert state["tool_intent_plan"].unavailable_runtime_capability is True
-    assert any(step == "no_capability_fallback_resolved" for step, _ in logs)
-
-
-def test_invalid_selector_does_not_report_unavailable_when_runtime_tools_exist(
+def test_invalid_selector_does_not_expose_runtime_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tools = [{"name": "example_update_item", "provider_type": "example"}]
@@ -432,20 +500,103 @@ def test_invalid_selector_does_not_report_unavailable_when_runtime_tools_exist(
     async def _invalid_selector(**kwargs):
         return None
 
-    async def _forbid_no_capability_fallback(**kwargs):
-        raise AssertionError(
-            "Projection must not turn a selector failure into unavailable capability"
-        )
-
     runner._select_capability_intent_plan_with_model = _invalid_selector
-    runner._classify_no_capability_route_with_model = _forbid_no_capability_fallback
     deps = SkillDeps(session_key="selector-with-tools-session", channel="api", extra={})
     state = _prepare_phase_state(deps=deps)
 
+    asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert state["tool_intent_plan"].unavailable_runtime_capability is True
+    assert deps.extra["runtime_allowed_tool_names"] == []
+    assert state["selector_failed"] is True
+
+
+def test_selected_skill_confirmation_authorizes_its_mutation_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tools = [
+        {
+            "name": "example_list_items",
+            "provider_type": "example",
+            "provider_skill_name": "primary.request",
+            "qualified_skill_name": "example:request",
+            "skill_name": "request",
+        },
+        {
+            "name": "example_submit_request",
+            "provider_type": "example",
+            "provider_skill_name": "primary.request",
+            "qualified_skill_name": "example:request",
+            "skill_name": "request",
+            "group_ids": ["group:mutation"],
+        },
+    ]
+    capability_entry = {
+        "capability_id": "provider_skill:primary.request",
+        "kind": "provider_skill",
+        "name": "primary.request",
+        "target_provider_instances": ["example.primary"],
+        "target_provider_types": ["example"],
+        "target_provider_skill_names": ["primary.request"],
+    }
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_tools_snapshot",
+        lambda **kwargs: list(tools),
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_capability_index_snapshot",
+        lambda **kwargs: [dict(capability_entry)],
+    )
+    runner = _build_prepare_runner(_PrepareSessionManager())
+    selector_calls = 0
+
+    async def _select_confirmation(**kwargs):
+        nonlocal selector_calls
+        selector_calls += 1
+        assert kwargs["capability_index"] == [capability_entry]
+        return ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            selector_outcome=CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY,
+            target_provider_instances=["example.primary"],
+            target_provider_types=["example"],
+            target_provider_skill_names=["primary.request"],
+            mutation_authorized=True,
+            reason="The current user explicitly confirmed the external operation.",
+        )
+
+    runner._select_capability_intent_plan_with_model = _select_confirmation
+    deps = SkillDeps(
+        session_key="selected-mutation-session",
+        channel="api",
+        extra={
+            "_selected_capability": {
+                "kind": "provider_skill",
+                "target_provider_instances": ["example.primary"],
+                "target_provider_types": ["example"],
+                "target_provider_skill_names": ["primary.request"],
+            }
+        },
+    )
+    state = _prepare_phase_state(deps=deps)
+    state["user_message"] = "Confirm submission"
+
+    assert _selected_plan_has_mutation_tools(
+        tools=tools,
+        intent_plan=build_user_selected_tool_intent_plan(deps),
+    )
     logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
 
-    assert state["tool_intent_plan"].unavailable_runtime_capability is False
-    assert not any(step == "no_capability_fallback_resolved" for step, _ in logs)
+    assert selector_calls == 1
+    assert state["tool_intent_plan"].mutation_authorized is True
+    assert deps.extra["runtime_allowed_tool_names"] == [
+        "example_list_items",
+        "example_submit_request",
+    ]
+    assert next(
+        data["policy"] for step, data in logs if step == "tool_gate_decided"
+    ) == ToolPolicyMode.MUST_USE_TOOL.value
 
 
 def test_authorized_context_prepare_loads_skill_without_exposing_mutating_tools(
@@ -509,6 +660,95 @@ def test_authorized_context_prepare_loads_skill_without_exposing_mutating_tools(
     assert "present a draft before any update" in deps.extra["target_md_skill"]["instructions"]
     assert state["tool_execution_required"] is False
     assert state["tool_projection_trace"]["reason"] == "projection_context_only"
+
+
+def test_active_numeric_selection_retains_only_non_mutating_workflow_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "# Item workflow\n\nUse another lookup only when the next field requires it.",
+        encoding="utf-8",
+    )
+    tools = [
+        {
+            "name": "example_list_items",
+            "provider_type": "example",
+            "provider_skill_name": "primary.item",
+            "qualified_skill_name": "example:item",
+            "skill_name": "item",
+        },
+        {
+            "name": "example_update_item",
+            "provider_type": "example",
+            "provider_skill_name": "primary.item",
+            "qualified_skill_name": "example:item",
+            "skill_name": "item",
+            "group_ids": ["group:mutation"],
+        },
+    ]
+    provider_skill_entry = {
+        "capability_id": "provider_skill:primary.item",
+        "kind": "provider_skill",
+        "name": "primary.item",
+        "provider_type": "example",
+        "provider_name": "primary",
+        "instance_name": "primary",
+        "qualified_skill_name": "example:item",
+        "target_provider_instances": ["example.primary"],
+        "target_provider_types": ["example"],
+        "target_provider_skill_names": ["primary.item"],
+        "declared_tool_names": ["example_list_items", "example_update_item"],
+        "locator": str(skill_path),
+    }
+    transcript = [
+        {
+            "role": "tool",
+            "tool_name": "example_list_items",
+            "content": {"_internal": {"items": [{"id": "item-1", "name": "First"}]}},
+        },
+        {"role": "assistant", "content": "Choose an item by number."},
+    ]
+    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: list(tools))
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_capability_index_snapshot",
+        lambda **kwargs: [dict(provider_skill_entry)],
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "_infer_active_provider_skill_from_transcript",
+        lambda **kwargs: "primary.item",
+    )
+    runner = _build_prepare_runner(_PrepareSessionManager(transcript=transcript))
+
+    async def _select_active_capability(**kwargs):
+        return ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            selector_outcome=CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY,
+            target_provider_instances=["example.primary"],
+            target_provider_types=["example"],
+            target_provider_skill_names=["primary.item"],
+            mutation_authorized=True,
+            reason="The user selected a previously listed item.",
+        )
+
+    runner._select_capability_intent_plan_with_model = _select_active_capability
+    deps = SkillDeps(session_key="active-selection-session", channel="api", extra={})
+    state = _prepare_phase_state(deps=deps)
+    state["user_message"] = "1"
+
+    logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert deps.extra["runtime_allowed_tool_names"] == ["example_list_items"]
+    assert deps.extra["tool_policy"]["mode"] == "active_continuation"
+    assert state["tool_execution_required"] is False
+    assert state["tool_intent_plan"].mutation_authorized is False
+    assert state["tool_intent_plan"].non_mutating_tools_allowed is True
+    assert next(
+        data["policy"] for step, data in logs if step == "tool_gate_decided"
+    ) == ToolPolicyMode.PREFER_TOOL.value
 
 
 def test_authorized_context_does_not_inject_standalone_skill_runtime_tools(
@@ -680,8 +920,8 @@ def test_coordination_only_toolset_is_not_executable_runtime_capability() -> Non
     )
 
 
-def test_implicit_memory_tools_are_hidden_from_natural_language_routing() -> None:
-    filtered, removed = filter_implicit_memory_tools(
+def test_implicit_only_tools_are_hidden_from_natural_language_routing() -> None:
+    filtered, removed = filter_implicit_only_tools(
         [
             {
                 "name": "memory_search",
@@ -696,6 +936,11 @@ def test_implicit_memory_tools_are_hidden_from_natural_language_routing() -> Non
                 "group_ids": ["group:memory"],
             },
             {
+                "name": "internal_provider_lookup",
+                "description": "Provider lookup selected only by another skill or slash command",
+                "routing_visibility": "internal",
+            },
+            {
                 "name": "web_search",
                 "description": "Search the public web",
                 "capability_class": "web_search",
@@ -704,7 +949,7 @@ def test_implicit_memory_tools_are_hidden_from_natural_language_routing() -> Non
         ]
     )
 
-    assert removed == ["memory_search", "memory_get"]
+    assert removed == ["memory_search", "memory_get", "internal_provider_lookup"]
     assert [tool["name"] for tool in filtered] == ["web_search"]
 
 
@@ -718,11 +963,11 @@ def test_capability_selector_uses_authorized_xlsx_skill_without_pptx_substitutio
         }
     )
 
-    plan = asyncio.run(
+    result = asyncio.run(
         runner._select_capability_intent_plan_with_model(
             agent=selector,
             deps=SimpleNamespace(extra={}),
-            user_message="生成 Excel",
+            user_message="Create an Excel workbook",
             recent_history=[],
             capability_index=[
                 {
@@ -744,7 +989,8 @@ def test_capability_selector_uses_authorized_xlsx_skill_without_pptx_substitutio
         )
     )
 
-    assert plan is not None
+    assert result is not None
+    plan = result
     assert plan.action is ToolIntentAction.USE_TOOLS
     assert plan.target_skill_names == ["xlsx"]
     assert plan.target_tool_names == []
@@ -752,7 +998,7 @@ def test_capability_selector_uses_authorized_xlsx_skill_without_pptx_substitutio
     assert selector.messages
 
 
-def test_capability_selector_carries_executable_md_skill_targets() -> None:
+def test_capability_selector_leaves_skill_operation_to_execution_model() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
@@ -762,11 +1008,11 @@ def test_capability_selector_carries_executable_md_skill_targets() -> None:
         }
     )
 
-    plan = asyncio.run(
+    result = asyncio.run(
         runner._select_capability_intent_plan_with_model(
             agent=selector,
             deps=SimpleNamespace(extra={}),
-            user_message="把上面的待审批生成 PPT",
+            user_message="Create a PowerPoint from the pending items above",
             recent_history=[],
             capability_index=[
                 {
@@ -784,11 +1030,65 @@ def test_capability_selector_carries_executable_md_skill_targets() -> None:
         )
     )
 
-    assert plan is not None
+    assert result is not None
+    plan = result
     assert plan.action is ToolIntentAction.USE_TOOLS
     assert plan.target_skill_names == ["pptx"]
-    assert plan.target_tool_names == ["pptx_create_deck"]
+    assert plan.target_tool_names == []
     assert plan.target_capability_classes == ["artifact:pptx"]
+
+
+def test_selected_skill_does_not_require_every_internal_tool() -> None:
+    plan = ToolIntentPlan(
+        action=ToolIntentAction.USE_TOOLS,
+        target_skill_names=["slides"],
+        target_capability_classes=["artifact:pptx"],
+    )
+    decision = ToolGateDecision(
+        needs_tool=True,
+        suggested_tool_classes=["artifact:pptx"],
+        reason="The selected skill must execute one appropriate operation.",
+        policy=ToolPolicyMode.MUST_USE_TOOL,
+    )
+    match_result = CapabilityMatcher(
+        available_tools=[
+            {
+                "name": "slides_create",
+                "skill_name": "slides",
+                "capability_class": "artifact:pptx",
+            },
+            {
+                "name": "slides_update",
+                "skill_name": "slides",
+                "capability_class": "artifact:pptx",
+            },
+        ]
+    ).match(decision.suggested_tool_classes)
+
+    required = RunnerToolGatePolicyMixin._required_tool_names_for_decision(
+        decision=decision,
+        match_result=match_result,
+        intent_plan=plan,
+    )
+
+    assert required == []
+
+
+def test_json_extractor_rejects_duplicate_complete_objects() -> None:
+    runner = _GateRunner()
+    payload = {
+        "outcome": "authorized_capability",
+        "targets": ["provider_skill:cmp.request"],
+        "reason": "Continue the active workflow.",
+        "mutation_authorized": False,
+    }
+    serialized = json.dumps(payload)
+
+    assert json.loads(runner._extract_json_object(serialized)) == payload
+    assert runner._extract_json_object(serialized + serialized) == ""
+    assert runner._extract_json_object(
+        serialized + json.dumps({**payload, "mutation_authorized": True})
+    ) == ""
 
 
 def test_capability_selector_prompt_uses_descriptions_only_for_capabilities() -> None:
@@ -861,21 +1161,17 @@ def test_capability_selector_receives_active_workflow_candidate() -> None:
         active_capability_context="provider_skill:cmp.request",
     )
 
-    assert "Current active workflow candidate:" in prompt
-    assert "provider_skill:cmp.request" in prompt
-    assert "current active workflow candidate" in prompt
-    assert "authorized_context" in prompt
-    assert "when no tool execution is needed" in prompt
-    assert "Supplying requested input does not itself authorize an external side effect" in prompt
-    assert "explicitly authorizes or requests the operation that must execute now" in prompt
-    assert "Current active workflow candidate:" in message
-    assert "provider_skill:cmp.request" in message
+    active_workflow = "Current active workflow candidate:\nprovider_skill:cmp.request"
+
+    assert active_workflow in prompt
+    assert "mutation_authorized" in prompt
+    assert active_workflow in message
 
 
 def test_capability_selector_preserves_authorized_context_without_tool_requirement() -> None:
     runner = _GateRunner()
 
-    plan = runner._coerce_capability_selector_payload(
+    result = runner._coerce_capability_selector_payload(
         payload={
             "outcome": "authorized_context",
             "targets": ["provider_skill:prod.request"],
@@ -893,7 +1189,8 @@ def test_capability_selector_preserves_authorized_context_without_tool_requireme
         ],
     )
 
-    assert plan is not None
+    assert result is not None
+    plan = result
     assert plan.action is ToolIntentAction.DIRECT_ANSWER
     assert plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT
     assert plan.target_provider_skill_names == ["prod.request"]
@@ -951,11 +1248,11 @@ def test_capability_selector_preserves_no_capability_runtime_request() -> None:
         }
     )
 
-    plan = asyncio.run(
+    result = asyncio.run(
         runner._select_capability_intent_plan_with_model(
             agent=selector,
             deps=SimpleNamespace(extra={}),
-            user_message="申请云资源",
+            user_message="Create a cloud resource",
             recent_history=[],
             capability_index=[
                 {
@@ -968,9 +1265,9 @@ def test_capability_selector_preserves_no_capability_runtime_request() -> None:
         )
     )
 
-    assert plan is not None
-    assert plan.action is ToolIntentAction.DIRECT_ANSWER
-    assert plan.unavailable_runtime_capability is True
+    assert result is not None
+    assert result.action is ToolIntentAction.DIRECT_ANSWER
+    assert result.unavailable_runtime_capability is True
 
 
 @pytest.mark.parametrize(
@@ -1044,45 +1341,22 @@ def test_capability_selector_rejects_inconsistent_outcome_targets(
     assert plan is None
 
 
-def test_no_capability_router_classifies_runtime_request() -> None:
-    runner = _GateRunner()
-    selector = _SelectorAgent(
-        {
-            "decision": "runtime_capability_request",
-            "reason": "The user asks to continue an unavailable external workflow.",
-        }
-    )
-
-    decision = asyncio.run(
-        runner._classify_no_capability_route_with_model(
-            agent=selector,
-            deps=SimpleNamespace(extra={}),
-            user_message="确定这是新建的 VM",
-            recent_history=[
-                {"role": "user", "content": "申请云资源"},
-                {"role": "assistant", "content": "没有可用能力。"},
-            ],
-        )
-    )
-
-    assert decision == "runtime_capability_request"
-
-
 def test_capability_selector_can_select_provider_skill_and_standard_skill_targets() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
             "outcome": "authorized_capability",
             "targets": ["provider_skill:prod.request", "skill:xlsx"],
-            "reason": "Fetch provider data and export as spreadsheet.",
+            "reason": "The user explicitly confirms the external approval and export.",
+            "mutation_authorized": True,
         }
     )
 
-    plan = asyncio.run(
+    result = asyncio.run(
         runner._select_capability_intent_plan_with_model(
             agent=selector,
             deps=SimpleNamespace(extra={}),
-            user_message="把待审批生成 excel",
+            user_message="Confirm approval and export the result to Excel",
             recent_history=[],
             capability_index=[
                 {
@@ -1111,15 +1385,17 @@ def test_capability_selector_can_select_provider_skill_and_standard_skill_target
         )
     )
 
-    assert plan is not None
+    assert result is not None
+    plan = result
     assert plan.action is ToolIntentAction.USE_TOOLS
     assert plan.target_provider_instances == ["smartcmp.prod"]
     assert plan.target_provider_types == ["smartcmp"]
     assert plan.target_provider_skill_names == ["prod.request"]
     assert plan.target_skill_names == ["xlsx"]
+    assert plan.mutation_authorized is True
 
 
-def test_capability_selector_preserves_no_target_direct_answer() -> None:
+def test_capability_selector_preserves_no_target_ordinary_conversation() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
@@ -1129,39 +1405,36 @@ def test_capability_selector_preserves_no_target_direct_answer() -> None:
         }
     )
 
-    plan = asyncio.run(
+    result = asyncio.run(
         runner._select_capability_intent_plan_with_model(
             agent=selector,
             deps=SimpleNamespace(extra={}),
-            user_message="我要申请 Linux VM",
+            user_message="Tell me a short joke",
             recent_history=[],
             capability_index=[
                 {
-                    "capability_id": "skill:smartcmp:request",
+                    "capability_id": "skill:example:request",
                     "kind": "md_skill",
-                    "name": "smartcmp:request",
-                    "description": (
-                        "Self-service request skill. Request cloud resources, "
-                        "create VM, apply resources, 申请资源, 创建虚拟机."
-                    ),
-                    "declared_tool_names": ["smartcmp_list_services"],
+                    "name": "example:request",
+                    "description": "Create resources in an external service.",
+                    "declared_tool_names": ["example_list_services"],
                     "declares_executable_tools": True,
                 },
                 {
-                    "capability_id": "skill:smartcmp:datasource",
+                    "capability_id": "skill:example:datasource",
                     "kind": "md_skill",
-                    "name": "smartcmp:datasource",
-                    "description": "Browse service catalogs and reference data.",
-                    "declared_tool_names": ["smartcmp_list_components"],
+                    "name": "example:datasource",
+                    "description": "Browse external reference data.",
+                    "declared_tool_names": ["example_list_components"],
                     "declares_executable_tools": True,
                 },
             ],
         )
     )
 
-    assert plan is not None
-    assert plan.action is ToolIntentAction.DIRECT_ANSWER
-    assert plan.target_skill_names == []
+    assert result is not None
+    assert result.action is ToolIntentAction.DIRECT_ANSWER
+    assert result.target_skill_names == []
 
 
 def test_capability_selector_rejects_provider_level_target() -> None:
@@ -1342,7 +1615,7 @@ def test_selected_capability_ids_keep_standalone_skill_separate_from_provider_sk
     assert "provider_skill:cmp.xlsx" not in ids
 
 
-def test_repeated_selected_provider_skill_can_scope_active_follow_up_without_forcing_tool() -> None:
+def test_repeated_selected_provider_skill_keeps_tools_for_active_follow_up() -> None:
     plan = ToolIntentPlan(
         action=ToolIntentAction.USE_TOOLS,
         target_provider_instances=["smartcmp.cmp"],
@@ -1360,12 +1633,6 @@ def test_repeated_selected_provider_skill_can_scope_active_follow_up_without_for
         active_skill=None,
     )
 
-    continuation_plan = plan.model_copy(
-        update={
-            "action": ToolIntentAction.DIRECT_ANSWER,
-            "reason": "user_selected_capability_active_continuation",
-        }
-    )
     projected, trace = project_minimal_toolset(
         allowed_tools=[
             {
@@ -1381,6 +1648,7 @@ def test_repeated_selected_provider_skill_can_scope_active_follow_up_without_for
                 "provider_skill_name": "cmp.request",
                 "qualified_skill_name": "smartcmp:request",
                 "skill_name": "request",
+                "group_ids": ["group:cmp", "group:request", "group:mutation"],
             },
             {
                 "name": "smartcmp_preapproval_get_catalog_detail",
@@ -1390,12 +1658,36 @@ def test_repeated_selected_provider_skill_can_scope_active_follow_up_without_for
                 "skill_name": "preapproval-agent",
             },
         ],
-        intent_plan=continuation_plan,
+        intent_plan=plan,
     )
 
-    assert not turn_action_requires_tool_execution(continuation_plan)
+    assert turn_action_requires_tool_execution(plan)
     assert trace["reason"] == "projection_applied"
-    assert {tool["name"] for tool in projected} == {
+    assert [tool["name"] for tool in projected] == ["smartcmp_list_services"]
+
+    confirmed, confirmed_trace = project_minimal_toolset(
+        allowed_tools=[
+            {
+                "name": "smartcmp_list_services",
+                "provider_type": "smartcmp",
+                "provider_skill_name": "cmp.request",
+                "qualified_skill_name": "smartcmp:request",
+                "skill_name": "request",
+            },
+            {
+                "name": "smartcmp_submit_request",
+                "provider_type": "smartcmp",
+                "provider_skill_name": "cmp.request",
+                "qualified_skill_name": "smartcmp:request",
+                "skill_name": "request",
+                "group_ids": ["group:mutation"],
+            },
+        ],
+        intent_plan=plan.model_copy(update={"mutation_authorized": True}),
+    )
+
+    assert confirmed_trace["mutation_authorized"] is True
+    assert {tool["name"] for tool in confirmed} == {
         "smartcmp_list_services",
         "smartcmp_submit_request",
     }
@@ -1439,7 +1731,7 @@ def test_capability_selector_rejects_group_and_capability_targets() -> None:
     assert plan is None
 
 
-def test_capability_selector_drops_unauthorized_targets() -> None:
+def test_capability_selector_rejects_unauthorized_targets() -> None:
     runner = _GateRunner()
     selector = _SelectorAgent(
         {
@@ -1467,9 +1759,7 @@ def test_capability_selector_drops_unauthorized_targets() -> None:
         )
     )
 
-    assert plan is not None
-    assert plan.target_skill_names == ["xlsx"]
-    assert plan.target_tool_names == []
+    assert plan is None
 
 
 def test_apply_provider_instance_selection_policy_records_explicit_instance() -> None:

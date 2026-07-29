@@ -361,6 +361,18 @@ def build_tool_policy(
         lines.append(
             "Do not emit tool-call markup or a pseudo tool invocation while execution is paused."
         )
+    elif mode == "active_continuation":
+        lines.append(
+            "Continue the selected workflow using its existing context and resolved user selection."
+        )
+        lines.append(
+            "Non-mutating tools from the selected skill remain available. Call one only when the "
+            "workflow's next step requires a new lookup, discovery, or validation; otherwise "
+            "continue with the next known field, draft, or confirmation request."
+        )
+        lines.append(
+            "Mutating operations are not authorized in this turn. Do not submit, update, or delete."
+        )
     elif mode == "create_artifact":
         lines.append("This turn is an artifact-generation request.")
         lines.append(

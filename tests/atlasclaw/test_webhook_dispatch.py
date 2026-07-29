@@ -425,6 +425,7 @@ class TestWebhookDispatchAPI:
         assert "cmp.preapproval-agent" in runner.calls[0]["user_message"]
         assert "approval_id" in runner.calls[0]["user_message"]
         deps_extra = runner.calls[0]["deps"].extra
+        assert deps_extra["authenticated_webhook_authority"] is True
         assert deps_extra["webhook_skill"] == "cmp.preapproval-agent"
         assert deps_extra["webhook_qualified_skill"] == "smartcmp:preapproval-agent"
         assert deps_extra["target_md_skill"]["qualified_name"] == "smartcmp:preapproval-agent"

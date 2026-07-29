@@ -310,8 +310,6 @@ class _PostRunner(
     RunnerToolEvidenceMixin,
     RunnerExecutionFlowPostMixin,
 ):
-    TOOL_POLICY_MAX_RETRIES = 1
-
     def __init__(self) -> None:
         self.history = _History()
         self.runtime_events = _RuntimeEvents()
@@ -324,7 +322,6 @@ class _PostRunner(
         self.direct_answer_recovery_calls = []
         self.lookup_dump_recovery_answer = ""
         self.lookup_dump_recovery_calls = []
-        self.retry_after_missing_tool_execution_calls = []
         self.finalize_title_calls = []
 
     @staticmethod
@@ -348,12 +345,6 @@ class _PostRunner(
             or getattr(decision, "needs_live_data", False)
             or getattr(decision, "needs_grounded_verification", False)
         )
-
-    async def _retry_after_missing_tool_execution(self, **kwargs):
-        self.retry_after_missing_tool_execution_calls.append(kwargs)
-        if False:
-            yield None
-        return
 
     async def run_single(self, user_message, deps, *, system_prompt=None, agent=None, allowed_tool_names=None):
         self.unsupported_calls.append(
@@ -640,13 +631,14 @@ async def test_tool_required_turn_does_not_accept_fast_path_text_without_real_to
         for event in events
         if event.type == "runtime" and str(event.metadata.get("state", "")).strip() == "answered"
     ]
-    assistant_chunks = [event for event in events if event.type == "assistant"]
-    assert answered_states == []
-    assert assistant_chunks == []
+    assistant_text = "".join(event.content for event in events if event.type == "assistant")
+    assert len(answered_states) == 1
+    assert "No action was executed" in assistant_text
+    assert len(runner.unsupported_calls) == 1
 
 
 @pytest.mark.asyncio
-async def test_tool_required_missing_tool_after_retry_asks_llm_for_unsupported_tool_message() -> None:
+async def test_tool_required_missing_tool_asks_llm_for_safe_answer_without_recursive_retry() -> None:
     runner = _PostRunner()
     session_manager = _SessionManager()
     state = {
@@ -694,7 +686,7 @@ async def test_tool_required_missing_tool_after_retry_asks_llm_for_unsupported_t
         "_emit_lifecycle_bounds": False,
         "selected_token_id": None,
         "release_slot": None,
-        "tool_execution_retry_count": 1,
+        "tool_execution_retry_count": 0,
         "persist_override_messages": None,
         "persist_override_base_len": 0,
         "run_output_start_index": 1,
@@ -704,7 +696,7 @@ async def test_tool_required_missing_tool_after_retry_asks_llm_for_unsupported_t
         "assistant_output_streamed": False,
         "model_stream_timed_out": False,
         "model_timeout_error_message": "",
-        "current_model_attempt": 2,
+        "current_model_attempt": 1,
         "thinking_emitter": SimpleNamespace(assistant_emitted=False),
         "context_history_for_hooks": [],
         "session_title": "",
@@ -750,7 +742,6 @@ async def test_tool_required_missing_tool_after_retry_asks_llm_for_unsupported_t
     assert "No action was executed" in assistant_text
     assert "Supported options are `enable` and `disable`" in assistant_text
     assert "A grounded tool-backed answer" not in assistant_text
-    assert runner.retry_after_missing_tool_execution_calls == []
     assert len(runner.unsupported_calls) == 1
     assert runner.unsupported_calls[0]["allowed_tool_names"] == []
     assert "item_operation" in runner.unsupported_calls[0]["user_message"]
@@ -2502,7 +2493,7 @@ async def test_direct_answer_turn_replaces_tool_call_markup_with_recovery_answer
 
 
 @pytest.mark.asyncio
-async def test_plaintext_dsml_tool_call_attempt_retries_structured_tool_execution() -> None:
+async def test_plaintext_dsml_tool_call_attempt_is_blocked_without_recursive_retry() -> None:
     runner = _PostRunner()
     session_manager = _SessionManager()
     dsml_markup = (
@@ -2581,14 +2572,17 @@ async def test_plaintext_dsml_tool_call_attempt_retries_structured_tool_executio
     retry_events = [
         event for event in events if event.type == "runtime" and event.metadata.get("state") == "retrying"
     ]
+    failed_events = [
+        event for event in events if event.type == "runtime" and event.metadata.get("state") == "failed"
+    ]
 
     assert assistant_chunks == []
     assert runtime_warnings
+    assert runtime_warnings[0].metadata["phase"] == "plaintext_tool_call_blocked"
     assert retry_events == []
-    assert runner.retry_after_missing_tool_execution_calls
-    retry_call = runner.retry_after_missing_tool_execution_calls[0]
-    assert retry_call["preferred_tools"] == ["openmeteo_weather"]
-    assert "plaintext tool-call markup" in retry_call["failure_message"]
+    assert failed_events
+    assert len(runner.runtime_events.context_ready_calls) == 1
+    assert runner.runtime_events.context_ready_calls[0]["run_status"] == "failed"
     assert state.get("should_stop") in {None, False}
 
 

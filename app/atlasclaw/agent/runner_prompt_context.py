@@ -20,10 +20,8 @@ from app.atlasclaw.core.provider_skill_capability import (
     provider_skill_display_name,
 )
 from app.atlasclaw.memory.access import memory_available_for_deps
-from app.atlasclaw.tools.providers.instance_tools import (
-    provider_instance_usage_hint,
-)
 from app.atlasclaw.tools.catalog import STANDARD_SKILL_RUNTIME_TOOL_NAMES
+from app.atlasclaw.tools.providers.instance_tools import provider_instance_usage_hint
 
 
 def build_system_prompt(
@@ -116,26 +114,13 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
             continue
         if bool(item.get("coordination_only")):
             continue
+        if _normalize_optional_text(
+            item.get("qualified_skill_name", "")
+        ) or _normalize_optional_text(item.get("skill_name", "")):
+            continue
         tool_name = str(item.get("name") or "unknown").strip() or "unknown"
         provider_type = _normalize_optional_text(item.get("provider_type", ""))
-        if provider_type:
-            if not _has_provider_instance_bucket(provider_instances, provider_type):
-                continue
-            existing_ids = {
-                str(entry.get("capability_id", "") or "").strip()
-                for entry in capability_index
-                if isinstance(entry, dict)
-            }
-            for provider_tool_entry in _provider_tool_capability_entries(
-                deps=deps,
-                item=item,
-                provider_type=provider_type,
-                provider_instances=provider_instances,
-            ):
-                if provider_tool_entry["capability_id"] in existing_ids:
-                    continue
-                existing_ids.add(provider_tool_entry["capability_id"])
-                capability_index.append(provider_tool_entry)
+        if provider_type and not _has_provider_instance_bucket(provider_instances, provider_type):
             continue
         tool_names.add(tool_name)
         capability_index.append(
@@ -262,6 +247,12 @@ def collect_md_skill_capability_entries(
         metadata = item.get("metadata", {})
         if not isinstance(metadata, dict):
             metadata = {}
+        routing_visibility = _normalize_optional_text(
+            metadata.get("routing_visibility", ""),
+            metadata.get("planner_visibility", ""),
+        )
+        if routing_visibility in {"hidden", "internal"}:
+            continue
         provider_type = _normalize_optional_text(
             metadata.get("provider_type", ""),
             item.get("provider_type", ""),
@@ -281,7 +272,6 @@ def collect_md_skill_capability_entries(
             continue
         if provider_bound:
             provider_skill_entries = _provider_md_skill_capability_entries(
-                deps=deps,
                 item=item,
                 name=name,
                 metadata=metadata,
@@ -319,28 +309,8 @@ def collect_md_skill_capability_entries(
     return entries
 
 
-def _provider_skill_capability_description(
-    *,
-    description: str,
-    provider_context: dict[str, Any],
-    instance_config: dict[str, Any],
-) -> str:
-    parts: list[str] = []
-    parts.extend(_normalize_string_list(description))
-    for value in (
-        provider_context.get("display_name", ""),
-        provider_context.get("description", ""),
-        provider_context.get("capabilities", []),
-        provider_context.get("use_when", []),
-        provider_instance_usage_hint(instance_config),
-    ):
-        parts.extend(_normalize_string_list(value))
-    return " ".join(parts).strip() or "Authorized provider instance capability."
-
-
 def _provider_md_skill_capability_entries(
     *,
-    deps,
     item: dict[str, Any],
     name: str,
     metadata: dict[str, Any],
@@ -351,13 +321,6 @@ def _provider_md_skill_capability_entries(
     instances = _provider_instance_entries(provider_instances, provider_type)
     if not instances:
         return []
-
-    provider_contexts = collect_provider_contexts(deps)
-    provider_context = provider_contexts.get(provider_type) or provider_contexts.get(
-        provider_type.lower(), {}
-    )
-    if not isinstance(provider_context, dict):
-        provider_context = {}
 
     description = str(item.get("description", "") or "").strip()
     declared_tool_names = _extract_md_tool_names(item)
@@ -387,11 +350,15 @@ def _provider_md_skill_capability_entries(
                 ),
                 "kind": "provider_skill",
                 "name": provider_skill_name,
-                "description": _provider_skill_capability_description(
-                    description=description,
-                    provider_context=provider_context,
-                    instance_config=instance_config,
-                ),
+                "description": " ".join(
+                    part
+                    for part in (
+                        description,
+                        provider_instance_usage_hint(instance_config),
+                    )
+                    if part
+                )
+                or "Authorized provider skill.",
                 "locator": str(item.get("file_path", "")).strip() or name or "unknown",
                 **target_fields,
                 "artifact_types": _infer_artifact_types(
@@ -404,78 +371,6 @@ def _provider_md_skill_capability_entries(
                 ),
                 "declared_tool_names": declared_tool_names,
                 "declares_executable_tools": _metadata_declares_executable_tool(metadata),
-            }
-        )
-    return entries
-
-
-def _provider_tool_capability_entries(
-    *,
-    deps,
-    item: dict[str, Any],
-    provider_type: str,
-    provider_instances: Any,
-) -> list[dict[str, Any]]:
-    """Expand one provider-bound executable tool into instance-qualified capabilities."""
-    instances = _provider_instance_entries(provider_instances, provider_type)
-    if not instances:
-        return []
-
-    tool_name = str(item.get("name") or "unknown").strip() or "unknown"
-    qualified_skill_name = _normalize_optional_text(item.get("qualified_skill_name", ""))
-    if not qualified_skill_name:
-        return []
-    skill_name = _normalize_optional_text(item.get("skill_name", ""), tool_name)
-    display_skill_name = provider_skill_display_name(
-        qualified_skill_name or skill_name,
-        provider_type,
-    )
-    description = str(item.get("description", "") or "").strip()
-    provider_contexts = collect_provider_contexts(deps)
-    provider_context = provider_contexts.get(provider_type) or provider_contexts.get(
-        provider_type.lower(), {}
-    )
-    if not isinstance(provider_context, dict):
-        provider_context = {}
-
-    entries: list[dict[str, Any]] = []
-    for resolved_provider_type, instance_name, instance_config in instances:
-        target_fields = build_provider_skill_target_fields(
-            provider_type=resolved_provider_type,
-            instance_name=instance_name,
-            qualified_skill_name=qualified_skill_name,
-            skill_name=skill_name,
-            display_skill_name=display_skill_name,
-        )
-        provider_skill_name = str(target_fields.get("provider_skill_name", "") or "")
-        entries.append(
-            {
-                "capability_id": provider_skill_capability_id(
-                    provider_name=instance_name,
-                    provider_type=resolved_provider_type,
-                    qualified_skill_name=qualified_skill_name,
-                    skill_name=skill_name,
-                    display_skill_name=display_skill_name,
-                ),
-                "kind": "provider_skill",
-                "name": provider_skill_name,
-                "description": _provider_skill_capability_description(
-                    description=description,
-                    provider_context=provider_context,
-                    instance_config=instance_config,
-                ),
-                "locator": _format_tool_locator(item),
-                **target_fields,
-                "artifact_types": _infer_artifact_types(
-                    name=tool_name,
-                    description=description,
-                    capability_class=_normalize_optional_text(
-                        item.get("capability_class", "")
-                    ),
-                    metadata=item,
-                ),
-                "declared_tool_names": [tool_name],
-                "declares_executable_tools": True,
             }
         )
     return entries

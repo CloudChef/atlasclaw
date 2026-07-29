@@ -27,7 +27,7 @@ class TestStreamEvent:
     def test_create_lifecycle_start(self):
         """测试创建生命周期开始事件"""
         event = StreamEvent.lifecycle_start()
-        
+
         assert event.type == "lifecycle"
         assert event.phase == "start"
         
@@ -212,7 +212,7 @@ class TestPromptBuilder:
         prompt = builder.build()
 
         assert "You are Momo, enterprise collaboration partner." in prompt
-        
+
     def test_prompt_modes(self):
         """测试不同提示模式"""
         # Full 模式

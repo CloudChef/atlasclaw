@@ -14,6 +14,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from app.atlasclaw.agent.plaintext_tool_calls import looks_like_plaintext_tool_call_attempt
 from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
+    build_capability_selection_failure_answer,
     build_direct_answer_recovery_payload,
     build_lookup_dump_recovery_payload,
     build_no_runtime_capability_answer,
@@ -598,14 +599,6 @@ class RunnerExecutionFlowPostMixin:
         system_prompt = state.get("system_prompt")
         deps = state.get("deps")
         persist_user_metadata = self._persist_user_message_metadata_from_deps(deps)
-        max_tool_calls = int(state.get("max_tool_calls") or 0)
-        timeout_seconds = float(state.get("timeout_seconds") or 0.0)
-        token_failover_attempt = int(state.get("_token_failover_attempt") or 0)
-        emit_lifecycle_bounds = bool(state.get("_emit_lifecycle_bounds"))
-        selected_token_id = state.get("selected_token_id")
-        release_slot = state.get("release_slot")
-        tool_execution_retry_count = int(state.get("tool_execution_retry_count") or 0)
-
         try:
             raw_final_messages = agent_run.all_messages()
         except Exception:
@@ -916,12 +909,16 @@ class RunnerExecutionFlowPostMixin:
             and bool(tool_intent_plan.unavailable_runtime_capability)
             and not state.get("available_tools")
         ):
-            provider_auth_diagnostic = select_no_runtime_provider_auth_diagnostic(
-                extra=getattr(deps, "extra", {}),
-                intent_plan=tool_intent_plan,
-            )
-            final_assistant = build_no_runtime_capability_answer(provider_auth_diagnostic)
-            _log_step("no_runtime_capability_answer_applied")
+            if state.get("selector_failed"):
+                final_assistant = build_capability_selection_failure_answer()
+                _log_step("capability_selection_failure_answer_applied")
+            else:
+                provider_auth_diagnostic = select_no_runtime_provider_auth_diagnostic(
+                    extra=getattr(deps, "extra", {}),
+                    intent_plan=tool_intent_plan,
+                )
+                final_assistant = build_no_runtime_capability_answer(provider_auth_diagnostic)
+                _log_step("no_runtime_capability_answer_applied")
 
         if (
             not tool_execution_required
@@ -1054,47 +1051,12 @@ class RunnerExecutionFlowPostMixin:
                 "warning",
                 "Model returned plaintext tool-call markup instead of a real tool call.",
                 metadata={
-                    "phase": "plaintext_tool_call_retry",
+                    "phase": "plaintext_tool_call_blocked",
                     "attempt": current_model_attempt,
                     "elapsed": round(time.monotonic() - start_time, 1),
                     "preferred_tools": preferred_tools,
                 },
             )
-            yield StreamEvent.runtime_update(
-                "reasoning",
-                "Retrying once with stricter structured tool-execution guidance.",
-                metadata={
-                    "phase": "plaintext_tool_call_retry",
-                    "attempt": current_model_attempt,
-                    "elapsed": round(time.monotonic() - start_time, 1),
-                    "preferred_tools": preferred_tools,
-                },
-            )
-            plaintext_tool_retry_started = False
-            async for retry_event in self._retry_after_missing_tool_execution(
-                session_key=session_key,
-                user_message=user_message,
-                deps=deps,
-                release_slot=release_slot,
-                selected_token_id=selected_token_id,
-                start_time=start_time,
-                max_tool_calls=max_tool_calls,
-                timeout_seconds=timeout_seconds,
-                token_failover_attempt=token_failover_attempt,
-                emit_lifecycle_bounds=emit_lifecycle_bounds,
-                failure_message="The model emitted plaintext tool-call markup instead of executing a real tool call.",
-                preferred_tools=preferred_tools,
-                tool_execution_retry_count=tool_execution_retry_count,
-                allow_retry=True,
-            ):
-                plaintext_tool_retry_started = True
-                yield retry_event
-            if plaintext_tool_retry_started:
-                state["release_slot"] = None
-                state["selected_token_id"] = None
-                state["should_stop"] = True
-                buffered_assistant_events.clear()
-                return
             final_assistant = ""
             should_fail_for_missing_evidence = True
             should_block_assistant_emit = True
@@ -1188,13 +1150,11 @@ class RunnerExecutionFlowPostMixin:
                     )
             recovery_answer = ""
             answer_phase = "unsupported_tool_request"
-            max_tool_policy_retries = int(self.TOOL_POLICY_MAX_RETRIES or 0)
-            unsupported_tool_request_exhausted = (
+            missing_tool_execution_needs_answer = (
                 tool_execution_required
                 and not tool_required_has_real_execution
-                and tool_execution_retry_count >= max_tool_policy_retries
             )
-            if unsupported_tool_request_exhausted:
+            if missing_tool_execution_needs_answer:
                 yield StreamEvent.runtime_update(
                     "reasoning",
                     "Generating response for unsupported tool request.",
@@ -1337,34 +1297,6 @@ class RunnerExecutionFlowPostMixin:
                     tool_call_summaries=tool_call_summaries,
                 )
             else:
-                preferred_tools = []
-                if isinstance(getattr(deps, "extra", None), dict):
-                    preferred_tools = list(deps.extra.get("tool_policy", {}).get("preferred_tools", []) or [])
-                tool_execution_retried = False
-                async for retry_event in self._retry_after_missing_tool_execution(
-                    session_key=session_key,
-                    user_message=user_message,
-                    deps=deps,
-                    release_slot=release_slot,
-                    selected_token_id=selected_token_id,
-                    start_time=start_time,
-                    max_tool_calls=max_tool_calls,
-                    timeout_seconds=timeout_seconds,
-                    token_failover_attempt=token_failover_attempt,
-                    emit_lifecycle_bounds=emit_lifecycle_bounds,
-                    failure_message=failure_message,
-                    preferred_tools=preferred_tools,
-                    tool_execution_retry_count=tool_execution_retry_count,
-                    allow_retry=True,
-                ):
-                    tool_execution_retried = True
-                    yield retry_event
-                if tool_execution_retried:
-                    state["release_slot"] = None
-                    state["selected_token_id"] = None
-                    state["should_stop"] = True
-                    return
-
                 safe_messages = self._sanitize_turn_messages_for_persistence(
                     messages=final_messages,
                     start_index=persist_run_output_start_index,

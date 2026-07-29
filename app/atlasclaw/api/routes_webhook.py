@@ -78,6 +78,9 @@ async def execute_webhook_dispatch(
 
     target_fields = skill_selection.target_fields()
     extra: dict[str, Any] = {
+        # This server-only marker is set after webhook authentication, allowed
+        # skill validation, and provider-instance resolution have succeeded.
+        "authenticated_webhook_authority": True,
         "webhook_system_id": system.system_id,
         "webhook_skill": skill_selection.provider_skill_name,
         "webhook_qualified_skill": skill_entry.qualified_name,

@@ -100,7 +100,6 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             extra["trace_id"] = trace_context.trace_id
             extra["thread_id"] = trace_context.thread_id
         await hydrate_session_provider_instance_selections(deps)
-        tool_execution_retry_count = int(extra.get("_tool_execution_retry_count", 0) or 0)
         run_failed = False
         message_history: list[dict] = []
         system_prompt = ""
@@ -163,7 +162,6 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             "release_slot": release_slot,
             "extra": extra,
             "run_id": run_id,
-            "tool_execution_retry_count": tool_execution_retry_count,
             "run_failed": run_failed,
             "message_history": message_history,
             "system_prompt": system_prompt,
@@ -260,6 +258,22 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             )
             yield StreamEvent.error_event(str(e))
         finally:
+            if phase_state.get("selector_attempted"):
+                _log_step(
+                    "capability_selector_audit",
+                    selector_outcome=str(
+                        phase_state.get("selector_outcome") or ""
+                    ),
+                    selector_failed=bool(
+                        phase_state.get("selector_failed")
+                    ),
+                    selector_elapsed_ms=int(
+                        phase_state.get("selector_elapsed_ms") or 0
+                    ),
+                    main_model_calls=int(
+                        phase_state.get("current_model_attempt") or 0
+                    ),
+                )
             selected_token_id = phase_state.get("selected_token_id")
             release_slot = phase_state.get("release_slot")
             deps_obj = phase_state.get("deps", deps)

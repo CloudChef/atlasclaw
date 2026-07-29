@@ -609,8 +609,13 @@ def test_collect_capability_index_snapshot_uses_provider_instances_not_provider_
         "knowledgebase.markdown-vault-query",
     ]
     assert "target_skill_names" not in snapshot[0]
-    assert "Search read-only Markdown vault content." in snapshot[0]["description"]
-    assert "Use for SmartCMP knowledge-base Q&A." in snapshot[0]["description"]
+    assert snapshot[0]["description"] == (
+        "Query a Markdown vault. Use for SmartCMP knowledge-base Q&A."
+    )
+    assert snapshot[1]["description"] == (
+        "Query a Markdown vault. Use for AtlasClaw product documentation."
+    )
+    assert "Search read-only Markdown vault content." not in snapshot[0]["description"]
 
 
 def test_collect_capability_index_snapshot_omits_provider_md_skill_without_visible_instance() -> None:
@@ -721,7 +726,7 @@ def test_collect_capability_index_snapshot_omits_provider_tool_without_visible_i
     assert snapshot == []
 
 
-def test_collect_capability_index_snapshot_exposes_provider_tool_as_provider_skill() -> None:
+def test_collect_capability_index_snapshot_does_not_synthesize_skill_from_provider_tool() -> None:
     deps = SimpleNamespace(
         extra={
             "tools_snapshot_authoritative": True,
@@ -746,11 +751,29 @@ def test_collect_capability_index_snapshot_exposes_provider_tool_as_provider_ski
 
     snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
 
-    assert [item["capability_id"] for item in snapshot] == ["provider_skill:cmp.request"]
-    assert snapshot[0]["target_provider_instances"] == ["smartcmp.cmp"]
-    assert snapshot[0]["target_provider_skill_names"] == ["cmp.request"]
-    assert "target_skill_names" not in snapshot[0]
-    assert snapshot[0]["declared_tool_names"] == ["smartcmp_list_services"]
+    assert snapshot == []
+
+
+def test_collect_capability_index_snapshot_keeps_independent_provider_tool() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [
+                {
+                    "name": "external_status",
+                    "description": "Read current external service status.",
+                    "provider_type": "example",
+                }
+            ],
+            "md_skills_snapshot": [],
+            "skills_snapshot": [],
+            "provider_instances": {"example": {"primary": {}}},
+        }
+    )
+
+    snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
+
+    assert [item["capability_id"] for item in snapshot] == ["tool:external_status"]
 
 
 def test_collect_capability_index_snapshot_uses_explicit_md_tool_artifact_capability() -> None:
@@ -781,7 +804,7 @@ def test_collect_capability_index_snapshot_uses_explicit_md_tool_artifact_capabi
     assert snapshot[0]["artifact_types"] == ["pdf"]
 
 
-def test_collect_capability_index_snapshot_carries_executable_md_skill_targets() -> None:
+def test_collect_capability_index_snapshot_keeps_skill_execution_metadata() -> None:
     deps = SimpleNamespace(
         extra={
             "tools_snapshot_authoritative": True,
@@ -915,6 +938,46 @@ def test_collect_capability_index_snapshot_omits_internal_skill_snapshots() -> N
     snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
 
     assert [item["capability_id"] for item in snapshot] == ["skill:public_report"]
+
+
+def test_collect_capability_index_snapshot_omits_internal_provider_md_skill() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "tools_snapshot_authoritative": True,
+            "tools_snapshot": [],
+            "md_skills_snapshot": [
+                {
+                    "name": "internal-query",
+                    "qualified_name": "example:internal-query",
+                    "description": "Query provider data only when explicitly selected.",
+                    "provider": "example",
+                    "metadata": {
+                        "provider_type": "example",
+                        "routing_visibility": "internal",
+                        "tool_name": "example_internal_query",
+                    },
+                },
+                {
+                    "name": "request",
+                    "qualified_name": "example:request",
+                    "description": "Request provider resources.",
+                    "provider": "example",
+                    "metadata": {
+                        "provider_type": "example",
+                        "tool_name": "example_request",
+                    },
+                },
+            ],
+            "skills_snapshot": [],
+            "provider_instances": {"example": {"primary": {}}},
+        }
+    )
+
+    snapshot = collect_capability_index_snapshot(agent=SimpleNamespace(tools=[]), deps=deps)
+
+    assert [item["capability_id"] for item in snapshot] == [
+        "provider_skill:primary.request"
+    ]
 
 
 def test_build_system_prompt_uses_unified_capability_index_surface(tmp_path) -> None:
@@ -1465,6 +1528,7 @@ def test_resolve_selected_md_skill_target_prefers_docs_only_skill_for_multi_skil
 def test_preselected_md_skill_plan_overrides_routing_skill_for_webhook() -> None:
     deps = SimpleNamespace(
         extra={
+            "authenticated_webhook_authority": True,
             "webhook_skill": "acme:preapproval-agent",
             "target_md_skill": {
                 "provider": "acme",
@@ -1486,6 +1550,7 @@ def test_preselected_md_skill_plan_overrides_routing_skill_for_webhook() -> None
     assert plan.target_provider_skill_names == ["prod.preapproval-agent"]
     assert plan.target_skill_names == []
     assert plan.target_group_ids == ["group:acme"]
+    assert plan.mutation_authorized is True
     assert plan.reason == "preselected_target_md_skill"
 
 
@@ -1503,6 +1568,26 @@ def test_preselected_provider_md_skill_plan_requires_explicit_provider_instance(
     plan = build_preselected_md_skill_intent_plan(deps)
 
     assert plan is None
+
+
+def test_preselected_md_skill_does_not_authorize_mutation_without_webhook_authority() -> None:
+    deps = SimpleNamespace(
+        extra={
+            "target_md_skill": {
+                "provider": "acme",
+                "qualified_name": "acme:automation",
+                "file_path": "/tmp/automation/SKILL.md",
+                "target_provider_instances": ["acme.prod"],
+                "target_provider_types": ["acme"],
+                "target_provider_skill_names": ["prod.automation"],
+            },
+        }
+    )
+
+    plan = build_preselected_md_skill_intent_plan(deps)
+
+    assert plan is not None
+    assert plan.mutation_authorized is False
 
 
 def test_enrich_target_md_skill_with_workflow_context_attaches_structured_context() -> None:
