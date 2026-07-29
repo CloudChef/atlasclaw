@@ -12,6 +12,7 @@ import pytest
 
 from app.atlasclaw.skills.md_tool_runtime import (
     ScriptInvocationConfig,
+    _extract_parameters_schema,
     create_script_wrapper,
     load_handler_from_file,
     register_executable_tools_from_md,
@@ -435,6 +436,27 @@ def test_script_wrapper_sanitizes_provider_http_auth_errors(tmp_path: Path) -> N
     assert "Provider authentication failed" in result["output"]
     assert "user_token" not in result["output"]
     assert "personal provider access credential" not in result["output"]
+
+
+def test_md_tool_preserves_explicit_zero_argument_object_schema() -> None:
+    metadata = {
+        "tool_read_current_parameters": {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": False,
+        }
+    }
+
+    schema = _extract_parameters_schema(metadata, tool_id="read_current")
+
+    assert schema == {
+        "type": "object",
+        "properties": {},
+    }
+    assert _extract_parameters_schema(
+        {"tool_read_current_parameters": {"properties": {}}},
+        tool_id="read_current",
+    ) == {}
 
 
 def test_artifact_md_tool_defaults_to_tool_only_result_mode(tmp_path: Path) -> None:
