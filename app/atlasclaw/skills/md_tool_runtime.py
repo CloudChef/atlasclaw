@@ -1064,7 +1064,9 @@ def _coerce_parameters_schema(candidate: Any) -> dict[str, Any]:
     if schema_type and schema_type != "object":
         return {}
     properties = candidate.get("properties")
-    if not isinstance(properties, dict) or not properties:
+    if not isinstance(properties, dict):
+        return {}
+    if not properties and schema_type != "object":
         return {}
 
     normalized: dict[str, Any] = {

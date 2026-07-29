@@ -4,12 +4,27 @@
 from __future__ import annotations
 
 import inspect
+from typing import Any
+
+from pydantic_ai import Agent
+from pydantic_ai.models.test import TestModel
 
 from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
 
 
 async def _generic_script_handler(ctx=None, **kwargs):
     return kwargs
+
+
+async def _zero_argument_generated_handler(ctx: "RunContext[Any]") -> "dict[str, Any]":
+    return {"ctx": ctx}
+
+
+_zero_argument_generated_handler.__annotations__ = {
+    "args": Any,
+    "kwargs": Any,
+    "return": Any,
+}
 
 
 def test_tool_definitions_prefer_metadata_parameters_schema() -> None:
@@ -64,3 +79,33 @@ def test_runtime_handler_signature_uses_metadata_parameters_schema() -> None:
     assert list(signature.parameters.keys()) == ["ctx", "identifier", "days"]
     assert signature.parameters["identifier"].default is inspect.Parameter.empty
     assert signature.parameters["days"].default == 90
+
+
+def test_runtime_handler_wraps_explicit_zero_argument_object_schema() -> None:
+    registry = SkillRegistry()
+    metadata = SkillMetadata(
+        name="smartcmp_read_current_form_schema",
+        description="Read the current form schema draft.",
+        source="provider",
+        provider_type="smartcmp",
+        parameters_schema={
+            "type": "object",
+            "properties": {},
+        },
+    )
+
+    wrapped_handler = registry._build_runtime_handler(
+        metadata,
+        _zero_argument_generated_handler,
+    )
+    signature = inspect.signature(wrapped_handler)
+
+    assert wrapped_handler is not _zero_argument_generated_handler
+    assert list(signature.parameters.keys()) == ["ctx"]
+    assert "ctx" in wrapped_handler.__annotations__
+
+    registry.register_entry_to_agent(
+        Agent(TestModel()),
+        metadata,
+        _zero_argument_generated_handler,
+    )

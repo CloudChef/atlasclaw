@@ -602,7 +602,9 @@ from count JSON Schema
         if schema_type and schema_type != "object":
             return {}
         properties = raw_schema.get("properties")
-        if not isinstance(properties, dict) or not properties:
+        if not isinstance(properties, dict):
+            return {}
+        if not properties and schema_type != "object":
             return {}
         normalized: dict[str, Any] = {
             "type": "object",
