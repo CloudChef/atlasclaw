@@ -2056,6 +2056,7 @@ class RunnerExecutionPreparePhaseMixin:
             server_page_provider_type = ""
             server_page_provider_instance = ""
             server_page_action_start = False
+            capability_selection_history = message_history
             if isinstance(getattr(deps, "extra", None), dict):
                 request_context = deps.extra.get("context")
                 embed_scope = (
@@ -2083,6 +2084,52 @@ class RunnerExecutionPreparePhaseMixin:
                     server_page_provider_instance = str(
                         embed_scope.get("provider_instance", "") or ""
                     ).strip()
+            if server_page_skill_scope:
+                if server_page_action_start:
+                    target_md_skill_workflow_context = None
+                else:
+                    scoped_workflow_history = _embed_scope_workflow_history(
+                        message_history,
+                        embed_scope=embed_scope,
+                    )
+                    capability_selection_history = scoped_workflow_history or []
+                    target_md_skill_workflow_context = (
+                        build_target_md_skill_workflow_context(
+                            recent_history=capability_selection_history,
+                        )
+                        if scoped_workflow_history is not None
+                        else None
+                    )
+                    transcript_active_provider_skill = (
+                        _infer_active_provider_skill_from_transcript(
+                            message_history=capability_selection_history,
+                            capability_index=capability_index,
+                            active_provider_name=(
+                                str(
+                                    deps.extra.get("provider_instance_name", "")
+                                    or ""
+                                )
+                                if isinstance(deps.extra, dict)
+                                else ""
+                            ),
+                            active_provider_names=(
+                                _active_provider_instance_names_from_extra(deps.extra)
+                                if isinstance(deps.extra, dict)
+                                else []
+                            ),
+                        )
+                    )
+                    transcript_active_skill = None
+                    if not transcript_active_provider_skill:
+                        transcript_active_skill = _infer_active_skill_from_transcript(
+                            message_history=capability_selection_history,
+                            md_skills_snapshot=md_skills_snapshot,
+                            provider_instances=(
+                                deps.extra.get("provider_instances")
+                                if isinstance(deps.extra, dict)
+                                else None
+                            ),
+                        )
             if authenticated_webhook_authority and preselected_md_skill_plan is not None:
                 capability_selector_intent_plan = preselected_md_skill_plan
                 metadata_candidates = {
@@ -2123,26 +2170,9 @@ class RunnerExecutionPreparePhaseMixin:
                         preselected_md_skill_plan.target_tool_names
                     ),
                 )
-            elif server_page_skill_scope:
-                # The server-restored page projection is authoritative for this
-                # turn. A hidden object action starts a new page workflow, so
-                # discard an earlier trace then. A visible follow-up may reuse
-                # only metadata produced after the latest hidden action when it
-                # was bound to this exact server-owned context identity.
-                if server_page_action_start:
-                    target_md_skill_workflow_context = None
-                else:
-                    scoped_workflow_history = _embed_scope_workflow_history(
-                        message_history,
-                        embed_scope=embed_scope,
-                    )
-                    target_md_skill_workflow_context = (
-                        build_target_md_skill_workflow_context(
-                            recent_history=scoped_workflow_history,
-                        )
-                        if scoped_workflow_history is not None
-                        else None
-                    )
+            elif server_page_skill_scope and server_page_action_start:
+                # A hidden object action starts a new page workflow. The
+                # server-restored page projection is authoritative for this turn.
                 provider_skill_targets = [
                     provider_skill_capability_name(
                         provider_name=server_page_provider_instance,
@@ -2357,7 +2387,7 @@ class RunnerExecutionPreparePhaseMixin:
                     tool_request_message, used_follow_up_context = (
                         self._resolve_contextual_tool_request(
                             user_message=user_message,
-                            recent_history=message_history,
+                            recent_history=capability_selection_history,
                             deps=deps,
                         )
                     )
@@ -2445,7 +2475,7 @@ class RunnerExecutionPreparePhaseMixin:
                         agent=runtime_agent or self.agent,
                         deps=deps,
                         user_message=selector_user_message,
-                        recent_history=message_history,
+                        recent_history=capability_selection_history,
                         capability_index=capability_index,
                         usage_profile_context=usage_profile_context,
                         active_capability_context=active_capability_context,
