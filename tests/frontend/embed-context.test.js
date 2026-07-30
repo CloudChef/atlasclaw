@@ -6,6 +6,7 @@ import { parseEmbedSurface } from '../../app/frontend/scripts/embed/surface.js'
 import { EmbedContextStore } from '../../app/frontend/scripts/embed/context-store.js'
 import { EmbedContextBridge, EMBED_PROTOCOL } from '../../app/frontend/scripts/embed/context-bridge.js'
 import { EmbedContextController } from '../../app/frontend/scripts/embed/context-controller.js'
+import { renderObjectContextBar } from '../../app/frontend/scripts/embed/components/object-context-bar.js'
 import { renderContextObjectActions } from '../../app/frontend/scripts/chat-ui.js'
 import { jest } from '@jest/globals'
 
@@ -38,31 +39,46 @@ describe('atlasclaw-embed/v1 frontend contract', () => {
     expect(store.getCurrent().object.id).toBe('B')
   })
 
-  test('rejects a turn while current page context is still resolving', async () => {
-    jest.useFakeTimers()
+  test('pending Context does not delay or control an ordinary Chat turn', () => {
     const store = new EmbedContextStore()
     store.beginResolve(9)
-    const pending = store.getTurnContext(500)
 
-    jest.advanceTimersByTime(500)
-    await expect(pending).rejects.toMatchObject({ code: 'EMBED_CONTEXT_PENDING' })
-    jest.useRealTimers()
+    expect(store.getTurnContext()).toBeNull()
   })
 
-  test('unsupported pages allow ordinary Chat while matched failures fail closed', async () => {
+  test('unsupported and unavailable pages expose no optional turn context', () => {
     const unsupported = new EmbedContextStore()
     unsupported.beginResolve(10)
     unsupported.completeResolve(10, { generation: 10, status: 'unsupported' })
-    await expect(unsupported.getTurnContext()).resolves.toBeNull()
+    expect(unsupported.getTurnContext()).toBeNull()
     expect(unsupported.getStatus()).toBe('unsupported')
 
     const unavailable = new EmbedContextStore()
     unavailable.beginResolve(11)
     unavailable.completeResolve(11, { generation: 11, status: 'unavailable' })
-    await expect(unavailable.getTurnContext()).rejects.toMatchObject({
-      code: 'EMBED_CONTEXT_UNAVAILABLE'
-    })
+    expect(unavailable.getTurnContext()).toBeNull()
     expect(unavailable.getStatus()).toBe('unavailable')
+  })
+
+  test('context bar displays the default Skill and current object', () => {
+    const container = document.createElement('div')
+    renderObjectContextBar(
+      container,
+      { type: 'service', id: 'SVC-1', name: 'Linux VM' },
+      {
+        ref: 'example:service-request',
+        name: 'default.service-request',
+        description: 'Request the current service.'
+      }
+    )
+
+    expect(container.hidden).toBe(false)
+    expect(container.querySelector('.embed-default-skill-name')?.textContent)
+      .toBe('default.service-request')
+    expect(container.querySelector('.embed-object-context-summary')?.textContent)
+      .toBe('Linux VM')
+    expect(container.querySelector('.embed-object-context-id')?.textContent)
+      .toBe('SVC-1')
   })
 
   test('bridge accepts only the minimal normalized PAGE_CHANGED payload', () => {

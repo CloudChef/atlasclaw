@@ -1100,24 +1100,7 @@ class RunnerToolEvidenceMixin:
         extra = getattr(deps, "extra", {})
         context = extra.get("context") if isinstance(extra, dict) else None
         if isinstance(context, dict) and context.get("visible_user_turn") is False:
-            metadata: dict[str, Any] = {"visible_user_turn": False}
-            embed_scope = context.get("embed_scope")
-            if isinstance(embed_scope, dict):
-                persisted_scope = {
-                    key: embed_scope.get(key)
-                    for key in (
-                        "context_id",
-                        "generation",
-                        "provider_type",
-                        "provider_instance",
-                        "object_type",
-                        "object_id",
-                    )
-                    if embed_scope.get(key) is not None
-                }
-                if persisted_scope:
-                    metadata["embed_scope"] = persisted_scope
-            return metadata
+            return {"visible_user_turn": False}
         return {}
 
     def _collect_matched_tool_call_keys(

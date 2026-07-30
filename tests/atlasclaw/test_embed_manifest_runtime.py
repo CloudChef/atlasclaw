@@ -15,15 +15,10 @@ from pydantic import ValidationError
 from app.atlasclaw.auth.guards import AuthorizationContext
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.core.config_schema import AtlasClawConfig, EmbedIntegrationConfig
-from app.atlasclaw.core.embed.context_service import EmbedContextService, EmbedPermissionError
+from app.atlasclaw.core.embed.context_service import EmbedContextService
 from app.atlasclaw.core.embed import context_service as context_service_module
 from app.atlasclaw.core.embed.integration_registry import EmbedIntegrationRegistry
-from app.atlasclaw.core.embed.models import (
-    ContextSkillTool,
-    ContextSnapshot,
-    ResolvedObject,
-    RouteManifest,
-)
+from app.atlasclaw.core.embed.models import ContextSnapshot, ResolvedObject, RouteManifest
 from app.atlasclaw.core.embed.route_matcher import match_route, normalize_host_path
 from app.atlasclaw.core.embed.snapshot_store import (
     EmbedContextSnapshotStore,
@@ -84,6 +79,8 @@ def _snapshot(
         provider_instance="default",
         page_type="item-detail",
         skill_ref="example:item",
+        skill_name="default.item",
+        skill_description="Manage items.",
         object=ResolvedObject(type="item", id=context_id),
         created_at=now,
         expires_at=expires_at or now + timedelta(minutes=5),
@@ -104,6 +101,25 @@ def _put(
         max_contexts_per_user=capacity,
     )
     assert store.put(snapshot, max_contexts_per_user=capacity)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("skill_name", "s" * 257),
+        ("skill_description", "d" * 4097),
+    ],
+)
+def test_context_snapshot_bounds_prompt_visible_skill_metadata(
+    field_name: str,
+    field_value: str,
+) -> None:
+    """Prompt-visible default Skill metadata must remain bounded in memory."""
+    payload = _snapshot("ctx-bounded").model_dump()
+    payload[field_name] = field_value
+
+    with pytest.raises(ValidationError, match="string_too_long"):
+        ContextSnapshot.model_validate(payload)
 
 
 def test_embed_configuration_is_opt_in_and_accepts_only_default_provider_binding() -> None:
@@ -153,39 +169,11 @@ def test_route_manifest_matches_exact_skill_and_rejects_untrusted_contract_field
             RouteManifest.model_validate(payload)
 
 
-def test_context_tools_are_projected_only_from_the_matched_skill(
+def test_default_skill_is_resolved_through_the_ordinary_authorized_catalog(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    registry = SimpleNamespace(
-        tools_snapshot=lambda: [
-            {
-                "name": "example_inspect",
-                "description": "Inspect the current item.",
-                "aliases": ["Inspect item"],
-                "priority": 20,
-                "coordination_only": False,
-            },
-            {
-                "name": "example_internal",
-                "description": "Internal coordination.",
-                "aliases": [],
-                "priority": 10,
-                "coordination_only": True,
-            },
-            {
-                "name": "example_other",
-                "description": "Another Skill Tool.",
-                "aliases": [],
-                "priority": 5,
-                "coordination_only": False,
-            },
-        ],
-        tool_belongs_to_md_skill=lambda skill_ref, tool_name: (
-            skill_ref == "example:item" and tool_name != "example_other"
-        ),
-    )
     service = EmbedContextService(
-        SimpleNamespace(skill_registry=registry, provider_instances={"example": {"default": {}}}),
+        SimpleNamespace(provider_instances={"example": {"default": {}}}),
         SimpleNamespace(),
         EmbedContextSnapshotStore(),
     )
@@ -202,11 +190,9 @@ def test_context_tools_are_projected_only_from_the_matched_skill(
                     "qualified_skill_name": "example:item",
                     "provider_type": "example",
                     "instance_name": "default",
-                    "target_tool_names": [
-                        "example_inspect",
-                        "example_internal",
-                        "example_other",
-                    ],
+                    "skill_name": "item",
+                    "label": "default.item",
+                    "description": "Manage the current item.",
                 }
             ]
         },
@@ -214,54 +200,24 @@ def test_context_tools_are_projected_only_from_the_matched_skill(
     user = UserInfo(user_id="alice")
     authz = AuthorizationContext(user=user, permissions={"providers": {"allow_all": True}})
 
-    tools = service.resolve_visible_skill_tools(
+    default_skill = service.resolve_visible_default_skill(
         integration=integration,
         skill_ref="example:item",
         authz=authz,
     )
 
-    assert [tool.model_dump() for tool in tools] == [
-        {
-            "name": "example_inspect",
-            "label": "Inspect item",
-            "description": "Inspect the current item.",
-        }
-    ]
-    now = datetime.now(timezone.utc)
-    snapshot = ContextSnapshot(
-        context_id="ctx-tools",
-        owner_user_id="alice",
-        surface_id=_SURFACE_A,
-        generation=1,
-        provider_type="example",
-        provider_instance="default",
-        page_type="item-detail",
-        skill_ref="example:item",
-        object=ResolvedObject(type="item", id="ITEM-1"),
-        tools=tools,
-        created_at=now,
-        expires_at=now + timedelta(minutes=5),
-    )
-    service.require_visible_snapshot_tool(
-        snapshot=snapshot,
-        integration=integration,
-        authz=authz,
-        tool_name="example_inspect",
-    )
-    with pytest.raises(EmbedPermissionError, match="current page Skill"):
-        service.require_visible_snapshot_tool(
-            snapshot=snapshot,
-            integration=integration,
-            authz=authz,
-            tool_name="example_other",
-        )
+    assert default_skill == {
+        "ref": "example:item",
+        "name": "item",
+        "description": "Manage the current item.",
+    }
 
 
 @pytest.mark.asyncio
 async def test_new_provider_skill_needs_only_route_and_object_resolver_mapping(
     tmp_path: Path,
 ) -> None:
-    """A conforming Provider Skill must project its Tools without Core/UI mappings."""
+    """A conforming Provider Skill supplies a default without Core/UI mappings."""
     provider_root = tmp_path / "provider"
     skill_root = provider_root / "skills"
     skill_dir = skill_root / "widget"
@@ -370,13 +326,8 @@ tool_inspect_aliases:
     assert resolution.snapshot is not None
     assert resolution.snapshot.object.id == "W-42"
     assert resolution.snapshot.skill_ref == "example:widget"
-    assert [tool.model_dump() for tool in resolution.snapshot.tools] == [
-        {
-            "name": "example_inspect_widget",
-            "label": "Inspect widget",
-            "description": "Inspect the current widget.",
-        }
-    ]
+    assert resolution.snapshot.skill_name == "widget"
+    assert resolution.snapshot.skill_description == "Inspect widgets."
     service._execute_resolver.assert_awaited_once()
 
 
@@ -430,8 +381,12 @@ async def test_context_service_uses_fixed_server_owned_resolver_contract() -> No
             ],
         }
     )
-    service.resolve_visible_skill_tools = Mock(
-        return_value=[ContextSkillTool(name="example_inspect", label="Inspect item")]
+    service.resolve_visible_default_skill = Mock(
+        return_value={
+            "ref": "example:item",
+            "name": "default.item",
+            "description": "Manage items.",
+        }
     )
     user = UserInfo(user_id="alice")
     authz = AuthorizationContext(user=user, permissions={"providers": {"allow_all": True}})
@@ -446,7 +401,7 @@ async def test_context_service_uses_fixed_server_owned_resolver_contract() -> No
     )
 
     assert resolution.snapshot is not None
-    assert [tool.name for tool in resolution.snapshot.tools] == ["example_inspect"]
+    assert resolution.snapshot.skill_name == "default.item"
     assert [action["action_id"] for action in resolution.snapshot.object_actions] == ["inspect"]
     service._execute_resolver.assert_awaited_once_with(
         integration=integration,
@@ -465,7 +420,7 @@ async def test_context_service_uses_fixed_server_owned_resolver_contract() -> No
 
 
 @pytest.mark.asyncio
-async def test_invalid_page_tool_metadata_fails_closed_as_unavailable() -> None:
+async def test_unauthorized_default_skill_degrades_context_to_unavailable() -> None:
     manifest = RouteManifest.model_validate(_route_payload())
     integration = SimpleNamespace(
         routes=manifest,
@@ -501,9 +456,7 @@ async def test_invalid_page_tool_metadata_fails_closed_as_unavailable() -> None:
             "object": {"type": "item", "id": "ITEM-1"},
         }
     )
-    service.resolve_visible_skill_tools = Mock(
-        side_effect=ValueError("description exceeds limit")
-    )
+    service.resolve_visible_default_skill = Mock(return_value=None)
     user = UserInfo(user_id="alice")
     authz = AuthorizationContext(user=user, permissions={"providers": {"allow_all": True}})
 

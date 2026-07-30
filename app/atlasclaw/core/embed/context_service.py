@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -29,11 +28,7 @@ from app.atlasclaw.skills.md_tool_runtime import (
 )
 
 from .integration_registry import EmbedIntegrationRegistry, LoadedEmbedIntegration
-from .models import (
-    ContextSnapshot,
-    ContextSkillTool,
-    ResolvedObject,
-)
+from .models import ContextSnapshot, ResolvedObject
 from .route_matcher import match_route, normalize_host_path
 from .snapshot_store import EmbedContextSnapshotStore
 
@@ -174,23 +169,14 @@ class EmbedContextService:
             )
             return EmbedContextResolution(matched=True)
 
-        try:
-            tools = self.resolve_visible_skill_tools(
-                integration=integration,
-                skill_ref=matched.rule.result.skill_ref,
-                authz=resolver_authz,
-            )
-        except ValueError as exc:
+        default_skill = self.resolve_visible_default_skill(
+            integration=integration,
+            skill_ref=matched.rule.result.skill_ref,
+            authz=resolver_authz,
+        )
+        if default_skill is None:
             logger.warning(
-                "Embed page Skill Tool metadata is invalid: provider=%s route=%s error=%s",
-                integration.config.provider_type,
-                matched.rule.id,
-                exc,
-            )
-            return EmbedContextResolution(matched=True)
-        if len(tools) > 128:
-            logger.warning(
-                "Embed page Skill exceeds the Context Tool limit: provider=%s route=%s",
+                "Embed default Skill is not authorized: provider=%s route=%s",
                 integration.config.provider_type,
                 matched.rule.id,
             )
@@ -207,9 +193,10 @@ class EmbedContextService:
                 provider_instance=integration.config.provider_instance,
                 page_type=matched.rule.result.page_type,
                 skill_ref=matched.rule.result.skill_ref,
+                skill_name=default_skill["name"],
+                skill_description=default_skill["description"],
                 object=object_value,
                 object_actions=object_actions,
-                tools=tools,
                 created_at=created_at,
                 expires_at=created_at + timedelta(seconds=integration.context_ttl_seconds),
             )
@@ -246,14 +233,14 @@ class EmbedContextService:
         ):
             raise EmbedResolverError("route Skill does not match the configured Provider")
 
-    def resolve_visible_skill_tools(
+    def resolve_visible_default_skill(
         self,
         *,
         integration: LoadedEmbedIntegration,
         skill_ref: str,
         authz: AuthorizationContext,
-    ) -> list[ContextSkillTool]:
-        """Return authorized runtime Tools owned by one exact page Skill."""
+    ) -> dict[str, str] | None:
+        """Return the matched default Skill only when ordinary RBAC exposes it."""
         normalized_ref = str(skill_ref or "").strip().lower()
         catalog = build_agent_capabilities(
             ctx=self._ctx,
@@ -276,89 +263,15 @@ class EmbedContextService:
             None,
         )
         if capability is None:
-            return []
-
-        allowed_names = {
-            str(name or "").strip()
-            for name in capability.get("target_tool_names", [])
-            if str(name or "").strip()
+            return None
+        return {
+            "ref": normalized_ref,
+            "name": str(
+                capability.get("skill_name")
+                or normalized_ref.split(":", 1)[-1]
+            ).strip(),
+            "description": str(capability.get("description") or "").strip(),
         }
-        metadata_by_name = {
-            str(item.get("name") or "").strip(): item
-            for item in self._ctx.skill_registry.tools_snapshot()
-            if isinstance(item, dict)
-            and str(item.get("name") or "").strip() in allowed_names
-            and not bool(item.get("coordination_only"))
-            and self._ctx.skill_registry.tool_belongs_to_md_skill(
-                normalized_ref,
-                str(item.get("name") or "").strip(),
-            )
-        }
-        ordered = sorted(
-            metadata_by_name.values(),
-            key=lambda item: (
-                int(item.get("priority") or 100),
-                str(item.get("name") or "").lower(),
-            ),
-        )
-        return [
-            ContextSkillTool(
-                name=str(item.get("name") or "").strip(),
-                label=self._tool_display_label(
-                    item,
-                    provider_type=integration.config.provider_type,
-                ),
-                description=str(item.get("description") or "").strip(),
-            )
-            for item in ordered
-        ]
-
-    def require_visible_snapshot_tool(
-        self,
-        *,
-        snapshot: ContextSnapshot,
-        integration: LoadedEmbedIntegration,
-        authz: AuthorizationContext,
-        tool_name: str,
-    ) -> None:
-        """Require one Tool to remain frozen, visible, and owned by the page Skill."""
-        normalized_tool_name = str(tool_name or "").strip()
-        frozen_tool_names = {tool.name for tool in snapshot.tools}
-        visible_tool_names = {
-            tool.name
-            for tool in self.resolve_visible_skill_tools(
-                integration=integration,
-                skill_ref=snapshot.skill_ref,
-                authz=authz,
-            )
-        }
-        if (
-            normalized_tool_name not in frozen_tool_names
-            or normalized_tool_name not in visible_tool_names
-            or not self._ctx.skill_registry.tool_belongs_to_md_skill(
-                snapshot.skill_ref,
-                normalized_tool_name,
-            )
-        ):
-            raise EmbedPermissionError(
-                "embed Tool is not available for the current page Skill"
-            )
-
-    @staticmethod
-    def _tool_display_label(tool: dict[str, Any], *, provider_type: str) -> str:
-        """Build a generic button label from existing Tool metadata."""
-        aliases = tool.get("aliases")
-        if isinstance(aliases, list):
-            first_alias = next(
-                (str(value).strip() for value in aliases if str(value).strip()),
-                "",
-            )
-            if first_alias:
-                return first_alias
-        name = str(tool.get("name") or "").strip()
-        prefix = f"{str(provider_type or '').strip().lower()}_"
-        bare = name[len(prefix) :] if name.lower().startswith(prefix) else name
-        return re.sub(r"[_-]+", " ", bare).strip() or name
 
     async def _execute_resolver(
         self,

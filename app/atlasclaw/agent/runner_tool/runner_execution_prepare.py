@@ -49,7 +49,6 @@ from app.atlasclaw.agent.tool_gate_models import (
     ToolPolicyMode,
 )
 from app.atlasclaw.core.deps import SkillDeps
-from app.atlasclaw.core.provider_skill_capability import provider_skill_capability_name
 from app.atlasclaw.memory.access import MEMORY_TOOL_NAMES
 from app.atlasclaw.tools.providers.instance_tools import (
     PROVIDER_INSTANCE_SELECTIONS_KEY,
@@ -166,12 +165,6 @@ def build_user_selected_tool_intent_plan(deps: SkillDeps) -> ToolIntentPlan | No
     """Translate a validated slash capability into a runtime tool plan."""
     selected = get_selected_capability_from_deps(deps)
     if not selected:
-        return None
-    extra = getattr(deps, "extra", None)
-    request_context = extra.get("context") if isinstance(extra, dict) else None
-    if isinstance(request_context, dict) and isinstance(
-        request_context.get("embed_scope"), dict
-    ):
         return None
 
     targets = selected_capability_targets(selected)
@@ -1063,55 +1056,6 @@ def enrich_target_md_skill_with_workflow_context(
     if isinstance(workflow_trace, dict) and workflow_trace:
         enriched["workflow_context"] = dict(workflow_trace)
     return enriched
-
-
-_EMBED_SCOPE_IDENTITY_KEYS = (
-    "context_id",
-    "generation",
-    "provider_type",
-    "provider_instance",
-    "object_type",
-    "object_id",
-)
-
-
-def _normalize_embed_scope_identity(value: Any) -> Optional[tuple[str, ...]]:
-    """Return a stable identity for a server-restored embed context."""
-    if not isinstance(value, dict):
-        return None
-    identity = tuple(
-        "" if value.get(key) is None else str(value.get(key)).strip()
-        for key in _EMBED_SCOPE_IDENTITY_KEYS
-    )
-    if not identity[0] or not identity[1]:
-        return None
-    return identity
-
-
-def _embed_scope_workflow_history(
-    message_history: list[dict[str, Any]],
-    *,
-    embed_scope: dict[str, Any],
-) -> Optional[list[dict[str, Any]]]:
-    """Return messages after the latest hidden action when its page identity still matches."""
-    if not isinstance(message_history, list):
-        return None
-    current_identity = _normalize_embed_scope_identity(embed_scope)
-    if current_identity is None:
-        return None
-    for index in range(len(message_history) - 1, -1, -1):
-        message = message_history[index]
-        if not isinstance(message, dict):
-            continue
-        if str(message.get("role", "") or "").strip().lower() != "user":
-            continue
-        metadata = message.get("metadata")
-        if not isinstance(metadata, dict) or metadata.get("visible_user_turn") is not False:
-            continue
-        if _normalize_embed_scope_identity(metadata.get("embed_scope")) != current_identity:
-            return None
-        return message_history[index + 1 :]
-    return None
 
 
 def _parse_target_md_skill_workflow_metadata(value: Any) -> Any:
@@ -2051,38 +1995,6 @@ class RunnerExecutionPreparePhaseMixin:
             selector_outcome = ""
             selector_attempted = False
             capability_selector_failed = False
-            server_page_skill_scope = False
-            server_page_skill_refs: list[str] = []
-            server_page_provider_type = ""
-            server_page_provider_instance = ""
-            server_page_action_start = False
-            if isinstance(getattr(deps, "extra", None), dict):
-                request_context = deps.extra.get("context")
-                embed_scope = (
-                    request_context.get("embed_scope")
-                    if isinstance(request_context, dict)
-                    else None
-                )
-                page_skill_refs = (
-                    request_context.get("allowed_page_skill_refs")
-                    if isinstance(request_context, dict)
-                    else None
-                )
-                if isinstance(embed_scope, dict):
-                    server_page_skill_scope = True
-                    server_page_action_start = bool(
-                        isinstance(request_context, dict)
-                        and request_context.get("visible_user_turn") is False
-                    )
-                    server_page_skill_refs = unique_capability_values(
-                        page_skill_refs if isinstance(page_skill_refs, list) else []
-                    )
-                    server_page_provider_type = str(
-                        embed_scope.get("provider_type", "") or ""
-                    ).strip().lower()
-                    server_page_provider_instance = str(
-                        embed_scope.get("provider_instance", "") or ""
-                    ).strip()
             if authenticated_webhook_authority and preselected_md_skill_plan is not None:
                 capability_selector_intent_plan = preselected_md_skill_plan
                 metadata_candidates = {
@@ -2122,75 +2034,6 @@ class RunnerExecutionPreparePhaseMixin:
                     target_tool_names=list(
                         preselected_md_skill_plan.target_tool_names
                     ),
-                )
-            elif server_page_skill_scope:
-                # The server-restored page projection is authoritative for this
-                # turn. A hidden object action starts a new page workflow, so
-                # discard an earlier trace then. A visible follow-up may reuse
-                # only metadata produced after the latest hidden action when it
-                # was bound to this exact server-owned context identity.
-                if server_page_action_start:
-                    target_md_skill_workflow_context = None
-                else:
-                    scoped_workflow_history = _embed_scope_workflow_history(
-                        message_history,
-                        embed_scope=embed_scope,
-                    )
-                    target_md_skill_workflow_context = (
-                        build_target_md_skill_workflow_context(
-                            recent_history=scoped_workflow_history,
-                        )
-                        if scoped_workflow_history is not None
-                        else None
-                    )
-                provider_skill_targets = [
-                    provider_skill_capability_name(
-                        provider_name=server_page_provider_instance,
-                        provider_type=server_page_provider_type,
-                        qualified_skill_name=skill_ref,
-                    )
-                    for skill_ref in server_page_skill_refs
-                ]
-                provider_skill_targets = unique_capability_values(provider_skill_targets)
-                provider_targets = []
-                if (
-                    provider_skill_targets
-                    and server_page_provider_type
-                    and server_page_provider_instance
-                ):
-                    provider_targets.append(
-                        f"{server_page_provider_type}.{server_page_provider_instance}"
-                    )
-                provider_types = (
-                    [server_page_provider_type]
-                    if provider_targets
-                    else []
-                )
-                capability_selector_intent_plan = ToolIntentPlan(
-                    action=ToolIntentAction.DIRECT_ANSWER,
-                    target_provider_instances=provider_targets,
-                    target_provider_types=provider_types,
-                    target_provider_skill_names=provider_skill_targets,
-                    target_tool_names=[],
-                    reason="server_page_projection",
-                )
-                metadata_candidates = {
-                    "reason": "server_page_projection",
-                    "confidence": 1.0,
-                    "preferred_provider_instances": provider_targets,
-                    "preferred_provider_types": provider_types,
-                    "preferred_provider_skill_names": provider_skill_targets,
-                    "preferred_group_ids": [],
-                    "preferred_capability_classes": [],
-                    "preferred_tool_names": [],
-                    "preferred_skill_names": [],
-                }
-                _log_step(
-                    "capability_selector_skipped",
-                    reason="server_page_projection",
-                    target_provider_instances=provider_targets,
-                    target_provider_skill_names=provider_skill_targets,
-                    target_tool_names=[],
                 )
             elif selected_tool_intent_plan is not None:
                 if _selected_plan_matches_active_capability(
@@ -2587,11 +2430,7 @@ class RunnerExecutionPreparePhaseMixin:
                     selector_elapsed_ms=selector_elapsed_ms,
                 )
             ranking_trace = {
-                "status": (
-                    "server_page_projection"
-                    if metadata_candidates.get("reason") == "server_page_projection"
-                    else "capability_selector"
-                ),
+                "status": "capability_selector",
                 "reason": str(metadata_candidates.get("reason", "") or "capability_selector"),
                 "confidence": float(metadata_candidates.get("confidence", 0.0) or 0.0),
                 "preferred_provider_instances": list(
@@ -2617,11 +2456,7 @@ class RunnerExecutionPreparePhaseMixin:
                 deps.extra["tool_metadata_candidates"] = dict(metadata_candidates)
                 deps.extra["tool_ranking_trace"] = dict(ranking_trace)
             _log_step(
-                (
-                    "server_page_projection_recorded"
-                    if metadata_candidates.get("reason") == "server_page_projection"
-                    else "capability_selector_recorded"
-                ),
+                "capability_selector_recorded",
                 confidence=float(metadata_candidates.get("confidence", 0.0) or 0.0),
                 preferred_provider_instances=list(
                     metadata_candidates.get("preferred_provider_instances", []) or []
@@ -2642,9 +2477,7 @@ class RunnerExecutionPreparePhaseMixin:
                     metadata_candidates.get("preferred_tool_names", []) or []
                 ),
             )
-            if metadata_candidates.get("reason") == "server_page_projection":
-                metadata_tool_intent_plan = capability_selector_intent_plan
-            elif selected_tool_intent_plan is not None:
+            if selected_tool_intent_plan is not None:
                 metadata_tool_intent_plan = selected_tool_intent_plan
             else:
                 metadata_tool_intent_plan = capability_selector_intent_plan
@@ -2691,11 +2524,7 @@ class RunnerExecutionPreparePhaseMixin:
                     )
             if metadata_tool_intent_plan is not None:
                 _log_step(
-                    (
-                        "server_page_projection_plan_resolved"
-                        if metadata_candidates.get("reason") == "server_page_projection"
-                        else "capability_selector_plan_resolved"
-                    ),
+                    "capability_selector_plan_resolved",
                     action=metadata_tool_intent_plan.action.value,
                     target_provider_instances=list(
                         metadata_tool_intent_plan.target_provider_instances

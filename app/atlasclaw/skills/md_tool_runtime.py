@@ -8,11 +8,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib.util
-import inspect
 import json
 import os
 import sys
-from functools import wraps
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -108,11 +106,7 @@ def load_handler_from_file(
 
         handler = getattr(module, attr_name, None)
         if handler is not None and callable(handler):
-            return _wrap_function_handler_with_provider_guard(
-                handler,
-                provider_type=provider_type,
-                tool_name=tool_name or py_file.stem,
-            )
+            return handler
         return create_script_wrapper(
             py_file,
             provider_type,
@@ -127,37 +121,6 @@ def load_handler_from_file(
                 sys.path.remove(scripts_dir)
             except ValueError:
                 pass
-
-
-def _wrap_function_handler_with_provider_guard(
-    handler: Callable,
-    *,
-    provider_type: Optional[str],
-    tool_name: str,
-) -> Callable:
-    """Revalidate Embed scope before a function-style Provider Tool executes."""
-    if not str(provider_type or "").strip():
-        return handler
-
-    @wraps(handler)
-    async def guarded_handler(*args: Any, **kwargs: Any) -> Any:
-        ctx = kwargs.get("ctx")
-        if ctx is None and args and hasattr(args[0], "deps"):
-            ctx = args[0]
-        deps = getattr(ctx, "deps", None) if ctx is not None else None
-        extra = getattr(deps, "extra", None)
-        provider_io_guard = (
-            extra.get("_provider_io_guard") if isinstance(extra, dict) else None
-        )
-        if callable(provider_io_guard):
-            guard_result = provider_io_guard(str(tool_name or "").strip())
-            if inspect.isawaitable(guard_result):
-                await guard_result
-        result = handler(*args, **kwargs)
-        return await result if inspect.isawaitable(result) else result
-
-    return guarded_handler
-
 
 def create_script_wrapper(
     py_file: Path,
@@ -412,16 +375,6 @@ def create_script_wrapper(
         cmd.extend(_build_script_command_arguments(kwargs=runtime_kwargs, config=config))
 
         try:
-            provider_io_guard = (
-                extra.get("_provider_io_guard")
-                if isinstance(extra, dict)
-                else None
-            )
-            if callable(provider_io_guard):
-                guard_result = provider_io_guard(normalized_tool_name)
-                if inspect.isawaitable(guard_result):
-                    await guard_result
-
             process = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,

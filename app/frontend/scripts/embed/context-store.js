@@ -25,13 +25,10 @@ export class EmbedContextStore {
     if (!Number.isSafeInteger(generation) || generation < 0 || generation <= this.latestGeneration) {
       return null
     }
-    this.pending?.resolve(null)
     this.latestGeneration = generation
     this.current = null
     this.status = 'pending'
-    let settle
-    const promise = new Promise((resolve) => { settle = resolve })
-    const pending = { generation, promise, resolve: settle }
+    const pending = { generation }
     this.pending = pending
     this._notify()
     return pending
@@ -52,7 +49,6 @@ export class EmbedContextStore {
     if (payload?.generation !== generation) {
       this.pending = null
       this.status = 'unavailable'
-      pending.resolve(null)
       this._notify()
       return false
     }
@@ -82,43 +78,19 @@ export class EmbedContextStore {
       ? 'resolved'
       : (responseStatus === 'unsupported' ? 'unsupported' : 'unavailable')
     this.pending = null
-    pending.resolve(this.current)
     this._notify()
     return true
   }
 
   /**
-   * Return the send-time context, waiting briefly for only the current resolve.
-   * A later generation invalidates the wait and can never fall back to old data.
+   * Return the current resolved context without delaying or controlling Chat.
    *
-   * @param {number} timeoutMs - Maximum wait before rejecting a pending send.
-   * @returns {Promise<object|null>} Minimal Agent Run context fields.
-   * @throws {Error} When a newer page Context is still resolving at send time.
+   * @returns {object|null} Minimal Agent Run context fields.
    */
-  async getTurnContext(timeoutMs = 500) {
-    const expectedGeneration = this.latestGeneration
-    if (this.current?.generation === expectedGeneration) {
-      return toTurnContext(this.current)
-    }
-    const pending = this.pending
-    if (!pending || pending.generation !== expectedGeneration) {
-      return this._completedTurnContext()
-    }
-
-    let timerId
-    const timeoutMarker = Symbol('embed-context-timeout')
-    const timeout = new Promise((resolve) => {
-      timerId = setTimeout(() => resolve(timeoutMarker), timeoutMs)
-    })
-    const resolved = await Promise.race([pending.promise, timeout])
-    clearTimeout(timerId)
-    if (resolved === timeoutMarker || this.latestGeneration !== expectedGeneration) {
-      const error = new Error('Page context is still loading. Please try again.')
-      error.code = 'EMBED_CONTEXT_PENDING'
-      throw error
-    }
-    if (resolved) return toTurnContext(resolved)
-    return this._completedTurnContext()
+  getTurnContext() {
+    return this.current?.generation === this.latestGeneration
+      ? toTurnContext(this.current)
+      : null
   }
 
   /** @returns {object|null} Current immutable snapshot view. */
@@ -158,14 +130,6 @@ export class EmbedContextStore {
     this.listeners.forEach((listener) => listener(this.current, this.status))
   }
 
-  _completedTurnContext() {
-    if (this.status === 'unavailable') {
-      const error = new Error('Page context could not be resolved. Please try again.')
-      error.code = 'EMBED_CONTEXT_UNAVAILABLE'
-      throw error
-    }
-    return null
-  }
 }
 
 function toTurnContext(context) {

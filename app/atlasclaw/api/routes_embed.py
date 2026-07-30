@@ -70,10 +70,11 @@ class EmbedObjectResponse(BaseModel):
 
 
 class EmbedSkillResponse(BaseModel):
-    """Matched existing Skill that owns the Context Tool projection."""
+    """Matched existing Skill offered as the page's default routing hint."""
 
-    ref: str
-    name: str
+    ref: str = Field(min_length=1, max_length=128)
+    name: str = Field(min_length=1, max_length=256)
+    description: str = Field(default="", max_length=4096)
 
 
 class EmbedContextResolveResponse(BaseModel):
@@ -107,7 +108,8 @@ def _build_context_resolve_response(
         object=EmbedObjectResponse(**snapshot.object.model_dump(exclude={"attributes"})),
         skill=EmbedSkillResponse(
             ref=snapshot.skill_ref,
-            name=snapshot.skill_ref.split(":", 1)[-1],
+            name=snapshot.skill_name,
+            description=snapshot.skill_description,
         ),
         object_actions=snapshot.object_actions,
     )

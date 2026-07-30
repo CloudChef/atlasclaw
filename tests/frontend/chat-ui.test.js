@@ -1669,7 +1669,7 @@ describe('chat-ui.js handler mode', () => {
         });
 
         await initChat(element, {
-            getTurnContext: jest.fn(() => Promise.resolve({
+            getTurnContext: jest.fn(() => ({
                 embed_context_id: 'ctx-9',
                 context_generation: 9
             }))
@@ -1696,10 +1696,7 @@ describe('chat-ui.js handler mode', () => {
         await handlerPromise;
     });
 
-    test.each([
-        ['EMBED_CONTEXT_PENDING', 'Page context is still loading. Please try again.'],
-        ['EMBED_CONTEXT_UNAVAILABLE', 'Page context could not be resolved. Please try again.']
-    ])('handler fails closed for %s', async (code, message) => {
+    test('handler uses the ordinary request shape when optional page context is absent', async () => {
         const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
         const element = createChatElement();
         const signals = createMockSignals();
@@ -1710,22 +1707,29 @@ describe('chat-ui.js handler mode', () => {
             ok: true,
             json: () => Promise.resolve({})
         });
-        const contextError = Object.assign(new Error(message), { code });
         await initChat(element, {
-            getTurnContext: jest.fn(() => Promise.reject(contextError))
+            getTurnContext: jest.fn(() => null)
         });
 
         global.fetch.mockClear();
-        await element.handler(
+        global.fetch.mockResolvedValueOnce({
+            ok: true,
+            json: () => Promise.resolve({ run_id: 'run-without-page-context' })
+        });
+        const handlerPromise = element.handler(
             { messages: [{ text: 'perform this page action', role: 'user' }] },
             signals
         );
+        await new Promise((resolve) => setTimeout(resolve, 50));
 
-        expect(global.fetch).not.toHaveBeenCalled();
-        expect(signals.onResponse).toHaveBeenCalledWith(expect.objectContaining({
-            html: expect.stringContaining(message)
-        }));
-        expect(signals.onClose).toHaveBeenCalled();
+        const body = latestAgentRunRequestBody();
+        expect(body.message).toBe('perform this page action');
+        expect(body.context.embed_context_id).toBeUndefined();
+        expect(body.context.context_generation).toBeUndefined();
+        expect(MockEventSource.instances).toHaveLength(1);
+
+        MockEventSource.instances[0].simulateEvent('lifecycle', { phase: 'end' });
+        await handlerPromise;
     });
 
     test('handler sends selected provider skill capability from slash picker', async () => {
@@ -1744,7 +1748,12 @@ describe('chat-ui.js handler mode', () => {
                 json: () => Promise.resolve({})
             });
 
-        await initChat(element);
+        await initChat(element, {
+            getTurnContext: jest.fn(() => ({
+                embed_context_id: 'ctx-current-page',
+                context_generation: 17
+            }))
+        });
         global.fetch.mockClear();
         global.fetch.mockResolvedValueOnce({
             ok: true,
@@ -1763,10 +1772,24 @@ describe('chat-ui.js handler mode', () => {
                         target_provider_types: ['demo-provider'],
                         target_skill_names: ['demo-provider:resource-request', 'resource-request'],
                         target_tool_names: ['demo_provider_resource_request']
+                    },
+                    {
+                        id: 'other-skill',
+                        kind: 'skill',
+                        command: '/other-skill',
+                        label: 'other-skill',
+                        skill_name: 'other-skill',
+                        qualified_skill_name: 'other-skill',
+                        target_skill_names: ['other-skill'],
+                        target_tool_names: ['other_skill_tool']
                     }
                 ]
             })
         });
+
+        setEditableText(input, '/');
+        await new Promise(r => setTimeout(r, 80));
+        expect(document.querySelectorAll('.slash-picker-row')).toHaveLength(2);
 
         setEditableText(input, '/def');
         await new Promise(r => setTimeout(r, 80));
@@ -1793,6 +1816,10 @@ describe('chat-ui.js handler mode', () => {
             instance_name: 'default',
             qualified_skill_name: 'demo-provider:resource-request',
             target_tool_names: ['demo_provider_resource_request']
+        });
+        expect(parsedBody.context).toMatchObject({
+            embed_context_id: 'ctx-current-page',
+            context_generation: 17
         });
 
         MockEventSource.instances[0].simulateEvent('lifecycle', { phase: 'end' });

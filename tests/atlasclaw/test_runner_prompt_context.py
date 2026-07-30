@@ -13,6 +13,7 @@ from app.atlasclaw.agent.prompt_builder import PromptBuilder, PromptBuilderConfi
 from app.atlasclaw.agent import prompt_sections
 from app.atlasclaw.agent.runner_prompt_context import (
     build_system_prompt,
+    collect_current_host_page_context,
     collect_memory_available,
     collect_capability_index_snapshot,
     collect_tools_snapshot,
@@ -1954,3 +1955,43 @@ def test_host_page_context_cannot_close_markdown_or_inject_a_heading() -> None:
     assert "<script>" not in prompt
     assert "\\u0060\\u0060\\u0060" in prompt
     assert "\\u003cscript\\u003e" in prompt
+
+
+def test_execution_prompt_context_excludes_selector_only_default_skill() -> None:
+    """Execution sees the current object but not the selector's default Skill hint."""
+    deps = SimpleNamespace(
+        extra={
+            "context": {
+                "turn_context": {
+                    "page_type": "item-detail",
+                    "default_skill": {
+                        "ref": "example:item",
+                        "name": "default.item",
+                        "description": "Selector-only default.",
+                    },
+                    "object": {
+                        "type": "item",
+                        "id": "ITEM-1",
+                        "name": "Current item",
+                    },
+                    "context_generation": 3,
+                }
+            }
+        }
+    )
+
+    execution_context = collect_current_host_page_context(deps)
+    prompt = prompt_sections.build_current_host_page_context(execution_context)
+
+    assert execution_context == {
+        "page_type": "item-detail",
+        "object": {
+            "type": "item",
+            "id": "ITEM-1",
+            "name": "Current item",
+        },
+        "context_generation": 3,
+    }
+    assert "default.item" not in prompt
+    assert "Selector-only default." not in prompt
+    assert "ITEM-1" in prompt

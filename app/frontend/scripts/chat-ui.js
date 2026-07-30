@@ -18,7 +18,7 @@ import {
 import { createStreamHandler } from './stream-handler.js?v=29'
 import { buildApiUrl } from './config.js?v=27'
 import { translateIfExists, getCurrentLocale } from './i18n.js'
-import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=27'
+import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=28'
 
 let chatElement = null
 let currentStreamHandler = null
@@ -1023,26 +1023,13 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     if (explicitTurnContext) {
       Object.assign(requestContext, explicitTurnContext)
     } else if (typeof chatCallbacks.getTurnContext === 'function') {
-      try {
-        const turnContext = await chatCallbacks.getTurnContext()
-        if (
-          turnContext?.embed_context_id &&
-          Number.isSafeInteger(turnContext.context_generation)
-        ) {
-          requestContext.embed_context_id = turnContext.embed_context_id
-          requestContext.context_generation = turnContext.context_generation
-        }
-      } catch (error) {
-        console.warn('[ChatUI] Send-time Embed context unavailable:', error)
-        const errorMessage = [
-          'EMBED_CONTEXT_PENDING',
-          'EMBED_CONTEXT_UNAVAILABLE'
-        ].includes(error?.code)
-          ? error.message
-          : 'Page context is unavailable. Please try again.'
-        reportRunCreationError(signals, errorMessage, options.onRunCreationError)
-        settleRunActivity()
-        return false
+      const turnContext = chatCallbacks.getTurnContext()
+      if (
+        turnContext?.embed_context_id &&
+        Number.isSafeInteger(turnContext.context_generation)
+      ) {
+        requestContext.embed_context_id = turnContext.embed_context_id
+        requestContext.context_generation = turnContext.context_generation
       }
     }
     const response = await fetch(buildApiUrl('/api/agent/run'), {
