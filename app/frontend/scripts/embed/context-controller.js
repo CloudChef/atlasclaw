@@ -4,10 +4,9 @@
 
 import { resolveEmbedContext } from '../api-client.js?v=31'
 import { EmbedContextBridge } from './context-bridge.js?v=36'
-import { EmbedContextStore } from './context-store.js?v=33'
-import { renderObjectContextBar } from './components/object-context-bar.js'
-import { renderContextObjectActions } from '../chat-ui.js?v=43'
-import { setSlashCapabilityPageScopeActive } from '../slash-picker.js?v=27'
+import { EmbedContextStore } from './context-store.js?v=35'
+import { renderObjectContextBar } from './components/object-context-bar.js?v=1'
+import { renderContextObjectActions } from '../chat-ui.js?v=45'
 
 /**
  * Coordinate PAGE_CHANGED resolution and the optional floating Context UI.
@@ -46,14 +45,13 @@ export class EmbedContextController {
     this.bridge.stop()
     this.unsubscribe?.()
     this.closeButton?.removeEventListener('click', this.closeHandler)
-    renderObjectContextBar(this.contextSlot, null)
+    renderObjectContextBar(this.contextSlot, null, null)
     renderContextObjectActions(this.actionSlot, null)
-    setSlashCapabilityPageScopeActive(false)
   }
 
-  /** @returns {Promise<object|null>} Send-time minimal Agent Turn context. */
-  async getTurnContext() {
-    return this.store.getTurnContext(500)
+  /** @returns {object|null} Current optional Agent Turn context. */
+  getTurnContext() {
+    return this.store.getTurnContext()
   }
 
   /** Clear transient confirmation/submission UI while preserving current page actions. */
@@ -80,13 +78,11 @@ export class EmbedContextController {
   }
 
   _render(context, status) {
-    // A matched-but-unavailable page remains page-scoped and fail-closed.
-    // Only an unsupported page returns to unrestricted ordinary Chat behavior.
-    setSlashCapabilityPageScopeActive(
-      status === 'pending' || status === 'resolved' || status === 'unavailable',
-      this.contextSlot?.ownerDocument?.getElementById('chat') || null
+    renderObjectContextBar(
+      this.contextSlot,
+      context?.object || null,
+      context?.skill || null
     )
-    renderObjectContextBar(this.contextSlot, context?.object || null)
     const turnContext = context ? Object.freeze({
       embed_context_id: context.contextId,
       context_generation: context.generation

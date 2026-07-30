@@ -114,16 +114,8 @@ class ResolvedObject(StrictEmbedModel):
         return value
 
 
-class ContextSkillTool(StrictEmbedModel):
-    """Presentation metadata for one Tool owned by the matched page Skill."""
-
-    name: str = Field(min_length=1, max_length=256)
-    label: str = Field(min_length=1, max_length=256)
-    description: str = Field(default="", max_length=4096)
-
-
 class ContextSnapshot(StrictEmbedModel):
-    """User-bound immutable page context retained only in process memory."""
+    """User-bound immutable default Skill and page object retained in memory."""
 
     context_id: str
     owner_user_id: str
@@ -137,9 +129,10 @@ class ContextSnapshot(StrictEmbedModel):
     provider_instance: str
     page_type: str
     skill_ref: str
+    skill_name: str = Field(min_length=1, max_length=256)
+    skill_description: str = Field(default="", max_length=4096)
     object: ResolvedObject
     object_actions: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
-    tools: list[ContextSkillTool] = Field(default_factory=list, max_length=128)
     created_at: datetime
     expires_at: datetime
 

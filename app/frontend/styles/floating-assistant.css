@@ -104,6 +104,22 @@ body.atlas-surface-floating .embed-object-context-summary {
   font-weight: 650;
 }
 
+body.atlas-surface-floating .embed-default-skill-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #4f46e5;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+body.atlas-surface-floating .embed-context-separator {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
 body.atlas-surface-floating .embed-object-context-id {
   margin-left: auto;
   max-width: 42%;

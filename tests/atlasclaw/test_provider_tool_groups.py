@@ -686,7 +686,7 @@ def test_build_scoped_deps_keeps_provider_tools_when_instance_is_allowed(tmp_pat
     assert deps.extra["available_providers"] == {"smartcmp": ["default"]}
 
 
-def test_build_scoped_deps_projects_the_existing_page_skill_tool_set(
+def test_build_scoped_deps_keeps_identical_capabilities_with_page_defaults(
     tmp_path,
 ) -> None:
     provider_root = tmp_path / "provider-skills"
@@ -740,42 +740,46 @@ tool_update_entrypoint: run.py:update_item
             }
         },
     )
-    deps = build_scoped_deps(
+    user = UserInfo(user_id="u1", display_name="User", roles=["user"])
+    session_key = "agent:main:user:u1:web:dm:peer-1:topic:thread-42"
+    ordinary_deps = build_scoped_deps(
         ctx,
-        UserInfo(user_id="u1", display_name="User", roles=["user"]),
-        "agent:main:user:u1:web:dm:peer-1:topic:thread-42",
+        user,
+        session_key,
+    )
+    embedded_deps = build_scoped_deps(
+        ctx,
+        user,
+        session_key,
         extra={
             "context": {
-                "_user_skill_permissions": [],
-                "_provider_permissions": [
-                    {
-                        "provider_type": "generic",
-                        "instance_name": "default",
-                        "allowed": True,
-                    }
-                ],
-                "allowed_page_skill_refs": ["generic:item-helper"],
-                "embed_scope": {
-                    "provider_type": "generic",
-                    "provider_instance": "default",
+                "turn_context": {
+                    "default_skill": {
+                        "ref": "generic:item-helper",
+                        "name": "default.item-helper",
+                    },
+                    "object": {
+                        "type": "item",
+                        "id": "ITEM-1",
+                    },
                 },
             }
         },
     )
 
-    assert {tool["name"] for tool in deps.extra["tools_snapshot"]} == {
+    assert embedded_deps.extra["tools_snapshot"] == ordinary_deps.extra["tools_snapshot"]
+    assert embedded_deps.extra["md_skills_snapshot"] == ordinary_deps.extra["md_skills_snapshot"]
+    assert embedded_deps.extra["skills_snapshot"] == ordinary_deps.extra["skills_snapshot"]
+    assert {tool["name"] for tool in embedded_deps.extra["tools_snapshot"]} == {
         "example_get_item",
         "example_update_item",
+        "vm_request_prepare",
     }
     assert {
-        skill["qualified_name"] for skill in deps.extra["md_skills_snapshot"]
-    } == {"generic:item-helper"}
-    assert "vm_request_prepare" not in {
-        tool["name"] for tool in deps.extra["tools_snapshot"]
-    }
-    assert deps.extra["provider_type"] == "generic"
-    assert deps.extra["provider_instance_name"] == "default"
-    assert deps.extra["provider_instance"]["base_url"] == "https://provider.example.com"
+        skill["qualified_name"] for skill in embedded_deps.extra["md_skills_snapshot"]
+    } == {"generic:item-helper", "vm-request"}
+    assert "provider_type" not in embedded_deps.extra
+    assert "provider_instance_name" not in embedded_deps.extra
 
 
 def test_build_scoped_deps_keeps_provider_tools_when_visible_instance_lacks_user_auth(tmp_path) -> None:

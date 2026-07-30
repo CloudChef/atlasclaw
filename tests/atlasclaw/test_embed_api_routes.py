@@ -9,20 +9,21 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi import APIRouter, Request
+from pydantic import ValidationError
 
 from app.atlasclaw.api.routes_embed import (
     EmbedContextResolveRequest,
+    EmbedSkillResponse,
     _build_context_resolve_response,
     embed_session_matches_scope,
     register_embed_routes,
 )
-from app.atlasclaw.api.services.run_service import _require_current_embed_provider_tool
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.core.embed.context_service import (
     EmbedContextResolution,
     EmbedContextService,
 )
-from app.atlasclaw.core.embed.models import ContextSkillTool, ContextSnapshot, ResolvedObject
+from app.atlasclaw.core.embed.models import ContextSnapshot, ResolvedObject
 from app.atlasclaw.session.context import ChatType, SessionKey
 
 
@@ -71,6 +72,8 @@ def test_context_response_distinguishes_all_resolution_states() -> None:
         provider_instance="default",
         page_type="item-detail",
         skill_ref="example:item",
+        skill_name="default.item",
+        skill_description="Manage items.",
         object=ResolvedObject(type="item", id="ITEM-5", name="Item 5"),
         object_actions=[
             {
@@ -80,13 +83,6 @@ def test_context_response_distinguishes_all_resolution_states() -> None:
                 "agent_prompt": {"default": "Inspect ITEM-5"},
                 "tone": "success",
             }
-        ],
-        tools=[
-            ContextSkillTool(
-                name="example_inspect",
-                label="Inspect item",
-                description="Inspect the current item.",
-            )
         ],
         created_at=now,
         expires_at=now + timedelta(minutes=5),
@@ -105,8 +101,33 @@ def test_context_response_distinguishes_all_resolution_states() -> None:
     assert resolved.context_id == "ctx-resolved"
     assert resolved.object is not None and resolved.object.id == "ITEM-5"
     assert resolved.skill is not None and resolved.skill.ref == "example:item"
+    assert resolved.skill.name == "default.item"
+    assert resolved.skill.description == "Manage items."
     assert [action["action_id"] for action in resolved.object_actions] == ["inspect"]
     assert "tools" not in resolved.model_dump()
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("name", "s" * 257),
+        ("description", "d" * 4097),
+    ],
+)
+def test_embed_skill_response_bounds_prompt_visible_metadata(
+    field_name: str,
+    field_value: str,
+) -> None:
+    """The browser projection must enforce the same Skill metadata bounds."""
+    payload = {
+        "ref": "example:item",
+        "name": "default.item",
+        "description": "Manage items.",
+        field_name: field_value,
+    }
+
+    with pytest.raises(ValidationError, match="string_too_long"):
+        EmbedSkillResponse.model_validate(payload)
 
 
 @pytest.mark.asyncio
@@ -141,79 +162,3 @@ async def test_rejected_generation_skips_provider_resolution(monkeypatch) -> Non
 
     assert response.status == "unavailable"
     resolver.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_provider_io_guard_revalidates_scope_without_deferred_name_error(
-    monkeypatch,
-) -> None:
-    """The deferred Tool guard must resolve its context-service dependencies at call time."""
-    from app.atlasclaw.api.services import run_service
-    from app.atlasclaw.core.embed import context_service
-
-    class SessionContext:
-        async def __aenter__(self):
-            return object()
-
-        async def __aexit__(self, exc_type, exc, traceback):
-            return False
-
-    service = Mock()
-    service_type = Mock(return_value=service)
-    require_access = Mock()
-    authz = SimpleNamespace(permissions={})
-    monkeypatch.setattr(context_service, "EmbedContextService", service_type)
-    monkeypatch.setattr(context_service, "require_embed_resolver_access", require_access)
-    monkeypatch.setattr(
-        run_service,
-        "get_db_manager",
-        lambda: SimpleNamespace(
-            is_initialized=True,
-            get_session=lambda: SessionContext(),
-        ),
-    )
-    monkeypatch.setattr(
-        run_service,
-        "resolve_authorization_context",
-        AsyncMock(return_value=authz),
-    )
-
-    snapshot = SimpleNamespace(
-        context_id="ctx-1",
-        owner_user_id="alice",
-        surface_id="surface-1",
-        generation=3,
-        provider_type="example",
-        provider_instance="default",
-        skill_ref="example:item",
-    )
-    integration = SimpleNamespace(
-        config=SimpleNamespace(provider_type="example", provider_instance="default")
-    )
-    ctx = SimpleNamespace(
-        embed_context_store=SimpleNamespace(is_latest=Mock(return_value=True)),
-        embed_integration_registry=SimpleNamespace(get=Mock(return_value=integration)),
-    )
-
-    await _require_current_embed_provider_tool(
-        ctx,
-        user_info=UserInfo(user_id="alice"),
-        snapshot=snapshot,
-        tool_name="example_inspect",
-    )
-
-    require_access.assert_called_once_with(
-        authz,
-        provider_type="example",
-        provider_instance="default",
-    )
-    service.validate_snapshot_skill_binding.assert_called_once_with(
-        provider_type="example",
-        skill_ref="example:item",
-    )
-    service.require_visible_snapshot_tool.assert_called_once_with(
-        snapshot=snapshot,
-        integration=integration,
-        authz=authz,
-        tool_name="example_inspect",
-    )

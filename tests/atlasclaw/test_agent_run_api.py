@@ -24,7 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -35,6 +36,7 @@ from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
 from app.atlasclaw.api.services.run_service import abort_run, execute_agent_run, init_run
 from app.atlasclaw.auth.models import UserInfo
+from app.atlasclaw.core.embed.models import ContextSnapshot, ResolvedObject
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
@@ -373,6 +375,116 @@ def test_agent_run_binds_available_slash_without_client_selected_capability(tmp_
     selected = runner.last_deps.extra[SELECTED_CAPABILITY_KEY]
     assert selected["kind"] == "skill"
     assert selected["command"] == "/safe-tool"
+
+
+def test_embed_run_keeps_page_default_soft_for_explicit_other_skill(tmp_path):
+    """A valid page default must not restrict an otherwise authorized selection."""
+    runner = _RecordingRunner()
+    client, ctx = _build_client_and_context(tmp_path, runner, user_id="alice")
+    ctx.skill_registry.register(
+        SkillMetadata(name="safe-tool", description="A selectable test skill."),
+        lambda: "ok",
+    )
+    integration = SimpleNamespace(
+        config=SimpleNamespace(provider_type="example", provider_instance="default"),
+        agent_id="main",
+        session_scope="example",
+    )
+    now = datetime.now(timezone.utc)
+    snapshot = ContextSnapshot(
+        context_id="ctx-stale-default",
+        owner_user_id="alice",
+        surface_id="a" * 22,
+        generation=7,
+        provider_type="example",
+        provider_instance="default",
+        page_type="item-detail",
+        skill_ref="example:item",
+        skill_name="item",
+        object=ResolvedObject(type="item", id="ITEM-7", name="Item 7"),
+        created_at=now,
+        expires_at=now + timedelta(minutes=5),
+    )
+    ctx.embed_integration_registry = SimpleNamespace(get=lambda: integration)
+    ctx.embed_context_store = SimpleNamespace(
+        get=lambda *args, **kwargs: snapshot,
+        is_latest=lambda *args, **kwargs: True,
+    )
+    ctx.provider_instances = {"example": {"default": {"base_url": "https://example.test"}}}
+
+    session = client.post(
+        "/api/sessions/threads",
+        json={"account_id": "example", "peer_id": "alice"},
+    )
+    assert session.status_code == 200
+    session_key = session.json()["session_key"]
+
+    run = client.post(
+        "/api/agent/run",
+        json={
+            "session_key": session_key,
+            "message": "Run the explicitly selected safe skill.",
+            "timeout_seconds": 30,
+            "context": {
+                "embed_context_id": snapshot.context_id,
+                "context_generation": snapshot.generation,
+                "selected_capability": {
+                    "kind": "skill",
+                    "command": "/safe-tool",
+                },
+            },
+        },
+    )
+
+    assert run.status_code == 200
+    assert runner.called is True
+    assert runner.last_deps.extra[SELECTED_CAPABILITY_KEY]["command"] == "/safe-tool"
+    turn_context = runner.last_deps.extra["context"]["turn_context"]
+    assert turn_context["default_skill"]["ref"] == "example:item"
+    assert turn_context["object"]["id"] == "ITEM-7"
+
+
+@pytest.mark.parametrize(
+    ("field_name", "field_value"),
+    [
+        ("allowed_page_skill_refs", ["example:item"]),
+        (
+            "embed_scope",
+            {
+                "provider_type": "example",
+                "provider_instance": "default",
+                "object_id": "ITEM-7",
+            },
+        ),
+    ],
+)
+def test_agent_run_rejects_retired_page_control_fields(
+    tmp_path,
+    field_name,
+    field_value,
+):
+    """Retired page controls must never reach ordinary runner dependencies."""
+    runner = _RecordingRunner()
+    client, _ctx = _build_client_and_context(tmp_path, runner, user_id="alice")
+    session = client.post(
+        "/api/sessions/threads",
+        json={"account_id": "example", "peer_id": "alice"},
+    )
+    assert session.status_code == 200
+
+    run = client.post(
+        "/api/agent/run",
+        json={
+            "session_key": session.json()["session_key"],
+            "message": "Run an ordinary request.",
+            "timeout_seconds": 30,
+            "context": {field_name: field_value},
+        },
+    )
+
+    assert run.status_code == 422
+    assert run.json()["detail"] == "Page-scoped capability controls are not accepted."
+    assert runner.called is False
 
 
 def test_agent_run_status_rejects_other_users_run_id(tmp_path):

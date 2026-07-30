@@ -3,13 +3,14 @@
  */
 
 /**
- * Render the latest Host object only. Objects already acted on remain visible
- * in Chat history and are intentionally not retained in this bar.
+ * Render the latest Host default Skill and object. This is presentation
+ * context only and does not represent a selected or locked capability.
  *
  * @param {HTMLElement} container - Context slot.
  * @param {object|null} object - Resolved object summary.
+ * @param {object|null} skill - Resolved default Skill summary.
  */
-export function renderObjectContextBar(container, object) {
+export function renderObjectContextBar(container, object, skill) {
   if (!container) return
   container.replaceChildren()
   if (!object?.id) {
@@ -25,6 +26,16 @@ export function renderObjectContextBar(container, object) {
   marker.className = 'embed-object-context-marker'
   marker.setAttribute('aria-hidden', 'true')
 
+  const skillName = document.createElement('span')
+  skillName.className = 'embed-default-skill-name'
+  skillName.textContent = skill?.name || skill?.ref || ''
+  skillName.title = skill?.description || skill?.ref || ''
+
+  const separator = document.createElement('span')
+  separator.className = 'embed-context-separator'
+  separator.setAttribute('aria-hidden', 'true')
+  separator.textContent = '·'
+
   const summary = document.createElement('span')
   summary.className = 'embed-object-context-summary'
   summary.textContent = object.name || object.id
@@ -33,7 +44,11 @@ export function renderObjectContextBar(container, object) {
   identity.className = 'embed-object-context-id'
   identity.textContent = object.id
 
-  bar.append(marker, summary, identity)
+  bar.append(marker)
+  if (skillName.textContent) {
+    bar.append(skillName, separator)
+  }
+  bar.append(summary, identity)
   container.appendChild(bar)
   container.hidden = false
 }
