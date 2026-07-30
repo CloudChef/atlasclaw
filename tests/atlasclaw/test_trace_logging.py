@@ -50,6 +50,15 @@ class _LoopTraceRunner(RunnerExecutionLoopMixin):
 
     async def _run_prepare_phase(self, *, state: dict[str, object], _log_step):
         _log_step("prepare_stub")
+        state.update(
+            {
+                "selector_attempted": True,
+                "selector_outcome": "authorized_capability",
+                "selector_failed": False,
+                "selector_elapsed_ms": 125,
+                "current_model_attempt": 2,
+            }
+        )
         state["should_stop"] = True
         if False:
             yield None
@@ -311,3 +320,14 @@ async def test_runner_run_step_log_includes_trace_fields(caplog: pytest.LogCaptu
     assert payload["trace_id"] == "thread-77"
     assert payload["thread_id"] == "thread-77"
     assert payload["run_id"] == deps.extra["run_id"]
+    selector_audit_records = [
+        record
+        for record in caplog.records
+        if "capability_selector_audit" in record.message
+    ]
+    assert len(selector_audit_records) == 1
+    selector_audit = selector_audit_records[0].args
+    assert selector_audit["selector_outcome"] == "authorized_capability"
+    assert selector_audit["selector_failed"] is False
+    assert selector_audit["selector_elapsed_ms"] == 125
+    assert selector_audit["main_model_calls"] == 2

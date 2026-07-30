@@ -32,10 +32,6 @@ class RunnerToolGatePolicyMixin:
         """Inject per-run turn guidance for prompt building."""
         if not isinstance(deps.extra, dict):
             deps.extra = {}
-        retry_count = int(deps.extra.get("_tool_execution_retry_count", 0) or 0)
-        retry_missing_tools = deps.extra.get("tool_execution_retry_missing_tools")
-        if not isinstance(retry_missing_tools, list):
-            retry_missing_tools = []
         if intent_plan is None:
             preferred_tools = self._preferred_tools_from_available_tools(available_tools=available_tools)
         else:
@@ -54,8 +50,12 @@ class RunnerToolGatePolicyMixin:
         target_group_ids: list[str] = []
         target_capability_classes: list[str] = []
         if intent_plan is not None:
-            if intent_plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT:
-                policy_mode = "context_only"
+            if intent_plan.non_mutating_tools_allowed:
+                policy_mode = "active_continuation"
+            elif intent_plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT:
+                policy_mode = (
+                    "context_only"
+                )
             elif intent_plan.action is ToolIntentAction.CREATE_ARTIFACT:
                 policy_mode = intent_plan.action.value
             elif intent_plan.action is ToolIntentAction.USE_TOOLS:
@@ -95,10 +95,6 @@ class RunnerToolGatePolicyMixin:
             "max_same_tool_calls_per_turn": int(
                 getattr(self, "MAX_IDENTICAL_TOOL_CALLS_PER_TURN", 2) or 2
             ),
-            "retry_count": retry_count,
-            "retry_missing_tools": [
-                str(name).strip() for name in retry_missing_tools if str(name).strip()
-            ],
             "target_provider_instances": target_provider_instances,
             "target_provider_types": target_provider_types,
             "target_provider_skill_names": target_provider_skill_names,
@@ -242,6 +238,17 @@ class RunnerToolGatePolicyMixin:
                 seen_targets.add(name)
                 deduped_targets.append(name)
             return deduped_targets
+        if intent_plan is not None and (
+            any(str(name or "").strip() for name in intent_plan.target_skill_names)
+            or any(
+                str(name or "").strip()
+                for name in intent_plan.target_provider_skill_names
+            )
+        ):
+            # A selected skill authorizes its projected tool set; it does not
+            # require every internal operation to run. The turn-level evidence
+            # check still requires at least one real execution.
+            return []
 
         required: list[str] = []
         if decision.needs_external_system:

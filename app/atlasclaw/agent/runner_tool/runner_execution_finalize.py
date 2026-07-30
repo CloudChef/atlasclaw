@@ -32,7 +32,6 @@ class RunnerExecutionFinalizePhaseMixin:
         release_slot = state.get("release_slot")
         extra = state.get("extra")
         run_id = state.get("run_id")
-        tool_execution_retry_count = state.get("tool_execution_retry_count")
         run_failed = state.get("run_failed")
         message_history = state.get("message_history")
         system_prompt = state.get("system_prompt")
@@ -109,7 +108,6 @@ class RunnerExecutionFinalizePhaseMixin:
             "release_slot": release_slot,
             "extra": extra,
             "run_id": run_id,
-            "tool_execution_retry_count": tool_execution_retry_count,
             "run_failed": run_failed,
             "message_history": message_history,
             "system_prompt": system_prompt,

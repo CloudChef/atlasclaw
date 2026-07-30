@@ -72,6 +72,8 @@ class ToolIntentPlan(BaseModel):
     target_group_ids: list[str] = Field(default_factory=list)
     target_capability_classes: list[str] = Field(default_factory=list)
     target_tool_names: list[str] = Field(default_factory=list)
+    mutation_authorized: bool = False
+    non_mutating_tools_allowed: bool = False
     missing_inputs: list[str] = Field(default_factory=list)
     unavailable_runtime_capability: bool = False
     reason: str = ""

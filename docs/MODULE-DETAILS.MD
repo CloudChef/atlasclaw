@@ -701,12 +701,15 @@ capabilities can satisfy required grounding, and whether the final answer must b
   `provider_skill:` target and preserves that target only for instruction and
   workflow-context loading. The Tool Necessity Gate treats this intentional
   pause as direct-answer mode, not as a missing or unavailable capability
-- replying to a workflow's missing-input prompt remains `authorized_context`
-  even when the reply completes all required fields; input completion is not
-  authorization for an external side effect
+- replying to a workflow's missing-input prompt uses `authorized_context` only
+  when the next action can be answered from the existing workflow context. If
+  the next step requires another read-only query, it remains
+  `authorized_capability`. Input completion is not authorization for an
+  external side effect
 - `unavailable_capability` is returned by the same selector; the smaller
-  no-capability classifier runs only as a fail-open fallback when selector
-  output is invalid and no runtime capability is visible
+  selector fails closed with no tools when its output is invalid
+- tools marked with `group:mutation` are projected only when the current user
+  turn explicitly authorizes the external mutation
 - `AgentRunner` calls the gate after the prompt and capability surface are prepared
 - explicit injected classifiers may provide the `ToolGateDecision`
 - model-backed classification is available as an opt-in runtime capability and is disabled by default

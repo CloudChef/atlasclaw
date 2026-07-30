@@ -24,6 +24,14 @@ def tool_is_coordination_support(tool: dict[str, Any]) -> bool:
     return bool(tool.get("coordination_only"))
 
 
+def tool_requires_mutation_authorization(tool: dict[str, Any]) -> bool:
+    """Return whether a tool is explicitly classified as externally mutating."""
+    return any(
+        str(group_id or "").strip().lower() in {"mutation", "group:mutation"}
+        for group_id in (tool.get("group_ids", []) or [])
+    )
+
+
 def _artifact_turn_has_explicit_targets(intent_plan: ToolIntentPlan) -> bool:
     if intent_plan.action is not ToolIntentAction.CREATE_ARTIFACT:
         return False
@@ -43,15 +51,27 @@ def project_minimal_toolset(
     intent_plan: ToolIntentPlan | None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Project the policy-allowed tool universe into the minimal executable set for this turn."""
-    normalized_tools = [
+    all_normalized_tools = [
         dict(tool)
         for tool in allowed_tools
         if isinstance(tool, dict) and str(tool.get("name", "") or "").strip()
     ]
+    mutation_authorized = bool(
+        intent_plan is not None and intent_plan.mutation_authorized
+    )
+    normalized_tools = [
+        tool
+        for tool in all_normalized_tools
+        if mutation_authorized or not tool_requires_mutation_authorization(tool)
+    ]
     trace: dict[str, Any] = {
-        "enabled": False,
-        "reason": "projection_not_required",
-        "before_count": len(normalized_tools),
+        "enabled": len(normalized_tools) != len(all_normalized_tools),
+        "reason": (
+            "projection_mutation_guard"
+            if len(normalized_tools) != len(all_normalized_tools)
+            else "projection_not_required"
+        ),
+        "before_count": len(all_normalized_tools),
         "after_count": len(normalized_tools),
         "action": intent_plan.action.value if intent_plan is not None else "",
         "target_provider_instances": list(intent_plan.target_provider_instances) if intent_plan is not None else [],
@@ -61,11 +81,15 @@ def project_minimal_toolset(
         "target_group_ids": list(intent_plan.target_group_ids) if intent_plan is not None else [],
         "target_capability_classes": list(intent_plan.target_capability_classes) if intent_plan is not None else [],
         "target_tool_names": list(intent_plan.target_tool_names) if intent_plan is not None else [],
+        "mutation_authorized": mutation_authorized,
         "coordination_tools": [],
     }
     if intent_plan is None:
         return normalized_tools, trace
-    if intent_plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT:
+    if (
+        intent_plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT
+        and not intent_plan.non_mutating_tools_allowed
+    ):
         trace.update(
             {
                 "enabled": True,
@@ -251,7 +275,7 @@ def project_minimal_toolset(
         )
         _append_matches(
             "capability_class",
-            bool(target_capability_classes),
+            bool(target_capability_classes) and not bool(target_skill_names),
             lambda tool: (
                 str(tool.get("capability_class", "") or "").strip().lower()
                 in target_capability_classes
@@ -335,6 +359,8 @@ def tool_required_turn_has_real_execution(
 def turn_action_requires_tool_execution(intent_plan: ToolIntentPlan | None) -> bool:
     """Return whether the current turn contract requires a real executed tool."""
     if intent_plan is None:
+        return False
+    if intent_plan.non_mutating_tools_allowed:
         return False
     if intent_plan.action is ToolIntentAction.USE_TOOLS:
         return True

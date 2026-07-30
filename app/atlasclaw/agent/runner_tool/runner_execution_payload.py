@@ -445,6 +445,14 @@ def build_no_runtime_capability_answer(
     return "当前没有可用的 provider、skill 或工具，AtlasClaw 不能执行或验证该操作。"
 
 
+def build_capability_selection_failure_answer() -> str:
+    """Return the fail-closed answer for an invalid capability-selection result."""
+    return (
+        "AtlasClaw could not reliably select an authorized capability for this request, "
+        "so no tool was executed. Retry or explicitly select the required skill."
+    )
+
+
 def build_lookup_dump_recovery_payload(
     *,
     user_message: str,

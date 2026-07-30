@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from datetime import datetime
 import logging
@@ -36,6 +35,7 @@ from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import normalize_to
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
     project_minimal_toolset,
     tool_is_coordination_support,
+    tool_requires_mutation_authorization,
     turn_action_requires_tool_execution,
 )
 from app.atlasclaw.agent.stream import StreamEvent
@@ -76,15 +76,14 @@ def _is_memory_tool(tool: dict[str, Any]) -> bool:
     )
 
 
-def filter_implicit_memory_tools(
+def filter_implicit_only_tools(
     tools: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], list[str]]:
-    """Hide read-only memory tools from ordinary natural-language routing.
+    """Hide tools reserved for explicit selection or internal orchestration.
 
-    Users can still select memory tools explicitly via slash capability. For
-    plain chat turns, memory recall and writes are handled by the active-memory
-    and auto-write services so memory cannot steer skill/tool selection or
-    surface unrelated search results.
+    Explicit slash capabilities bypass this filter. Plain chat turns cannot
+    access memory tools or tools whose routing visibility excludes implicit
+    model selection.
     """
     filtered: list[dict[str, Any]] = []
     removed: list[str] = []
@@ -92,12 +91,31 @@ def filter_implicit_memory_tools(
         if not isinstance(tool, dict):
             continue
         name = str(tool.get("name", "") or "").strip()
-        if _is_memory_tool(tool):
+        routing_visibility = str(
+            tool.get("routing_visibility", "")
+            or tool.get("planner_visibility", "")
+        ).strip().lower()
+        if _is_memory_tool(tool) or routing_visibility in {"hidden", "internal"}:
             if name:
                 removed.append(name)
             continue
         filtered.append(tool)
     return filtered, removed
+
+
+def _selected_plan_has_mutation_tools(
+    *,
+    tools: list[dict[str, Any]],
+    intent_plan: ToolIntentPlan | None,
+) -> bool:
+    """Return whether the selected capability scope contains an external write tool."""
+    if intent_plan is None:
+        return False
+    scoped_tools, _trace = project_minimal_toolset(
+        allowed_tools=tools,
+        intent_plan=intent_plan.model_copy(update={"mutation_authorized": True}),
+    )
+    return any(tool_requires_mutation_authorization(tool) for tool in scoped_tools)
 
 
 def select_execution_prompt_mode(
@@ -199,6 +217,21 @@ def _selected_plan_matches_active_capability(
     return False
 
 
+def _numeric_selection_has_workflow_evidence(
+    *,
+    user_message: str,
+    workflow_context: Optional[dict[str, Any]],
+) -> bool:
+    """Return whether a numeric reply follows evidence from the active workflow."""
+    normalized_message = " ".join(str(user_message or "").split()).strip()
+    if not re.fullmatch(r"\d+", normalized_message):
+        return False
+    if not isinstance(workflow_context, dict):
+        return False
+    recent_tool_metadata = workflow_context.get("recent_tool_metadata")
+    return isinstance(recent_tool_metadata, list) and bool(recent_tool_metadata)
+
+
 def build_preselected_md_skill_intent_plan(deps: SkillDeps) -> ToolIntentPlan | None:
     """Translate a request-scoped target markdown skill into a hard skill plan."""
     extra = getattr(deps, "extra", None)
@@ -238,6 +271,7 @@ def build_preselected_md_skill_intent_plan(deps: SkillDeps) -> ToolIntentPlan | 
         target_provider_skill_names=target_provider_skill_names,
         target_skill_names=[] if provider_type else [qualified_name],
         target_group_ids=[f"group:{provider_type}"] if provider_type else [],
+        mutation_authorized=extra.get("authenticated_webhook_authority") is True,
         reason="preselected_target_md_skill",
     )
 
@@ -574,22 +608,6 @@ def _infer_active_provider_skill_from_transcript(
         if len(matches) == 1:
             return matches[0]
     return None
-
-
-def _intent_plan_has_explicit_targets(intent_plan: ToolIntentPlan | None) -> bool:
-    if intent_plan is None:
-        return False
-    return any(
-        [
-            list(intent_plan.target_provider_instances or []),
-            list(intent_plan.target_provider_types or []),
-            list(intent_plan.target_provider_skill_names or []),
-            list(intent_plan.target_skill_names or []),
-            list(intent_plan.target_group_ids or []),
-            list(intent_plan.target_capability_classes or []),
-            list(intent_plan.target_tool_names or []),
-        ]
-    )
 
 
 def _split_provider_instance_ref(value: Any) -> tuple[str, str]:
@@ -1763,7 +1781,6 @@ class RunnerExecutionPreparePhaseMixin:
         release_slot = state.get("release_slot")
         extra = state.get("extra")
         run_id = state.get("run_id")
-        tool_execution_retry_count = state.get("tool_execution_retry_count")
         run_failed = state.get("run_failed")
         message_history = state.get("message_history")
         system_prompt = state.get("system_prompt")
@@ -2019,7 +2036,20 @@ class RunnerExecutionPreparePhaseMixin:
                     ),
                 )
             selected_tool_intent_plan = build_user_selected_tool_intent_plan(deps)
+            selected_plan_has_mutation_tools = _selected_plan_has_mutation_tools(
+                tools=available_tools,
+                intent_plan=selected_tool_intent_plan,
+            )
+            preselected_md_skill_plan = build_preselected_md_skill_intent_plan(deps)
+            authenticated_webhook_authority = (
+                isinstance(getattr(deps, "extra", None), dict)
+                and deps.extra.get("authenticated_webhook_authority") is True
+            )
             capability_selector_intent_plan: ToolIntentPlan | None = None
+            capability_selector_result: ToolIntentPlan | None = None
+            selector_elapsed_ms = 0
+            selector_outcome = ""
+            selector_attempted = False
             capability_selector_failed = False
             server_page_skill_scope = False
             server_page_skill_refs: list[str] = []
@@ -2053,7 +2083,47 @@ class RunnerExecutionPreparePhaseMixin:
                     server_page_provider_instance = str(
                         embed_scope.get("provider_instance", "") or ""
                     ).strip()
-            if server_page_skill_scope:
+            if authenticated_webhook_authority and preselected_md_skill_plan is not None:
+                capability_selector_intent_plan = preselected_md_skill_plan
+                metadata_candidates = {
+                    "reason": "authenticated_webhook_skill",
+                    "confidence": 1.0,
+                    "preferred_provider_instances": list(
+                        preselected_md_skill_plan.target_provider_instances
+                    ),
+                    "preferred_provider_types": list(
+                        preselected_md_skill_plan.target_provider_types
+                    ),
+                    "preferred_provider_skill_names": list(
+                        preselected_md_skill_plan.target_provider_skill_names
+                    ),
+                    "preferred_group_ids": list(
+                        preselected_md_skill_plan.target_group_ids
+                    ),
+                    "preferred_capability_classes": list(
+                        preselected_md_skill_plan.target_capability_classes
+                    ),
+                    "preferred_tool_names": list(
+                        preselected_md_skill_plan.target_tool_names
+                    ),
+                    "preferred_skill_names": list(
+                        preselected_md_skill_plan.target_skill_names
+                    ),
+                }
+                _log_step(
+                    "capability_selector_skipped",
+                    reason="authenticated_webhook_skill",
+                    target_provider_instances=list(
+                        preselected_md_skill_plan.target_provider_instances
+                    ),
+                    target_provider_skill_names=list(
+                        preselected_md_skill_plan.target_provider_skill_names
+                    ),
+                    target_tool_names=list(
+                        preselected_md_skill_plan.target_tool_names
+                    ),
+                )
+            elif server_page_skill_scope:
                 # The server-restored page projection is authoritative for this
                 # turn. A hidden object action starts a new page workflow, so
                 # discard an earlier trace then. A visible follow-up may reuse
@@ -2141,13 +2211,6 @@ class RunnerExecutionPreparePhaseMixin:
                         if resolved_follow_up_context and tool_request_message != user_message
                         else user_message
                     )
-                    selected_tool_intent_plan = selected_tool_intent_plan.model_copy(
-                        update={
-                            "action": ToolIntentAction.DIRECT_ANSWER,
-                            "selector_outcome": CapabilitySelectorOutcome.AUTHORIZED_CONTEXT,
-                            "reason": "user_selected_capability_active_continuation",
-                        }
-                    )
                     _log_step(
                         "user_selected_capability_active_continuation",
                         target_provider_skill_names=list(
@@ -2156,6 +2219,76 @@ class RunnerExecutionPreparePhaseMixin:
                         target_skill_names=list(selected_tool_intent_plan.target_skill_names),
                         used_follow_up_context=used_follow_up_context,
                     )
+                if selected_plan_has_mutation_tools:
+                    selected_capability_ids = set(
+                        selected_capability_ids_from_intent_plan(
+                            selected_tool_intent_plan
+                        )
+                    )
+                    selected_capability_index = [
+                        entry
+                        for entry in capability_index
+                        if isinstance(entry, dict)
+                        and str(entry.get("capability_id", "") or "").strip()
+                        in selected_capability_ids
+                    ]
+                    if selected_capability_index:
+                        yield StreamEvent.runtime_update(
+                            "reasoning",
+                            "Checking current operation authorization.",
+                            metadata={
+                                "phase": "capability_selection",
+                                "elapsed": round(time.monotonic() - start_time, 1),
+                            },
+                        )
+                        selector_started_at = time.monotonic()
+                        selector_attempted = True
+                        capability_selector_result = (
+                            await self._select_capability_intent_plan_with_model(
+                                agent=runtime_agent or self.agent,
+                                deps=deps,
+                                user_message=user_message,
+                                recent_history=message_history,
+                                capability_index=selected_capability_index,
+                                usage_profile_context="",
+                                active_capability_context=", ".join(
+                                    sorted(selected_capability_ids)
+                                ),
+                            )
+                        )
+                        selector_elapsed_ms = round(
+                            (time.monotonic() - selector_started_at) * 1000
+                        )
+                        if capability_selector_result is not None:
+                            selector_outcome = (
+                                capability_selector_result.selector_outcome.value
+                                if capability_selector_result.selector_outcome is not None
+                                else ""
+                            )
+                            selected_tool_intent_plan = (
+                                selected_tool_intent_plan.model_copy(
+                                    update={
+                                        "action": (
+                                            capability_selector_result.action
+                                        ),
+                                        "selector_outcome": (
+                                            capability_selector_result.selector_outcome
+                                        ),
+                                        "mutation_authorized": (
+                                            capability_selector_result.mutation_authorized
+                                        ),
+                                        "reason": (
+                                            capability_selector_result.reason
+                                        ),
+                                    }
+                                )
+                            )
+                        _log_step(
+                            "user_selected_capability_mutation_authorization_checked",
+                            authorized=selected_tool_intent_plan.mutation_authorized,
+                            selector_valid=capability_selector_result is not None,
+                            selector_elapsed_ms=selector_elapsed_ms,
+                        )
                 metadata_candidates = {
                     "reason": "user_selected_capability",
                     "confidence": 1.0,
@@ -2186,8 +2319,8 @@ class RunnerExecutionPreparePhaseMixin:
                     target_tool_names=list(selected_tool_intent_plan.target_tool_names),
                 )
             else:
-                filtered_tools, hidden_memory_tools = filter_implicit_memory_tools(available_tools)
-                if hidden_memory_tools:
+                filtered_tools, hidden_implicit_tools = filter_implicit_only_tools(available_tools)
+                if hidden_implicit_tools:
                     available_tools = filtered_tools
                     runtime_allowed_tool_names = [
                         str(tool.get("name", "") or "").strip()
@@ -2203,9 +2336,9 @@ class RunnerExecutionPreparePhaseMixin:
                             available_tools,
                         )
                     _log_step(
-                        "implicit_memory_tools_hidden",
-                        reason="memory_read_tools_require_explicit_slash_or_internal_services",
-                        removed_tools=hidden_memory_tools,
+                        "implicit_only_tools_hidden",
+                        reason="tools_require_explicit_selection_or_internal_orchestration",
+                        removed_tools=hidden_implicit_tools,
                     )
                 has_transcript_active_capability = bool(
                     transcript_active_provider_skill or transcript_active_skill
@@ -2247,13 +2380,29 @@ class RunnerExecutionPreparePhaseMixin:
                 )
                 if capability_selector_intent_plan is None:
                     usage_profile_context = ""
-                    usage_profile_result = await self.active_memory.recall_usage_profile_for_routing(
-                        deps=deps,
-                        session_key=session_key,
+                    active_memory = getattr(self, "active_memory", None)
+                    usage_recall = getattr(
+                        active_memory,
+                        "recall_usage_profile_for_routing",
+                        None,
                     )
+                    try:
+                        usage_profile_result = (
+                            await usage_recall(deps=deps, session_key=session_key)
+                            if callable(usage_recall)
+                            else None
+                        )
+                    except Exception as exc:
+                        logger.warning("usage profile routing recall failed open: %s", exc)
+                        usage_profile_result = None
+                    usage_profile_failed = isinstance(usage_profile_result, BaseException)
                     if isinstance(deps.extra, dict):
                         deps.extra["usage_profile_routing"] = {
-                            "status": str(getattr(usage_profile_result, "status", "") or ""),
+                            "status": (
+                                "error"
+                                if usage_profile_failed
+                                else str(getattr(usage_profile_result, "status", "") or "")
+                            ),
                             "elapsed_ms": int(
                                 getattr(usage_profile_result, "elapsed_ms", 0) or 0
                             ),
@@ -2282,7 +2431,17 @@ class RunnerExecutionPreparePhaseMixin:
                         if has_transcript_active_capability
                         else ""
                     )
-                    capability_selector_intent_plan = await self._select_capability_intent_plan_with_model(
+                    yield StreamEvent.runtime_update(
+                        "reasoning",
+                        "Selecting authorized capabilities.",
+                        metadata={
+                            "phase": "capability_selection",
+                            "elapsed": round(time.monotonic() - start_time, 1),
+                        },
+                    )
+                    selector_started_at = time.monotonic()
+                    selector_attempted = True
+                    capability_selector_result = await self._select_capability_intent_plan_with_model(
                         agent=runtime_agent or self.agent,
                         deps=deps,
                         user_message=selector_user_message,
@@ -2291,20 +2450,66 @@ class RunnerExecutionPreparePhaseMixin:
                         usage_profile_context=usage_profile_context,
                         active_capability_context=active_capability_context,
                     )
-                    if capability_selector_intent_plan is None:
+                    selector_elapsed_ms = round(
+                        (time.monotonic() - selector_started_at) * 1000
+                    )
+                    if capability_selector_result is None:
                         capability_selector_failed = True
                         capability_selector_intent_plan = ToolIntentPlan(
                             action=ToolIntentAction.DIRECT_ANSWER,
-                            reason="capability_selector_returned_no_valid_target",
+                            selector_outcome=CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY,
+                            unavailable_runtime_capability=True,
+                            reason="capability_selector_invalid",
                         )
+                    else:
+                        if (
+                            _selected_plan_matches_active_capability(
+                                intent_plan=capability_selector_result,
+                                active_provider_skill=transcript_active_provider_skill,
+                                active_skill=transcript_active_skill,
+                            )
+                            and _numeric_selection_has_workflow_evidence(
+                                user_message=user_message,
+                                workflow_context=target_md_skill_workflow_context,
+                            )
+                        ):
+                            capability_selector_result = (
+                                capability_selector_result.model_copy(
+                                    update={
+                                        "mutation_authorized": False,
+                                        "non_mutating_tools_allowed": True,
+                                    }
+                                )
+                            )
+                            _log_step(
+                                "active_continuation_tools_retained",
+                                reason="numeric_selection_with_workflow_evidence",
+                            )
+                        capability_selector_intent_plan = capability_selector_result
+                        selector_outcome = (
+                            capability_selector_intent_plan.selector_outcome.value
+                            if capability_selector_intent_plan.selector_outcome is not None
+                            else ""
+                        )
+                    yield StreamEvent.runtime_update(
+                        "reasoning",
+                        "Capability selection completed.",
+                        metadata={
+                            "phase": "capability_selected",
+                            "elapsed": round(time.monotonic() - start_time, 1),
+                            "selector_outcome": (
+                                capability_selector_intent_plan.selector_outcome.value
+                                if capability_selector_intent_plan is not None
+                                and capability_selector_intent_plan.selector_outcome is not None
+                                else ""
+                            ),
+                            "selector_failed": capability_selector_failed,
+                            "selector_elapsed_ms": selector_elapsed_ms,
+                        },
+                    )
                 metadata_candidates = {
                     "reason": "llm_capability_selector",
-                    "confidence": (
-                        1.0
-                        if capability_selector_intent_plan.reason
-                        != "capability_selector_returned_no_valid_target"
-                        else 0.0
-                    ),
+                    "confidence": 0.0 if capability_selector_failed else 1.0,
                     "preferred_provider_instances": (
                         list(capability_selector_intent_plan.target_provider_instances)
                         if capability_selector_intent_plan is not None
@@ -2378,6 +2583,8 @@ class RunnerExecutionPreparePhaseMixin:
                         if capability_selector_intent_plan is not None
                         else []
                     ),
+                    selector_failed=capability_selector_failed,
+                    selector_elapsed_ms=selector_elapsed_ms,
                 )
             ranking_trace = {
                 "status": (
@@ -2572,13 +2779,6 @@ class RunnerExecutionPreparePhaseMixin:
                 if tool_intent_plan is not None
                 else [],
             )
-            if not explicit_capability_match:
-                _log_step(
-                    "unmatched_intent_tools_preserved",
-                    reason="capability_selector_returned_no_target_preserve_authorized_tools",
-                    available_tool_count=len(available_tools),
-                )
-
             if tool_intent_plan is not None:
                 tool_gate_decision = self._normalize_tool_gate_decision(
                     self._build_tool_gate_decision_from_intent_plan(
@@ -2597,9 +2797,6 @@ class RunnerExecutionPreparePhaseMixin:
                         policy=ToolPolicyMode.ANSWER_DIRECT,
                     )
                 )
-            pre_projection_has_executable_tools = bool(
-                available_tools
-            ) and not toolset_has_only_coordination_support_tools(available_tools)
             available_tools, tool_projection_trace = project_minimal_toolset(
                 allowed_tools=available_tools,
                 intent_plan=tool_intent_plan,
@@ -2662,7 +2859,6 @@ class RunnerExecutionPreparePhaseMixin:
             #
             # Webhook-selected skills are an authenticated routing decision, so
             # they take precedence over the model-selected routing plan.
-            preselected_md_skill_plan = build_preselected_md_skill_intent_plan(deps)
             if preselected_md_skill_plan is not None:
                 _log_step(
                     "target_md_skill_preselected",
@@ -2722,6 +2918,7 @@ class RunnerExecutionPreparePhaseMixin:
                         tool_intent_plan is not None
                         and tool_intent_plan.selector_outcome
                         is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT
+                        and not tool_intent_plan.non_mutating_tools_allowed
                     ),
                 )
             )
@@ -2807,35 +3004,6 @@ class RunnerExecutionPreparePhaseMixin:
                 _log_step(
                     "coordination_only_toolset_dropped",
                     reason="no_executable_runtime_capability",
-                )
-            if (
-                capability_selector_failed
-                and not pre_projection_has_executable_tools
-                and tool_intent_plan is not None
-                and tool_intent_plan.action
-                in {ToolIntentAction.DIRECT_ANSWER, ToolIntentAction.ASK_CLARIFICATION}
-                and not _intent_plan_has_explicit_targets(tool_intent_plan)
-            ):
-                no_capability_route = await self._classify_no_capability_route_with_model(
-                    agent=runtime_agent or self.agent,
-                    deps=deps,
-                    user_message=user_message,
-                    recent_history=message_history,
-                )
-                if no_capability_route == self.NO_CAPABILITY_RUNTIME_REQUEST:
-                    tool_intent_plan = ToolIntentPlan(
-                        action=ToolIntentAction.DIRECT_ANSWER,
-                        unavailable_runtime_capability=True,
-                        reason="fallback_classifier_detected_unavailable_runtime_capability",
-                    )
-                    tool_gate_decision = self._build_tool_gate_decision_from_intent_plan(
-                        tool_intent_plan,
-                        available_tools=available_tools,
-                    )
-                _log_step(
-                    "no_capability_fallback_resolved",
-                    decision=no_capability_route or "",
-                    applied=bool(tool_intent_plan.unavailable_runtime_capability),
                 )
             tool_match_result = CapabilityMatcher(available_tools=available_tools).match(
                 tool_gate_decision.suggested_tool_classes
@@ -3109,7 +3277,6 @@ class RunnerExecutionPreparePhaseMixin:
                 "release_slot": release_slot,
                 "extra": extra,
                 "run_id": run_id,
-                "tool_execution_retry_count": tool_execution_retry_count,
                 "run_failed": run_failed,
                 "message_history": message_history,
                 "runtime_message_history": resolved_runtime_message_history,
@@ -3155,6 +3322,10 @@ class RunnerExecutionPreparePhaseMixin:
                 "ranking_trace": ranking_trace,
                 "artifact_goal": artifact_goal,
                 "prompt_mode": prompt_mode,
+                "selector_elapsed_ms": selector_elapsed_ms,
+                "selector_outcome": selector_outcome,
+                "selector_attempted": selector_attempted,
+                "selector_failed": capability_selector_failed,
             })
 
     @staticmethod
