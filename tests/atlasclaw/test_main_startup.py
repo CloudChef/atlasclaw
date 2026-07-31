@@ -81,6 +81,73 @@ class TestMainStartup:
             assert resp.status_code == 200
             assert resp.json()["status"] == "healthy"
             assert get_api_context().memory_manager is not None
+            assert not hasattr(main_module, "_channel_event_runtime")
+            assert not hasattr(main_module, "_ha_background_runtime")
+
+    def test_dotenv_cannot_enable_ha_runtime(self, monkeypatch):
+        """Only the process environment present before dotenv may enable HA."""
+        import dotenv
+        import importlib
+
+        import app.atlasclaw.main as main_module
+
+        monkeypatch.delenv("ATLASCLAW_ENABLE_HA", raising=False)
+        monkeypatch.delenv("ATLASCLAW_HA_NODE_ID", raising=False)
+
+        def _dotenv_with_ha_settings(*_args, **_kwargs):
+            monkeypatch.setenv("ATLASCLAW_ENABLE_HA", "true")
+            monkeypatch.setenv("ATLASCLAW_HA_NODE_ID", "dotenv-node")
+            return True
+
+        monkeypatch.setattr(dotenv, "load_dotenv", _dotenv_with_ha_settings)
+        importlib.reload(main_module)
+
+        settings = main_module.HaRuntimeSettings.from_environment(
+            main_module._HA_PROCESS_ENVIRONMENT
+        )
+        assert settings.enabled is False
+
+    def test_ha_startup_preserves_shared_workspace_and_writes_local_token_health(
+        self,
+        test_config_path,
+        tmp_path,
+        monkeypatch,
+    ):
+        """HA startup must validate shared content and keep node state local."""
+        import importlib
+
+        from app.atlasclaw.core.workspace import WorkspaceInitializer
+        import app.atlasclaw.core.config as config_module
+        import app.atlasclaw.main as main_module
+
+        shared_workspace = tmp_path / "shared-workspace"
+        assert WorkspaceInitializer(str(shared_workspace)).initialize() is True
+        runtime_state = shared_workspace / "runtime_state.json"
+        shared_state_before = runtime_state.read_bytes()
+        node_working_directory = tmp_path / "node-a"
+        node_working_directory.mkdir()
+
+        config = json.loads(Path(test_config_path).read_text(encoding="utf-8"))
+        config["workspace"] = {"path": str(shared_workspace)}
+        config_path = tmp_path / "atlasclaw.ha.json"
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        monkeypatch.setenv("ATLASCLAW_CONFIG", str(config_path))
+        monkeypatch.setenv("ATLASCLAW_ENABLE_HA", "true")
+        monkeypatch.setenv("ATLASCLAW_HA_NODE_ID", "node-a")
+        monkeypatch.chdir(node_working_directory)
+
+        old_manager = config_module._config_manager
+        config_module._config_manager = config_module.ConfigManager(config_path=str(config_path))
+        try:
+            importlib.reload(main_module)
+            with TestClient(main_module.app) as client:
+                assert client.get("/api/health").status_code == 200
+
+            assert runtime_state.read_bytes() == shared_state_before
+            assert (node_working_directory / "runtime" / "token_health.json").exists()
+            assert not (shared_workspace / "token_health.json").exists()
+        finally:
+            config_module._config_manager = old_manager
 
     def test_startup_loads_all_provider_and_standalone_skills(
         self,

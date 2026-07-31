@@ -456,6 +456,7 @@ class MySqlDatabaseConfig(BaseModel):
     user: str = Field(default="root", description="Database user")
     password: str = Field(default="", description="Database password")
     charset: str = Field(default="utf8mb4", description="Character set")
+    tls: bool = Field(default=True, description="Enable TLS without peer verification")
 
 
 class DatabaseConfig(BaseModel):

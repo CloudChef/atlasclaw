@@ -1038,6 +1038,10 @@ Class attributes: `channel_type: str`, `channel_name: str`, `channel_icon: str`,
 
 **Long Connection Methods**: `connect() -> bool`, `disconnect() -> bool`, `set_message_callback(callback)`
 
+**HA Capability Method**: `uses_long_connection(config) -> bool` reports
+whether a specific configuration selects the Handler's long-connection mode.
+Handlers supporting multiple connection modes override this method.
+
 **Native Acknowledgement Method**: `acknowledge_message(inbound) -> MessageAcknowledgementResult`
 is best-effort and must not send ordinary fallback text when a platform has no
 native received/processing surface. Current platform implementations include
@@ -1049,7 +1053,8 @@ Feishu message reactions and WeCom streaming placeholders.
 
 **Class: `ChannelManager`**
 
-Constructor: `workspace_path: Path`
+Constructor: `workspace_path: Path`, with optional `ha_enabled` and
+`runtime_node_id` keyword arguments.
 
 When a channel connection stores `config.provider_binding`, `ChannelManager` resolves that
 `provider_type/instance_name` against the current user's `user_setting.json` provider section and
@@ -1059,6 +1064,8 @@ injects `provider_type`, `provider_instance_name`, `provider_instance`, `provide
 | Method | Signature | Description |
 |---|---|---|
 | `initialize_connection` | `(user_id, channel_type, connection_id) -> bool` | Initialize a connection |
+| `schedule_background_initialize` | `(user_id, channel_type, connection_id) -> Task` | Start tracked bounded initialization |
+| `cancel_background_initialize` | `(connection_id) -> None` | Cancel and await pending initialization |
 | `set_agent_runner` | `(agent_runner) -> None` | Set the agent runner for message handling |
 | `send_message` | `(user_id, channel_type, connection_id, message) -> SendResult` | Send outbound message |
 | `receive_message` | `(inbound_message) -> None` | Process inbound message |
@@ -1688,6 +1695,7 @@ Relational database abstraction with SQLAlchemy ORM, supporting SQLite (default)
 | `pool_size` | `int` | `5` | Connection pool size |
 | `max_overflow` | `int` | `10` | Max overflow connections |
 | `pool_pre_ping` | `bool` | `False` | Enable SQLAlchemy pool pre-ping for MySQL connections |
+| `mysql_tls` | `bool` | `True` | Enable MySQL TLS without peer verification |
 | `echo` | `bool` | `False` | Log SQL statements |
 
 `pool_pre_ping` is disabled by default for aiomysql compatibility. Enable it only
@@ -1714,7 +1722,7 @@ for MySQL deployments where SQLAlchemy pre-ping is known to work reliably.
 | `AgentModel` | `agents` | Agent configuration |
 | `ModelTokenConfigModel` | `model_token_configs` | LLM token/API keys |
 | `UserModel` | `users` | User accounts |
-| `ChannelModel` | `channels` | Channel configurations |
+| `ChannelModel` | `channels` | Channel configurations and optional HA `runtime_node_id` ownership |
 | `ServiceProviderConfigModel` | `service_provider_configs` | Provider instance configs |
 | `ModelConfigModel` | `model_configs` | AI model configurations |
 
@@ -1811,6 +1819,20 @@ Request/response schemas for API validation:
 - `002_add_channel_is_default.py` -Add `is_default` to channels
 - `003_add_service_provider_configs.py` -Add `service_provider_configs` table
 - `005_add_model_configs.py` -Add `model_configs` table
+- `010_add_channel_runtime_node_id.py` -Add the indexed HA Channel owner
+
+### 11.6 HA Runtime (`core/ha_runtime.py`)
+
+`HaRuntimeSettings` reads `ATLASCLAW_ENABLE_HA`,
+`ATLASCLAW_HA_NODE_ID`, and `ATLASCLAW_RUN_AGENT_HEARTBEAT` from the
+service process environment. HA uses the node working directory's `runtime/`
+for process-owned Token Health and Heartbeat state, while standalone mode keeps
+the existing Workspace-backed paths.
+
+HA startup validates an externally initialized shared Workspace and leaves
+database migration to the deployment initializer. Channel API requests lazily
+assign null-owner historical Channels to the current user's sticky-session
+node; `ChannelManager` restores only Channels owned by its node.
 
 ---
 

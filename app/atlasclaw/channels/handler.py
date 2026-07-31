@@ -62,6 +62,16 @@ class ChannelHandler(ABC):
         self._status = ConnectionStatus.DISCONNECTED
         self._message_callback: Optional[Callable[[InboundMessage], None]] = None
         self._connection_task: Optional[Any] = None
+
+    @classmethod
+    def uses_long_connection(cls, config: Dict[str, Any]) -> bool:
+        """Return whether this configuration selects the handler's long connection.
+
+        Pure long-connection handlers can use the default implementation.
+        Handlers supporting multiple connection modes must override it.
+        """
+        del config
+        return cls.supports_long_connection and not cls.supports_webhook
     
     # Lifecycle methods
     @abstractmethod

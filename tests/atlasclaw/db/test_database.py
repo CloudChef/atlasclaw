@@ -43,6 +43,7 @@ from app.atlasclaw.db.schemas import (
     ChannelCreate,
     ChannelUpdate,
 )
+from app.atlasclaw.core.config_schema import MySqlDatabaseConfig
 
 
 @pytest_asyncio.fixture
@@ -185,6 +186,11 @@ class TestDatabaseConfig:
             }
         })
         assert config.pool_pre_ping is True
+
+    def test_mysql_schema_preserves_tls_for_runtime_configuration(self):
+        mysql = MySqlDatabaseConfig(tls=False)
+
+        assert mysql.tls is False
 
     def test_from_config_dict(self):
         """Test creating config from dict."""

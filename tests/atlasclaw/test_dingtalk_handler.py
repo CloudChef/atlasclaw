@@ -313,6 +313,15 @@ class TestDingTalkHandler:
         assert mock_sleep.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_connect_rejects_stream_mode_without_stream_credentials(self):
+        handler = DingTalkHandler({
+            "connection_mode": "stream",
+            "webhook_url": "https://oapi.dingtalk.com/robot/send?access_token=test",
+        })
+
+        assert await handler.connect() is False
+
+    @pytest.mark.asyncio
     async def test_validate_config_valid_webhook(self):
         """Test config validation with valid webhook_url."""
         handler = DingTalkHandler()

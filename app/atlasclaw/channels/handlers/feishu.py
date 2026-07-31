@@ -164,6 +164,20 @@ class FeishuHandler(ChannelHandler):
     supports_webhook = False
     supports_provisioning = True
     provisioning_default_mode = "qr"
+
+    @classmethod
+    def uses_long_connection(cls, config: Dict[str, Any]) -> bool:
+        """Return whether Feishu uses its SDK long-connection mode."""
+        connection_mode = str(
+            config.get("connection_mode") or config.get("mode") or ""
+        ).strip().lower()
+        if not connection_mode:
+            connection_mode = (
+                "webhook"
+                if config.get("webhook_url") and not config.get("app_id")
+                else "longconnection"
+            )
+        return connection_mode == "longconnection"
     provisioning_manual_config_available = True
     provisioning_instructions_i18n_key = "channel.provisioning.feishu.instructions"
     provisioning_user_code_groups = 2

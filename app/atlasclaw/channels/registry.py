@@ -107,6 +107,11 @@ class ChannelRegistry:
             Handler instance or None if not found
         """
         return cls._instances.get(channel_id)
+
+    @classmethod
+    def remove_instance(cls, channel_id: str) -> None:
+        """Remove a cached handler instance."""
+        cls._instances.pop(channel_id, None)
     
     @classmethod
     def register_connection(cls, connection: ChannelConnection) -> None:

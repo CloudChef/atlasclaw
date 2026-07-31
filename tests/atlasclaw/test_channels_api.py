@@ -8,6 +8,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
@@ -34,7 +35,8 @@ from app.atlasclaw.channels.qr_provisioning import (
     ChannelProvisioningStart,
 )
 from app.atlasclaw.db import init_database
-from app.atlasclaw.db.database import DatabaseConfig
+from app.atlasclaw.db.database import DatabaseConfig, get_db_manager
+from app.atlasclaw.db.orm.channel_config import ChannelConfigService
 from app.atlasclaw.db.orm.role import build_default_permissions
 
 
@@ -125,7 +127,7 @@ async def initialized_db(temp_workspace):
     db_manager = await init_database(config)
     await db_manager.create_tables()
     yield
-    # Cleanup is handled by temp_workspace fixture
+    await db_manager.close()
 
 
 @pytest.fixture
@@ -143,6 +145,24 @@ def channel_manager(temp_workspace):
     manager = ChannelManager(temp_workspace)
     set_channel_manager(manager)
     
+    return manager
+
+
+@pytest.fixture
+def ha_channel_manager(temp_workspace):
+    """Create a minimal-HA manager for node-a."""
+    ChannelRegistry._handlers.clear()
+    ChannelRegistry._instances.clear()
+    ChannelRegistry._connections.clear()
+    ChannelRegistry.register("feishu", FeishuHandler)
+    ChannelRegistry.register("dingtalk", DingTalkHandler)
+    ChannelRegistry.register("wecom", WeComHandler)
+    manager = ChannelManager(
+        temp_workspace,
+        ha_enabled=True,
+        runtime_node_id="node-a",
+    )
+    set_channel_manager(manager)
     return manager
 
 
@@ -207,7 +227,15 @@ class PollingProvisioningWebSocketHandler(ProvisioningWebSocketHandler):
 @pytest.fixture
 def client(app, channel_manager, initialized_db):
     """Create test client with initialized database."""
-    return TestClient(app)
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def ha_client(app, ha_channel_manager, initialized_db):
+    """Create an API client whose Channel runtime belongs to HA node-a."""
+    with TestClient(app) as test_client:
+        yield test_client
 
 
 class TestChannelTypesAPI:
@@ -612,6 +640,238 @@ class TestConnectionsAPI:
         assert data["config"]["path"] == "/ws"
         assert data["enabled"] is True
         assert "id" in data
+
+    def test_ha_create_assigns_the_request_serving_node(
+        self,
+        ha_client,
+        ha_channel_manager,
+    ):
+        response = ha_client.post(
+            "/api/channels/feishu/connections",
+            headers={"X-Test-Channel-Type": "feishu"},
+            json={
+                "name": "HA Feishu",
+                "config": {"connection_mode": "longconnection"},
+                "enabled": False,
+            },
+        )
+
+        assert response.status_code == 200
+        connection_id = response.json()["id"]
+
+        async def _runtime_owner():
+            async with get_db_manager().get_session() as session:
+                channel = await ChannelConfigService.get_by_id(session, connection_id)
+                return channel.runtime_node_id
+
+        assert ha_client.portal.call(_runtime_owner) == "node-a"
+
+    def test_ha_rejects_a_second_runtime_owner_for_the_same_user(
+        self,
+        ha_client,
+        ha_channel_manager,
+        temp_workspace,
+    ):
+        first = ha_client.post(
+            "/api/channels/feishu/connections",
+            headers={"X-Test-Channel-Type": "feishu"},
+            json={
+                "name": "Node A",
+                "config": {"connection_mode": "longconnection"},
+                "enabled": False,
+            },
+        )
+        assert first.status_code == 200
+
+        node_b = ChannelManager(
+            temp_workspace,
+            ha_enabled=True,
+            runtime_node_id="node-b",
+        )
+        set_channel_manager(node_b)
+        second = ha_client.post(
+            "/api/channels/dingtalk/connections",
+            headers={"X-Test-Channel-Type": "dingtalk"},
+            json={
+                "name": "Node B",
+                "config": {
+                    "connection_mode": "stream",
+                    "client_id": "ding_test",
+                    "client_secret": "secret",
+                },
+                "enabled": False,
+            },
+        )
+
+        assert second.status_code == 409
+        assert "node-a" in second.json()["detail"]
+
+    def test_ha_non_owner_cannot_mutate_channel_lifecycle(
+        self,
+        ha_client,
+        ha_channel_manager,
+        temp_workspace,
+    ):
+        created = ha_client.post(
+            "/api/channels/feishu/connections",
+            headers={"X-Test-Channel-Type": "feishu"},
+            json={
+                "name": "Node A",
+                "config": {"connection_mode": "longconnection"},
+                "enabled": False,
+            },
+        )
+        assert created.status_code == 200
+        connection_id = created.json()["id"]
+
+        set_channel_manager(
+            ChannelManager(
+                temp_workspace,
+                ha_enabled=True,
+                runtime_node_id="node-b",
+            )
+        )
+        headers = {"X-Test-Channel-Type": "feishu"}
+        responses = [
+            ha_client.patch(
+                f"/api/channels/feishu/connections/{connection_id}",
+                headers=headers,
+                json={"name": "Wrong node"},
+            ),
+            ha_client.post(
+                f"/api/channels/feishu/connections/{connection_id}/enable",
+                headers=headers,
+            ),
+            ha_client.post(
+                f"/api/channels/feishu/connections/{connection_id}/disable",
+                headers=headers,
+            ),
+            ha_client.delete(
+                f"/api/channels/feishu/connections/{connection_id}",
+                headers=headers,
+            ),
+        ]
+
+        assert [response.status_code for response in responses] == [409, 409, 409, 409]
+
+    def test_ha_first_user_request_claims_an_unassigned_legacy_channel(
+        self,
+        ha_client,
+        ha_channel_manager,
+    ):
+        created = ha_client.post(
+            "/api/channels/feishu/connections",
+            headers={"X-Test-Channel-Type": "feishu"},
+            json={
+                "name": "Legacy",
+                "config": {"connection_mode": "longconnection"},
+                "enabled": False,
+            },
+        )
+        assert created.status_code == 200
+        connection_id = created.json()["id"]
+
+        async def _clear_runtime_owner():
+            async with get_db_manager().get_session() as session:
+                channel = await ChannelConfigService.get_by_id(session, connection_id)
+                channel.runtime_node_id = None
+
+        ha_client.portal.call(_clear_runtime_owner)
+        response = ha_client.patch(
+            f"/api/channels/feishu/connections/{connection_id}",
+            headers={"X-Test-Channel-Type": "feishu"},
+            json={"name": "Claimed on sticky node"},
+        )
+
+        assert response.status_code == 200
+
+        async def _runtime_owner():
+            async with get_db_manager().get_session() as session:
+                channel = await ChannelConfigService.get_by_id(session, connection_id)
+                return channel.runtime_node_id
+
+        assert ha_client.portal.call(_runtime_owner) == "node-a"
+
+    def test_ha_first_user_request_starts_claimed_active_legacy_channels(
+        self,
+        ha_client,
+        ha_channel_manager,
+    ):
+        created = ha_client.post(
+            "/api/channels/feishu/connections",
+            headers={"X-Test-Channel-Type": "feishu"},
+            json={
+                "name": "Active Legacy",
+                "config": {"connection_mode": "longconnection"},
+                "enabled": False,
+            },
+        )
+        assert created.status_code == 200
+        connection_id = created.json()["id"]
+
+        async def _make_active_legacy():
+            async with get_db_manager().get_session() as session:
+                channel = await ChannelConfigService.get_by_id(session, connection_id)
+                channel.runtime_node_id = None
+                channel.is_active = True
+
+        ha_client.portal.call(_make_active_legacy)
+        with patch.object(
+            ha_channel_manager,
+            "schedule_background_initialize",
+        ) as schedule:
+            response = ha_client.get(
+                "/api/channels/feishu/connections",
+                headers={"X-Test-Channel-Type": "feishu"},
+            )
+
+        assert response.status_code == 200
+        schedule.assert_called_once_with(
+            "channel-admin",
+            "feishu",
+            connection_id,
+        )
+
+    @pytest.mark.parametrize("channel_type", ["feishu", "dingtalk", "wecom"])
+    def test_ha_rejects_webhook_channel_mode(
+        self,
+        ha_client,
+        ha_channel_manager,
+        channel_type,
+    ):
+        response = ha_client.post(
+            f"/api/channels/{channel_type}/connections",
+            headers={"X-Test-Channel-Type": channel_type},
+            json={
+                "name": "Webhook",
+                "config": {
+                    "connection_mode": "webhook",
+                    "webhook_url": "https://example.test/hook",
+                },
+                "enabled": False,
+            },
+        )
+
+        assert response.status_code == 422
+        assert "long-connection mode" in response.json()["detail"]
+
+    def test_single_node_still_accepts_webhook_mode(self, client, channel_manager):
+        ChannelRegistry.register("dingtalk", DingTalkHandler)
+
+        response = client.post(
+            "/api/channels/dingtalk/connections",
+            headers={"X-Test-Channel-Type": "dingtalk"},
+            json={
+                "name": "Standalone webhook",
+                "config": {
+                    "connection_mode": "webhook",
+                    "webhook_url": "https://example.test/hook",
+                },
+                "enabled": False,
+            },
+        )
+
+        assert response.status_code == 200
 
     def test_create_connection_discards_legacy_provider_selection(
         self,
