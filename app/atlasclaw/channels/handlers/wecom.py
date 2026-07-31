@@ -75,19 +75,37 @@ class WeComHandler(ChannelHandler):
     provisioning_default_mode = "qr"
 
     @classmethod
-    def uses_long_connection(cls, config: Dict[str, Any]) -> bool:
-        """Return whether WeCom uses WebSocket mode."""
-        connection_mode = str(
+    def _resolve_runtime_mode(cls, config: Dict[str, Any]) -> Optional[str]:
+        """Resolve the transport that connect() can actually start."""
+        requested_mode = str(
             config.get("connection_mode") or config.get("mode") or ""
         ).strip().lower()
-        if not connection_mode:
-            if config.get("bot_id"):
-                connection_mode = "websocket"
-            elif config.get("corpid"):
-                connection_mode = "app"
-            else:
-                connection_mode = "webhook"
-        return connection_mode == "websocket"
+        bot_id = config.get("bot_id")
+        bot_secret = config.get("bot_secret") or config.get("secret")
+        corpid = config.get("corpid")
+        corpsecret = config.get("corpsecret")
+        webhook_url = config.get("webhook_url")
+
+        if requested_mode == "websocket":
+            return "websocket" if bot_id and bot_secret else None
+        if requested_mode == "app":
+            return "app" if corpid and corpsecret else None
+        if requested_mode == "webhook":
+            return "webhook" if webhook_url else None
+        if requested_mode:
+            return None
+        if bot_id and bot_secret:
+            return "websocket"
+        if corpid and corpsecret:
+            return "app"
+        if webhook_url:
+            return "webhook"
+        return None
+
+    @classmethod
+    def uses_long_connection(cls, config: Dict[str, Any]) -> bool:
+        """Return whether WeCom can actually start WebSocket mode."""
+        return cls._resolve_runtime_mode(config) == "websocket"
     provisioning_manual_config_available = True
     provisioning_instructions_i18n_key = "channel.provisioning.wecom.instructions"
     
@@ -290,26 +308,27 @@ class WeComHandler(ChannelHandler):
     async def connect(self) -> bool:
         """Establish connection based on configuration."""
         try:
-            bot_id = self.config.get("bot_id")
-            secret = self.config.get("bot_secret") or self.config.get("secret")  # bot_secret is new, secret for backward compat
+            runtime_mode = self._resolve_runtime_mode(self.config)
             
-            if bot_id and secret:
-                # Use WebSocket long connection mode
+            if runtime_mode == "websocket":
                 return await self._connect_websocket()
-            else:
-                # Use API/Webhook mode
-                corpid = self.config.get("corpid")
-                corpsecret = self.config.get("corpsecret")
-                
-                if corpid and corpsecret:
-                    if not await self._get_access_token_for_connect():
-                        logger.error("Failed to get WeCom access token")
-                        return False
-                
+
+            if runtime_mode == "app":
+                if not await self._get_access_token_for_connect():
+                    logger.error("Failed to get WeCom access token")
+                    return False
                 self._status = ConnectionStatus.CONNECTED
                 logger.info("WeCom connected (API mode)")
                 return True
-                
+
+            if runtime_mode == "webhook":
+                self._status = ConnectionStatus.CONNECTED
+                logger.info("WeCom connected (Webhook mode)")
+                return True
+
+            logger.error("WeCom configuration does not match a usable runtime mode")
+            return False
+
         except Exception as e:
             logger.error(f"WeCom connect failed: {e}")
             self._status = ConnectionStatus.ERROR

@@ -190,18 +190,31 @@ class DingTalkHandler(ChannelHandler):
     provisioning_default_mode = "qr"
 
     @classmethod
-    def uses_long_connection(cls, config: Dict[str, Any]) -> bool:
-        """Return whether DingTalk uses Stream mode."""
-        connection_mode = str(
+    def _resolve_runtime_mode(cls, config: Dict[str, Any]) -> Optional[str]:
+        """Resolve the transport that connect() can actually start."""
+        requested_mode = str(
             config.get("connection_mode") or config.get("mode") or ""
         ).strip().lower()
-        if not connection_mode:
-            connection_mode = (
-                "stream"
-                if config.get("client_id") or config.get("app_key")
-                else "webhook"
-            )
-        return connection_mode == "stream"
+        client_id = config.get("client_id") or config.get("app_key")
+        client_secret = config.get("client_secret") or config.get("app_secret")
+        webhook_url = config.get("webhook_url")
+
+        if requested_mode == "stream":
+            return "stream" if client_id and client_secret else None
+        if requested_mode == "webhook":
+            return "webhook" if webhook_url else None
+        if requested_mode:
+            return None
+        if client_id and client_secret:
+            return "stream"
+        if webhook_url and not client_id:
+            return "webhook"
+        return None
+
+    @classmethod
+    def uses_long_connection(cls, config: Dict[str, Any]) -> bool:
+        """Return whether DingTalk can actually start Stream mode."""
+        return cls._resolve_runtime_mode(config) == "stream"
     provisioning_manual_config_available = True
     provisioning_instructions_i18n_key = "channel.provisioning.dingtalk.instructions"
     
@@ -496,16 +509,15 @@ class DingTalkHandler(ChannelHandler):
         try:
             client_id = self.config.get("client_id") or self.config.get("app_key")
             client_secret = self.config.get("client_secret") or self.config.get("app_secret")
-            webhook_url = self.config.get("webhook_url")
+            runtime_mode = self._resolve_runtime_mode(self.config)
             
-            # If only webhook URL is provided, use webhook mode (no long connection)
-            if webhook_url and not client_id:
+            if runtime_mode == "webhook":
                 logger.info("[DingTalk] Using webhook mode (outbound only)")
                 self._status = ConnectionStatus.CONNECTED
                 return True
             
             # Use Stream mode with multiprocessing
-            if client_id and client_secret:
+            if runtime_mode == "stream":
                 # Pre-verify credentials before starting SDK subprocess
                 if not await self._verify_credentials_for_connect():
                     self._status = ConnectionStatus.ERROR
@@ -568,7 +580,7 @@ class DingTalkHandler(ChannelHandler):
                 await self._cleanup_connect_failure()
                 return False
             
-            logger.error("[DingTalk] No valid configuration (need client_id/client_secret or webhook_url)")
+            logger.error("[DingTalk] Configuration does not match a usable runtime mode")
             return False
             
         except Exception as e:

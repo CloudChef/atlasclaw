@@ -227,6 +227,38 @@ class TestChannelManager:
                 await asyncio.gather(task, return_exceptions=True)
 
     @pytest.mark.asyncio
+    async def test_schedule_background_initialize_reuses_running_task(self):
+        manager = ChannelManager(self.temp_dir)
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _blocking_initialize(*_args):
+            started.set()
+            await release.wait()
+
+        with patch.object(
+            manager,
+            "_background_initialize",
+            side_effect=_blocking_initialize,
+        ) as initialize:
+            first = manager.schedule_background_initialize(
+                "user-123",
+                "blocking",
+                "conn-123",
+            )
+            await asyncio.wait_for(started.wait(), timeout=1)
+            second = manager.schedule_background_initialize(
+                "user-123",
+                "blocking",
+                "conn-123",
+            )
+
+            assert second is first
+            assert initialize.await_count == 1
+            release.set()
+            await first
+
+    @pytest.mark.asyncio
     async def test_initialize_rechecks_persisted_active_state_before_start(self):
         manager = ChannelManager(self.temp_dir)
         handler = BlockingLongConnectionHandler()
@@ -461,6 +493,43 @@ class TestChannelManager:
             mock_create_task.assert_called_once()
             assert len(scheduled_coroutines) == 1
             assert self.manager.get_connection_runtime_status("conn-123") == "connecting"
+
+    @pytest.mark.asyncio
+    async def test_enable_active_connection_is_a_successful_noop(self):
+        mock_channel = MagicMock(
+            id="conn-123",
+            user_id="user-123",
+            type="websocket",
+            is_active=True,
+        )
+        instance_key = "user-123:websocket:conn-123"
+        self.manager._active_connections[instance_key] = WebSocketHandler({})
+
+        with patch("app.atlasclaw.db.get_db_manager") as mock_db_manager, patch.object(
+            ChannelConfigService,
+            "get_by_id",
+            AsyncMock(return_value=mock_channel),
+        ), patch.object(
+            ChannelConfigService,
+            "update_status",
+            AsyncMock(),
+        ) as update_status, patch.object(
+            self.manager,
+            "schedule_background_initialize",
+        ) as schedule:
+            mock_db_manager.return_value.get_session.return_value.__aenter__.return_value = (
+                AsyncMock()
+            )
+
+            result = await self.manager.enable_connection(
+                "user-123",
+                "websocket",
+                "conn-123",
+            )
+
+        assert result is True
+        update_status.assert_not_awaited()
+        schedule.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_disable_connection(self):

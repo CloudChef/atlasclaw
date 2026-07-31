@@ -88,7 +88,9 @@ def test_ha_token_health_storage_is_not_under_shared_workspace(tmp_path: Path) -
     [
         (FeishuHandler, {"connection_mode": "webhook", "webhook_url": "https://example.test"}),
         (DingTalkHandler, {"connection_mode": "webhook", "webhook_url": "https://example.test"}),
+        (DingTalkHandler, {"connection_mode": "stream", "webhook_url": "https://example.test"}),
         (WeComHandler, {"connection_mode": "webhook", "webhook_url": "https://example.test"}),
+        (WeComHandler, {"connection_mode": "websocket", "webhook_url": "https://example.test"}),
         (WeComHandler, {"connection_mode": "app", "corpid": "corp"}),
         (RESTHandler, {}),
     ],
@@ -104,9 +106,30 @@ def test_ha_rejects_non_long_connection_channel_modes(
 @pytest.mark.parametrize(
     ("handler_class", "config"),
     [
-        (FeishuHandler, {"connection_mode": "longconnection"}),
-        (DingTalkHandler, {"connection_mode": "stream"}),
-        (WeComHandler, {"connection_mode": "websocket"}),
+        (
+            FeishuHandler,
+            {
+                "connection_mode": "longconnection",
+                "app_id": "cli_test",
+                "app_secret": "secret",
+            },
+        ),
+        (
+            DingTalkHandler,
+            {
+                "connection_mode": "stream",
+                "client_id": "ding_test",
+                "client_secret": "secret",
+            },
+        ),
+        (
+            WeComHandler,
+            {
+                "connection_mode": "websocket",
+                "bot_id": "aib_test",
+                "bot_secret": "secret",
+            },
+        ),
     ],
 )
 def test_ha_accepts_supported_long_connection_channel_modes(

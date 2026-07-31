@@ -517,6 +517,15 @@ class TestWeComHandler:
         assert mock_sleep.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_connect_rejects_websocket_mode_without_bot_credentials(self):
+        handler = WeComHandler({
+            "connection_mode": "websocket",
+            "webhook_url": "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test",
+        })
+
+        assert await handler.connect() is False
+
+    @pytest.mark.asyncio
     async def test_validate_config_empty(self):
         """Test configuration validation fails with empty config."""
         handler = WeComHandler()

@@ -694,7 +694,11 @@ class TestConnectionsAPI:
             headers={"X-Test-Channel-Type": "dingtalk"},
             json={
                 "name": "Node B",
-                "config": {"connection_mode": "stream"},
+                "config": {
+                    "connection_mode": "stream",
+                    "client_id": "ding_test",
+                    "client_secret": "secret",
+                },
                 "enabled": False,
             },
         )

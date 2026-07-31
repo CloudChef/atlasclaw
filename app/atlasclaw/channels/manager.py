@@ -64,7 +64,7 @@ class ChannelManager:
         """Run the existing bounded retry loop in this AtlasClaw process."""
         existing = self._initialization_tasks.get(connection_id)
         if existing is not None and not existing.done():
-            existing.cancel()
+            return existing
 
         task = asyncio.create_task(
             self._background_initialize(user_id, channel_type, connection_id)
@@ -734,6 +734,9 @@ class ChannelManager:
                 or not self.owns_channel(existing)
             ):
                 return False
+            instance_key = f"{user_id}:{channel_type}:{connection_id}"
+            if instance_key in self._active_connections:
+                return True
             channel = await ChannelConfigService.update_status(session, connection_id, True)
             if not channel:
                 return False
