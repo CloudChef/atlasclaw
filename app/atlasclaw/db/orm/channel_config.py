@@ -9,7 +9,7 @@ import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.atlasclaw.core.encryption import encrypt_json, decrypt_json, FORMAT_PREFIX
@@ -47,7 +47,12 @@ class ChannelConfigService:
     """Service operations for Channel configuration."""
 
     @staticmethod
-    async def create(session: AsyncSession, channel_data: ChannelCreate) -> ChannelModel:
+    async def create(
+        session: AsyncSession,
+        channel_data: ChannelCreate,
+        *,
+        runtime_node_id: str | None = None,
+    ) -> ChannelModel:
         """Create a new Channel.
 
         Args:
@@ -64,6 +69,7 @@ class ChannelConfigService:
             config=_encrypt_config(channel_data.config),
             is_active=channel_data.is_active,
             is_default=channel_data.is_default,
+            runtime_node_id=runtime_node_id,
         )
         session.add(channel)
         await session.flush()
@@ -211,6 +217,52 @@ class ChannelConfigService:
             .order_by(ChannelModel.created_at.desc())
         )
         return list(result.scalars().all())
+
+    @staticmethod
+    async def list_active_by_runtime_node(
+        session: AsyncSession,
+        runtime_node_id: str,
+    ) -> List[ChannelModel]:
+        """List enabled Channels assigned to one HA runtime node."""
+        result = await session.execute(
+            select(ChannelModel)
+            .where(ChannelModel.is_active == True)
+            .where(ChannelModel.runtime_node_id == runtime_node_id)
+            .order_by(ChannelModel.created_at.asc())
+        )
+        return list(result.scalars().all())
+
+    @staticmethod
+    async def list_runtime_node_ids_by_user(
+        session: AsyncSession,
+        user_id: str,
+    ) -> set[str]:
+        """Return non-null HA runtime owners already used by one user."""
+        result = await session.execute(
+            select(ChannelModel.runtime_node_id)
+            .where(ChannelModel.user_id == user_id)
+            .where(ChannelModel.runtime_node_id.is_not(None))
+            .distinct()
+        )
+        return {
+            str(runtime_node_id)
+            for runtime_node_id in result.scalars().all()
+            if runtime_node_id
+        }
+
+    @staticmethod
+    async def claim_unassigned_runtime_nodes(
+        session: AsyncSession,
+        runtime_node_id: str,
+    ) -> int:
+        """Assign legacy null-owner Channels to a deterministic HA node."""
+        result = await session.execute(
+            update(ChannelModel)
+            .where(ChannelModel.runtime_node_id.is_(None))
+            .values(runtime_node_id=runtime_node_id, updated_at=datetime.utcnow())
+        )
+        await session.flush()
+        return int(result.rowcount or 0)
 
     @staticmethod
     async def update(

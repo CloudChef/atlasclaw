@@ -15,10 +15,24 @@ Usage:
 """
 
 import asyncio
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
 
+
+# HA is enabled exclusively by the service manager environment.  Capture these
+# values before loading the optional local .env file so a file in the working
+# directory cannot turn a normal process into an HA node.
+_HA_PROCESS_ENVIRONMENT = {
+    key: value
+    for key in (
+        "ATLASCLAW_ENABLE_HA",
+        "ATLASCLAW_HA_NODE_ID",
+        "ATLASCLAW_RUN_AGENT_HEARTBEAT",
+    )
+    if (value := os.environ.get(key)) is not None
+}
 
 from dotenv import load_dotenv
 
@@ -55,6 +69,12 @@ from app.atlasclaw.core.embed.snapshot_store import EmbedContextSnapshotStore
 from app.atlasclaw.core.provider_scanner import ProviderScanner
 from app.atlasclaw.core.trace import enrich_trace_metadata
 from app.atlasclaw.core.workspace import WorkspaceInitializer
+from app.atlasclaw.core.ha_runtime import (
+    HaRuntimeSettings,
+    prepare_workspace_for_startup,
+    runtime_state_storage_path,
+    token_health_storage_path,
+)
 from app.atlasclaw.agent.agent_definition import AgentLoader
 from app.atlasclaw.channels import ChannelRegistry
 from app.atlasclaw.channels.manager import ChannelManager
@@ -88,6 +108,7 @@ from app.atlasclaw.core.token_health_store import TokenHealthStore
 from app.atlasclaw.core.token_interceptor import TokenHealthInterceptor
 from app.atlasclaw.core.token_pool import TokenEntry, TokenHealth, TokenPool
 from app.atlasclaw.db.database import DatabaseConfig, init_database, get_db_manager
+from app.atlasclaw.db.orm.channel_config import ChannelConfigService
 from app.atlasclaw.db.orm.user import UserService
 from app.atlasclaw.db.orm.model_config import ModelConfigService
 from app.atlasclaw.bootstrap.app_factory_helpers import (
@@ -213,17 +234,19 @@ async def lifespan(app: FastAPI):
     workspace_path = config.workspace.path
 
     
-    # Initialize workspace directory structure
+    ha_runtime_settings = HaRuntimeSettings.from_environment(_HA_PROCESS_ENVIRONMENT)
+
+    # HA validates deployment-owned shared storage without writing it.
     workspace_initializer = WorkspaceInitializer(workspace_path)
-    was_initialized = workspace_initializer.is_initialized()
-    workspace_initializer.initialize()
-    if not was_initialized:
+    was_initialized = prepare_workspace_for_startup(workspace_initializer, ha_runtime_settings)
+    if not was_initialized and not ha_runtime_settings.enabled:
         print(f"[AtlasClaw] Initialized workspace at: {workspace_path}")
 
     check_and_prompt_for_providers(providers_root)
 
     # Initialize database if configured
     db_initialized = False
+    db_config: DatabaseConfig | None = None
     if config.database:
         try:
             db_config = DatabaseConfig.from_config({
@@ -237,6 +260,7 @@ async def lifespan(app: FastAPI):
                         "user": config.database.mysql.user,
                         "password": config.database.mysql.password,
                         "charset": config.database.mysql.charset,
+                        "tls": config.database.mysql.tls,
                     } if config.database.mysql else {},
                     "pool_size": config.database.pool_size,
                     "max_overflow": config.database.max_overflow,
@@ -249,8 +273,11 @@ async def lifespan(app: FastAPI):
             if db_config.db_type not in {"sqlite", "mysql"}:
                 raise RuntimeError(f"Unsupported database type: {db_config.db_type}")
 
-            await run_alembic_upgrade(db_config)
-            print(f"[AtlasClaw] {db_config.db_type.upper()} initialized via Alembic migrations")
+            if ha_runtime_settings.enabled:
+                print("[AtlasClaw] HA database migrations are deployment-owned")
+            else:
+                await run_alembic_upgrade(db_config)
+                print(f"[AtlasClaw] {db_config.db_type.upper()} initialized via Alembic migrations")
 
             db_initialized = True
         except Exception as e:
@@ -269,9 +296,30 @@ async def lifespan(app: FastAPI):
     print(f"[AtlasClaw] Registered built-in channel handlers")
     
     # Initialize ChannelManager
-    _channel_manager = ChannelManager(workspace_path)
+    _channel_manager = ChannelManager(
+        workspace_path,
+        ha_enabled=ha_runtime_settings.enabled,
+        runtime_node_id=ha_runtime_settings.node_id,
+    )
     set_channel_manager(_channel_manager)
     print(f"[AtlasClaw] Channel manager initialized")
+
+    if (
+        db_initialized
+        and ha_runtime_settings.enabled
+        and ha_runtime_settings.run_agent_heartbeat
+    ):
+        assert ha_runtime_settings.node_id is not None
+        async with get_db_manager().get_session() as session:
+            claimed_count = await ChannelConfigService.claim_unassigned_runtime_nodes(
+                session,
+                ha_runtime_settings.node_id,
+            )
+        if claimed_count:
+            print(
+                f"[AtlasClaw] Assigned {claimed_count} legacy Channel(s) "
+                f"to runtime node {ha_runtime_settings.node_id}"
+            )
     
     # Scan providers for auth extensions only.
     scan_results = ProviderScanner.scan_providers(providers_root)
@@ -471,7 +519,9 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"[AtlasClaw] Warning: Failed to load model configs from database: {e}")
 
-    health_store = TokenHealthStore(workspace_path)
+    health_store = TokenHealthStore(
+        str(token_health_storage_path(workspace_path, ha_runtime_settings))
+    )
     # Product requirement: clear token unhealthy state on every restart so one bad
     # session does not poison subsequent runs.
     for token_id in list(token_pool.tokens.keys()):
@@ -672,6 +722,8 @@ async def lifespan(app: FastAPI):
     async def _build_agent_heartbeat_jobs() -> list[HeartbeatJobDefinition]:
         if not config.heartbeat.agent_turn.enabled:
             return []
+        if ha_runtime_settings.enabled and not ha_runtime_settings.run_agent_heartbeat:
+            return []
         user_ids = await _collect_runtime_user_ids(
             workspace_path,
             db_initialized=db_initialized,
@@ -726,7 +778,9 @@ async def lifespan(app: FastAPI):
         return jobs
 
     if config.heartbeat.enabled:
-        _heartbeat_store = HeartbeatStateStore(workspace_path=workspace_path)
+        _heartbeat_store = HeartbeatStateStore(
+            workspace_path=str(runtime_state_storage_path(workspace_path, ha_runtime_settings))
+        )
         _heartbeat_runtime = HeartbeatRuntime(
             HeartbeatRuntimeContext(
                 store=_heartbeat_store,
@@ -753,15 +807,54 @@ async def lifespan(app: FastAPI):
                 await _heartbeat_runtime.run_once()
                 await asyncio.sleep(config.heartbeat.runtime.tick_seconds)
 
+    async def _start_heartbeat_loop() -> None:
+        global _heartbeat_task
+        if _heartbeat_runtime is None or (_heartbeat_task is not None and not _heartbeat_task.done()):
+            return
         _heartbeat_task = asyncio.create_task(_heartbeat_loop())
-    
-    # Auto-start enabled channel connections for default user
+
+    async def _stop_heartbeat_loop() -> None:
+        global _heartbeat_task
+        task = _heartbeat_task
+        _heartbeat_task = None
+        if task is None:
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
     async def start_enabled_connections(db_ready: bool):
-        """Start all enabled channel connections on startup."""
+        """Start enabled connections owned by this runtime node."""
         if not db_ready:
             print("[AtlasClaw] Skipping channel auto-start: database not initialized")
             return
         try:
+            if _channel_manager.ha_enabled:
+                assert _channel_manager.runtime_node_id is not None
+                async with get_db_manager().get_session() as session:
+                    owned_channels = await ChannelConfigService.list_active_by_runtime_node(
+                        session,
+                        _channel_manager.runtime_node_id,
+                    )
+                for channel in owned_channels:
+                    print(
+                        f"[AtlasClaw] Starting owned channel connection: "
+                        f"{channel.user_id}/{channel.type}/{channel.id}"
+                    )
+                    success = await _channel_manager.initialize_connection(
+                        channel.user_id,
+                        channel.type,
+                        channel.id,
+                    )
+                    if not success:
+                        print(
+                            f"[AtlasClaw] Failed to start owned channel: "
+                            f"{channel.user_id}/{channel.type}/{channel.id}"
+                        )
+                return
+
             user_ids = await _collect_runtime_user_ids(
                 workspace_path,
                 db_initialized=db_ready,
@@ -778,7 +871,9 @@ async def lifespan(app: FastAPI):
                             f"{user_id}/{channel_type}/{connection_id}"
                         )
                         success = await _channel_manager.initialize_connection(
-                            user_id, channel_type, connection_id
+                            user_id,
+                            channel_type,
+                            connection_id,
                         )
                         if success:
                             print(
@@ -792,8 +887,8 @@ async def lifespan(app: FastAPI):
                             )
         except Exception as e:
             print(f"[AtlasClaw] Error starting channel connections: {e}")
-    
-    # Schedule connection startup (will run after event loop starts)
+
+    await _start_heartbeat_loop()
     asyncio.create_task(start_enabled_connections(db_initialized))
 
 
@@ -868,12 +963,7 @@ async def lifespan(app: FastAPI):
     
     # Cleanup on shutdown
     print("[AtlasClaw] Application shutting down")
-    if _heartbeat_task is not None:
-        _heartbeat_task.cancel()
-        try:
-            await _heartbeat_task
-        except asyncio.CancelledError:
-            pass
+    await _stop_heartbeat_loop()
 
 
 def create_app() -> FastAPI:

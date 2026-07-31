@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +16,7 @@ from .handler import ChannelHandler
 from .models import ChannelConnection, ConnectionStatus, InboundMessage, OutboundMessage
 from .registry import ChannelRegistry
 from app.atlasclaw.auth.models import UserInfo
+from app.atlasclaw.core.ha_runtime import validate_ha_channel_mode
 from app.atlasclaw.db.orm.channel_config import ChannelConfigService
 from app.atlasclaw.session.context import ChatType, SessionKey, SessionScope
 
@@ -30,7 +31,13 @@ logger = logging.getLogger(__name__)
 class ChannelManager:
     """Manager for channel connections lifecycle."""
 
-    def __init__(self, workspace_path: Path):
+    def __init__(
+        self,
+        workspace_path: Path,
+        *,
+        ha_enabled: bool = False,
+        runtime_node_id: str | None = None,
+    ):
         """Initialize channel manager.
 
         Args:
@@ -42,6 +49,35 @@ class ChannelManager:
         self._agent_runner: Optional["AgentRunner"] = None
         self._session_manager_router: Optional["SessionManagerRouter"] = None
         self._event_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ha_enabled = bool(ha_enabled)
+        self._runtime_node_id = str(runtime_node_id or "").strip() or None
+        if self._ha_enabled and self._runtime_node_id is None:
+            raise ValueError("runtime_node_id is required when ChannelManager HA is enabled")
+
+    def schedule_background_initialize(
+        self,
+        user_id: str,
+        channel_type: str,
+        connection_id: str,
+    ) -> asyncio.Task[None]:
+        """Run the existing bounded retry loop in this AtlasClaw process."""
+        return asyncio.create_task(
+            self._background_initialize(user_id, channel_type, connection_id)
+        )
+
+    @property
+    def ha_enabled(self) -> bool:
+        return self._ha_enabled
+
+    @property
+    def runtime_node_id(self) -> str | None:
+        return self._runtime_node_id
+
+    def owns_channel(self, channel: Any) -> bool:
+        """Return whether this process may operate the persisted Channel."""
+        if not self._ha_enabled:
+            return True
+        return getattr(channel, "runtime_node_id", None) == self._runtime_node_id
 
     def _set_connection_runtime_status(
         self,
@@ -83,7 +119,7 @@ class ChannelManager:
         self,
         user_id: str,
         channel_type: str,
-        connection_id: str
+        connection_id: str,
     ) -> bool:
         """Initialize and start a channel connection.
 
@@ -99,7 +135,6 @@ class ChannelManager:
             True if initialized successfully
         """
         self._set_connection_runtime_status(connection_id, ConnectionStatus.CONNECTING)
-
         try:
             from app.atlasclaw.db import get_db_manager
 
@@ -110,8 +145,22 @@ class ChannelManager:
                     logger.error(f"Connection not found: {user_id}/{channel_type}/{connection_id}")
                     self._set_connection_runtime_status(connection_id, ConnectionStatus.ERROR)
                     return False
+                if not self.owns_channel(channel):
+                    logger.warning(
+                        "Channel %s belongs to runtime node %s, not %s",
+                        connection_id,
+                        getattr(channel, "runtime_node_id", None),
+                        self._runtime_node_id,
+                    )
+                    self._set_connection_runtime_status(
+                        connection_id,
+                        ConnectionStatus.DISCONNECTED,
+                    )
+                    return False
 
                 connection_config = ChannelConfigService.to_channel_config(channel)
+                if self._ha_enabled:
+                    validate_ha_channel_mode(channel_type, connection_config["config"])
 
             # Get handler class
             handler_class = ChannelRegistry.get(channel_type)
@@ -578,6 +627,8 @@ class ChannelManager:
                 channels = await ChannelConfigService.list_by_user(session, user_id)
 
             for channel in channels:
+                if not self.owns_channel(channel):
+                    continue
                 result.append(ChannelConfigService.to_channel_config(channel))
 
         return result
@@ -602,13 +653,21 @@ class ChannelManager:
 
         # Step 1: Update DB status (synchronous, fast)
         async with get_db_manager().get_session() as session:
+            existing = await ChannelConfigService.get_by_id(session, connection_id)
+            if (
+                existing is None
+                or existing.user_id != user_id
+                or existing.type != channel_type
+                or not self.owns_channel(existing)
+            ):
+                return False
             channel = await ChannelConfigService.update_status(session, connection_id, True)
             if not channel:
                 return False
 
         # Step 2: Initialize connection in background (async, don't block API response)
         self._set_connection_runtime_status(connection_id, ConnectionStatus.CONNECTING)
-        asyncio.create_task(self._background_initialize(user_id, channel_type, connection_id))
+        self.schedule_background_initialize(user_id, channel_type, connection_id)
         return True
 
     async def _background_initialize(
@@ -684,9 +743,16 @@ class ChannelManager:
         """
         from app.atlasclaw.db import get_db_manager
 
-        await self.stop_connection(user_id, channel_type, connection_id)
-
         async with get_db_manager().get_session() as session:
+            existing = await ChannelConfigService.get_by_id(session, connection_id)
+            if (
+                existing is None
+                or existing.user_id != user_id
+                or existing.type != channel_type
+                or not self.owns_channel(existing)
+            ):
+                return False
+            await self.stop_connection(user_id, channel_type, connection_id)
             channel = await ChannelConfigService.update_status(session, connection_id, False)
             if channel is not None:
                 self._set_connection_runtime_status(connection_id, ConnectionStatus.DISCONNECTED)
