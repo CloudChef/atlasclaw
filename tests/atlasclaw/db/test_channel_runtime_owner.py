@@ -11,7 +11,6 @@ import pytest
 import pytest_asyncio
 
 from app.atlasclaw.db.database import DatabaseConfig, DatabaseManager, init_database
-from app.atlasclaw.db.models import ChannelModel
 from app.atlasclaw.db.orm.channel_config import ChannelConfigService
 from app.atlasclaw.db.orm.user import UserService
 from app.atlasclaw.db.schemas import ChannelCreate, UserCreate
@@ -46,8 +45,6 @@ async def test_create_persists_only_the_runtime_node_owner(db_manager: DatabaseM
         )
 
     assert channel.runtime_node_id == "node-a"
-    assert not hasattr(channel, "lease_name")
-    assert not hasattr(channel, "event_worker_id")
 
 
 @pytest.mark.asyncio
@@ -85,7 +82,7 @@ async def test_runtime_node_queries_do_not_return_another_nodes_channels(
 
 
 @pytest.mark.asyncio
-async def test_claim_unassigned_channels_changes_only_null_owners(
+async def test_claim_unassigned_channels_changes_only_one_users_null_owners(
     db_manager: DatabaseManager,
 ) -> None:
     async with db_manager.get_session() as session:
@@ -101,27 +98,26 @@ async def test_claim_unassigned_channels_changes_only_null_owners(
             session,
             ChannelCreate(user_id=first_user.id, name="Legacy", type="feishu"),
         )
+        other_unassigned = await ChannelConfigService.create(
+            session,
+            ChannelCreate(user_id=second_user.id, name="Other Legacy", type="wecom"),
+        )
         assigned = await ChannelConfigService.create(
             session,
             ChannelCreate(user_id=second_user.id, name="Existing", type="dingtalk"),
             runtime_node_id="node-b",
         )
 
-        claimed = await ChannelConfigService.claim_unassigned_runtime_nodes(
+        claimed = await ChannelConfigService.claim_unassigned_runtime_nodes_by_user(
             session,
+            first_user.id,
             "node-a",
         )
         await session.refresh(unassigned)
+        await session.refresh(other_unassigned)
         await session.refresh(assigned)
 
-    assert claimed == 1
+    assert [channel.id for channel in claimed] == [unassigned.id]
     assert unassigned.runtime_node_id == "node-a"
+    assert other_unassigned.runtime_node_id is None
     assert assigned.runtime_node_id == "node-b"
-
-
-def test_minimal_ha_models_do_not_define_coordination_or_event_tables() -> None:
-    from app.atlasclaw.db import models
-
-    assert hasattr(ChannelModel, "runtime_node_id")
-    assert not hasattr(models, "ChannelOutboxEventModel")
-    assert not hasattr(models, "ChannelWebhookInboxModel")

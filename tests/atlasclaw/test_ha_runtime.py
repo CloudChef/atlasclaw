@@ -8,11 +8,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.atlasclaw.channels.handler import ChannelHandler
+from app.atlasclaw.channels.handlers import (
+    DingTalkHandler,
+    FeishuHandler,
+    RESTHandler,
+    WeComHandler,
+)
 from app.atlasclaw.core.ha_runtime import (
     HaRuntimeSettings,
     prepare_workspace_for_startup,
-    runtime_state_storage_path,
-    token_health_storage_path,
+    runtime_storage_path,
     validate_ha_channel_mode,
 )
 from app.atlasclaw.core.workspace import WorkspaceInitializer
@@ -72,45 +78,42 @@ def test_ha_token_health_storage_is_not_under_shared_workspace(tmp_path: Path) -
         working_directory=tmp_path / "node-a",
     )
 
-    assert token_health_storage_path(tmp_path / "shared-workspace", settings) == (
-        tmp_path / "node-a" / "runtime"
-    ).resolve()
-    assert runtime_state_storage_path(tmp_path / "shared-workspace", settings) == (
+    assert runtime_storage_path(tmp_path / "shared-workspace", settings) == (
         tmp_path / "node-a" / "runtime"
     ).resolve()
 
 
 @pytest.mark.parametrize(
-    ("channel_type", "config"),
+    ("handler_class", "config"),
     [
-        ("feishu", {"connection_mode": "webhook", "webhook_url": "https://example.test"}),
-        ("dingtalk", {"connection_mode": "webhook", "webhook_url": "https://example.test"}),
-        ("wecom", {"connection_mode": "webhook", "webhook_url": "https://example.test"}),
-        ("wecom", {"connection_mode": "app", "corpid": "corp"}),
-        ("future-platform", {"webhook_url": "https://example.test"}),
+        (FeishuHandler, {"connection_mode": "webhook", "webhook_url": "https://example.test"}),
+        (DingTalkHandler, {"connection_mode": "webhook", "webhook_url": "https://example.test"}),
+        (WeComHandler, {"connection_mode": "webhook", "webhook_url": "https://example.test"}),
+        (WeComHandler, {"connection_mode": "app", "corpid": "corp"}),
+        (RESTHandler, {}),
     ],
 )
 def test_ha_rejects_non_long_connection_channel_modes(
-    channel_type: str,
+    handler_class: type[ChannelHandler],
     config: dict[str, str],
 ) -> None:
     with pytest.raises(ValueError, match="long-connection mode"):
-        validate_ha_channel_mode(channel_type, config)
+        validate_ha_channel_mode(handler_class, config)
 
 
 @pytest.mark.parametrize(
-    ("channel_type", "config"),
+    ("handler_class", "config"),
     [
-        ("feishu", {"connection_mode": "longconnection"}),
-        ("dingtalk", {"connection_mode": "stream"}),
-        ("wecom", {"connection_mode": "websocket"}),
+        (FeishuHandler, {"connection_mode": "longconnection"}),
+        (DingTalkHandler, {"connection_mode": "stream"}),
+        (WeComHandler, {"connection_mode": "websocket"}),
     ],
 )
 def test_ha_accepts_supported_long_connection_channel_modes(
-    channel_type: str,
+    handler_class: type[ChannelHandler],
     config: dict[str, str],
 ) -> None:
-    validate_ha_channel_mode(channel_type, config)
+    validate_ha_channel_mode(handler_class, config)
 
 
 def test_ha_startup_validates_an_initialized_workspace_without_writing(tmp_path: Path) -> None:

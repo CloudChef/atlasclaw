@@ -76,53 +76,30 @@ def prepare_workspace_for_startup(
     return was_initialized
 
 
-def token_health_storage_path(
+def runtime_storage_path(
     workspace_path: str | Path,
     settings: HaRuntimeSettings,
 ) -> Path:
-    """Return node-local token health storage in HA and workspace storage otherwise."""
+    """Return node-local HA runtime storage or standalone workspace storage."""
     if settings.enabled:
         assert settings.runtime_dir is not None
         return settings.runtime_dir
     return Path(workspace_path).resolve()
-
-
-def runtime_state_storage_path(
-    workspace_path: str | Path,
-    settings: HaRuntimeSettings,
-) -> Path:
-    """Keep process-owned HA state out of the shared workspace."""
-    if settings.enabled:
-        assert settings.runtime_dir is not None
-        return settings.runtime_dir
-    return Path(workspace_path).resolve()
-
-
-_HA_LONG_CONNECTION_MODES = {
-    "feishu": "longconnection",
-    "dingtalk": "stream",
-    "wecom": "websocket",
-}
 
 
 def validate_ha_channel_mode(
-    channel_type: str,
+    handler_class: type[object],
     config: Mapping[str, object],
 ) -> None:
-    """Reject Channel modes that cannot be routed by the minimal HA design."""
-    expected_mode = _HA_LONG_CONNECTION_MODES.get(channel_type)
-    configured_mode = str(config.get("connection_mode", "") or "").strip().lower()
-    if expected_mode is None:
-        if configured_mode == "webhook" or config.get("webhook_url"):
-            raise ValueError(
-                f"HA requires {channel_type} long-connection mode; webhook is not supported"
-            )
-        return
-
-    if not configured_mode:
-        configured_mode = "webhook" if config.get("webhook_url") else expected_mode
-    if configured_mode != expected_mode:
-        raise ValueError(
-            f"HA requires {channel_type} long-connection mode "
-            f"({expected_mode}); {configured_mode} is not supported"
-        )
+    """Require the registered Channel handler to select a long connection."""
+    channel_type = str(getattr(handler_class, "channel_type", "") or "unknown")
+    supports_long_connection = bool(
+        getattr(handler_class, "supports_long_connection", False)
+    )
+    uses_long_connection = getattr(handler_class, "uses_long_connection", None)
+    if (
+        not supports_long_connection
+        or not callable(uses_long_connection)
+        or not bool(uses_long_connection(dict(config)))
+    ):
+        raise ValueError(f"HA requires {channel_type} long-connection mode")

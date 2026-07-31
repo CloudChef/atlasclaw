@@ -20,18 +20,69 @@ from app.atlasclaw.api.service_provider_schemas import (
     register_provider_schema_definition,
 )
 from app.atlasclaw.channels import ChannelConnection, ChannelRegistry
+from app.atlasclaw.channels.handler import ChannelHandler
 from app.atlasclaw.channels.handlers import WebSocketHandler
 from app.atlasclaw.channels.models import (
+    ChannelValidationResult,
     ConnectionStatus,
     InboundMessage,
     MessageAcknowledgementResult,
     SendResult,
 )
 from app.atlasclaw.channels.manager import ChannelManager
+from app.atlasclaw.db.orm.channel_config import ChannelConfigService
 from app.atlasclaw.session.manager import SessionManager
 from app.atlasclaw.session.queue import SessionQueue
 from app.atlasclaw.skills.registry import SkillRegistry
 from tests.atlasclaw.provider_schema_fixtures import managed_provider_definition
+
+
+class BlockingLongConnectionHandler(ChannelHandler):
+    """Test handler whose setup can be paused to expose lifecycle races."""
+
+    channel_type = "blocking"
+    channel_name = "Blocking"
+    supports_long_connection = True
+
+    def __init__(self):
+        super().__init__({})
+        self.setup_started = asyncio.Event()
+        self.release_setup = asyncio.Event()
+        self.start_calls = 0
+        self.stop_calls = 0
+
+    async def setup(self, connection_config):
+        self.setup_started.set()
+        await self.release_setup.wait()
+        return True
+
+    async def start(self, context):
+        self.start_calls += 1
+        return True
+
+    async def stop(self):
+        self.stop_calls += 1
+        return True
+
+    async def connect(self):
+        self._status = ConnectionStatus.CONNECTED
+        return True
+
+    async def disconnect(self):
+        self._status = ConnectionStatus.DISCONNECTED
+        return True
+
+    async def handle_inbound(self, request):
+        return None
+
+    async def send_message(self, outbound):
+        return SendResult(success=True)
+
+    async def validate_config(self, config):
+        return ChannelValidationResult(valid=True)
+
+    def describe_schema(self):
+        return {}
 
 
 class TestChannelManager:
@@ -127,6 +178,104 @@ class TestChannelManager:
         result = await self.manager.stop_connection("user-123", "websocket", "nonexistent")
         
         assert result is False
+
+    @pytest.mark.asyncio
+    async def test_stop_cancels_an_in_progress_background_initialization(self):
+        manager = ChannelManager(self.temp_dir)
+        handler = BlockingLongConnectionHandler()
+        channel = MagicMock(
+            id="conn-123",
+            name="Blocking",
+            user_id="user-123",
+            type="blocking",
+            config={},
+            is_active=True,
+            is_default=False,
+        )
+        ChannelRegistry.register("blocking", BlockingLongConnectionHandler)
+
+        with patch("app.atlasclaw.db.get_db_manager") as mock_db_manager, patch.object(
+            ChannelConfigService,
+            "get_by_id",
+            AsyncMock(return_value=channel),
+        ), patch.object(
+            ChannelConfigService,
+            "to_channel_config",
+            return_value={"config": {}},
+        ), patch.object(
+            ChannelRegistry,
+            "create_instance",
+            return_value=handler,
+        ):
+            mock_db_manager.return_value.get_session.return_value.__aenter__.return_value = (
+                AsyncMock()
+            )
+            task = manager.schedule_background_initialize(
+                "user-123",
+                "blocking",
+                "conn-123",
+            )
+            await asyncio.wait_for(handler.setup_started.wait(), timeout=1)
+            try:
+                await manager.stop_connection("user-123", "blocking", "conn-123")
+                assert task.done()
+                assert handler.start_calls == 0
+                assert "user-123:blocking:conn-123" not in manager._active_connections
+                assert ChannelRegistry.get_instance("user-123:blocking:conn-123") is None
+            finally:
+                handler.release_setup.set()
+                await asyncio.gather(task, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_initialize_rechecks_persisted_active_state_before_start(self):
+        manager = ChannelManager(self.temp_dir)
+        handler = BlockingLongConnectionHandler()
+        handler.release_setup.set()
+        active_channel = MagicMock(
+            id="conn-123",
+            name="Blocking",
+            user_id="user-123",
+            type="blocking",
+            config={},
+            is_active=True,
+            is_default=False,
+        )
+        inactive_channel = MagicMock(
+            id="conn-123",
+            name="Blocking",
+            user_id="user-123",
+            type="blocking",
+            config={},
+            is_active=False,
+            is_default=False,
+        )
+        ChannelRegistry.register("blocking", BlockingLongConnectionHandler)
+
+        with patch("app.atlasclaw.db.get_db_manager") as mock_db_manager, patch.object(
+            ChannelConfigService,
+            "get_by_id",
+            AsyncMock(side_effect=[active_channel, inactive_channel]),
+        ), patch.object(
+            ChannelConfigService,
+            "to_channel_config",
+            return_value={"config": {}},
+        ), patch.object(
+            ChannelRegistry,
+            "create_instance",
+            return_value=handler,
+        ):
+            mock_db_manager.return_value.get_session.return_value.__aenter__.return_value = (
+                AsyncMock()
+            )
+            result = await manager.initialize_connection(
+                "user-123",
+                "blocking",
+                "conn-123",
+            )
+
+        assert result is False
+        assert handler.start_calls == 0
+        assert handler.stop_calls == 1
 
     @pytest.mark.asyncio
     async def test_ha_node_refuses_to_initialize_another_nodes_channel(self):

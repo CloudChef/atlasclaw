@@ -326,12 +326,11 @@ async def load_agent_config_from_db(session, agent_id: str):
 async def ensure_default_local_admin(config) -> None:
     """Ensure default local admin account exists when local auth is enabled.
 
-    CMP deployments install with local authentication disabled.  If an operator
-    subsequently enables it, the supported procedure restarts HA nodes one at
-    a time: the first restarted node creates this account and later nodes only
-    read it.  Consequently this helper deliberately has no HA lease or
-    distributed-lock logic; concurrently starting an empty database outside
-    that installation/operation procedure is not a supported topology.
+    AtlasClaw HA deployments start with local authentication disabled. If an
+    operator subsequently enables it, the supported procedure restarts nodes
+    one at a time: the first restarted node creates this account and later
+    nodes only read it. This helper deliberately has no HA lease or distributed
+    lock for concurrently starting an empty database outside that procedure.
     """
     from app.atlasclaw.auth.config import AuthConfig
     from app.atlasclaw.db.orm.user import UserService

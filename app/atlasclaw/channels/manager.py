@@ -45,6 +45,7 @@ class ChannelManager:
         """
         self._workspace_path = workspace_path
         self._active_connections: Dict[str, ChannelHandler] = {}
+        self._initialization_tasks: Dict[str, asyncio.Task[None]] = {}
         self._runtime_status_by_connection_id: Dict[str, ConnectionStatus] = {}
         self._agent_runner: Optional["AgentRunner"] = None
         self._session_manager_router: Optional["SessionManagerRouter"] = None
@@ -61,9 +62,41 @@ class ChannelManager:
         connection_id: str,
     ) -> asyncio.Task[None]:
         """Run the existing bounded retry loop in this AtlasClaw process."""
-        return asyncio.create_task(
+        existing = self._initialization_tasks.get(connection_id)
+        if existing is not None and not existing.done():
+            existing.cancel()
+
+        task = asyncio.create_task(
             self._background_initialize(user_id, channel_type, connection_id)
         )
+        self._initialization_tasks[connection_id] = task
+        task.add_done_callback(
+            lambda completed: self._forget_initialization_task(
+                connection_id,
+                completed,
+            )
+        )
+        return task
+
+    def _forget_initialization_task(
+        self,
+        connection_id: str,
+        task: asyncio.Task[None],
+    ) -> None:
+        """Forget a completed task without removing a newer replacement."""
+        if self._initialization_tasks.get(connection_id) is task:
+            self._initialization_tasks.pop(connection_id, None)
+
+    async def cancel_background_initialize(self, connection_id: str) -> None:
+        """Cancel and await an in-progress Channel initialization."""
+        task = self._initialization_tasks.pop(connection_id, None)
+        if task is None or task.done() or task is asyncio.current_task():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     @property
     def ha_enabled(self) -> bool:
@@ -135,8 +168,16 @@ class ChannelManager:
             True if initialized successfully
         """
         self._set_connection_runtime_status(connection_id, ConnectionStatus.CONNECTING)
+        instance_key = f"{user_id}:{channel_type}:{connection_id}"
+        handler: Optional[ChannelHandler] = None
         try:
             from app.atlasclaw.db import get_db_manager
+
+            handler_class = ChannelRegistry.get(channel_type)
+            if not handler_class:
+                logger.error(f"Channel type not found: {channel_type}")
+                self._set_connection_runtime_status(connection_id, ConnectionStatus.ERROR)
+                return False
 
             # Get connection config from database
             async with get_db_manager().get_session() as session:
@@ -157,20 +198,16 @@ class ChannelManager:
                         ConnectionStatus.DISCONNECTED,
                     )
                     return False
+                if not channel.is_active:
+                    self._set_connection_runtime_status(
+                        connection_id,
+                        ConnectionStatus.DISCONNECTED,
+                    )
+                    return False
 
                 connection_config = ChannelConfigService.to_channel_config(channel)
                 if self._ha_enabled:
-                    validate_ha_channel_mode(channel_type, connection_config["config"])
-
-            # Get handler class
-            handler_class = ChannelRegistry.get(channel_type)
-            if not handler_class:
-                logger.error(f"Channel type not found: {channel_type}")
-                self._set_connection_runtime_status(connection_id, ConnectionStatus.ERROR)
-                return False
-
-            # Create instance
-            instance_key = f"{user_id}:{channel_type}:{connection_id}"
+                    validate_ha_channel_mode(handler_class, connection_config["config"])
 
             handler = ChannelRegistry.create_instance(
                 instance_key,
@@ -186,8 +223,28 @@ class ChannelManager:
             # Setup handler
             if not await handler.setup(connection_config["config"]):
                 logger.error(f"Handler setup failed: {instance_key}")
+                ChannelRegistry.remove_instance(instance_key)
                 self._set_connection_runtime_status(connection_id, ConnectionStatus.ERROR)
                 return False
+
+            # setup() can be slow. Recheck persisted state immediately before start().
+            async with get_db_manager().get_session() as session:
+                current = await ChannelConfigService.get_by_id(session, connection_id)
+                if (
+                    current is None
+                    or current.user_id != user_id
+                    or current.type != channel_type
+                    or not current.is_active
+                    or not self.owns_channel(current)
+                ):
+                    await handler.stop()
+                    ChannelRegistry.remove_instance(instance_key)
+                    self._set_connection_runtime_status(
+                        connection_id,
+                        ConnectionStatus.DISCONNECTED,
+                    )
+                    return False
+                channel = current
 
             # Set message callback for long-connection mode
             if handler.supports_long_connection:
@@ -201,6 +258,7 @@ class ChannelManager:
                 failure_status = handler.get_status()
                 if failure_status == ConnectionStatus.DISCONNECTED:
                     failure_status = ConnectionStatus.ERROR
+                ChannelRegistry.remove_instance(instance_key)
                 self._set_connection_runtime_status(connection_id, failure_status)
                 return False
 
@@ -209,6 +267,7 @@ class ChannelManager:
                 if not await handler.connect():
                     logger.error(f"Long connection failed: {instance_key}")
                     await handler.stop()
+                    ChannelRegistry.remove_instance(instance_key)
                     failure_status = handler.get_status()
                     if failure_status == ConnectionStatus.DISCONNECTED:
                         failure_status = ConnectionStatus.ERROR
@@ -231,8 +290,21 @@ class ChannelManager:
             logger.info(f"Channel connection initialized: {instance_key}")
             return True
 
+        except asyncio.CancelledError:
+            if handler is not None:
+                try:
+                    await handler.stop()
+                except Exception:
+                    logger.exception("Failed to clean up cancelled Channel initialization")
+            ChannelRegistry.remove_instance(instance_key)
+            self._set_connection_runtime_status(
+                connection_id,
+                ConnectionStatus.DISCONNECTED,
+            )
+            raise
         except Exception as e:
             logger.error(f"Failed to initialize connection: {e}")
+            ChannelRegistry.remove_instance(instance_key)
             self._set_connection_runtime_status(connection_id, ConnectionStatus.ERROR)
             return False
 
@@ -482,6 +554,7 @@ class ChannelManager:
         Returns:
             True if stopped successfully
         """
+        await self.cancel_background_initialize(connection_id)
         try:
             instance_key = f"{user_id}:{channel_type}:{connection_id}"
             handler = self._active_connections.get(instance_key)

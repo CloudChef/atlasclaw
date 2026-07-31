@@ -251,18 +251,25 @@ class ChannelConfigService:
         }
 
     @staticmethod
-    async def claim_unassigned_runtime_nodes(
+    async def claim_unassigned_runtime_nodes_by_user(
         session: AsyncSession,
+        user_id: str,
         runtime_node_id: str,
-    ) -> int:
-        """Assign legacy null-owner Channels to a deterministic HA node."""
+    ) -> List[ChannelModel]:
+        """Assign one sticky-session user's legacy Channels to the current node."""
         result = await session.execute(
-            update(ChannelModel)
+            select(ChannelModel)
+            .where(ChannelModel.user_id == user_id)
             .where(ChannelModel.runtime_node_id.is_(None))
-            .values(runtime_node_id=runtime_node_id, updated_at=datetime.utcnow())
+            .order_by(ChannelModel.created_at.asc())
+            .with_for_update()
         )
+        channels = list(result.scalars().all())
+        for channel in channels:
+            channel.runtime_node_id = runtime_node_id
+            channel.updated_at = datetime.utcnow()
         await session.flush()
-        return int(result.rowcount or 0)
+        return channels
 
     @staticmethod
     async def update(

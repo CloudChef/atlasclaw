@@ -7,36 +7,58 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "migrations" / "versions" / "010_add_channel_runtime_node_id.py"
 
 
-def _migration_text() -> str:
-    return MIGRATION.read_text(encoding="utf-8")
-
-
-def test_migration_only_adds_runtime_node_id_to_channels() -> None:
-    text = _migration_text()
-
-    assert "op.add_column(" in text
-    assert '"channels",' in text
-    assert '"runtime_node_id"' in text
-    assert 'op.create_index("ix_channels_runtime_node_id"' in text
-    assert "op.create_table" not in text
-    assert "ha_coordination" not in text
-    assert "inbox" not in text.lower()
-    assert "outbox" not in text.lower()
-
-
-def test_migration_has_upgrade_and_downgrade_entrypoints() -> None:
+def _load_migration():
     spec = importlib.util.spec_from_file_location("channel_owner_migration", MIGRATION)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def test_migration_adds_and_indexes_the_runtime_node_column() -> None:
+    module = _load_migration()
+    with patch.object(module.op, "add_column") as add_column, patch.object(
+        module.op,
+        "create_index",
+    ) as create_index:
+        module.upgrade()
+
+    table_name, column = add_column.call_args.args
+    assert table_name == "channels"
+    assert column.name == "runtime_node_id"
+    assert column.nullable is True
+    create_index.assert_called_once_with(
+        "ix_channels_runtime_node_id",
+        "channels",
+        ["runtime_node_id"],
+        unique=False,
+    )
+
+
+def test_migration_downgrade_removes_the_runtime_node_column_and_index() -> None:
+    module = _load_migration()
+    with patch.object(module.op, "drop_index") as drop_index, patch.object(
+        module.op,
+        "drop_column",
+    ) as drop_column:
+        module.downgrade()
+
+    drop_index.assert_called_once_with(
+        "ix_channels_runtime_node_id",
+        table_name="channels",
+    )
+    drop_column.assert_called_once_with("channels", "runtime_node_id")
+
+
+def test_migration_revision_follows_channel_provisioning_sessions() -> None:
+    module = _load_migration()
 
     assert module.revision == "010"
     assert module.down_revision == "009"
-    assert callable(module.upgrade)
-    assert callable(module.downgrade)

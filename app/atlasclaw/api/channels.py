@@ -75,11 +75,17 @@ async def _ensure_owned_channel_connection(
     connection_id: str,
     manager: ChannelManager | None = None,
 ) -> Any:
+    if manager is not None:
+        await _ensure_ha_user_runtime_owner(
+            session,
+            manager=manager,
+            user_id=user_id,
+        )
     channel = await ChannelConfigService.get_by_id(session, connection_id)
     if not channel or channel.user_id != user_id or channel.type != channel_type:
         raise HTTPException(status_code=404, detail=f"Connection not found: {connection_id}")
     if manager is not None:
-        await _ensure_ha_channel_owner(session, manager=manager, channel=channel)
+        await _ensure_ha_channel_owner(manager=manager, channel=channel)
     return channel
 
 
@@ -104,10 +110,26 @@ async def _ensure_ha_user_runtime_owner(
                 f"current node is {current_node_id}"
             ),
         )
+    claimed_channels = await ChannelConfigService.claim_unassigned_runtime_nodes_by_user(
+        session,
+        user_id,
+        current_node_id,
+    )
+    if not claimed_channels:
+        return
+
+    # Publish the ownership before ChannelManager opens its own database session.
+    await session.commit()
+    for channel in claimed_channels:
+        if channel.is_active:
+            manager.schedule_background_initialize(
+                channel.user_id,
+                channel.type,
+                channel.id,
+            )
 
 
 async def _ensure_ha_channel_owner(
-    session: AsyncSession,
     *,
     manager: ChannelManager,
     channel: Any,
@@ -121,7 +143,7 @@ async def _ensure_ha_channel_owner(
     if owner is None:
         raise HTTPException(
             status_code=409,
-            detail="Channel has no HA runtime owner; restart the primary AtlasClaw node",
+            detail="Channel has no HA runtime owner for the current sticky session",
         )
     if owner != current_node_id:
         raise HTTPException(
@@ -140,8 +162,11 @@ def _validate_ha_channel_config(
 ) -> None:
     if not manager.ha_enabled:
         return
+    handler_class = ChannelRegistry.get(channel_type)
+    if handler_class is None:
+        raise HTTPException(status_code=404, detail=f"Channel type not found: {channel_type}")
     try:
-        validate_ha_channel_mode(channel_type, config)
+        validate_ha_channel_mode(handler_class, config)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -720,6 +745,11 @@ async def list_connections(
     if not handler_class:
         raise HTTPException(status_code=404, detail=f"Channel type not found: {channel_type}")
     ensure_channel_type_access(authz, channel_type)
+    await _ensure_ha_user_runtime_owner(
+        session,
+        manager=manager,
+        user_id=user_id,
+    )
     
     connections = await ChannelConfigService.list_by_user_and_type(
         session, user_id, channel_type
@@ -839,10 +869,13 @@ async def update_connection(
     ensure_channel_type_access(authz, channel_type)
     user_id = authz.user.user_id
     
-    channel = await ChannelConfigService.get_by_id(session, connection_id)
-    if not channel or channel.user_id != user_id or channel.type != channel_type:
-        raise HTTPException(status_code=404, detail=f"Connection not found: {connection_id}")
-    await _ensure_ha_channel_owner(session, manager=manager, channel=channel)
+    channel = await _ensure_owned_channel_connection(
+        session,
+        user_id=user_id,
+        channel_type=channel_type,
+        connection_id=connection_id,
+        manager=manager,
+    )
     was_active = channel.is_active
     
     # Build update data
@@ -908,11 +941,13 @@ async def delete_connection(
     ensure_channel_type_access(authz, channel_type)
     user_id = authz.user.user_id
     
-    # Verify ownership
-    channel = await ChannelConfigService.get_by_id(session, connection_id)
-    if not channel or channel.user_id != user_id or channel.type != channel_type:
-        raise HTTPException(status_code=404, detail=f"Connection not found: {connection_id}")
-    await _ensure_ha_channel_owner(session, manager=manager, channel=channel)
+    await _ensure_owned_channel_connection(
+        session,
+        user_id=user_id,
+        channel_type=channel_type,
+        connection_id=connection_id,
+        manager=manager,
+    )
 
     await manager.stop_connection(user_id, channel_type, connection_id)
     if not await ChannelConfigService.delete(session, connection_id):
@@ -950,7 +985,7 @@ async def validate_config(
         return ValidationResponse(valid=False, errors=[str(exc)])
     if manager.ha_enabled:
         try:
-            validate_ha_channel_mode(channel_type, normalized_config)
+            validate_ha_channel_mode(handler_class, normalized_config)
         except ValueError as exc:
             return ValidationResponse(valid=False, errors=[str(exc)])
 
@@ -977,6 +1012,7 @@ async def verify_connection(
     channel_type: str,
     connection_id: str,
     request: Request,
+    manager: ChannelManager = Depends(get_channel_manager),
     session: AsyncSession = Depends(get_db_session),
     authz: AuthorizationContext = Depends(get_authorization_context),
 ) -> ValidationResponse:
@@ -992,9 +1028,13 @@ async def verify_connection(
     ensure_channel_type_access(authz, channel_type)
     user_id = authz.user.user_id
     
-    channel = await ChannelConfigService.get_by_id(session, connection_id)
-    if not channel or channel.user_id != user_id or channel.type != channel_type:
-        raise HTTPException(status_code=404, detail=f"Connection not found: {connection_id}")
+    channel = await _ensure_owned_channel_connection(
+        session,
+        user_id=user_id,
+        channel_type=channel_type,
+        connection_id=connection_id,
+        manager=manager,
+    )
     
     handler_class = ChannelRegistry.get(channel_type)
     if not handler_class:

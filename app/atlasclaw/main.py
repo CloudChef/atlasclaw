@@ -72,8 +72,7 @@ from app.atlasclaw.core.workspace import WorkspaceInitializer
 from app.atlasclaw.core.ha_runtime import (
     HaRuntimeSettings,
     prepare_workspace_for_startup,
-    runtime_state_storage_path,
-    token_health_storage_path,
+    runtime_storage_path,
 )
 from app.atlasclaw.agent.agent_definition import AgentLoader
 from app.atlasclaw.channels import ChannelRegistry
@@ -304,23 +303,6 @@ async def lifespan(app: FastAPI):
     set_channel_manager(_channel_manager)
     print(f"[AtlasClaw] Channel manager initialized")
 
-    if (
-        db_initialized
-        and ha_runtime_settings.enabled
-        and ha_runtime_settings.run_agent_heartbeat
-    ):
-        assert ha_runtime_settings.node_id is not None
-        async with get_db_manager().get_session() as session:
-            claimed_count = await ChannelConfigService.claim_unassigned_runtime_nodes(
-                session,
-                ha_runtime_settings.node_id,
-            )
-        if claimed_count:
-            print(
-                f"[AtlasClaw] Assigned {claimed_count} legacy Channel(s) "
-                f"to runtime node {ha_runtime_settings.node_id}"
-            )
-    
     # Scan providers for auth extensions only.
     scan_results = ProviderScanner.scan_providers(providers_root)
     print(f"[AtlasClaw] Provider scan complete: {len(scan_results['auth'])} auth providers")
@@ -520,7 +502,7 @@ async def lifespan(app: FastAPI):
             print(f"[AtlasClaw] Warning: Failed to load model configs from database: {e}")
 
     health_store = TokenHealthStore(
-        str(token_health_storage_path(workspace_path, ha_runtime_settings))
+        str(runtime_storage_path(workspace_path, ha_runtime_settings))
     )
     # Product requirement: clear token unhealthy state on every restart so one bad
     # session does not poison subsequent runs.
@@ -779,7 +761,7 @@ async def lifespan(app: FastAPI):
 
     if config.heartbeat.enabled:
         _heartbeat_store = HeartbeatStateStore(
-            workspace_path=str(runtime_state_storage_path(workspace_path, ha_runtime_settings))
+            workspace_path=str(runtime_storage_path(workspace_path, ha_runtime_settings))
         )
         _heartbeat_runtime = HeartbeatRuntime(
             HeartbeatRuntimeContext(

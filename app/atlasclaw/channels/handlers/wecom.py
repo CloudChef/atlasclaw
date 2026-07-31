@@ -73,6 +73,21 @@ class WeComHandler(ChannelHandler):
     supports_webhook = True
     supports_provisioning = True
     provisioning_default_mode = "qr"
+
+    @classmethod
+    def uses_long_connection(cls, config: Dict[str, Any]) -> bool:
+        """Return whether WeCom uses WebSocket mode."""
+        connection_mode = str(
+            config.get("connection_mode") or config.get("mode") or ""
+        ).strip().lower()
+        if not connection_mode:
+            if config.get("bot_id"):
+                connection_mode = "websocket"
+            elif config.get("corpid"):
+                connection_mode = "app"
+            else:
+                connection_mode = "webhook"
+        return connection_mode == "websocket"
     provisioning_manual_config_available = True
     provisioning_instructions_i18n_key = "channel.provisioning.wecom.instructions"
     

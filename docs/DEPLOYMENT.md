@@ -43,7 +43,8 @@ Create `/opt/atlasclaw/config/atlasclaw.json`:
       "database": "atlasclaw",
       "user": "atlasclaw",
       "password": "change-to-secure-password",
-      "charset": "utf8mb4"
+      "charset": "utf8mb4",
+      "tls": true
     },
     "pool_size": 20,
     "max_overflow": 30,
@@ -181,7 +182,8 @@ curl http://localhost:8000/api/health
       "database": "atlasclaw",
       "user": "atlasclaw",
       "password": "secure-password",
-      "charset": "utf8mb4"
+      "charset": "utf8mb4",
+      "tls": true
     },
     "pool_size": 20,
     "max_overflow": 30,
@@ -193,6 +195,47 @@ curl http://localhost:8000/api/health
 `pool_pre_ping` controls SQLAlchemy connection checkout pre-ping for MySQL only.
 The default is `false` for aiomysql deployments; enable it only when the selected
 driver and deployment are known to support SQLAlchemy pre-ping reliably.
+
+`mysql.tls` defaults to `true`. It enables encrypted MySQL transport without
+peer certificate verification.
+
+### High-Availability Runtime
+
+An AtlasClaw HA deployment requires:
+
+- A shared MySQL database.
+- A shared Workspace initialized before application nodes start.
+- A stable and unique node ID for each instance.
+- An upstream proxy that keeps one authenticated user's requests on one node.
+
+Run migrations once from the deployment initializer before starting any HA
+application instance:
+
+```bash
+alembic upgrade head
+```
+
+Set these process environment variables on every node:
+
+```bash
+ATLASCLAW_ENABLE_HA=true
+ATLASCLAW_HA_NODE_ID=<unique-node-id>
+ATLASCLAW_RUN_AGENT_HEARTBEAT=false
+```
+
+Set `ATLASCLAW_RUN_AGENT_HEARTBEAT=true` on only one node when singleton Agent
+Heartbeat work is enabled. This flag does not control Channel ownership.
+
+Each node must use a local working directory. Token Health and Heartbeat runtime
+state are stored in its local `runtime/` child directory, not in the shared
+Workspace.
+
+New Channels are assigned to the node serving the user's sticky session.
+Historical Channels with no owner are assigned per user on that user's first
+Channel API request, and enabled connections are then started on that node.
+HA accepts only configurations identified by their registered Handler as
+long-connection mode. It does not automatically transfer ownership after a
+permanent node failure.
 
 ### LLM Provider
 

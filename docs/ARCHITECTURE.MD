@@ -334,6 +334,31 @@ The `lifespan()` async context manager executes this ordered sequence:
 16. **Set up APIContext** -Global context holder for all API routes
 17. **Start channel connections** -Initialize active channel connections
 
+### High-Availability Runtime Boundary
+
+AtlasClaw HA is enabled only through the service process environment:
+
+| Variable | Purpose |
+|---|---|
+| `ATLASCLAW_ENABLE_HA=true` | Enable HA runtime behavior |
+| `ATLASCLAW_HA_NODE_ID` | Provide the stable, unique identity of this node |
+| `ATLASCLAW_RUN_AGENT_HEARTBEAT=true` | Run singleton Agent Heartbeat work on this node |
+
+The shared Workspace must be initialized by the deployment initializer before
+HA nodes start. Application instances validate it but do not initialize or
+modify its bootstrap content. Token health and Heartbeat runtime state are
+stored under each process working directory's local `runtime/` directory.
+
+HA application instances do not run Alembic. The deployment initializer must
+run `alembic upgrade head` exactly once before starting the nodes.
+
+Each Channel stores a `runtime_node_id`. New Channels belong to the node serving
+the user's sticky session. Historical Channels with a null owner are assigned,
+per user, when that user first reaches a Channel API on a sticky node. Enabled
+Channels assigned this way are started on that node. Only configurations that
+the registered Handler identifies as long-connection mode are accepted in HA.
+There is no automatic owner takeover when a node remains unavailable.
+
 ### Shutdown Sequence
 
 1. Stop all active channel connections
@@ -933,7 +958,7 @@ Heartbeat state is intentionally separate from Hook Runtime state:
 | `agents` | Agent configuration storage | `id`, `name` (unique), `display_name`, `identity` (JSON), `soul` (JSON), `memory` (JSON) |
 | `model_token_configs` | LLM token/API key storage (encrypted) | `id`, `name` (unique), `provider`, `model`, `api_key` (AES-256-GCM encrypted), `priority`, `weight` |
 | `users` | User accounts | `id`, `username` (unique), `password_hash`, `roles` (JSON) |
-| `channels` | Channel configurations (encrypted) | `id`, `name`, `type`, `user_id`, `config` (AES-256-GCM encrypted JSON), `is_default` |
+| `channels` | Channel configurations (encrypted) | `id`, `name`, `type`, `user_id`, `config` (AES-256-GCM encrypted JSON), `is_default`, `runtime_node_id` |
 | `service_provider_configs` | Provider instance configs (encrypted) | `id`, `provider_type`, `instance_name`, `config` (AES-256-GCM encrypted JSON), `is_active` |
 
 **Unique Constraints**:
@@ -987,6 +1012,7 @@ All sensitive data is encrypted at rest using **AES-256-GCM**:
 - Requires Alembic migrations (`alembic upgrade head`)
 - Migrations located in `migrations/versions/`
 - Suitable for multi-node and production deployments
+- In HA, migrations are run once by the deployment initializer, not by application instances
 
 ---
 
