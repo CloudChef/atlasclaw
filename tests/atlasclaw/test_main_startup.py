@@ -12,6 +12,7 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -325,6 +326,256 @@ class TestConfigResolution:
         # 验证 model 配置 - 现在使用 tokens 配置
         assert config.model.primary == "test-token-1"
         assert len(config.model.tokens) == 3
+
+    def test_unresolved_model_tokens_are_not_registered_as_fallbacks(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unset environment-backed token must not become a runtime fallback."""
+        from app.atlasclaw.bootstrap.startup_helpers import build_token_entries
+
+        monkeypatch.delenv("UNSET_FALLBACK_API_KEY", raising=False)
+        token_defaults = {
+            "api_type": "openai",
+            "priority": 0,
+            "weight": 100,
+            "context_window": None,
+        }
+        config = SimpleNamespace(
+            model=SimpleNamespace(
+                primary="primary",
+                tokens=[
+                    SimpleNamespace(
+                        id="empty-fallback",
+                        provider="openai",
+                        model="gpt-test",
+                        base_url="https://llm.example.test/v1",
+                        api_key="${UNSET_FALLBACK_API_KEY}",
+                        **token_defaults,
+                    ),
+                    SimpleNamespace(
+                        id="primary",
+                        provider="openai",
+                        model="gpt-test",
+                        base_url="https://llm.example.test/v1",
+                        api_key="usable-key",
+                        **token_defaults,
+                    ),
+                ],
+            )
+        )
+
+        tokens, primary_id = build_token_entries(config)
+
+        assert [token.token_id for token in tokens] == ["primary"]
+        assert primary_id == "primary"
+
+    def test_keyless_ollama_token_remains_available(self) -> None:
+        """Keep providers whose preset explicitly permits an empty API key."""
+
+        from app.atlasclaw.bootstrap.startup_helpers import build_token_entries
+
+        config = SimpleNamespace(
+            model=SimpleNamespace(
+                primary="ollama-local",
+                tokens=[
+                    SimpleNamespace(
+                        id="ollama-local",
+                        provider="ollama",
+                        model="qwen3:8b",
+                        base_url="http://127.0.0.1:11434/v1",
+                        api_key="",
+                        api_type="openai",
+                        priority=0,
+                        weight=100,
+                        context_window=None,
+                    )
+                ],
+            )
+        )
+
+        tokens, primary_id = build_token_entries(config)
+
+        assert [token.token_id for token in tokens] == ["ollama-local"]
+        assert tokens[0].api_key == ""
+        assert primary_id == "ollama-local"
+
+    def test_all_unresolved_json_tokens_allow_database_token_loading(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Return an empty JSON set so startup can still merge database tokens."""
+        from app.atlasclaw.bootstrap.startup_helpers import build_token_entries
+
+        monkeypatch.delenv("UNSET_ONLY_API_KEY", raising=False)
+        config = SimpleNamespace(
+            model=SimpleNamespace(
+                primary="empty-json-token",
+                tokens=[
+                    SimpleNamespace(
+                        id="empty-json-token",
+                        provider="openai",
+                        model="gpt-test",
+                        base_url="https://llm.example.test/v1",
+                        api_key="${UNSET_ONLY_API_KEY}",
+                        api_type="openai",
+                        priority=0,
+                        weight=100,
+                        context_window=None,
+                    )
+                ],
+            )
+        )
+
+        tokens, primary_id = build_token_entries(config)
+
+        assert tokens == []
+        assert primary_id is None
+
+    @pytest.mark.asyncio
+    async def test_database_model_config_can_populate_an_empty_json_pool(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A DB-only deployment must reach Model Configuration loading."""
+
+        from app.atlasclaw.bootstrap.startup_helpers import (
+            build_token_entries,
+            build_token_entries_from_model_configs,
+            merge_token_entries,
+        )
+        from app.atlasclaw.db.orm.model_config import ModelConfigService
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        config = SimpleNamespace(
+            model=SimpleNamespace(
+                primary="main",
+                tokens=[],
+                providers={},
+            )
+        )
+        database_model = SimpleNamespace(
+            name="database-primary",
+            provider="openai",
+            model_id="database-model-id",
+            base_url="https://models.example.test/v1",
+            api_type="openai",
+            priority=100,
+            weight=100,
+            context_window=64_000,
+        )
+
+        async def _list_active(_session):
+            return [database_model]
+
+        monkeypatch.setattr(ModelConfigService, "list_active", _list_active)
+        monkeypatch.setattr(
+            ModelConfigService,
+            "get_decrypted_api_key",
+            lambda _model_config: "database-api-key",
+        )
+
+        json_entries, primary_id = build_token_entries(config)
+        database_entries = await build_token_entries_from_model_configs(object())
+        token_entries = merge_token_entries(database_entries, json_entries)
+        primary_id = primary_id or token_entries[0].token_id
+
+        assert [entry.token_id for entry in token_entries] == ["database-primary"]
+        assert primary_id == "database-primary"
+
+    @pytest.mark.asyncio
+    async def test_database_token_sources_filter_invalid_and_keep_keyless(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Apply one provider-aware usability rule to both database sources."""
+
+        from app.atlasclaw.bootstrap.startup_helpers import (
+            build_token_entries_from_db,
+            build_token_entries_from_model_configs,
+        )
+        from app.atlasclaw.db.orm.model_config import ModelConfigService
+        from app.atlasclaw.db.orm.model_token_config import ModelTokenConfigService
+
+        valid_model_config = SimpleNamespace(
+            name="database-model",
+            provider="openai",
+            model_id="database-model-id",
+            base_url="https://models.example.test/v1",
+            api_type="openai",
+            priority=10,
+            weight=50,
+            context_window=64_000,
+        )
+        invalid_model_config = SimpleNamespace(
+            **{
+                **vars(valid_model_config),
+                "name": "invalid-database-model",
+            }
+        )
+        keyless_model_config = SimpleNamespace(
+            **{
+                **vars(valid_model_config),
+                "name": "ollama-database-model",
+                "provider": "ollama",
+                "model_id": "qwen3:8b",
+                "base_url": "http://127.0.0.1:11434/v1",
+            }
+        )
+        invalid_token = SimpleNamespace(
+            name="invalid-token",
+            provider="openai",
+            model="gpt-test",
+            base_url="https://models.example.test/v1",
+            priority=0,
+            weight=100,
+        )
+        keyless_token = SimpleNamespace(
+            name="ollama-token",
+            provider="ollama",
+            model="qwen3:8b",
+            base_url="http://127.0.0.1:11434/v1",
+            priority=0,
+            weight=100,
+        )
+
+        async def _list_active(_session):
+            return [
+                valid_model_config,
+                invalid_model_config,
+                keyless_model_config,
+            ]
+
+        async def _list_tokens(_session, **_kwargs):
+            return [invalid_token, keyless_token], 2
+
+        monkeypatch.setattr(ModelConfigService, "list_active", _list_active)
+        monkeypatch.setattr(
+            ModelConfigService,
+            "get_decrypted_api_key",
+            lambda model_config: (
+                "database-api-key"
+                if model_config is valid_model_config
+                else ""
+            ),
+        )
+        monkeypatch.setattr(ModelTokenConfigService, "list_all", _list_tokens)
+        monkeypatch.setattr(
+            ModelTokenConfigService,
+            "get_decrypted_api_key",
+            lambda _token: "",
+        )
+
+        model_entries = await build_token_entries_from_model_configs(object())
+        token_entries, primary_id = await build_token_entries_from_db(object())
+
+        assert [entry.token_id for entry in model_entries] == [
+            "database-model",
+            "ollama-database-model",
+        ]
+        assert [entry.token_id for entry in token_entries] == ["ollama-token"]
+        assert model_entries[1].api_key == token_entries[0].api_key == ""
+        assert primary_id == "ollama-token"
 
 
 class TestSimpleLLMCall:

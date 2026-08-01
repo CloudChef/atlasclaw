@@ -109,7 +109,6 @@ from app.atlasclaw.core.token_pool import TokenEntry, TokenHealth, TokenPool
 from app.atlasclaw.db.database import DatabaseConfig, init_database, get_db_manager
 from app.atlasclaw.db.orm.channel_config import ChannelConfigService
 from app.atlasclaw.db.orm.user import UserService
-from app.atlasclaw.db.orm.model_config import ModelConfigService
 from app.atlasclaw.bootstrap.app_factory_helpers import (
     ExternalBasePathMiddleware,
     StaticFileCacheMiddleware,
@@ -120,6 +119,7 @@ from app.atlasclaw.bootstrap.app_factory_helpers import (
 )
 from app.atlasclaw.bootstrap.startup_helpers import (
     build_token_entries_from_db,
+    build_token_entries_from_model_configs,
     build_provider_instances_from_db,
     build_token_entries,
     check_and_prompt_for_providers,
@@ -463,6 +463,33 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             print(f"[AtlasClaw] Warning: Failed to load tokens from database: {e}")
 
+    # ModelConfig is a second database-backed runtime model source. Merge it
+    # before the authoritative empty-pool check so deployments can be managed
+    # entirely through Model Configuration even when JSON placeholders are
+    # unset. Higher-priority model configs retain the established override
+    # behavior for duplicate token names.
+    if db_initialized:
+        try:
+            async with get_db_manager().get_session() as session:
+                model_config_entries = await build_token_entries_from_model_configs(
+                    session
+                )
+                if model_config_entries:
+                    token_entries = merge_token_entries(
+                        model_config_entries,
+                        token_entries,
+                    )
+                    print(
+                        "[AtlasClaw] Loaded "
+                        f"{len(model_config_entries)} model configs from database"
+                    )
+                    print(
+                        "[AtlasClaw] Combined token pool: "
+                        f"{len(token_entries)} (model configs + tokens)"
+                    )
+        except Exception as e:
+            print(f"[AtlasClaw] Warning: Failed to load model configs from database: {e}")
+
     if not token_entries:
         raise RuntimeError("No token configurations found. Please configure tokens in database or atlasclaw.json")
 
@@ -476,30 +503,6 @@ async def lifespan(app: FastAPI):
     token_pool = TokenPool()
     for token in token_entries:
         token_pool.register_token(token)
-
-    # Load model configs from DB and register as token entries
-    # Model configs can override token entries with the same name
-    if db_initialized:
-        try:
-            async with get_db_manager().get_session() as session:
-                db_model_configs = await ModelConfigService.list_active(session)
-                for mc in db_model_configs:
-                    entry = TokenEntry(
-                        token_id=mc.name,
-                        provider=mc.provider,
-                        model=mc.model_id,
-                        base_url=mc.base_url or "",
-                        api_key=ModelConfigService.get_decrypted_api_key(mc) or "",
-                        api_type=mc.api_type or "openai",
-                        priority=mc.priority or 0,
-                        weight=mc.weight or 100,
-                        context_window=mc.context_window,
-                    )
-                    token_pool.register_token(entry)
-                if db_model_configs:
-                    print(f"[AtlasClaw] Loaded {len(db_model_configs)} model configs from database")
-        except Exception as e:
-            print(f"[AtlasClaw] Warning: Failed to load model configs from database: {e}")
 
     health_store = TokenHealthStore(
         str(runtime_storage_path(workspace_path, ha_runtime_settings))

@@ -1735,6 +1735,7 @@ class RunnerExecutionPreparePhaseMixin:
         buffered_assistant_events = state.get("buffered_assistant_events")
         assistant_output_streamed = state.get("assistant_output_streamed")
         tool_request_message = state.get("tool_request_message")
+        model_user_message = state.get("model_user_message") or user_message
         tool_intent_plan = state.get("tool_intent_plan")
         tool_gate_decision = state.get("tool_gate_decision")
         tool_match_result = state.get("tool_match_result")
@@ -1763,6 +1764,10 @@ class RunnerExecutionPreparePhaseMixin:
         metadata_candidates = state.get("metadata_candidates")
         ranking_trace = state.get("ranking_trace")
         artifact_goal = state.get("artifact_goal")
+        selector_elapsed_ms = state.get("selector_elapsed_ms") or 0
+        selector_outcome = state.get("selector_outcome") or ""
+        selector_attempted = bool(state.get("selector_attempted"))
+        capability_selector_failed = bool(state.get("selector_failed"))
         runtime_message_history = state.get("runtime_message_history")
         session_message_history = state.get("session_message_history")
         runtime_base_history_len = state.get("runtime_base_history_len")
