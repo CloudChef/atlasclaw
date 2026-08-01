@@ -20,13 +20,9 @@ from app.atlasclaw.auth.guards import (
     has_provider_instance_access,
 )
 from app.atlasclaw.auth.models import UserInfo
+from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.core.object_actions import normalize_object_actions
 from app.atlasclaw.session.context import ChatType, SessionKey, SessionScope
-from app.atlasclaw.skills.md_tool_runtime import (
-    ScriptInvocationConfig,
-    load_handler_from_file,
-)
-
 from .integration_registry import EmbedIntegrationRegistry, LoadedEmbedIntegration
 from .models import ContextSnapshot, ResolvedObject
 from .route_matcher import match_route, normalize_host_path
@@ -48,6 +44,55 @@ class EmbedContextResolution:
 
     matched: bool
     snapshot: ContextSnapshot | None = None
+
+
+def _build_resolver_deps(
+    *,
+    deps: SkillDeps,
+    user_info: UserInfo,
+    request_cookies: dict[str, str],
+    provider_type: str,
+    instance_name: str,
+    provider_instance: dict[str, Any],
+) -> SkillDeps:
+    """Restrict an in-process resolver to the former cookie-only boundary.
+
+    Context resolvers need the selected endpoint and the current Host request
+    cookies. They must not inherit configured Provider credentials, runtime SSO
+    state, or the AtlasClaw authentication token from ordinary Tool dependencies.
+    """
+
+    safe_instance = {
+        key: provider_instance[key]
+        for key in ("base_url", "timeout")
+        if key in provider_instance
+    }
+    trace_extra = {
+        key: deps.extra[key]
+        for key in (
+            "active_internal_request_trace_id",
+            "internal_request_trace_id",
+        )
+        if key in deps.extra
+    }
+    resolver_user = UserInfo(
+        user_id=user_info.user_id,
+        display_name=user_info.display_name,
+        tenant_id=user_info.tenant_id,
+        roles=list(user_info.roles),
+    )
+    return SkillDeps(
+        user_info=resolver_user,
+        session_key=deps.session_key,
+        abort_signal=deps.abort_signal,
+        cookies=request_cookies,
+        extra={
+            **trace_extra,
+            "provider_type": provider_type,
+            "provider_instance_name": instance_name,
+            "provider_instance": safe_instance,
+        },
+    )
 
 
 def build_authorization_extras(
@@ -117,7 +162,6 @@ class EmbedContextService:
         if matched is None:
             return EmbedContextResolution(matched=False)
 
-        resolver = integration.routes.context_resolver
         resolver_authz = require_embed_resolver_access(
             authz,
             provider_type=integration.config.provider_type,
@@ -132,7 +176,6 @@ class EmbedContextService:
                 user_info=user_info,
                 request_cookies=request_cookies,
                 authz=resolver_authz,
-                entrypoint=resolver.entrypoint,
                 arguments={
                     "route_id": matched.rule.id,
                     "path": normalized_path,
@@ -280,10 +323,9 @@ class EmbedContextService:
         user_info: UserInfo,
         request_cookies: dict[str, str],
         authz: AuthorizationContext,
-        entrypoint: str,
         arguments: dict[str, Any],
     ) -> Any:
-        """Execute one validated Provider-owned resolver outside SkillRegistry."""
+        """Execute the cached Provider resolver with request-scoped dependencies."""
         # The synthetic session supplies the normal scoped dependency contract;
         # it does not create or resume a user-visible Chat session.
         synthetic_session = SessionKey(
@@ -306,44 +348,26 @@ class EmbedContextService:
         provider_instance = provider_bucket.get(integration.config.provider_instance)
         if not isinstance(provider_instance, dict):
             raise EmbedPermissionError("configured embed provider instance is unavailable")
-        deps.extra.update(
-            {
-                "provider_type": integration.config.provider_type,
-                "provider_instance_name": integration.config.provider_instance,
-                "provider_instance": dict(provider_instance),
-            }
-        )
-        resolver_path = (integration.provider_root / entrypoint).resolve()
-        if (
-            integration.provider_root != resolver_path
-            and integration.provider_root not in resolver_path.parents
-        ):
-            raise EmbedResolverError("provider resolver entrypoint escapes provider root")
-        if not resolver_path.is_file() or resolver_path.suffix != ".py":
-            raise EmbedResolverError("provider resolver entrypoint is unavailable")
-        # Context resolution may act only with the current Host request Cookie.
-        # Provider credentials, stored tokens, and auto-login are intentionally
-        # unavailable on this execution path.
-        handler = load_handler_from_file(
-            resolver_path,
-            "handler",
+        resolver_deps = _build_resolver_deps(
+            deps=deps,
+            user_info=user_info,
+            request_cookies=request_cookies,
             provider_type=integration.config.provider_type,
-            invocation_config=ScriptInvocationConfig(
-                positional_args=(
-                    "route_id",
-                    "path",
-                    "route_parameters",
-                    "page_type",
-                    "object_type",
-                ),
-                timeout_seconds=30,
-                max_output_bytes=256 * 1024,
-                request_cookie_only=True,
-            ),
-            tool_name=f"embed_context_resolver:{entrypoint}",
-            result_mode="tool_only_ok",
+            instance_name=integration.config.provider_instance,
+            provider_instance=provider_instance,
         )
-        raw = await handler(SimpleNamespace(deps=deps), **arguments)
+        try:
+            raw = await asyncio.wait_for(
+                integration.resolver_handler(
+                    SimpleNamespace(deps=resolver_deps),
+                    **arguments,
+                ),
+                timeout=30,
+            )
+        except asyncio.TimeoutError:
+            raise
+        except Exception as exc:
+            raise EmbedResolverError("provider resolver execution failed") from exc
         try:
             return json.loads(raw) if isinstance(raw, str) else raw
         except (TypeError, json.JSONDecodeError) as exc:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from app.atlasclaw.skills.md_tool_runtime import (
+    CallableExportError,
     ScriptInvocationConfig,
     _extract_parameters_schema,
     create_script_wrapper,
@@ -48,6 +50,61 @@ def test_script_wrapper_serializes_positional_and_flag_arguments(tmp_path: Path)
     assert result["success"] is True
     payload = json.loads(result["output"].strip())
     assert payload["argv"] == ["TIC20260316000001", "--days", "90"]
+
+
+def test_missing_explicit_callable_does_not_fallback_to_script(
+    tmp_path: Path,
+) -> None:
+    """Fail closed when a named export is missing from an explicit entrypoint."""
+
+    marker = tmp_path / "script-ran.txt"
+    script = tmp_path / "explicit.py"
+    script.write_text(
+        "\n".join(
+            [
+                "from pathlib import Path",
+                "if __name__ == '__main__':",
+                f"    Path({str(marker)!r}).write_text('ran', encoding='utf-8')",
+                "def handler(ctx=None, **kwargs):",
+                "    return {'success': True}",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CallableExportError, match="missing_export"):
+        load_handler_from_file(script, "missing_export")
+
+    handler = load_handler_from_file(script, "handler")
+    assert handler()["success"] is True
+    assert marker.exists() is False
+
+
+def test_explicit_callable_registers_its_module_during_loading(
+    tmp_path: Path,
+) -> None:
+    """Support dataclasses and reflection that resolve the defining module."""
+
+    script = tmp_path / "typed_handler.py"
+    script.write_text(
+        "\n".join(
+            [
+                "from __future__ import annotations",
+                "from dataclasses import dataclass",
+                "@dataclass",
+                "class Payload:",
+                "    value: str",
+                "def handler(ctx=None, **kwargs):",
+                "    return Payload(value='loaded')",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    handler = load_handler_from_file(script, "handler")
+
+    assert handler().value == "loaded"
+    assert inspect.getmodule(handler) is not None
 
 
 def test_script_wrapper_splits_repeatable_positional_arguments(tmp_path: Path) -> None:
@@ -1097,6 +1154,43 @@ def test_request_cookie_only_wrapper_excludes_shared_credentials(
     assert payload["password"] == ""
     assert payload["cookie"] == {"CloudChef-Authenticate": "request-cookie"}
     assert payload["unknown_secret"] == ""
+
+
+def test_python_wrapper_exposes_runtime_root_from_isolated_working_directory(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    inherited_path = tmp_path / "inherited-pythonpath"
+    monkeypatch.setenv("PYTHONPATH", str(inherited_path))
+    script = tmp_path / "import_core_contract.py"
+    script.write_text(
+        "\n".join(
+            [
+                "import json, os",
+                "from app.atlasclaw.core.object_actions import build_localized_text",
+                "print(json.dumps({",
+                "  'localized': build_localized_text('Open', {'zh-CN': '打开'}),",
+                "  'pythonpath': os.environ.get('PYTHONPATH', '').split(os.pathsep),",
+                "}, ensure_ascii=False))",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    wrapper = create_script_wrapper(
+        script,
+        invocation_config=ScriptInvocationConfig(request_cookie_only=True),
+    )
+    result = asyncio.run(wrapper())
+
+    assert result["success"] is True
+    payload = json.loads(result["output"])
+    runtime_root = str(Path(__file__).resolve().parents[2])
+    assert payload["localized"] == {
+        "default": "Open",
+        "translations": {"zh-CN": "打开"},
+    }
+    assert payload["pythonpath"] == [runtime_root, str(inherited_path)]
 
 
 def test_script_wrapper_leaves_submit_confirmation_to_model_routing(

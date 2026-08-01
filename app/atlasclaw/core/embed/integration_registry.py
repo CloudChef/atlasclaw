@@ -5,13 +5,19 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from app.atlasclaw.core.config_schema import EmbedIntegrationConfig
 from app.atlasclaw.core.provider_registry import ServiceProviderRegistry
+from app.atlasclaw.skills.md_tool_runtime import (
+    load_callable_from_file,
+    parse_entrypoint,
+)
 
 from .models import RouteManifest
 
@@ -23,6 +29,7 @@ class LoadedEmbedIntegration:
     config: EmbedIntegrationConfig
     routes: RouteManifest
     provider_root: Path
+    resolver_handler: Callable[..., Any]
 
     @property
     def agent_id(self) -> str:
@@ -76,11 +83,21 @@ class EmbedIntegrationRegistry:
             raise ValueError(
                 "route manifest provider_type must equal the default embed provider_type"
             )
-        self._validate_resolver_entrypoints(provider_root, routes)
+        resolver_path, resolver_attr = self._resolve_provider_entrypoint(
+            provider_root,
+            raw_entrypoint=routes.context_resolver.entrypoint,
+        )
+        try:
+            resolver_handler = load_callable_from_file(resolver_path, resolver_attr)
+        except (AttributeError, ImportError, ValueError) as exc:
+            raise ValueError(f"failed to load context resolver entrypoint: {exc}") from exc
+        if not inspect.iscoroutinefunction(resolver_handler):
+            raise ValueError("context resolver entrypoint must be an async callable")
         self._integration = LoadedEmbedIntegration(
             config=validated,
             routes=routes,
             provider_root=provider_root,
+            resolver_handler=resolver_handler,
         )
 
     @staticmethod
@@ -106,33 +123,26 @@ class EmbedIntegrationRegistry:
         return self._integration
 
     @staticmethod
-    def _validate_resolver_entrypoints(
-        provider_root: Path,
-        routes: RouteManifest,
-    ) -> None:
-        """Require the Provider-level resolver script to stay inside its package root."""
-        EmbedIntegrationRegistry._validate_provider_entrypoint(
-            provider_root,
-            raw_entrypoint=routes.context_resolver.entrypoint,
-        )
-
-    @staticmethod
-    def _validate_provider_entrypoint(
+    def _resolve_provider_entrypoint(
         provider_root: Path,
         *,
         raw_entrypoint: str,
-    ) -> None:
-        """Require one Provider executable to be a Python file below its root."""
+    ) -> tuple[Path, str]:
+        """Resolve one explicit async Provider callable below its package root."""
         raw_entrypoint = str(raw_entrypoint or "").strip()
+        module_path, attr_name, explicit_callable = parse_entrypoint(raw_entrypoint)
         if (
             not raw_entrypoint
-            or "\\" in raw_entrypoint
-            or Path(raw_entrypoint).is_absolute()
-            or Path(raw_entrypoint).suffix != ".py"
+            or not explicit_callable
+            or "\\" in module_path
+            or Path(module_path).is_absolute()
+            or Path(module_path).suffix != ".py"
+            or not attr_name.isidentifier()
         ):
             raise ValueError("context resolver entrypoint is invalid")
-        path = (provider_root / raw_entrypoint).resolve()
+        path = (provider_root / module_path).resolve()
         if provider_root != path and provider_root not in path.parents:
             raise ValueError("context resolver entrypoint escapes provider root")
         if not path.is_file():
             raise ValueError("context resolver entrypoint does not exist")
+        return path, attr_name

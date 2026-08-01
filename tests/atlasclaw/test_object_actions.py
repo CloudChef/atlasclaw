@@ -6,6 +6,9 @@ from __future__ import annotations
 import pytest
 
 from app.atlasclaw.core.object_actions import (
+    build_agent_prompt_action,
+    build_localized_text,
+    build_open_url_action,
     collect_latest_object_action_reference_update,
     collect_latest_object_action_references_from_payloads,
     collect_object_action_references_from_payloads,
@@ -20,6 +23,49 @@ def localized(default: str, zh_cn: str | None = None) -> dict[str, object]:
             "zh-CN": zh_cn or default,
         },
     }
+
+
+def test_generic_action_builders_apply_the_protocol_contract() -> None:
+    assert build_localized_text(
+        "Open",
+        {"en-US": "Open", "zh-CN": "打开"},
+    ) == localized("Open", "打开")
+    assert build_localized_text("   ", {"zh-CN": "打开"}) is None
+
+    open_action = build_open_url_action(
+        "open_detail",
+        "https://console.example.com/resources/vm-1",
+        display_label=localized("Open", "打开"),
+        effect="navigate",
+    )
+    prompt_action = build_agent_prompt_action(
+        "restart",
+        localized("Restart vm-1", "重启 vm-1"),
+        display_label=localized("Restart", "重启"),
+        effect="mutate",
+        tone="warning",
+        requires_confirmation=True,
+        confirmation_message=localized("Confirm restart?", "确认重启？"),
+    )
+
+    assert open_action == {
+        "action_id": "open_detail",
+        "kind": "open_url",
+        "href": "https://console.example.com/resources/vm-1",
+        "effect": "navigate",
+        "display_label": localized("Open", "打开"),
+    }
+    assert prompt_action == {
+        "action_id": "restart",
+        "kind": "agent_prompt",
+        "effect": "mutate",
+        "tone": "warning",
+        "display_label": localized("Restart", "重启"),
+        "agent_prompt": localized("Restart vm-1", "重启 vm-1"),
+        "confirmation_message": localized("Confirm restart?", "确认重启？"),
+        "requires_confirmation": True,
+    }
+    assert build_open_url_action("unsafe", "javascript:alert(1)") is None
 
 
 def test_collects_nested_object_actions_and_context_fields() -> None:

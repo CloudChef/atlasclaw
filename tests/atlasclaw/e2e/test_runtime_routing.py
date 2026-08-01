@@ -512,10 +512,11 @@ def _extract_pending_items(messages: list[ModelMessage], extra_prompt_text: str 
     """Recover pending request items from prior tool results or assistant history."""
     for part in reversed(_iter_message_parts(messages)):
         if isinstance(part, ToolReturnPart) and part.tool_name == "smartcmp_list_pending":
-            output = _tool_output_text(part.content)
-            parsed = _extract_json_block(output, "##APPROVAL_META_START##", "##APPROVAL_META_END##")
-            if isinstance(parsed, list):
-                return [item for item in parsed if isinstance(item, dict)]
+            internal = _tool_internal_payload(part.content)
+            if isinstance(internal, dict):
+                items = internal.get("items")
+                if isinstance(items, list):
+                    return [item for item in items if isinstance(item, dict)]
 
     prompt_text = "\n\n".join(
         chunk
@@ -708,14 +709,14 @@ def _no_capability_route_response_for_prompt(messages: list[ModelMessage]) -> Op
 
 
 def _format_pending_summary(content: Any) -> str:
-    output = _tool_output_text(content)
-    parsed = _extract_json_block(output, "##APPROVAL_META_START##", "##APPROVAL_META_END##")
-    assert isinstance(parsed, list) and parsed, f"pending meta missing: {content!r}"
+    internal = _tool_internal_payload(content)
+    parsed = internal.get("items") if isinstance(internal, dict) else None
+    assert isinstance(parsed, list) and parsed, f"pending metadata missing: {content!r}"
     items = []
     for item in parsed[:3]:
-        workflow_id = str(item.get("workflowId", "")).strip()
+        workflow_id = str(item.get("request_id", "")).strip()
         name = str(item.get("name", "")).strip()
-        approver = str(item.get("currentApprover", "")).strip()
+        approver = str(item.get("current_approver", "")).strip()
         fragment = f"{workflow_id} {name}"
         if approver:
             fragment += f"（{approver}）"
@@ -724,13 +725,13 @@ def _format_pending_summary(content: Any) -> str:
 
 
 def _format_detail_summary(content: Any) -> str:
-    output = _tool_output_text(content)
-    parsed = _extract_json_block(output, "##APPROVAL_DETAIL_META_START##", "##APPROVAL_DETAIL_META_END##")
-    assert isinstance(parsed, dict) and parsed, f"detail meta missing: {content!r}"
+    parsed = _tool_internal_payload(content)
+    request = parsed.get("request") if isinstance(parsed, dict) else None
+    assert isinstance(request, dict) and request, f"detail metadata missing: {content!r}"
     return (
-        f"{parsed.get('workflowId', '')} 的详情：{parsed.get('description', '')}，"
-        f"标题是 {parsed.get('name', '')}，"
-        f"审批步骤是 {parsed.get('approvalStep', '')}，当前处理人是 {parsed.get('currentApprover', '')}。"
+        f"{parsed.get('request_id', '')} 的详情：{request.get('description', '')}，"
+        f"标题是 {request.get('name', '')}，"
+        f"审批步骤是 {request.get('approval_step', '')}，当前处理人是 {request.get('current_approver', '')}。"
     )
 
 

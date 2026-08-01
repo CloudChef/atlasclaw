@@ -130,7 +130,7 @@ def test_markdown_script_backed_tools_remain_enabled_without_builtin_high_risk_t
                 "name: script-skill",
                 "description: script backed tool",
                 "tool_name: script_tool",
-                "entrypoint: run.py:handler",
+                "entrypoint: run.py",
                 "---",
                 "# body",
             ]
