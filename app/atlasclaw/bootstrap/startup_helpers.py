@@ -163,23 +163,84 @@ def merge_token_entries(primary: list[TokenEntry], secondary: list[TokenEntry]) 
     return merged
 
 
+def _provider_allows_empty_api_key(provider: str) -> bool:
+    """Return whether a built-in provider explicitly supports keyless access."""
+
+    from app.atlasclaw.models.provider_presets import BUILTIN_PROVIDERS
+
+    preset = BUILTIN_PROVIDERS.get(str(provider or "").strip().lower())
+    return preset is not None and not preset.env_key
+
+
+def _missing_token_fields(token: TokenEntry) -> tuple[str, ...]:
+    """Return missing runtime fields under the provider-aware token contract."""
+
+    values = {
+        "id": str(token.token_id or "").strip(),
+        "provider": str(token.provider or "").strip(),
+        "model": str(token.model or "").strip(),
+        "base_url": str(token.base_url or "").strip(),
+    }
+    if not _provider_allows_empty_api_key(token.provider):
+        values["api_key"] = str(token.api_key or "").strip()
+    return tuple(name for name, value in values.items() if not value)
+
+
+def _filter_usable_token_entries(
+    entries: list[TokenEntry],
+    *,
+    source: str,
+) -> list[TokenEntry]:
+    """Apply one usability rule to JSON and both database token sources."""
+
+    usable: list[TokenEntry] = []
+    for token in entries:
+        missing_fields = _missing_token_fields(token)
+        if missing_fields:
+            print(
+                "[AtlasClaw] Warning: skipping unusable model token "
+                f"'{token.token_id or '<empty>'}' from {source}; missing "
+                + ", ".join(missing_fields)
+            )
+            continue
+        usable.append(token)
+    return usable
+
+
 def build_token_entries(config) -> tuple[list[TokenEntry], Optional[str]]:
-    """Build token entries from config."""
+    """Build usable token entries, excluding unresolved environment-backed entries."""
     tokens: list[TokenEntry] = []
     for token_cfg in config.model.tokens:
-        tokens.append(
-            TokenEntry(
-                token_id=token_cfg.id,
-                provider=token_cfg.provider,
-                model=token_cfg.model,
-                base_url=expand_env_value(token_cfg.base_url),
-                api_key=expand_env_value(token_cfg.api_key),
-                api_type=token_cfg.api_type,
-                priority=token_cfg.priority,
-                weight=token_cfg.weight,
-                context_window=token_cfg.context_window,
-            )
+        token_id = str(token_cfg.id or "").strip()
+        provider = expand_env_value(token_cfg.provider).strip()
+        model = expand_env_value(token_cfg.model).strip()
+        base_url = expand_env_value(token_cfg.base_url).strip()
+        raw_api_key = str(token_cfg.api_key or "").strip()
+        api_key = expand_env_value(raw_api_key).strip()
+        candidate = TokenEntry(
+            token_id=token_id,
+            provider=provider,
+            model=model,
+            base_url=base_url,
+            api_key=api_key,
+            api_type=token_cfg.api_type,
+            priority=token_cfg.priority,
+            weight=token_cfg.weight,
+            context_window=token_cfg.context_window,
         )
+        missing_fields = list(_missing_token_fields(candidate))
+        # A configured environment reference is a required credential even for a
+        # normally keyless provider; silently accepting an unresolved reference
+        # would turn a deployment typo into a runtime fallback.
+        if raw_api_key and not api_key and "api_key" not in missing_fields:
+            missing_fields.append("api_key")
+        if missing_fields:
+            print(
+                "[AtlasClaw] Warning: skipping unusable model token "
+                f"'{token_id or '<empty>'}'; missing {', '.join(missing_fields)}"
+            )
+            continue
+        tokens.append(candidate)
 
     if tokens:
         primary_id = config.model.primary
@@ -189,6 +250,12 @@ def build_token_entries(config) -> tuple[list[TokenEntry], Optional[str]]:
         elif not primary_id:
             primary_id = tokens[0].token_id
         return tokens, primary_id
+
+    if config.model.tokens:
+        # Database-backed token configuration is loaded after this helper.
+        # Returning an empty JSON set preserves that fallback while main keeps
+        # the authoritative "no usable tokens" startup check after merging.
+        return [], None
 
     model_name = config.model.primary
     if "/" in model_name:
@@ -213,32 +280,28 @@ def build_token_entries(config) -> tuple[list[TokenEntry], Optional[str]]:
 
     api_type = api_type or "openai"
 
-    if not base_url:
-        raise RuntimeError(
-            f"Missing base_url for provider '{provider}'. "
-            f"Set environment variable or configure in atlasclaw.json under model.providers.{provider}"
-        )
-    if not api_key:
-        env_hint = f" or set {preset.env_key}" if preset and preset.env_key else ""
-        raise RuntimeError(
-            f"Missing api_key for provider '{provider}'. "
-            f"Configure in atlasclaw.json under model.providers.{provider}{env_hint}"
-        )
-
     primary_id = f"{provider}-primary"
-    return [
-        TokenEntry(
-            token_id=primary_id,
-            provider=provider,
-            model=model,
-            base_url=base_url,
-            api_key=api_key,
-            api_type=api_type,
-            priority=100,
-            weight=100,
-            context_window=None,
+    candidate = TokenEntry(
+        token_id=primary_id,
+        provider=provider,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        api_type=api_type,
+        priority=100,
+        weight=100,
+        context_window=None,
+    )
+    missing_fields = _missing_token_fields(candidate)
+    if missing_fields:
+        # Database model sources have not been loaded yet. Defer the final
+        # failure to main's authoritative check after all sources are merged.
+        print(
+            "[AtlasClaw] Warning: skipping unusable legacy model "
+            f"'{config.model.primary}'; missing {', '.join(missing_fields)}"
         )
-    ], primary_id
+        return [], None
+    return [candidate], primary_id
 
 
 async def build_token_entries_from_db(session) -> tuple[list[TokenEntry], Optional[str]]:
@@ -247,7 +310,7 @@ async def build_token_entries_from_db(session) -> tuple[list[TokenEntry], Option
 
     tokens, _total = await ModelTokenConfigService.list_all(session, is_active=True)
     if not tokens:
-        return None, None
+        return [], None
 
     token_entries: list[TokenEntry] = []
     for token in tokens:
@@ -266,8 +329,41 @@ async def build_token_entries_from_db(session) -> tuple[list[TokenEntry], Option
             )
         )
 
-    primary_id = token_entries[0].token_id if token_entries else None
-    return token_entries, primary_id
+    usable_entries = _filter_usable_token_entries(
+        token_entries,
+        source="database tokens",
+    )
+    primary_id = usable_entries[0].token_id if usable_entries else None
+    return usable_entries, primary_id
+
+
+async def build_token_entries_from_model_configs(session: Any) -> list[TokenEntry]:
+    """Load active Model Configuration rows as runtime token entries.
+
+    This is the second database-backed model source. It is intentionally loaded
+    before startup decides that the runtime has no usable model credentials.
+    """
+    from app.atlasclaw.db.orm.model_config import ModelConfigService
+
+    model_configs = await ModelConfigService.list_active(session)
+    entries = [
+        TokenEntry(
+            token_id=model_config.name,
+            provider=model_config.provider,
+            model=model_config.model_id,
+            base_url=model_config.base_url or "",
+            api_key=ModelConfigService.get_decrypted_api_key(model_config) or "",
+            api_type=model_config.api_type or "openai",
+            priority=model_config.priority or 0,
+            weight=model_config.weight or 100,
+            context_window=model_config.context_window,
+        )
+        for model_config in model_configs
+    ]
+    return _filter_usable_token_entries(
+        entries,
+        source="database model configurations",
+    )
 
 
 def merge_provider_instances(

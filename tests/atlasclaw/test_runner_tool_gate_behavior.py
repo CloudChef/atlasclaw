@@ -170,6 +170,24 @@ def _build_prepare_runner(session_manager: _PrepareSessionManager) -> AgentRunne
     return runner
 
 
+def test_prepare_preserves_original_error_before_model_message_resolution() -> None:
+    """Do not mask an early runtime-token failure with an unbound local error."""
+
+    deps = SkillDeps(session_key="session-1", channel="api", extra={})
+    runner = _build_prepare_runner(_PrepareSessionManager())
+
+    async def fail_runtime_agent(*_args, **_kwargs):
+        raise RuntimeError("runtime token unavailable")
+
+    runner._resolve_runtime_agent = fail_runtime_agent
+    state = _prepare_phase_state(deps=deps)
+
+    with pytest.raises(RuntimeError, match="runtime token unavailable"):
+        asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert state["model_user_message"] == state["user_message"]
+
+
 class _ClassifierAgent:
     def __init__(self) -> None:
         self.messages: list[str] = []
