@@ -636,7 +636,7 @@ class TestSkillRegistryMdLoading:
                 "name: script-skill",
                 "description: script based",
                 "tool_name: script_tool",
-                "entrypoint: run.py:handler",
+                "entrypoint: run.py",
             ],
         )
         (skill_dir / "run.py").write_text("print('hello')\n", encoding="utf-8")

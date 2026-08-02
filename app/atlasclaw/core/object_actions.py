@@ -86,6 +86,109 @@ def normalize_object_actions(raw_actions: Any) -> list[dict[str, Any]]:
     return _normalize_actions(raw_actions)
 
 
+def build_localized_text(
+    default: str,
+    translations: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    """Build one validated Provider-neutral localized-text value.
+
+    Args:
+        default: Required fallback text shown when no locale matches.
+        translations: Optional locale-to-text mapping owned by the Provider.
+
+    Returns:
+        The normalized localized-text value, or ``None`` when ``default`` is invalid.
+    """
+    localized = _localized_text_value(
+        {
+            "default": default,
+            "translations": translations,
+        }
+    )
+    return localized or None
+
+
+def build_open_url_action(
+    action_id: str,
+    href: str,
+    *,
+    display_label: dict[str, Any] | None = None,
+    effect: str = "",
+    tone: str = "",
+) -> dict[str, Any] | None:
+    """Build one validated Provider-neutral browser navigation action.
+
+    Providers supply their own route and localized copy. Invalid or unsafe
+    values return ``None`` using the same contract as streamed action payloads.
+
+    Args:
+        action_id: Stable action identifier supplied by the Provider.
+        href: Absolute HTTP(S) URL to open in the browser.
+        display_label: Optional localized label using the object-action schema.
+        effect: Optional Provider-neutral effect metadata.
+        tone: Optional Provider-neutral visual tone metadata.
+
+    Returns:
+        The normalized action, or ``None`` when any required field is invalid.
+    """
+    return _normalize_action(
+        {
+            "action_id": action_id,
+            "kind": "open_url",
+            "href": href,
+            "display_label": display_label,
+            "effect": effect,
+            "tone": tone,
+        }
+    )
+
+
+def build_agent_prompt_action(
+    action_id: str,
+    prompt: dict[str, Any] | None,
+    *,
+    display_label: dict[str, Any] | None = None,
+    effect: str = "",
+    tone: str = "",
+    requires_confirmation: bool = False,
+    confirmation_message: dict[str, Any] | None = None,
+    prompt_template: bool = False,
+    inputs: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """Build one validated Provider-neutral action that starts an Agent turn.
+
+    The caller owns the prompt, labels, confirmation wording, and input meaning.
+    Invalid prompt or input structures are normalized by the shared protocol;
+    an unusable action returns ``None``.
+
+    Args:
+        action_id: Stable action identifier supplied by the Provider.
+        prompt: Localized prompt or prompt-template content.
+        display_label: Optional localized label using the object-action schema.
+        effect: Optional Provider-neutral effect metadata.
+        tone: Optional Provider-neutral visual tone metadata.
+        requires_confirmation: Whether the UI must confirm before starting the turn.
+        confirmation_message: Optional localized confirmation copy.
+        prompt_template: Store ``prompt`` as a template with declared inputs.
+        inputs: Optional prompt-template input declarations.
+
+    Returns:
+        The normalized action, or ``None`` when any required field is invalid.
+    """
+    action: dict[str, Any] = {
+        "action_id": action_id,
+        "kind": "agent_prompt",
+        "display_label": display_label,
+        "effect": effect,
+        "tone": tone,
+        "requires_confirmation": requires_confirmation,
+        "confirmation_message": confirmation_message,
+        "inputs": inputs,
+    }
+    action["agent_prompt_template" if prompt_template else "agent_prompt"] = prompt
+    return _normalize_action(action)
+
+
 def collect_object_action_references_from_payloads(
     payloads: list[Any],
     *,

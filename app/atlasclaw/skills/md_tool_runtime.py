@@ -35,12 +35,74 @@ class ScriptInvocationConfig:
     request_cookie_only: bool = False
 
 
-def parse_entrypoint(entrypoint: str) -> tuple[str, str]:
-    """Parse module entrypoint into (module_path, attr_name)."""
+class CallableExportError(AttributeError):
+    """Raised when an explicitly requested module export is not callable."""
+
+
+def parse_entrypoint(entrypoint: str) -> tuple[str, str, bool]:
+    """Parse a module path, callable name, and explicit-callable marker."""
+
     if ":" in entrypoint:
         module_path, attr_name = entrypoint.rsplit(":", 1)
-        return module_path.strip(), attr_name.strip() or "handler"
-    return entrypoint.strip(), "handler"
+        return module_path.strip(), attr_name.strip() or "handler", True
+    return entrypoint.strip(), "handler", False
+
+
+def load_callable_from_file(py_file: Path, attr_name: str) -> Callable:
+    """Load one explicitly named Python callable without script fallback.
+
+    Args:
+        py_file: Trusted Python module below its owning extension root.
+        attr_name: Explicit callable name exported by that module.
+
+    Returns:
+        The callable loaded from the module.
+
+    Raises:
+        ValueError: If ``attr_name`` is not a Python identifier.
+        ImportError: If the module cannot be loaded.
+        CallableExportError: If the named export is absent or not callable.
+    """
+
+    if not attr_name or not attr_name.isidentifier():
+        raise ValueError(f"Invalid callable name: {attr_name!r}")
+    scripts_dir = str(py_file.parent)
+    inserted = False
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+        inserted = True
+    try:
+        module_hash = hashlib.sha1(str(py_file).encode("utf-8")).hexdigest()[:12]
+        module_name = f"atlasclaw_md_skill_{module_hash}_{py_file.stem}"
+        spec = importlib.util.spec_from_file_location(module_name, py_file)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"Cannot load module from {py_file}")
+
+        module = importlib.util.module_from_spec(spec)
+        missing_module = object()
+        previous_module = sys.modules.get(module_name, missing_module)
+        sys.modules[module_name] = module
+        try:
+            spec.loader.exec_module(module)
+            handler = getattr(module, attr_name, None)
+            if handler is None or not callable(handler):
+                raise CallableExportError(
+                    f"Callable {attr_name!r} is unavailable in {py_file}"
+                )
+            return handler
+        except BaseException:
+            # A partially initialized module must not remain import-visible.
+            if previous_module is missing_module:
+                sys.modules.pop(module_name, None)
+            else:
+                sys.modules[module_name] = previous_module
+            raise
+    finally:
+        if inserted:
+            try:
+                sys.path.remove(scripts_dir)
+            except ValueError:
+                pass
 
 
 def should_override_location(existing_location: str, new_location: str) -> bool:
@@ -76,37 +138,16 @@ def load_handler_from_file(
     tool_name: str = "",
     result_mode: str = "",
     success_contract: dict[str, Any] | None = None,
+    legacy_script: bool = False,
 ) -> Callable:
-    """Load callable handler from file or fallback to script wrapper."""
-    scripts_dir = str(py_file.parent)
-    inserted = False
-    if scripts_dir not in sys.path:
-        sys.path.insert(0, scripts_dir)
-        inserted = True
+    """Load a callable, or run an explicitly unqualified legacy script.
 
-    try:
-        if attr_name == "handler":
-            return create_script_wrapper(
-                py_file,
-                provider_type,
-                invocation_config=invocation_config,
-                tool_name=tool_name,
-                result_mode=result_mode,
-                success_contract=success_contract,
-            )
+    Colon-qualified metadata always names an in-process callable, including a
+    callable literally named ``handler``. Only entrypoints without a colon may
+    opt into the historical subprocess protocol through ``legacy_script``.
+    """
 
-        module_hash = hashlib.sha1(str(py_file).encode("utf-8")).hexdigest()[:12]
-        module_name = f"atlasclaw_md_skill_{module_hash}_{py_file.stem}"
-        spec = importlib.util.spec_from_file_location(module_name, py_file)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Cannot load module from {py_file}")
-
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-
-        handler = getattr(module, attr_name, None)
-        if handler is not None and callable(handler):
-            return handler
+    if legacy_script:
         return create_script_wrapper(
             py_file,
             provider_type,
@@ -115,12 +156,8 @@ def load_handler_from_file(
             result_mode=result_mode,
             success_contract=success_contract,
         )
-    finally:
-        if inserted:
-            try:
-                sys.path.remove(scripts_dir)
-            except ValueError:
-                pass
+    return load_callable_from_file(py_file, attr_name)
+
 
 def create_script_wrapper(
     py_file: Path,
@@ -364,6 +401,20 @@ def create_script_wrapper(
                     env.setdefault("INTERNAL_REQUEST_TRACE_ID", _trace_id.strip())
 
         if py_file.suffix == ".py":
+            # Provider scripts run with their own directory as cwd so their
+            # adjacent modules remain importable. Also expose this AtlasClaw
+            # runtime explicitly: production systemd services do not normally
+            # define PYTHONPATH, while trusted Provider adapters may import
+            # provider-neutral Core contracts such as object_actions.
+            runtime_root = str(Path(__file__).resolve().parents[3])
+            inherited_pythonpath = str(env.get("PYTHONPATH") or "")
+            pythonpath_entries = [runtime_root]
+            pythonpath_entries.extend(
+                entry
+                for entry in inherited_pythonpath.split(os.pathsep)
+                if entry and entry != runtime_root
+            )
+            env["PYTHONPATH"] = os.pathsep.join(pythonpath_entries)
             cmd = [sys.executable, str(py_file)]
         elif py_file.suffix in [".sh", ".bash"]:
             cmd = ["bash", str(py_file)]
@@ -625,7 +676,7 @@ def _register_md_tool_entry(
     tool_description: str = "",
     tool_id: str = "",
 ) -> None:
-    module_path, attr_name = parse_entrypoint(entrypoint)
+    module_path, attr_name, explicit_callable = parse_entrypoint(entrypoint)
     py_file = (skill_dir / module_path).resolve()
     if not py_file.is_file():
         logger.warning(
@@ -653,6 +704,7 @@ def _register_md_tool_entry(
             tool_name=tool_name,
             result_mode=result_mode,
             success_contract=success_contract,
+            legacy_script=not explicit_callable,
         )
     except Exception as exc:
         logger.warning(

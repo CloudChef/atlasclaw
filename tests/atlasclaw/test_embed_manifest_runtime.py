@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from pydantic import ValidationError
 
 from app.atlasclaw.auth.guards import AuthorizationContext
 from app.atlasclaw.auth.models import UserInfo
+from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.core.config_schema import AtlasClawConfig, EmbedIntegrationConfig
 from app.atlasclaw.core.embed.context_service import EmbedContextService
 from app.atlasclaw.core.embed import context_service as context_service_module
@@ -36,7 +38,9 @@ def _route_payload() -> dict:
     return {
         "schema_version": 1,
         "provider_type": "example",
-        "context_resolver": {"entrypoint": "assistant_context/resolve.py"},
+        "context_resolver": {
+            "entrypoint": "assistant_context/resolve.py:resolve_context"
+        },
         "routes": [
             {
                 "id": "dynamic",
@@ -247,7 +251,9 @@ tool_inspect_aliases:
     route_payload = {
         "schema_version": 1,
         "provider_type": "example",
-        "context_resolver": {"entrypoint": "assistant_context/resolve.py"},
+        "context_resolver": {
+            "entrypoint": "assistant_context/resolve.py:resolve_context"
+        },
         "routes": [
             {
                 "id": "widget-detail",
@@ -408,7 +414,6 @@ async def test_context_service_uses_fixed_server_owned_resolver_contract() -> No
         user_info=user,
         request_cookies={},
         authz=authz,
-        entrypoint="assistant_context/resolve.py",
         arguments={
             "route_id": "dynamic",
             "path": "/main/items/abc%20123",
@@ -473,11 +478,21 @@ async def test_unauthorized_default_skill_degrades_context_to_unavailable() -> N
     assert resolution.snapshot is None
 
 
-def test_registry_confines_manifest_and_resolver_to_provider_root(tmp_path: Path) -> None:
+def test_registry_confines_manifest_and_resolver_to_provider_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     provider_root = tmp_path / "provider"
     resolver_root = provider_root / "assistant_context"
     resolver_root.mkdir(parents=True)
-    (resolver_root / "resolve.py").write_text("def handler(ctx, **kwargs): return {}\n")
+    (resolver_root / "resolve.py").write_text(
+        "calls = 0\n"
+        "async def resolve_context(ctx, **kwargs):\n"
+        "    global calls\n"
+        "    calls += 1\n"
+        "    return {'calls': calls}\n",
+        encoding="utf-8",
+    )
     profile = EmbedIntegrationConfig(
         provider_type="example",
         provider_instance="default",
@@ -493,10 +508,118 @@ def test_registry_confines_manifest_and_resolver_to_provider_root(tmp_path: Path
         EmbedIntegrationRegistry(profile, provider_registry)
 
     unsafe = _route_payload()
-    unsafe["context_resolver"]["entrypoint"] = "../resolve.py"
+    unsafe["context_resolver"]["entrypoint"] = "../resolve.py:resolve_context"
     (resolver_root / "routes.json").write_text(json.dumps(unsafe), encoding="utf-8")
     with pytest.raises(ValueError, match="resolver entrypoint"):
         EmbedIntegrationRegistry(profile, provider_registry)
+
+    implicit_script = _route_payload()
+    implicit_script["context_resolver"]["entrypoint"] = "assistant_context/resolve.py"
+    (resolver_root / "routes.json").write_text(
+        json.dumps(implicit_script),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="resolver entrypoint"):
+        EmbedIntegrationRegistry(profile, provider_registry)
+
+    (resolver_root / "routes.json").write_text(
+        json.dumps(_route_payload()),
+        encoding="utf-8",
+    )
+    integration = EmbedIntegrationRegistry(profile, provider_registry).get()
+    assert integration is not None
+    assert integration.resolver_handler.__name__ == "resolve_context"
+
+    async def reject_subprocess(*_args, **_kwargs):
+        raise AssertionError("cached Context callable must not start a subprocess")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", reject_subprocess)
+    assert asyncio.run(integration.resolver_handler(None)) == {"calls": 1}
+    assert asyncio.run(integration.resolver_handler(None)) == {"calls": 2}
+
+
+@pytest.mark.asyncio
+async def test_in_process_resolver_receives_only_request_cookie_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cached resolvers must not inherit stored or runtime Provider secrets."""
+
+    captured: dict[str, SkillDeps] = {}
+
+    async def resolver(ctx, **_arguments):
+        captured["deps"] = ctx.deps
+        return {"success": False, "reason": "not_found"}
+
+    provider_instance = {
+        "base_url": "https://provider.example.test",
+        "timeout": 30,
+        "provider_token": "stored-provider-token",
+        "user_token": "stored-user-token",
+        "cookie": "stored-cookie",
+        "username": "stored-user",
+        "password": "stored-password",
+    }
+    full_deps = SkillDeps(
+        user_info=UserInfo(
+            user_id="alice",
+            raw_token="atlasclaw-session-token",
+            extra={"provider_sso_token": "identity-sso-token"},
+        ),
+        session_key="agent:main:user:alice:web:dm:alice",
+        cookies={"CloudChef-Authenticate": "browser-cookie"},
+        extra={
+            "provider_instances": {"example": {"default": provider_instance}},
+            "provider_sso_token": "runtime-sso-token",
+            "provider_cookie_token": "runtime-cookie-token",
+            "internal_request_trace_id": "trace-1",
+        },
+    )
+    monkeypatch.setattr(
+        context_service_module,
+        "build_scoped_deps",
+        lambda *_args, **_kwargs: full_deps,
+    )
+    integration = SimpleNamespace(
+        config=SimpleNamespace(
+            provider_type="example",
+            provider_instance="default",
+        ),
+        agent_id="main",
+        session_scope="example",
+        resolver_handler=resolver,
+    )
+    service = EmbedContextService(
+        SimpleNamespace(),
+        SimpleNamespace(get=lambda: integration),
+        EmbedContextSnapshotStore(),
+    )
+
+    await service._execute_resolver(
+        integration=integration,
+        user_info=full_deps.user_info,
+        request_cookies={"CloudChef-Authenticate": "browser-cookie"},
+        authz=AuthorizationContext(
+            user=full_deps.user_info,
+            permissions={"providers": {"allow_all": True}},
+        ),
+        arguments={},
+    )
+
+    resolver_deps = captured["deps"]
+    assert resolver_deps.cookies == {
+        "CloudChef-Authenticate": "browser-cookie"
+    }
+    assert resolver_deps.user_info.raw_token == ""
+    assert resolver_deps.user_info.extra == {}
+    assert resolver_deps.extra == {
+        "internal_request_trace_id": "trace-1",
+        "provider_type": "example",
+        "provider_instance_name": "default",
+        "provider_instance": {
+            "base_url": "https://provider.example.test",
+            "timeout": 30,
+        },
+    }
 
 
 def test_snapshot_store_enforces_identity_generation_expiry_and_capacity() -> None:
