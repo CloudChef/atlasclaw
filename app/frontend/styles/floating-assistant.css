@@ -95,6 +95,32 @@ body.atlas-surface-floating .embed-object-context-marker {
   box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.12);
 }
 
+body.atlas-surface-floating .embed-context-loading-spinner {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  border: 2px solid rgba(99, 102, 241, 0.2);
+  border-top-color: #6366f1;
+  border-radius: 50%;
+  animation: embed-context-loading-spin 0.8s linear infinite;
+}
+
+body.atlas-surface-floating .embed-object-context-loading {
+  justify-content: center;
+}
+
+@keyframes embed-context-loading-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.atlas-surface-floating .embed-context-loading-spinner {
+    animation: none;
+  }
+}
+
 body.atlas-surface-floating .embed-object-context-summary {
   min-width: 0;
   overflow: hidden;

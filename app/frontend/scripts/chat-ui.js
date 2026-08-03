@@ -14,7 +14,7 @@ import {
   getAgentInfo,
   getAgentStatus,
   getSessionHistory
-} from './api-client.js?v=31'
+} from './api-client.js?v=32'
 import { createStreamHandler } from './stream-handler.js?v=29'
 import { buildApiUrl } from './config.js?v=27'
 import { translateIfExists, getCurrentLocale } from './i18n.js'

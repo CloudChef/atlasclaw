@@ -7,7 +7,7 @@
  * Manage session lifecycle and persistence
  */
 
-import { bootstrapEmbedIntegration, createThreadSession } from './api-client.js?v=31';
+import { bootstrapEmbedIntegration, createThreadSession } from './api-client.js?v=32';
 
 const SESSION_KEY_STORAGE = 'atlasclaw_session_key';
 const SESSION_HAS_MESSAGES_STORAGE = 'atlasclaw_session_has_messages';

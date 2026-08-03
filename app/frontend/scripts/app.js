@@ -16,7 +16,7 @@ import { initI18n, updatePageTranslations, updateContainerTranslations } from '.
 import { renderSidebar, updateSidebarActive } from './components/sidebar.js'
 import { renderHeader, updateHeaderTitle, updateHeaderTitleText } from './components/header.js'
 import { showToast } from './components/toast.js'
-import { getAgentInfo } from './api-client.js?v=31'
+import { getAgentInfo } from './api-client.js?v=32'
 import { parseEmbedSurface, applySurfaceClasses } from './embed/surface.js?v=31'
 import { initializeIntegrationChatSession, startNewSession } from './session-manager.js?v=36'
 import {
@@ -26,7 +26,7 @@ import {
   canAccessUserManagement
 } from './permissions.js'
 
-const SCRIPT_VERSION = '44'
+const SCRIPT_VERSION = '45'
 
 /**
  * Route table - lazy loaded page modules
