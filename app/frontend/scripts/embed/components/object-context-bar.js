@@ -9,10 +9,25 @@
  * @param {HTMLElement} container - Context slot.
  * @param {object|null} object - Resolved object summary.
  * @param {object|null} skill - Resolved default Skill summary.
+ * @param {string} [status] - Current Context resolution status.
  */
-export function renderObjectContextBar(container, object, skill) {
+export function renderObjectContextBar(container, object, skill, status = 'idle') {
   if (!container) return
   container.replaceChildren()
+  if (status === 'pending') {
+    const loadingBar = document.createElement('div')
+    loadingBar.className = 'embed-object-context-bar embed-object-context-loading'
+    loadingBar.setAttribute('aria-busy', 'true')
+
+    const spinner = document.createElement('span')
+    spinner.className = 'embed-context-loading-spinner'
+    spinner.setAttribute('aria-hidden', 'true')
+
+    loadingBar.appendChild(spinner)
+    container.appendChild(loadingBar)
+    container.hidden = false
+    return
+  }
   if (!object?.id) {
     container.hidden = true
     return

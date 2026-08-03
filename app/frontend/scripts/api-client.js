@@ -145,13 +145,16 @@ export async function bootstrapEmbedIntegration(params) {
  * Resolve a normalized Host path to a server-owned context snapshot.
  *
  * @param {object} params - Surface, generation and normalized path.
+ * @param {object} [options] - Optional request controls.
+ * @param {AbortSignal} [options.signal] - Signal used to cancel stale resolution.
  * @returns {Promise<object>} Public Context object and action projection.
  */
-export async function resolveEmbedContext(params) {
+export async function resolveEmbedContext(params, options = {}) {
     const response = await fetch(buildApiUrl('/api/embed/context/resolve'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
+        signal: options.signal,
         body: JSON.stringify({
             surface_id: params.surfaceId,
             generation: params.generation,

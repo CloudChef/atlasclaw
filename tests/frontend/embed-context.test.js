@@ -5,7 +5,10 @@
 import { parseEmbedSurface } from '../../app/frontend/scripts/embed/surface.js'
 import { EmbedContextStore } from '../../app/frontend/scripts/embed/context-store.js'
 import { EmbedContextBridge, EMBED_PROTOCOL } from '../../app/frontend/scripts/embed/context-bridge.js'
-import { EmbedContextController } from '../../app/frontend/scripts/embed/context-controller.js'
+import {
+  EMBED_CONTEXT_RESOLVE_DEBOUNCE_MS,
+  EmbedContextController
+} from '../../app/frontend/scripts/embed/context-controller.js'
 import { renderObjectContextBar } from '../../app/frontend/scripts/embed/components/object-context-bar.js'
 import { renderContextObjectActions } from '../../app/frontend/scripts/chat-ui.js'
 import { jest } from '@jest/globals'
@@ -44,6 +47,97 @@ describe('atlasclaw-embed/v1 frontend contract', () => {
     store.beginResolve(9)
 
     expect(store.getTurnContext()).toBeNull()
+  })
+
+  test('debounces rapid page changes and aborts the superseded resolve', async () => {
+    jest.useFakeTimers()
+    const previousFetch = global.fetch
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    document.body.innerHTML = '<div id="context"></div><div id="actions"></div>'
+    global.fetch = jest.fn()
+      .mockImplementationOnce((_url, options) => abortablePendingResponse(options.signal))
+      .mockResolvedValueOnce(okJsonResponse(contextPayload(3, 'ctx-c', 'C')))
+
+    const controller = createContextController()
+    controller.store.beginResolve(0)
+    controller.store.completeResolve(0, contextPayload(0, 'ctx-a', 'A'))
+
+    try {
+      controller._handlePageChanged({ generation: 1, path: '/main/items/A' })
+      expect(controller.getTurnContext()).toBeNull()
+      expect(document.querySelectorAll('.embed-context-loading-spinner')).toHaveLength(1)
+      expect(document.querySelector('.embed-object-context-loading')?.getAttribute('aria-busy'))
+        .toBe('true')
+
+      await jest.advanceTimersByTimeAsync(300)
+      controller._handlePageChanged({ generation: 2, path: '/main/items/B' })
+      await jest.advanceTimersByTimeAsync(EMBED_CONTEXT_RESOLVE_DEBOUNCE_MS - 1)
+      expect(global.fetch).not.toHaveBeenCalled()
+
+      await jest.advanceTimersByTimeAsync(1)
+      expect(global.fetch).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toMatchObject({
+        generation: 2,
+        path: '/main/items/B'
+      })
+      const supersededSignal = global.fetch.mock.calls[0][1].signal
+      expect(supersededSignal.aborted).toBe(false)
+
+      controller._handlePageChanged({ generation: 3, path: '/main/items/C' })
+      expect(supersededSignal.aborted).toBe(true)
+      await jest.advanceTimersByTimeAsync(EMBED_CONTEXT_RESOLVE_DEBOUNCE_MS)
+
+      expect(global.fetch).toHaveBeenCalledTimes(2)
+      expect(global.fetch.mock.calls[1][1].signal).not.toBe(supersededSignal)
+      expect(global.fetch.mock.calls[1][1].signal.aborted).toBe(false)
+      expect(JSON.parse(global.fetch.mock.calls[1][1].body)).toMatchObject({
+        generation: 3,
+        path: '/main/items/C'
+      })
+      expect(controller.store.getCurrent()?.object.id).toBe('C')
+      expect(document.querySelector('.embed-context-loading-spinner')).toBeNull()
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      controller.destroy()
+      global.fetch = previousFetch
+      warn.mockRestore()
+      jest.useRealTimers()
+    }
+  })
+
+  test('clears scheduled and active work on destroy', async () => {
+    jest.useFakeTimers()
+    const previousFetch = global.fetch
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {})
+    document.body.innerHTML = '<div id="context"></div><div id="actions"></div>'
+    global.fetch = jest.fn((_url, options) => abortablePendingResponse(options.signal))
+    const scheduledController = createContextController()
+    let activeController = null
+
+    try {
+      scheduledController._handlePageChanged({ generation: 1, path: '/main/items/scheduled' })
+      scheduledController.destroy()
+      await jest.advanceTimersByTimeAsync(EMBED_CONTEXT_RESOLVE_DEBOUNCE_MS)
+      expect(global.fetch).not.toHaveBeenCalled()
+
+      activeController = createContextController()
+      activeController._handlePageChanged({ generation: 2, path: '/main/items/active' })
+      await jest.advanceTimersByTimeAsync(EMBED_CONTEXT_RESOLVE_DEBOUNCE_MS)
+      expect(global.fetch).toHaveBeenCalledTimes(1)
+      const signal = global.fetch.mock.calls[0][1].signal
+      expect(signal.aborted).toBe(false)
+
+      activeController.destroy()
+      await Promise.resolve()
+      expect(signal.aborted).toBe(true)
+      expect(warn).not.toHaveBeenCalled()
+    } finally {
+      activeController?.destroy()
+      scheduledController.destroy()
+      global.fetch = previousFetch
+      warn.mockRestore()
+      jest.useRealTimers()
+    }
   })
 
   test('unsupported and unavailable pages expose no optional turn context', () => {
@@ -199,7 +293,8 @@ describe('atlasclaw-embed/v1 frontend contract', () => {
     })
 
     try {
-      await controller._handlePageChanged({ generation: 0, path: '/main/request/detail/20' })
+      controller._handlePageChanged({ generation: 0, path: '/main/request/detail/20' })
+      await jest.advanceTimersByTimeAsync(EMBED_CONTEXT_RESOLVE_DEBOUNCE_MS)
       const resolveBody = JSON.parse(global.fetch.mock.calls[0][1].body)
       expect(resolveBody).toEqual({
         surface_id: 'abcdefghijklmnopqrstuvwxyz123456',
@@ -228,7 +323,8 @@ describe('atlasclaw-embed/v1 frontend contract', () => {
       expect(alerts).toHaveLength(1)
       expect(alerts[0].textContent).toBe('Tool is no longer available')
 
-      await controller._handlePageChanged({ generation: 1, path: '/main/request/detail/21' })
+      controller._handlePageChanged({ generation: 1, path: '/main/request/detail/21' })
+      await jest.advanceTimersByTimeAsync(EMBED_CONTEXT_RESOLVE_DEBOUNCE_MS)
       expect(document.querySelector('#actions [role="alert"]')).toBeNull()
     } finally {
       controller.destroy()
@@ -253,6 +349,25 @@ function errorJsonResponse(status, detail) {
     statusText: 'Conflict',
     json: () => Promise.resolve({ detail })
   }
+}
+
+function abortablePendingResponse(signal) {
+  return new Promise((_resolve, reject) => {
+    signal.addEventListener('abort', () => {
+      reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }))
+    }, { once: true })
+  })
+}
+
+function createContextController() {
+  return new EmbedContextController({
+    surface: {
+      hostOrigin: 'https://host.example',
+      nonce: 'abcdefghijklmnopqrstuvwxyz123456'
+    },
+    contextSlot: document.getElementById('context'),
+    actionSlot: document.getElementById('actions')
+  })
 }
 
 function contextPayload(generation, contextId, objectId) {
