@@ -137,6 +137,24 @@ class RunnerToolGatePolicyMixin:
         intent_plan: ToolIntentPlan,
         available_tools: list[dict[str, Any]],
     ) -> list[str]:
+        has_selected_skill = bool(
+            any(
+                str(item).strip()
+                for item in (intent_plan.target_provider_skill_names or [])
+            )
+            or any(str(item).strip() for item in (intent_plan.target_skill_names or []))
+        )
+        if has_selected_skill:
+            names: list[str] = []
+            for tool in available_tools:
+                if not isinstance(tool, dict):
+                    continue
+                name = str(tool.get("name", "") or "").strip()
+                if not name or name in names:
+                    continue
+                names.append(name)
+            return names
+
         ranked: list[tuple[int, str]] = []
         for tool in available_tools:
             if not isinstance(tool, dict):
