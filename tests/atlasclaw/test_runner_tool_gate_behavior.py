@@ -1097,9 +1097,9 @@ def test_capability_selector_receives_active_workflow_candidate() -> None:
         active_capability_context="provider_skill:cmp.request",
     )
     message = runner._build_capability_selector_message(
-        user_message="资源环境：开发",
+        user_message="Resource environment: development",
         recent_history=[
-            {"role": "assistant", "content": "请选择资源池：1 aliyun资源池，2 vSphere资源池"}
+            {"role": "assistant", "content": "Select a resource pool: 1 Aliyun, 2 vSphere"}
         ],
         active_capability_context="provider_skill:cmp.request",
     )
@@ -1158,27 +1158,27 @@ def test_active_capability_continuation_context_does_not_require_prompt_markers(
     runner = _GateRunner()
 
     resolved, used_follow_up_context = runner._build_active_capability_continuation_request(
-        user_message="提交",
+        user_message="Submit",
         recent_history=[
-            {"role": "user", "content": "我要申请 Linux VM"},
+            {"role": "user", "content": "I want to request a Linux VM"},
             {
                 "role": "assistant",
                 "content": (
-                    "申请草稿：\n"
-                    "- 业务组：开发部\n"
-                    "- 规格：2C4G\n"
-                    "- 系统：Linux\n"
-                    "下一步由你决定。"
+                    "Request draft:\n"
+                    "- Business group: Development\n"
+                    "- Size: 2C4G\n"
+                    "- Operating system: Linux\n"
+                    "The next step is up to you."
                 ),
             },
         ],
     )
 
     assert used_follow_up_context is True
-    assert "Original user request:\n我要申请 Linux VM" in resolved
+    assert "Original user request:\nI want to request a Linux VM" in resolved
     assert "Latest assistant follow-up prompt:" in resolved
-    assert "申请草稿" in resolved
-    assert "User reply to that prompt:\n提交" in resolved
+    assert "Request draft" in resolved
+    assert "User reply to that prompt:\nSubmit" in resolved
 
 
 def test_capability_selector_preserves_no_capability_runtime_request() -> None:
@@ -1394,7 +1394,7 @@ def test_capability_selector_rejects_provider_level_target() -> None:
         runner._select_capability_intent_plan_with_model(
             agent=selector,
             deps=SimpleNamespace(extra={}),
-            user_message="查待审批",
+            user_message="List pending approvals",
             recent_history=[],
             capability_index=[
                 {
@@ -1431,7 +1431,7 @@ def test_capability_selector_rejects_bare_provider_instance_target() -> None:
         runner._select_capability_intent_plan_with_model(
             agent=selector,
             deps=SimpleNamespace(extra={}),
-            user_message="查待审批",
+            user_message="List pending approvals",
             recent_history=[],
             capability_index=[
                 {
@@ -1468,7 +1468,7 @@ def test_capability_selector_rejects_provider_bound_bare_skill_target() -> None:
         runner._select_capability_intent_plan_with_model(
             agent=selector,
             deps=SimpleNamespace(extra={}),
-            user_message="申请 Linux VM",
+            user_message="Request a Linux VM",
             recent_history=[],
             capability_index=[
                 {
@@ -1500,7 +1500,7 @@ def test_capability_selector_rejects_provider_skill_without_internal_targets() -
         runner._select_capability_intent_plan_with_model(
             agent=selector,
             deps=SimpleNamespace(extra={}),
-            user_message="查待审批",
+            user_message="List pending approvals",
             recent_history=[],
             capability_index=[
                 {
@@ -1650,7 +1650,7 @@ def test_capability_selector_rejects_group_and_capability_targets() -> None:
         runner._select_capability_intent_plan_with_model(
             agent=selector,
             deps=SimpleNamespace(extra={}),
-            user_message="查一下平台目录",
+            user_message="List the platform catalog",
             recent_history=[],
             capability_index=[
                 {
@@ -1688,7 +1688,7 @@ def test_capability_selector_rejects_unauthorized_targets() -> None:
         runner._select_capability_intent_plan_with_model(
             agent=selector,
             deps=SimpleNamespace(extra={}),
-            user_message="生成 Excel",
+            user_message="Create an Excel workbook",
             recent_history=[],
             capability_index=[
                 {
@@ -2162,7 +2162,7 @@ def test_align_external_system_intent_keeps_prefer_tool_policy() -> None:
         decision=initial_decision,
         match_result=initial_match,
         available_tools=available_tools,
-        user_message="查下CMP待审批",
+        user_message="List pending CMP approvals",
         recent_history=[],
         deps=None,
     )
@@ -2314,10 +2314,10 @@ def test_classifier_history_ignores_recent_history_for_complete_new_request() ->
     runner = _GateRunner()
 
     history = runner._build_classifier_history(
-        user_message="明天上海天气如何",
+        user_message="What is the weather in Shanghai tomorrow?",
         recent_history=[
-            {"role": "user", "content": "查下CMP 里目前所有待审批"},
-            {"role": "assistant", "content": "我来帮你查。"},
+            {"role": "user", "content": "List all current pending approvals in CMP"},
+            {"role": "assistant", "content": "I will look that up."},
         ],
         used_follow_up_context=False,
     )
@@ -2329,14 +2329,14 @@ def test_resolve_contextual_tool_request_keeps_rich_identifier_query_self_contai
     runner = _GateRunner()
 
     resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="我要看下TIC20260316000001的详情",
+        user_message="Show details for TIC20260316000001",
         recent_history=[
-            {"role": "user", "content": "查下CMP 里目前所有待审批"},
-            {"role": "assistant", "content": "好的，我帮你列出来。"},
+            {"role": "user", "content": "List all current pending approvals in CMP"},
+            {"role": "assistant", "content": "I will list them."},
         ],
     )
 
-    assert resolved == "我要看下TIC20260316000001的详情"
+    assert resolved == "Show details for TIC20260316000001"
     assert used_follow_up_context is False
 
 
@@ -2344,14 +2344,14 @@ def test_resolve_contextual_tool_request_reuses_previous_user_message_for_low_in
     runner = _GateRunner()
 
     resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="上海呢",
+        user_message="Shanghai",
         recent_history=[
-            {"role": "user", "content": "明天北京天气呢"},
-            {"role": "assistant", "content": "Weather for 北京市, 北京, 中国\nDaily forecast:\n| 2026-04-15 | Slight rain showers |"},
+            {"role": "user", "content": "What is the weather in Beijing tomorrow?"},
+            {"role": "assistant", "content": "Weather for Beijing, China\nDaily forecast:\n| 2026-04-15 | Slight rain showers |"},
         ],
     )
 
-    assert resolved == "明天北京天气呢\n上海呢"
+    assert resolved == "What is the weather in Beijing tomorrow?\nShanghai"
     assert used_follow_up_context is True
 
 
@@ -2373,18 +2373,18 @@ def test_resolve_contextual_tool_request_keeps_provider_route_query_self_contain
     )
 
     resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="SmartCMP 知识库里服务申请和部署日志如何关联？",
+        user_message="How does the SmartCMP knowledge base relate service requests to deployment logs?",
         recent_history=[
-            {"role": "user", "content": "请从 AtlasClaw 文档知识库回答：标准用户第一次登录后应该检查哪些事项？"},
+            {"role": "user", "content": "According to the AtlasClaw documentation, what should a standard user check after first login?"},
             {
                 "role": "assistant",
-                "content": "请提供你要查询的章节或具体问题。",
+                "content": "Provide the section or specific question to search for.",
             },
         ],
         deps=deps,
     )
 
-    assert resolved == "SmartCMP 知识库里服务申请和部署日志如何关联？"
+    assert resolved == "How does the SmartCMP knowledge base relate service requests to deployment logs?"
     assert used_follow_up_context is False
 
 
@@ -2396,7 +2396,7 @@ def test_provider_skill_projection_does_not_append_generic_coordination_tools() 
                     "knowledgebase": {
                         "usage_hint": (
                             "Use for SmartCMP support-status questions, configuration, "
-                            "integration, 是否支持, and extension-path knowledge-base Q&A."
+                            "integration, support status, and extension-path knowledge-base Q&A."
                         ),
                     }
                 }
@@ -2468,43 +2468,43 @@ def test_resolve_contextual_tool_request_reuses_previous_request_for_structured_
     resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
         user_message="linuxVM23, root, Passw0rd",
         recent_history=[
-            {"role": "user", "content": "申请2c4g云资源"},
+            {"role": "user", "content": "Request a 2C4G cloud resource"},
             {
                 "role": "assistant",
                 "content": (
-                    "请提供以下信息：\n"
-                    "1. 资源名称：\n"
-                    "2. 用户名：\n"
-                    "3. 密码："
+                    "Provide the following information:\n"
+                    "1. Resource name:\n"
+                    "2. Username:\n"
+                    "3. Password:"
                 ),
             },
         ],
     )
 
-    assert resolved == "申请2c4g云资源\nlinuxVM23, root, Passw0rd"
+    assert resolved == "Request a 2C4G cloud resource\nlinuxVM23, root, Passw0rd"
     assert used_follow_up_context is True
 
 
-def test_resolve_contextual_tool_request_reuses_previous_request_for_whitespace_separated_chinese_fields() -> None:
+def test_resolve_contextual_tool_request_reuses_previous_request_for_whitespace_separated_fields() -> None:
     runner = _GateRunner()
 
     resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="用户名 root 密码 Passw0rd 名称 linux-test123",
+        user_message="Username root Password Passw0rd Name linux-test123",
         recent_history=[
-            {"role": "user", "content": "我要申请一台 2C4G 的 Linux 虚拟机"},
+            {"role": "user", "content": "Request a 2C4G Linux virtual machine"},
             {
                 "role": "assistant",
                 "content": (
-                    "请补充以下信息后我再提交申请：\n"
-                    "1. 资源名称\n"
-                    "2. 用户名\n"
-                    "3. 密码"
+                    "Provide the following information before submission:\n"
+                    "1. Resource name\n"
+                    "2. Username\n"
+                    "3. Password"
                 ),
             },
         ],
     )
 
-    assert resolved == "我要申请一台 2C4G 的 Linux 虚拟机\n用户名 root 密码 Passw0rd 名称 linux-test123"
+    assert resolved == "Request a 2C4G Linux virtual machine\nUsername root Password Passw0rd Name linux-test123"
     assert used_follow_up_context is True
 
 
@@ -2531,6 +2531,65 @@ def test_resolve_contextual_tool_request_reuses_previous_request_for_prompt_deri
     assert used_follow_up_context is True
 
 
+def test_resolve_contextual_tool_request_reuses_single_labeled_option_selection() -> None:
+    runner = _GateRunner()
+    assistant_prompt = (
+        "Select an availability zone (available_zone_id) by number:\n"
+        "1. cn-north-1a\n"
+        "2. cn-north-1b\n"
+        "Select the availability zone to deploy into."
+    )
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="available_zone_id selection 1 (cn-north-1a)",
+        recent_history=[
+            {"role": "user", "content": "Request a cloud virtual machine"},
+            {"role": "assistant", "content": assistant_prompt},
+        ],
+    )
+
+    assert resolved == "Request a cloud virtual machine\navailable_zone_id selection 1 (cn-north-1a)"
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_reuses_selection_with_returned_option_id() -> None:
+    runner = _GateRunner()
+    assistant_prompt = (
+        "Select a network for the vSphere resource pool. One network is available:\n"
+        "1. 192.168.24.0/22 — vSphere network\n"
+        "Select the network by replying with 1."
+    )
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="networkId select 1 (network-361)",
+        recent_history=[
+            {"role": "user", "content": "2 cc160480-482-finaltest"},
+            {"role": "assistant", "content": assistant_prompt},
+        ],
+    )
+
+    assert resolved == "2 cc160480-482-finaltest\nnetworkId select 1 (network-361)"
+    assert used_follow_up_context is True
+
+
+def test_resolve_contextual_tool_request_keeps_unprompted_single_selection_self_contained() -> None:
+    runner = _GateRunner()
+
+    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
+        user_message="networkId selection 1 (network-361)",
+        recent_history=[
+            {"role": "user", "content": "Show the current network configuration."},
+            {
+                "role": "assistant",
+                "content": "The configuration is available. Tell me what you want next.",
+            },
+        ],
+    )
+
+    assert resolved == "networkId selection 1 (network-361)"
+    assert used_follow_up_context is False
+
+
 def test_resolve_contextual_tool_request_does_not_merge_prompt_shaped_fields_without_follow_up_prompt() -> None:
     runner = _GateRunner()
 
@@ -2555,7 +2614,7 @@ def test_resolve_contextual_tool_request_recognizes_enumerated_field_prompt_with
     resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
         user_message="linuxVM23, root, Passw0rd",
         recent_history=[
-            {"role": "user", "content": "申请2c4g云资源"},
+            {"role": "user", "content": "Request a 2C4G cloud resource"},
             {
                 "role": "assistant",
                 "content": (
@@ -2567,7 +2626,7 @@ def test_resolve_contextual_tool_request_recognizes_enumerated_field_prompt_with
         ],
     )
 
-    assert resolved == "申请2c4g云资源\nlinuxVM23, root, Passw0rd"
+    assert resolved == "Request a 2C4G cloud resource\nlinuxVM23, root, Passw0rd"
     assert used_follow_up_context is True
 
 
@@ -2577,21 +2636,21 @@ def test_resolve_contextual_tool_request_recognizes_bracketed_selection_prompt()
     resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
         user_message="2",
         recent_history=[
-            {"role": "user", "content": "申请2c4g云资源"},
+            {"role": "user", "content": "Request a 2C4G cloud resource"},
             {
                 "role": "assistant",
                 "content": (
                     "[1] team1\n"
-                    "[2] 我的业务组\n"
-                    "请选择业务组（输入编号）："
+                    "[2] My business group\n"
+                    "Select a business group by number:"
                 ),
             },
         ],
     )
 
-    assert "Original user request:\n申请2c4g云资源" in resolved
+    assert "Original user request:\nRequest a 2C4G cloud resource" in resolved
     assert "Latest assistant follow-up prompt:" in resolved
-    assert "[2] 我的业务组" in resolved
+    assert "[2] My business group" in resolved
     assert "User reply to that prompt:\n2" in resolved
     assert "Resolved latest visible selection:" not in resolved
     assert used_follow_up_context is True
@@ -2603,40 +2662,40 @@ def test_resolve_contextual_tool_request_preserves_latest_prompt_for_repeated_nu
     resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
         user_message="1",
         recent_history=[
-            {"role": "user", "content": "我要申请 Linux VM"},
+            {"role": "user", "content": "I want to request a Linux VM"},
             {
                 "role": "assistant",
                 "content": (
-                    "请选择您要申请的业务组：\n"
-                    "开发部\n"
-                    "测试部\n"
-                    "请问您想申请哪个业务组的 Linux VM？"
+                    "Select the business group for the request:\n"
+                    "Development\n"
+                    "Testing\n"
+                    "Which business group should own the Linux VM?"
                 ),
             },
             {"role": "user", "content": "1"},
             {
                 "role": "assistant",
                 "content": (
-                    "已选择开发部。\n\n"
-                    "请选择您需要的规格配置：\n"
+                    "Development selected.\n\n"
+                    "Please select the required size and reply with a number:\n"
                     "Tiny — 1C1G\n"
                     "Small — 1C2G\n"
                     "Medium — 2C4G\n"
                     "Large — 4C8G\n"
-                    "请问您需要哪种规格？"
+                    "Which size do you need?"
                 ),
             },
         ],
     )
 
-    assert "Original user request:\n我要申请 Linux VM" in resolved
+    assert "Original user request:\nI want to request a Linux VM" in resolved
     assert "Recent follow-up context:" in resolved
     assert "User: 1" in resolved
     assert "Latest assistant follow-up prompt:" in resolved
     assert "Tiny — 1C1G" in resolved
     assert "User reply to that prompt:\n1" in resolved
     assert "Resolved latest visible selection:" not in resolved
-    assert resolved != "我要申请 Linux VM 1"
+    assert resolved != "I want to request a Linux VM 1"
     assert used_follow_up_context is True
 
 
@@ -2646,49 +2705,49 @@ def test_resolve_contextual_tool_request_preserves_selection_chain_for_third_num
     resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
         user_message="1",
         recent_history=[
-            {"role": "user", "content": "我要申请 Linux VM"},
+            {"role": "user", "content": "I want to request a Linux VM"},
             {
                 "role": "assistant",
                 "content": (
-                    "请选择您要申请的业务组：\n"
-                    "开发部\n"
-                    "测试部\n"
-                    "请问您想申请哪个业务组的 Linux VM？"
+                    "Select the business group for the request:\n"
+                    "Development\n"
+                    "Testing\n"
+                    "Which business group should own the Linux VM?"
                 ),
             },
             {"role": "user", "content": "1"},
             {
                 "role": "assistant",
                 "content": (
-                    "已选择开发部。\n\n"
-                    "请选择您需要的规格配置：\n"
+                    "Development selected.\n\n"
+                    "Please select the required size and reply with a number:\n"
                     "Tiny — 1C1G\n"
                     "Small — 1C2G\n"
-                    "请问您需要哪种规格？"
+                    "Which size do you need?"
                 ),
             },
             {"role": "user", "content": "1"},
             {
                 "role": "assistant",
                 "content": (
-                    "已选择 Tiny。\n\n"
-                    "请选择资源环境：\n"
-                    "开发\n"
-                    "生产\n"
-                    "请问您需要哪个资源环境？"
+                    "Tiny selected.\n\n"
+                    "Please select the resource environment and reply with a number:\n"
+                    "Development\n"
+                    "Production\n"
+                    "Which resource environment do you need?"
                 ),
             },
         ],
     )
 
-    assert "Original user request:\n我要申请 Linux VM" in resolved
+    assert "Original user request:\nI want to request a Linux VM" in resolved
     assert "Recent follow-up context:" in resolved
-    assert "请选择您要申请的业务组" in resolved
-    assert "请选择您需要的规格配置" in resolved
+    assert "Select the business group for the request" in resolved
+    assert "Please select the required size" in resolved
     assert resolved.count("User: 1") == 2
     assert "Latest assistant follow-up prompt:" in resolved
-    assert "请选择资源环境" in resolved
-    assert "开发" in resolved
+    assert "Please select the resource environment" in resolved
+    assert "Development" in resolved
     assert "User reply to that prompt:\n1" in resolved
     assert "Resolved latest visible selection:" not in resolved
     assert used_follow_up_context is True
@@ -2697,10 +2756,10 @@ def test_resolve_contextual_tool_request_preserves_selection_chain_for_third_num
 def test_transcript_active_provider_skill_infers_from_assistant_tool_calls() -> None:
     active_skill = _infer_active_provider_skill_from_transcript(
         message_history=[
-            {"role": "user", "content": "我要申请 Linux VM"},
+            {"role": "user", "content": "I want to request a Linux VM"},
             {
                 "role": "assistant",
-                "content": "我先查询可用业务组。",
+                "content": "I will list the available business groups.",
                 "tool_calls": [{"name": "smartcmp_list_business_groups"}],
             },
         ],
@@ -2726,15 +2785,15 @@ def test_transcript_active_provider_skill_infers_from_assistant_tool_calls() -> 
 def test_transcript_active_provider_skill_uses_sticky_instance_to_disambiguate() -> None:
     active_skill = _infer_active_provider_skill_from_transcript(
         message_history=[
-            {"role": "user", "content": "从知识库回答 AWS Lambda 是否支持"},
+            {"role": "user", "content": "Use the knowledge base to determine whether AWS Lambda is supported"},
             {
                 "role": "assistant",
                 "content": "",
                 "tool_calls": [{"name": "markdown_vault_search"}],
             },
             {"role": "tool", "tool_name": "markdown_vault_search", "content": {"ok": True}},
-            {"role": "assistant", "content": "知识库中没有原生 AWS Lambda 支持证据。"},
-            {"role": "user", "content": "生成 Excel"},
+            {"role": "assistant", "content": "The knowledge base contains no evidence of native AWS Lambda support."},
+            {"role": "user", "content": "Create an Excel workbook"},
             {"role": "assistant", "content": "", "tool_calls": [{"name": "skill_exec"}]},
             {"role": "tool", "tool_name": "skill_exec", "content": {"ok": True}},
         ],
@@ -2765,7 +2824,7 @@ def test_transcript_active_provider_skill_uses_sticky_instance_to_disambiguate()
 def test_transcript_plain_skill_inference_ignores_provider_bound_markdown_skill() -> None:
     active_skill = _infer_active_skill_from_transcript(
         message_history=[
-            {"role": "user", "content": "从知识库回答 AWS Lambda 是否支持"},
+            {"role": "user", "content": "Use the knowledge base to determine whether AWS Lambda is supported"},
             {
                 "role": "assistant",
                 "content": "",
@@ -2799,7 +2858,7 @@ def test_transcript_active_provider_skill_infers_from_embedded_tool_results() ->
         message_history=[
             {
                 "role": "assistant",
-                "content": "请选择业务组。",
+                "content": "Select a business group.",
                 "tool_results": [
                     {
                         "tool_name": "smartcmp_list_business_groups",
@@ -2830,10 +2889,10 @@ def test_transcript_active_provider_skill_infers_from_embedded_tool_results() ->
 def xtest_build_recent_follow_up_tool_intent_plan_reuses_single_recent_tool() -> None:
     plan = build_recent_follow_up_tool_intent_plan(
         recent_history=[
-            {"role": "user", "content": "明天北京天气呢"},
-            {"role": "assistant", "content": "我来查一下。", "tool_calls": [{"name": "openmeteo_weather"}]},
+            {"role": "user", "content": "What is the weather in Beijing tomorrow?"},
+            {"role": "assistant", "content": "I will check.", "tool_calls": [{"name": "openmeteo_weather"}]},
             {"role": "tool", "tool_name": "openmeteo_weather", "content": {"ok": True}},
-            {"role": "assistant", "content": "Weather for 北京市, 北京, 中国"},
+            {"role": "assistant", "content": "Weather for Beijing, China"},
         ],
         available_tools=[
             {
@@ -2855,13 +2914,13 @@ def xtest_build_recent_follow_up_tool_intent_plan_recovers_recent_md_skill_scope
         recent_history=[
             {
                 "role": "assistant",
-                "content": "我先列出服务目录。",
+                "content": "I will list the service catalog.",
                 "tool_calls": [{"name": "smartcmp_list_services"}],
             },
             {"role": "tool", "tool_name": "smartcmp_list_services", "content": {"ok": True}},
             {
                 "role": "assistant",
-                "content": "我再获取业务组。",
+                "content": "I will retrieve the business groups next.",
                 "tool_calls": [{"name": "smartcmp_list_business_groups"}],
             },
             {"role": "tool", "tool_name": "smartcmp_list_business_groups", "content": {"ok": True}},
@@ -2908,8 +2967,8 @@ def xtest_build_recent_follow_up_tool_intent_plan_recovers_recent_md_skill_scope
 def test_runtime_history_for_tool_turns_keeps_recent_context_even_without_follow_up_flag() -> None:
     history = _PrepareRunner._build_runtime_message_history_for_turn(
         session_message_history=[
-            {"role": "user", "content": "查一个 cmp 所有待审批的申请"},
-            {"role": "assistant", "content": "我已经列出了 3 条待审批申请。"},
+            {"role": "user", "content": "List all pending requests in CMP"},
+            {"role": "assistant", "content": "I listed three pending requests."},
         ],
         used_follow_up_context=False,
         intent_plan=ToolIntentPlan(
@@ -2920,14 +2979,14 @@ def test_runtime_history_for_tool_turns_keeps_recent_context_even_without_follow
     )
 
     assert history == [
-        {"role": "user", "content": "查一个 cmp 所有待审批的申请"},
-        {"role": "assistant", "content": "我已经列出了 3 条待审批申请。"},
+        {"role": "user", "content": "List all pending requests in CMP"},
+        {"role": "assistant", "content": "I listed three pending requests."},
     ]
 
 
 def test_llm_first_guidance_plan_keeps_metadata_as_hints_only() -> None:
     plan = build_llm_first_guidance_plan(
-        user_message="查一个 cmp 所有待审批的申请",
+        user_message="List all pending requests in CMP",
         metadata_plan=ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
             target_provider_types=["smartcmp"],
@@ -2945,7 +3004,7 @@ def test_llm_first_guidance_plan_keeps_metadata_as_hints_only() -> None:
 
 def test_llm_first_guidance_plan_does_not_force_artifact_without_matching_capability() -> None:
     plan = build_llm_first_guidance_plan(
-        user_message="将这些申请写入一个新的PPT",
+        user_message="Write these requests into a new PowerPoint presentation",
         metadata_plan=ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
             target_provider_types=["smartcmp"],
@@ -2960,7 +3019,7 @@ def test_llm_first_guidance_plan_does_not_force_artifact_without_matching_capabi
 
 def test_llm_first_guidance_plan_rejects_provider_skill_without_instance_scope() -> None:
     plan = build_llm_first_guidance_plan(
-        user_message="将这些申请写入一个新的PPT",
+        user_message="Write these requests into a new PowerPoint presentation",
         metadata_plan=ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
             target_provider_types=["smartcmp"],
@@ -2976,7 +3035,7 @@ def test_llm_first_guidance_plan_rejects_provider_skill_without_instance_scope()
 
 def test_llm_first_guidance_plan_keeps_explicit_artifact_targets_from_metadata_plan() -> None:
     plan = build_llm_first_guidance_plan(
-        user_message="将这些申请写入一个新的PPT",
+        user_message="Write these requests into a new PowerPoint presentation",
         metadata_plan=ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
             target_provider_instances=["smartcmp.cmp"],
@@ -3001,7 +3060,7 @@ def test_llm_first_guidance_plan_keeps_explicit_artifact_targets_from_metadata_p
 
 def test_llm_first_guidance_plan_supports_new_artifact_types_without_keyword_router() -> None:
     plan = build_llm_first_guidance_plan(
-        user_message="将这些申请整理成一个新的PDF文件",
+        user_message="Organize these requests into a new PDF document",
         metadata_plan=ToolIntentPlan(
             action=ToolIntentAction.USE_TOOLS,
             target_provider_instances=["smartcmp.cmp"],

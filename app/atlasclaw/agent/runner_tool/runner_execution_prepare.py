@@ -219,6 +219,13 @@ def _numeric_selection_has_workflow_evidence(
     normalized_message = " ".join(str(user_message or "").split()).strip()
     if not re.fullmatch(r"\d+", normalized_message):
         return False
+    return _workflow_context_has_recent_tool_evidence(workflow_context)
+
+
+def _workflow_context_has_recent_tool_evidence(
+    workflow_context: Optional[dict[str, Any]],
+) -> bool:
+    """Return whether the active workflow retains a recent real tool result."""
     if not isinstance(workflow_context, dict):
         return False
     recent_tool_metadata = workflow_context.get("recent_tool_metadata")
@@ -1984,6 +1991,9 @@ class RunnerExecutionPreparePhaseMixin:
                         else None
                     ),
                 )
+            has_transcript_active_capability = bool(
+                transcript_active_provider_skill or transcript_active_skill
+            )
             selected_tool_intent_plan = build_user_selected_tool_intent_plan(deps)
             selected_plan_has_mutation_tools = _selected_plan_has_mutation_tools(
                 tools=available_tools,
@@ -2188,18 +2198,34 @@ class RunnerExecutionPreparePhaseMixin:
                         reason="tools_require_explicit_selection_or_internal_orchestration",
                         removed_tools=hidden_implicit_tools,
                     )
-                has_transcript_active_capability = bool(
-                    transcript_active_provider_skill or transcript_active_skill
-                )
                 if has_transcript_active_capability:
-                    tool_request_message = user_message
-                    model_user_message = user_message
-                    used_follow_up_context = False
+                    tool_request_message, used_follow_up_context = (
+                        self._resolve_contextual_tool_request(
+                            user_message=user_message,
+                            recent_history=message_history,
+                            deps=deps,
+                        )
+                    )
+                    if used_follow_up_context:
+                        contextual_request, contextualized = (
+                            self._build_active_capability_continuation_request(
+                                user_message=user_message,
+                                recent_history=message_history,
+                            )
+                        )
+                        if contextualized:
+                            tool_request_message = contextual_request
+                    model_user_message = (
+                        tool_request_message
+                        if used_follow_up_context and tool_request_message != user_message
+                        else user_message
+                    )
                     _log_step(
-                        "active_capability_context_forwarded",
-                        reason="single_capability_selector_pass",
+                        "active_capability_continuation_resolved",
+                        reason="contextual_selector_continuation",
                         active_provider_skill=transcript_active_provider_skill or "",
                         active_skill=transcript_active_skill or "",
+                        used_follow_up_context=used_follow_up_context,
                     )
                 else:
                     tool_request_message, used_follow_up_context = (
@@ -2316,9 +2342,23 @@ class RunnerExecutionPreparePhaseMixin:
                                 active_provider_skill=transcript_active_provider_skill,
                                 active_skill=transcript_active_skill,
                             )
-                            and _numeric_selection_has_workflow_evidence(
-                                user_message=user_message,
-                                workflow_context=target_md_skill_workflow_context,
+                            and (
+                                _numeric_selection_has_workflow_evidence(
+                                    user_message=user_message,
+                                    workflow_context=target_md_skill_workflow_context,
+                                )
+                                or (
+                                    capability_selector_result.selector_outcome
+                                    is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT
+                                    and not capability_selector_result.mutation_authorized
+                                    and used_follow_up_context
+                                    and not self._is_low_information_follow_up_text(
+                                        user_message
+                                    )
+                                    and _workflow_context_has_recent_tool_evidence(
+                                        target_md_skill_workflow_context
+                                    )
+                                )
                             )
                         ):
                             capability_selector_result = (
@@ -2331,7 +2371,7 @@ class RunnerExecutionPreparePhaseMixin:
                             )
                             _log_step(
                                 "active_continuation_tools_retained",
-                                reason="numeric_selection_with_workflow_evidence",
+                                reason="selection_with_workflow_evidence",
                             )
                         capability_selector_intent_plan = capability_selector_result
                         selector_outcome = (
