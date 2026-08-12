@@ -373,9 +373,18 @@ class RunnerToolGateRoutingMixin:
             else []
         )
         identifier_follow_up = self._contains_structured_identifier(normalized_user_message)
-        structured_field_response = assistant_requests_follow_up and self._looks_like_structured_field_response(
-            normalized_user_message,
-            expected_labels=expected_field_labels,
+        structured_field_response = assistant_requests_follow_up and (
+            self._looks_like_structured_field_response(
+                normalized_user_message,
+                expected_labels=expected_field_labels,
+            )
+            or self._looks_like_single_field_selection_response(
+                normalized_user_message,
+            )
+            or self._shares_structured_identifier(
+                normalized_user_message,
+                last_assistant_raw_message,
+            )
         )
         if (
             identifier_follow_up
@@ -538,6 +547,43 @@ class RunnerToolGateRoutingMixin:
         )
         lowered = normalized.lower()
         return any(re.search(pattern, lowered, flags=re.IGNORECASE) for pattern in patterns)
+
+    @staticmethod
+    def _shares_structured_identifier(first: str, second: str) -> bool:
+        """Return whether two messages share a structured workflow identifier."""
+
+        patterns = (
+            r"(?<![a-z0-9])[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}(?![a-z0-9])",
+            r"(?<![a-z0-9])(?=[a-z0-9_-]{8,})(?=[a-z0-9_-]*[a-z])(?=[a-z0-9_-]*\d)[a-z0-9_-]+(?![a-z0-9])",
+            r"(?<!\d)\d{8,}(?!\d)",
+        )
+        first_normalized = unicodedata.normalize("NFKC", str(first or "")).casefold()
+        second_normalized = unicodedata.normalize("NFKC", str(second or "")).casefold()
+        for pattern in patterns:
+            first_identifiers = set(
+                re.findall(pattern, first_normalized, flags=re.IGNORECASE)
+            )
+            if first_identifiers and first_identifiers.intersection(
+                re.findall(pattern, second_normalized, flags=re.IGNORECASE)
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _looks_like_single_field_selection_response(text: str) -> bool:
+        """Return whether a reply supplies one labeled selection and its value."""
+
+        normalized = unicodedata.normalize("NFKC", " ".join(str(text or "").split()))
+        if not normalized:
+            return False
+        return bool(
+            re.fullmatch(
+                r"[A-Za-z][A-Za-z0-9_.-]{1,63}\s+(?:选择|选|select)\s+"
+                r"\d+\s*[（(][A-Za-z0-9][A-Za-z0-9_.:/-]{2,127}[）)]",
+                normalized,
+                flags=re.IGNORECASE,
+            )
+        )
 
     @staticmethod
     def _looks_like_structured_field_response(
