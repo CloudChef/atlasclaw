@@ -181,7 +181,7 @@ def build_current_follow_up_context(context: str) -> str:
         "Do not say the raw number is unsupported when it can be mapped to an option in the latest assistant prompt.",
         "Do not reinterpret a bare numeric follow-up as an external object ID unless the latest assistant prompt explicitly asked for such an ID.",
         "Do not treat a numeric reply as submission confirmation unless the latest prompt explicitly asked to confirm a JSON preview.",
-        "If required fields are still missing after interpreting the reply, ask for the next missing field instead of calling a terminal or mutating tool.",
+        "If required fields are still missing after interpreting the reply, ask for the next missing field instead of advancing to a later tool step.",
         "",
         text,
     ]
@@ -360,18 +360,6 @@ def build_tool_policy(
         )
         lines.append(
             "Do not emit tool-call markup or a pseudo tool invocation while execution is paused."
-        )
-    elif mode == "active_continuation":
-        lines.append(
-            "Continue the selected workflow using its existing context and resolved user selection."
-        )
-        lines.append(
-            "Non-mutating tools from the selected skill remain available. Call one only when the "
-            "workflow's next step requires a new lookup, discovery, or validation; otherwise "
-            "continue with the next known field, draft, or confirmation request."
-        )
-        lines.append(
-            "Mutating operations are not authorized in this turn. Do not submit, update, or delete."
         )
     elif mode == "create_artifact":
         lines.append("This turn is an artifact-generation request.")

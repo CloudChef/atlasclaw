@@ -306,8 +306,7 @@ class RunnerToolGateModelMixin:
             "Task:\n"
             "Select which authorized capability targets, if any, should handle this turn.\n"
             "Slash-selected capability scope is resolved before you run. When one is shown as "
-            "the current active workflow, decide only the current action and mutation "
-            "authorization within that scope.\n\n"
+            "the current active workflow, decide only the current action within that scope.\n\n"
             "Rules:\n"
             "- Choose only capability IDs listed below.\n"
             "- Natural-language selector targets are limited to tool:, skill:, "
@@ -347,25 +346,11 @@ class RunnerToolGateModelMixin:
             "use authorized_capability only when the current next step actually requires a runtime "
             "read, discovery, validation, or other tool operation. A possible precautionary lookup "
             "is not enough.\n"
-            "- For an answer to a missing-input prompt or a selection from displayed choices, decide "
-            "from the workflow's next action. Use authorized_context when the next reply only parses "
-            "or records the input, revises a draft, or asks for another known field. Use "
-            "authorized_capability when continuing the workflow requires a new runtime lookup, "
-            "discovery, validation, or other tool operation.\n"
-            "- Reuse the selected choice from prior tool evidence. Do not use authorized_capability "
-            "only to revalidate that same choice.\n"
-            "- When the user selects a displayed option and explicitly asks to continue, proceed, "
-            "or resume the active workflow, use authorized_capability only when its next step is a "
-            "non-mutating runtime operation; otherwise use authorized_context.\n"
+            "- Reuse selected choices and prior tool evidence. Do not repeat a lookup solely to "
+            "revalidate an unchanged choice.\n"
             "- When supplied fields complete the draft and the next step is to show a preview or ask "
             "for confirmation, use authorized_context. Do not force a tool because the workflow may "
-            "perform a mutating operation after a later confirmation.\n"
-            "- Supplying requested input does not itself authorize a mutating external side effect. "
-            "Select authorized_capability for a mutating operation only when the current user turn "
-            "explicitly authorizes or requests the operation that must execute now.\n"
-            "- Set mutation_authorized to true only when the current user turn explicitly confirms "
-            "or requests a mutating external operation. Starting a workflow, supplying a field, or "
-            "selecting an option is not mutation authorization.\n"
+            "perform another runtime operation after a later confirmation.\n"
             "- Use authorized_capability for questions about a platform/product/system's supported "
             "features, configuration, usage, integration, runbooks, documentation, or "
             "knowledge-base content when an authorized documentation, knowledge-base, retrieval, "
@@ -402,8 +387,7 @@ class RunnerToolGateModelMixin:
             '  "outcome": "ordinary_conversation" | "authorized_capability" | '
             '"authorized_context" | "unavailable_capability" | "ask_clarification",\n'
             '  "targets": string[],\n'
-            '  "reason": string,\n'
-            '  "mutation_authorized": boolean\n'
+            '  "reason": string\n'
             "}\n"
         )
 
@@ -647,14 +631,6 @@ class RunnerToolGateModelMixin:
             return None
         if outcome not in targeted_outcomes and raw_target_values:
             return None
-        mutation_authorized = payload.get("mutation_authorized", False)
-        if not isinstance(mutation_authorized, bool):
-            return None
-        if (
-            mutation_authorized
-            and outcome is not CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY
-        ):
-            return None
         reason = str(payload.get("reason", "") or "").strip()
         if not reason:
             reason = "LLM capability selector produced a routing decision."
@@ -675,7 +651,6 @@ class RunnerToolGateModelMixin:
             target_skill_names=target_skill_names,
             target_capability_classes=target_capability_classes,
             target_tool_names=target_tool_names,
-            mutation_authorized=mutation_authorized,
             unavailable_runtime_capability=(
                 outcome is CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY
             ),
@@ -833,10 +808,7 @@ class RunnerToolGateModelMixin:
         plan: ToolIntentPlan,
         available_tools: Optional[list[dict[str, Any]]] = None,
     ) -> ToolGateDecision:
-        if (
-            plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT
-            and not plan.non_mutating_tools_allowed
-        ):
+        if plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT:
             return ToolGateDecision(
                 reason=plan.reason or "Planner selected authorized workflow context.",
                 confidence=0.7,
@@ -873,17 +845,6 @@ class RunnerToolGateModelMixin:
         needs_browser_interaction = any(
             self._tool_needs_browser_interaction(tool) for tool in selected_tools
         )
-        if plan.non_mutating_tools_allowed:
-            return ToolGateDecision(
-                needs_tool=True,
-                needs_external_system=needs_external_system,
-                needs_live_data=needs_live_data,
-                needs_browser_interaction=needs_browser_interaction,
-                suggested_tool_classes=suggested_classes,
-                reason=plan.reason or "Planner retained non-mutating workflow tools.",
-                confidence=0.7,
-                policy=ToolPolicyMode.PREFER_TOOL,
-            )
         if plan.action is ToolIntentAction.CREATE_ARTIFACT:
             explicit_artifact_target = bool(
                 plan.target_tool_names

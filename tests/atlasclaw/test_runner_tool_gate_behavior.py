@@ -23,7 +23,6 @@ from app.atlasclaw.agent.runner_tool.runner_execution_prepare import RunnerExecu
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
     _infer_active_provider_skill_from_transcript,
     _infer_active_skill_from_transcript,
-    _selected_plan_has_mutation_tools,
     _selected_plan_matches_active_capability,
     apply_provider_instance_selection_policy,
     build_user_selected_tool_intent_plan,
@@ -322,7 +321,6 @@ def test_authenticated_webhook_authorizes_only_preselected_skill_tools(
 
     assert selector_calls == 0
     assert state["selector_attempted"] is False
-    assert state["tool_intent_plan"].mutation_authorized is True
     assert state["tool_execution_required"] is True
     assert deps.extra["runtime_allowed_tool_names"] == [
         "example_read_event",
@@ -389,7 +387,7 @@ def test_invalid_selector_does_not_expose_runtime_tools(
     assert state["selector_failed"] is True
 
 
-def test_page_default_does_not_block_selected_skill_mutation_confirmation(
+def test_active_preview_confirmation_projects_selected_workflow_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tools = [
@@ -427,10 +425,21 @@ def test_page_default_does_not_block_selected_skill_mutation_confirmation(
         "collect_capability_index_snapshot",
         lambda **kwargs: [dict(capability_entry)],
     )
-    runner = _build_prepare_runner(_PrepareSessionManager())
+    monkeypatch.setattr(
+        prepare_module,
+        "_infer_active_provider_skill_from_transcript",
+        lambda **kwargs: "primary.request",
+    )
+    transcript = [
+        {
+            "role": "assistant",
+            "content": "Request preview: example item. Confirm submission?",
+        }
+    ]
+    runner = _build_prepare_runner(_PrepareSessionManager(transcript=transcript))
     selector_calls = 0
 
-    async def _select_confirmation(**kwargs):
+    async def _select_execution(**kwargs):
         nonlocal selector_calls
         selector_calls += 1
         assert kwargs["capability_index"] == [capability_entry]
@@ -440,21 +449,14 @@ def test_page_default_does_not_block_selected_skill_mutation_confirmation(
             target_provider_instances=["example.primary"],
             target_provider_types=["example"],
             target_provider_skill_names=["primary.request"],
-            mutation_authorized=True,
-            reason="The current user explicitly confirmed the external operation.",
+            reason="The next workflow step requires request submission.",
         )
 
-    runner._select_capability_intent_plan_with_model = _select_confirmation
+    runner._select_capability_intent_plan_with_model = _select_execution
     deps = SkillDeps(
-        session_key="selected-mutation-session",
+        session_key="preview-confirmation-session",
         channel="api",
         extra={
-            "_selected_capability": {
-                "kind": "provider_skill",
-                "target_provider_instances": ["example.primary"],
-                "target_provider_types": ["example"],
-                "target_provider_skill_names": ["primary.request"],
-            },
             "context": {
                 "turn_context": {
                     "default_skill": {
@@ -469,26 +471,22 @@ def test_page_default_does_not_block_selected_skill_mutation_confirmation(
         },
     )
     state = _prepare_phase_state(deps=deps)
-    state["user_message"] = "Confirm submission"
+    state["user_message"] = "Yes"
 
-    assert _selected_plan_has_mutation_tools(
-        tools=tools,
-        intent_plan=build_user_selected_tool_intent_plan(deps),
-    )
     logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
 
     assert selector_calls == 1
-    assert state["tool_intent_plan"].mutation_authorized is True
     assert deps.extra["runtime_allowed_tool_names"] == [
         "example_list_items",
         "example_submit_request",
     ]
+    assert state["tool_execution_required"] is True
     assert next(
         data["policy"] for step, data in logs if step == "tool_gate_decided"
     ) == ToolPolicyMode.MUST_USE_TOOL.value
 
 
-def test_authorized_context_prepare_loads_skill_without_exposing_mutating_tools(
+def test_authorized_context_prepare_loads_skill_without_exposing_tools(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -551,7 +549,7 @@ def test_authorized_context_prepare_loads_skill_without_exposing_mutating_tools(
     assert state["tool_projection_trace"]["reason"] == "projection_context_only"
 
 
-def test_active_numeric_selection_retains_only_non_mutating_workflow_tools(
+def test_active_numeric_selection_uses_context_without_projecting_tools(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
@@ -612,32 +610,30 @@ def test_active_numeric_selection_retains_only_non_mutating_workflow_tools(
     )
     runner = _build_prepare_runner(_PrepareSessionManager(transcript=transcript))
 
-    async def _select_active_capability(**kwargs):
+    async def _select_active_context(**kwargs):
         return ToolIntentPlan(
-            action=ToolIntentAction.USE_TOOLS,
-            selector_outcome=CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY,
+            action=ToolIntentAction.DIRECT_ANSWER,
+            selector_outcome=CapabilitySelectorOutcome.AUTHORIZED_CONTEXT,
             target_provider_instances=["example.primary"],
             target_provider_types=["example"],
             target_provider_skill_names=["primary.item"],
-            mutation_authorized=True,
-            reason="The user selected a previously listed item.",
+            reason="The selected item can be recorded without another tool call.",
         )
 
-    runner._select_capability_intent_plan_with_model = _select_active_capability
+    runner._select_capability_intent_plan_with_model = _select_active_context
     deps = SkillDeps(session_key="active-selection-session", channel="api", extra={})
     state = _prepare_phase_state(deps=deps)
     state["user_message"] = "1"
 
     logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
 
-    assert deps.extra["runtime_allowed_tool_names"] == ["example_list_items"]
-    assert deps.extra["tool_policy"]["mode"] == "active_continuation"
+    assert deps.extra["runtime_allowed_tool_names"] == []
+    assert deps.extra["tool_policy"]["mode"] == "context_only"
     assert state["tool_execution_required"] is False
-    assert state["tool_intent_plan"].mutation_authorized is False
-    assert state["tool_intent_plan"].non_mutating_tools_allowed is True
     assert next(
         data["policy"] for step, data in logs if step == "tool_gate_decided"
-    ) == ToolPolicyMode.PREFER_TOOL.value
+    ) == ToolPolicyMode.ANSWER_DIRECT.value
+    assert state["tool_projection_trace"]["reason"] == "projection_context_only"
 
 
 def test_authorized_context_does_not_inject_standalone_skill_runtime_tools(
@@ -988,14 +984,13 @@ def test_json_extractor_rejects_duplicate_complete_objects() -> None:
         "outcome": "authorized_capability",
         "targets": ["provider_skill:cmp.request"],
         "reason": "Continue the active workflow.",
-        "mutation_authorized": False,
     }
     serialized = json.dumps(payload)
 
     assert json.loads(runner._extract_json_object(serialized)) == payload
     assert runner._extract_json_object(serialized + serialized) == ""
     assert runner._extract_json_object(
-        serialized + json.dumps({**payload, "mutation_authorized": True})
+        serialized + json.dumps({**payload, "reason": "Use the selected workflow."})
     ) == ""
 
 
@@ -1107,7 +1102,7 @@ def test_capability_selector_receives_active_workflow_candidate() -> None:
     active_workflow = "Current active workflow candidate:\nprovider_skill:cmp.request"
 
     assert active_workflow in prompt
-    assert "mutation_authorized" in prompt
+    assert '  "reason": string\n}' in prompt
     assert active_workflow in message
 
 
@@ -1291,7 +1286,6 @@ def test_capability_selector_can_select_provider_skill_and_standard_skill_target
             "outcome": "authorized_capability",
             "targets": ["provider_skill:prod.request", "skill:xlsx"],
             "reason": "The user explicitly confirms the external approval and export.",
-            "mutation_authorized": True,
         }
     )
 
@@ -1335,7 +1329,6 @@ def test_capability_selector_can_select_provider_skill_and_standard_skill_target
     assert plan.target_provider_types == ["smartcmp"]
     assert plan.target_provider_skill_names == ["prod.request"]
     assert plan.target_skill_names == ["xlsx"]
-    assert plan.mutation_authorized is True
 
 
 def test_capability_selector_preserves_no_target_ordinary_conversation() -> None:
@@ -1606,31 +1599,7 @@ def test_repeated_selected_provider_skill_keeps_tools_for_active_follow_up() -> 
 
     assert turn_action_requires_tool_execution(plan)
     assert trace["reason"] == "projection_applied"
-    assert [tool["name"] for tool in projected] == ["smartcmp_list_services"]
-
-    confirmed, confirmed_trace = project_minimal_toolset(
-        allowed_tools=[
-            {
-                "name": "smartcmp_list_services",
-                "provider_type": "smartcmp",
-                "provider_skill_name": "cmp.request",
-                "qualified_skill_name": "smartcmp:request",
-                "skill_name": "request",
-            },
-            {
-                "name": "smartcmp_submit_request",
-                "provider_type": "smartcmp",
-                "provider_skill_name": "cmp.request",
-                "qualified_skill_name": "smartcmp:request",
-                "skill_name": "request",
-                "group_ids": ["group:mutation"],
-            },
-        ],
-        intent_plan=plan.model_copy(update={"mutation_authorized": True}),
-    )
-
-    assert confirmed_trace["mutation_authorized"] is True
-    assert {tool["name"] for tool in confirmed} == {
+    assert {tool["name"] for tool in projected} == {
         "smartcmp_list_services",
         "smartcmp_submit_request",
     }

@@ -1551,7 +1551,6 @@ def test_preselected_md_skill_plan_overrides_routing_skill_for_webhook() -> None
     assert plan.target_provider_skill_names == ["prod.preapproval-agent"]
     assert plan.target_skill_names == []
     assert plan.target_group_ids == ["group:acme"]
-    assert plan.mutation_authorized is True
     assert plan.reason == "preselected_target_md_skill"
 
 
@@ -1571,7 +1570,7 @@ def test_preselected_provider_md_skill_plan_requires_explicit_provider_instance(
     assert plan is None
 
 
-def test_preselected_md_skill_does_not_authorize_mutation_without_webhook_authority() -> None:
+def test_preselected_md_skill_plan_remains_executable_without_webhook_authority() -> None:
     deps = SimpleNamespace(
         extra={
             "target_md_skill": {
@@ -1588,7 +1587,7 @@ def test_preselected_md_skill_does_not_authorize_mutation_without_webhook_author
     plan = build_preselected_md_skill_intent_plan(deps)
 
     assert plan is not None
-    assert plan.mutation_authorized is False
+    assert plan.action is ToolIntentAction.USE_TOOLS
 
 
 def test_enrich_target_md_skill_with_workflow_context_attaches_structured_context() -> None:

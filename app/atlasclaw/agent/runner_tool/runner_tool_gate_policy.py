@@ -50,9 +50,7 @@ class RunnerToolGatePolicyMixin:
         target_group_ids: list[str] = []
         target_capability_classes: list[str] = []
         if intent_plan is not None:
-            if intent_plan.non_mutating_tools_allowed:
-                policy_mode = "active_continuation"
-            elif intent_plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT:
+            if intent_plan.selector_outcome is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT:
                 policy_mode = (
                     "context_only"
                 )

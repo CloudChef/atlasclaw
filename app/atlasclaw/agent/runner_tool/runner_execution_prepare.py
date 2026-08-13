@@ -35,7 +35,6 @@ from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import normalize_to
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
     project_minimal_toolset,
     tool_is_coordination_support,
-    tool_requires_mutation_authorization,
     turn_action_requires_tool_execution,
 )
 from app.atlasclaw.agent.stream import StreamEvent
@@ -100,21 +99,6 @@ def filter_implicit_only_tools(
             continue
         filtered.append(tool)
     return filtered, removed
-
-
-def _selected_plan_has_mutation_tools(
-    *,
-    tools: list[dict[str, Any]],
-    intent_plan: ToolIntentPlan | None,
-) -> bool:
-    """Return whether the selected capability scope contains an external write tool."""
-    if intent_plan is None:
-        return False
-    scoped_tools, _trace = project_minimal_toolset(
-        allowed_tools=tools,
-        intent_plan=intent_plan.model_copy(update={"mutation_authorized": True}),
-    )
-    return any(tool_requires_mutation_authorization(tool) for tool in scoped_tools)
 
 
 def select_execution_prompt_mode(
@@ -210,28 +194,6 @@ def _selected_plan_matches_active_capability(
     return False
 
 
-def _numeric_selection_has_workflow_evidence(
-    *,
-    user_message: str,
-    workflow_context: Optional[dict[str, Any]],
-) -> bool:
-    """Return whether a numeric reply follows evidence from the active workflow."""
-    normalized_message = " ".join(str(user_message or "").split()).strip()
-    if not re.fullmatch(r"\d+", normalized_message):
-        return False
-    return _workflow_context_has_recent_tool_evidence(workflow_context)
-
-
-def _workflow_context_has_recent_tool_evidence(
-    workflow_context: Optional[dict[str, Any]],
-) -> bool:
-    """Return whether the active workflow retains a recent real tool result."""
-    if not isinstance(workflow_context, dict):
-        return False
-    recent_tool_metadata = workflow_context.get("recent_tool_metadata")
-    return isinstance(recent_tool_metadata, list) and bool(recent_tool_metadata)
-
-
 def build_preselected_md_skill_intent_plan(deps: SkillDeps) -> ToolIntentPlan | None:
     """Translate a request-scoped target markdown skill into a hard skill plan."""
     extra = getattr(deps, "extra", None)
@@ -271,7 +233,6 @@ def build_preselected_md_skill_intent_plan(deps: SkillDeps) -> ToolIntentPlan | 
         target_provider_skill_names=target_provider_skill_names,
         target_skill_names=[] if provider_type else [qualified_name],
         target_group_ids=[f"group:{provider_type}"] if provider_type else [],
-        mutation_authorized=extra.get("authenticated_webhook_authority") is True,
         reason="preselected_target_md_skill",
     )
 
@@ -1995,10 +1956,6 @@ class RunnerExecutionPreparePhaseMixin:
                 transcript_active_provider_skill or transcript_active_skill
             )
             selected_tool_intent_plan = build_user_selected_tool_intent_plan(deps)
-            selected_plan_has_mutation_tools = _selected_plan_has_mutation_tools(
-                tools=available_tools,
-                intent_plan=selected_tool_intent_plan,
-            )
             preselected_md_skill_plan = build_preselected_md_skill_intent_plan(deps)
             authenticated_webhook_authority = (
                 isinstance(getattr(deps, "extra", None), dict)
@@ -2077,76 +2034,6 @@ class RunnerExecutionPreparePhaseMixin:
                         target_skill_names=list(selected_tool_intent_plan.target_skill_names),
                         used_follow_up_context=used_follow_up_context,
                     )
-                if selected_plan_has_mutation_tools:
-                    selected_capability_ids = set(
-                        selected_capability_ids_from_intent_plan(
-                            selected_tool_intent_plan
-                        )
-                    )
-                    selected_capability_index = [
-                        entry
-                        for entry in capability_index
-                        if isinstance(entry, dict)
-                        and str(entry.get("capability_id", "") or "").strip()
-                        in selected_capability_ids
-                    ]
-                    if selected_capability_index:
-                        yield StreamEvent.runtime_update(
-                            "reasoning",
-                            "Checking current operation authorization.",
-                            metadata={
-                                "phase": "capability_selection",
-                                "elapsed": round(time.monotonic() - start_time, 1),
-                            },
-                        )
-                        selector_started_at = time.monotonic()
-                        selector_attempted = True
-                        capability_selector_result = (
-                            await self._select_capability_intent_plan_with_model(
-                                agent=runtime_agent or self.agent,
-                                deps=deps,
-                                user_message=user_message,
-                                recent_history=message_history,
-                                capability_index=selected_capability_index,
-                                usage_profile_context="",
-                                active_capability_context=", ".join(
-                                    sorted(selected_capability_ids)
-                                ),
-                            )
-                        )
-                        selector_elapsed_ms = round(
-                            (time.monotonic() - selector_started_at) * 1000
-                        )
-                        if capability_selector_result is not None:
-                            selector_outcome = (
-                                capability_selector_result.selector_outcome.value
-                                if capability_selector_result.selector_outcome is not None
-                                else ""
-                            )
-                            selected_tool_intent_plan = (
-                                selected_tool_intent_plan.model_copy(
-                                    update={
-                                        "action": (
-                                            capability_selector_result.action
-                                        ),
-                                        "selector_outcome": (
-                                            capability_selector_result.selector_outcome
-                                        ),
-                                        "mutation_authorized": (
-                                            capability_selector_result.mutation_authorized
-                                        ),
-                                        "reason": (
-                                            capability_selector_result.reason
-                                        ),
-                                    }
-                                )
-                            )
-                        _log_step(
-                            "user_selected_capability_mutation_authorization_checked",
-                            authorized=selected_tool_intent_plan.mutation_authorized,
-                            selector_valid=capability_selector_result is not None,
-                            selector_elapsed_ms=selector_elapsed_ms,
-                        )
                 metadata_candidates = {
                     "reason": "user_selected_capability",
                     "confidence": 1.0,
@@ -2336,43 +2223,6 @@ class RunnerExecutionPreparePhaseMixin:
                             reason="capability_selector_invalid",
                         )
                     else:
-                        if (
-                            _selected_plan_matches_active_capability(
-                                intent_plan=capability_selector_result,
-                                active_provider_skill=transcript_active_provider_skill,
-                                active_skill=transcript_active_skill,
-                            )
-                            and (
-                                _numeric_selection_has_workflow_evidence(
-                                    user_message=user_message,
-                                    workflow_context=target_md_skill_workflow_context,
-                                )
-                                or (
-                                    capability_selector_result.selector_outcome
-                                    is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT
-                                    and not capability_selector_result.mutation_authorized
-                                    and used_follow_up_context
-                                    and not self._is_low_information_follow_up_text(
-                                        user_message
-                                    )
-                                    and _workflow_context_has_recent_tool_evidence(
-                                        target_md_skill_workflow_context
-                                    )
-                                )
-                            )
-                        ):
-                            capability_selector_result = (
-                                capability_selector_result.model_copy(
-                                    update={
-                                        "mutation_authorized": False,
-                                        "non_mutating_tools_allowed": True,
-                                    }
-                                )
-                            )
-                            _log_step(
-                                "active_continuation_tools_retained",
-                                reason="selection_with_workflow_evidence",
-                            )
                         capability_selector_intent_plan = capability_selector_result
                         selector_outcome = (
                             capability_selector_intent_plan.selector_outcome.value
@@ -2792,7 +2642,6 @@ class RunnerExecutionPreparePhaseMixin:
                         tool_intent_plan is not None
                         and tool_intent_plan.selector_outcome
                         is CapabilitySelectorOutcome.AUTHORIZED_CONTEXT
-                        and not tool_intent_plan.non_mutating_tools_allowed
                     ),
                 )
             )
