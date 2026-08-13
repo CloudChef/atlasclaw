@@ -703,13 +703,13 @@ capabilities can satisfy required grounding, and whether the final answer must b
   pause as direct-answer mode, not as a missing or unavailable capability
 - replying to a workflow's missing-input prompt uses `authorized_context` only
   when the next action can be answered from the existing workflow context. If
-  the next step requires another read-only query, it remains
-  `authorized_capability`. Input completion is not authorization for an
-  external side effect
+  the next step requires any runtime operation, including a lookup, submission,
+  update, or verification, it uses `authorized_capability`
 - `unavailable_capability` is returned by the same selector; the smaller
   selector fails closed with no tools when its output is invalid
-- tools marked with `group:mutation` are projected only when the current user
-  turn explicitly authorizes the external mutation
+- tool projection follows the selected capability scope without applying a
+  separate read-versus-write routing branch; provider workflows and upstream
+  permissions remain responsible for operation-specific requirements
 - `AgentRunner` calls the gate after the prompt and capability surface are prepared
 - explicit injected classifiers may provide the `ToolGateDecision`
 - model-backed classification is available as an opt-in runtime capability and is disabled by default
