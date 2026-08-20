@@ -432,14 +432,17 @@ def build_no_runtime_capability_answer(
     provider_auth_message = provider_auth_diagnostic_user_message(provider_auth_diagnostic)
     if provider_auth_message:
         return provider_auth_message
-    return "当前没有可用的 provider、skill 或工具，AtlasClaw 不能执行或验证该操作。"
-
-
-def build_capability_selection_failure_answer() -> str:
-    """Return the fail-closed answer for an invalid capability-selection result."""
     return (
-        "AtlasClaw could not reliably select an authorized capability for this request, "
-        "so no tool was executed. Retry or explicitly select the required skill."
+        "No provider, skill, or tool is available, so AtlasClaw cannot execute "
+        "or verify this operation."
+    )
+
+
+def build_conversation_planning_failure_answer() -> str:
+    """Return a neutral fail-closed answer when turn planning is invalid."""
+    return (
+        "AtlasClaw could not safely determine an execution path for this request. "
+        "No external action was executed. Rephrase the request and try again."
     )
 
 

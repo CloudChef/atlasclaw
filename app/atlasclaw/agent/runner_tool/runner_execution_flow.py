@@ -123,11 +123,15 @@ class RunnerExecutionFlowPhaseMixin(
         if isinstance(value, list):
             top_level_lists.append(value)
         elif isinstance(value, dict):
-            top_level_lists.extend(
-                nested
-                for key, nested in value.items()
-                if str(key).strip() != "_internal" and isinstance(nested, list)
-            )
+            declared_candidates = value.get("selectionCandidates")
+            if isinstance(declared_candidates, list):
+                top_level_lists.append(declared_candidates)
+            else:
+                top_level_lists.extend(
+                    nested
+                    for key, nested in value.items()
+                    if str(key).strip() != "_internal" and isinstance(nested, list)
+                )
         else:
             return None
 

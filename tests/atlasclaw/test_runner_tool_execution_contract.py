@@ -24,6 +24,7 @@ from app.atlasclaw.agent.runner_tool.runner_execution_flow_post import RunnerExe
 from app.atlasclaw.agent.runner_tool.runner_execution_flow_stream import RunnerExecutionFlowStreamMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     RunnerExecutionPayloadMixin,
+    build_conversation_planning_failure_answer,
     build_no_runtime_capability_answer,
     build_finalize_payload,
     build_lookup_dump_recovery_payload,
@@ -40,7 +41,13 @@ from app.atlasclaw.agent.runner_tool.runner_tool_messages import (
 from app.atlasclaw.agent.runner_tool.runner_tool_gate_policy import RunnerToolGatePolicyMixin
 from app.atlasclaw.agent.runner_tool.runner_tool_gate_routing import RunnerToolGateRoutingMixin
 from app.atlasclaw.agent.runner_tool_evidence import RunnerToolEvidenceMixin
-from app.atlasclaw.agent.tool_gate_models import ToolGateDecision, ToolIntentAction, ToolIntentPlan, ToolPolicyMode
+from app.atlasclaw.agent.tool_gate_models import (
+    CapabilitySelectorOutcome,
+    ToolGateDecision,
+    ToolIntentAction,
+    ToolIntentPlan,
+    ToolPolicyMode,
+)
 
 
 class _History:
@@ -299,7 +306,7 @@ def test_no_runtime_capability_uses_unique_missing_user_token_diagnostic() -> No
     assert diagnostic and diagnostic["missing_user_token"] is True
     answer = build_no_runtime_capability_answer(diagnostic)
     assert "personal provider access credential is not configured" in answer
-    assert "没有可用的 provider" not in answer
+    assert "No provider, skill, or tool is available" not in answer
 
 
 def test_no_runtime_capability_does_not_guess_between_unscoped_provider_diagnostics() -> None:
@@ -327,7 +334,7 @@ def test_no_runtime_capability_does_not_guess_between_unscoped_provider_diagnost
 
     assert diagnostic is None
     answer = build_no_runtime_capability_answer(diagnostic)
-    assert "没有可用的 provider、skill 或工具" in answer
+    assert "No provider, skill, or tool is available" in answer
 
 
 def test_no_runtime_capability_can_scope_provider_auth_diagnostic_by_instance() -> None:
@@ -1434,6 +1441,19 @@ def test_single_choice_continuation_keeps_only_read_only_tools_and_hides_interna
         continuation_index=1,
         _log_step=lambda *args, **kwargs: None,
     ) is None
+    assert runner._single_choice_candidate_identity(
+        {
+            "items": [
+                {"id": "bundle-1", "name": "Pool A"},
+                {"id": "bundle-2", "name": "Pool B"},
+            ],
+            "selectionField": {"key": "networkId"},
+            "selectionCandidates": [
+                {"id": "network-361", "name": "192.168.24.0/22"}
+            ],
+        },
+        visible_label="192.168.24.0/22",
+    ) == "network-361"
 
     newer_unrelated_result = messages[:-1] + [
         {
@@ -2974,6 +2994,78 @@ async def test_direct_answer_turn_replaces_tool_call_markup_with_recovery_answer
     assert all("<tool_call>" not in chunk for chunk in assistant_chunks)
     await runner._await_background_post_success_tasks()
     assert session_manager.persisted_messages is not None
+
+
+@pytest.mark.asyncio
+async def test_invalid_planner_with_authorized_tools_reports_planning_failure() -> None:
+    runner = _PostRunner()
+    session_manager = _SessionManager()
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-invalid-planner",
+        "session_manager": session_manager,
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-invalid-planner",
+        "user_message": "query my pending items",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=False,
+            reason="planning failed",
+            policy=ToolPolicyMode.ANSWER_DIRECT,
+        ),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "all_available_tools": [{"name": "providerx_list_pending"}],
+        "available_tools": [],
+        "selector_failed": True,
+        "tool_execution_required": False,
+        "max_tool_calls": 5,
+        "timeout_seconds": 60.0,
+        "_token_failover_attempt": 0,
+        "_emit_lifecycle_bounds": False,
+        "selected_token_id": None,
+        "release_slot": None,
+        "tool_execution_retry_count": 0,
+        "persist_override_messages": None,
+        "persist_override_base_len": 0,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "model_timeout_error_message": "",
+        "current_model_attempt": 1,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.DIRECT_ANSWER,
+            selector_outcome=CapabilitySelectorOutcome.ORDINARY_CONVERSATION,
+            reason="conversation_turn_plan_invalid",
+        ),
+    }
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(
+            [
+                {"role": "user", "content": "query my pending items"},
+                {
+                    "role": "assistant",
+                    "content": "No provider, skill, or tool is available.",
+                },
+            ]
+        ),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+
+    assistant_text = "".join(event.content for event in events if event.type == "assistant")
+    assert assistant_text == build_conversation_planning_failure_answer()
+    assert "No provider" not in assistant_text
+    assert "No external action was executed" in assistant_text
 
 
 @pytest.mark.asyncio

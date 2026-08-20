@@ -367,9 +367,81 @@ def test_invalid_turn_plan_does_not_expose_runtime_tools(
 
     asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
 
-    assert state["tool_intent_plan"].unavailable_runtime_capability is True
+    assert state["tool_intent_plan"].unavailable_runtime_capability is False
+    assert (
+        state["tool_intent_plan"].selector_outcome
+        is CapabilitySelectorOutcome.ORDINARY_CONVERSATION
+    )
     assert deps.extra["runtime_allowed_tool_names"] == []
     assert state["selector_failed"] is True
+
+
+def test_continue_active_targets_continue_or_switch_within_authorized_scope() -> None:
+    capability_index = [
+        {
+            "capability_id": "provider_skill:primary.item",
+            "declared_tool_names": ["example_list_items"],
+        },
+        {
+            "capability_id": "provider_skill:primary.report",
+            "declared_tool_names": ["example_create_report"],
+        },
+    ]
+
+    continued = _GateRunner._normalize_conversation_turn_plan_scope(
+        plan=ConversationTurnPlan(
+            route=ConversationTurnRoute.CONTINUE_ACTIVE,
+            action=ConversationTurnAction.USE_TOOLS,
+            target_capability_ids=["tool:example_list_items"],
+        ),
+        capability_index=capability_index,
+        active_capability_context="provider_skill:primary.item",
+    )
+    switched = _GateRunner._normalize_conversation_turn_plan_scope(
+        plan=ConversationTurnPlan(
+            route=ConversationTurnRoute.CONTINUE_ACTIVE,
+            action=ConversationTurnAction.USE_TOOLS,
+            target_capability_ids=["PROVIDER_SKILL:PRIMARY.REPORT"],
+        ),
+        capability_index=capability_index,
+        active_capability_context="provider_skill:primary.item",
+    )
+    rejected = _GateRunner._normalize_conversation_turn_plan_scope(
+        plan=ConversationTurnPlan(
+            route=ConversationTurnRoute.CONTINUE_ACTIVE,
+            action=ConversationTurnAction.USE_TOOLS,
+            target_capability_ids=["tool:unknown_operation"],
+        ),
+        capability_index=capability_index,
+        active_capability_context="provider_skill:primary.item",
+    )
+    ambiguous = _GateRunner._normalize_conversation_turn_plan_scope(
+        plan=ConversationTurnPlan(
+            route=ConversationTurnRoute.CONTINUE_ACTIVE,
+            action=ConversationTurnAction.USE_TOOLS,
+            target_capability_ids=["tool:example_other_item"],
+        ),
+        capability_index=[
+            {
+                "capability_id": "provider_skill:Primary.Item",
+                "declared_tool_names": ["example_list_items"],
+            },
+            {
+                "capability_id": "provider_skill:primary.item",
+                "declared_tool_names": ["example_other_item"],
+            },
+        ],
+        active_capability_context="provider_skill:Primary.Item",
+    )
+
+    assert continued is not None
+    assert continued.route is ConversationTurnRoute.CONTINUE_ACTIVE
+    assert continued.target_capability_ids == []
+    assert switched is not None
+    assert switched.route is ConversationTurnRoute.START_NEW
+    assert switched.target_capability_ids == ["provider_skill:primary.report"]
+    assert rejected is None
+    assert ambiguous is None
 
 
 def test_active_preview_confirmation_projects_selected_workflow_tools(

@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from app.atlasclaw.agent.plaintext_tool_calls import looks_like_plaintext_tool_call_attempt
 from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
-    build_capability_selection_failure_answer,
+    build_conversation_planning_failure_answer,
     build_direct_answer_recovery_payload,
     build_lookup_dump_recovery_payload,
     build_no_runtime_capability_answer,
@@ -982,21 +982,20 @@ class RunnerExecutionFlowPostMixin:
                     start_index=persist_run_output_start_index,
                 )
 
-        if (
+        if state.get("selector_failed") and state.get("all_available_tools"):
+            final_assistant = build_conversation_planning_failure_answer()
+            _log_step("conversation_planning_failure_answer_applied")
+        elif (
             tool_intent_plan is not None
             and bool(tool_intent_plan.unavailable_runtime_capability)
             and not state.get("available_tools")
         ):
-            if state.get("selector_failed") and state.get("all_available_tools"):
-                final_assistant = build_capability_selection_failure_answer()
-                _log_step("capability_selection_failure_answer_applied")
-            else:
-                provider_auth_diagnostic = select_no_runtime_provider_auth_diagnostic(
-                    extra=getattr(deps, "extra", {}),
-                    intent_plan=tool_intent_plan,
-                )
-                final_assistant = build_no_runtime_capability_answer(provider_auth_diagnostic)
-                _log_step("no_runtime_capability_answer_applied")
+            provider_auth_diagnostic = select_no_runtime_provider_auth_diagnostic(
+                extra=getattr(deps, "extra", {}),
+                intent_plan=tool_intent_plan,
+            )
+            final_assistant = build_no_runtime_capability_answer(provider_auth_diagnostic)
+            _log_step("no_runtime_capability_answer_applied")
 
         if (
             not tool_execution_required
