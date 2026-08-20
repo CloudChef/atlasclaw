@@ -24,6 +24,29 @@ def tool_is_coordination_support(tool: dict[str, Any]) -> bool:
     return bool(tool.get("coordination_only"))
 
 
+def project_explicit_read_only_tools(
+    allowed_tools: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Keep only tools explicitly declared side-effect free.
+
+    Choice-continuation turns may either ask for another value or perform the
+    next lookup.  Unknown tools are excluded rather than inferred from names,
+    descriptions, or the absence of a mutation group.
+    """
+    projected: list[dict[str, Any]] = []
+    removed: list[str] = []
+    for tool in allowed_tools:
+        if not isinstance(tool, dict):
+            continue
+        if tool.get("read_only") is True:
+            projected.append(dict(tool))
+            continue
+        name = str(tool.get("name", "") or "").strip()
+        if name:
+            removed.append(name)
+    return projected, removed
+
+
 def _artifact_turn_has_explicit_targets(intent_plan: ToolIntentPlan) -> bool:
     if intent_plan.action is not ToolIntentAction.CREATE_ARTIFACT:
         return False

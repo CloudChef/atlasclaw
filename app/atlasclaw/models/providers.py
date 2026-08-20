@@ -369,6 +369,7 @@ create PydanticAI Model instance
         from pydantic_ai.providers.openai import OpenAIProvider
 
         from app.atlasclaw.models.openai_chat_compat import (
+            DeepSeekOpenAIChatModel,
             QwenVllmOpenAIChatModel,
             requires_single_leading_system_message,
         )
@@ -393,17 +394,20 @@ create PydanticAI Model instance
             # This works for DeepSeek, OpenRouter, vLLM, and other compatible APIs
             model_kwargs["profile"] = OpenAIModelProfile(
                 openai_chat_thinking_field="reasoning_content",
+                supports_thinking=True,
             )
 
-        model_class = (
-            QwenVllmOpenAIChatModel
-            if requires_single_leading_system_message(
+        normalized_provider_name = str(provider_name or "").strip().lower().replace("_", "-")
+        if normalized_provider_name == "deepseek":
+            model_class = DeepSeekOpenAIChatModel
+        elif requires_single_leading_system_message(
                 provider=provider_name,
                 model=model_id,
                 base_url=config.base_url,
-            )
-            else OpenAIChatModel
-        )
+        ):
+            model_class = QwenVllmOpenAIChatModel
+        else:
+            model_class = OpenAIChatModel
         return model_class(model_id, **model_kwargs)
 
     def _create_anthropic_model(self, model_id: str, config: ProviderConfig) -> Any:

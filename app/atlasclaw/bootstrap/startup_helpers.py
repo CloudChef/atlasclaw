@@ -126,6 +126,7 @@ def create_pydantic_model(token: TokenEntry):
     from pydantic_ai.providers.openai import OpenAIProvider
 
     from app.atlasclaw.models.openai_chat_compat import (
+        DeepSeekOpenAIChatModel,
         QwenVllmOpenAIChatModel,
         requires_single_leading_system_message,
     )
@@ -137,16 +138,21 @@ def create_pydantic_model(token: TokenEntry):
     )
     # Use reasoning_content as the OpenAI-compatible thinking field when available.
     # For models/providers that do not emit it, this remains a no-op.
-    profile = OpenAIModelProfile(openai_chat_thinking_field="reasoning_content")
-    model_class = (
-        QwenVllmOpenAIChatModel
-        if requires_single_leading_system_message(
-            provider=token.provider,
-            model=token.model,
-            base_url=token.base_url,
-        )
-        else OpenAIChatModel
+    normalized_provider = str(token.provider or "").strip().lower().replace("_", "-")
+    profile = OpenAIModelProfile(
+        openai_chat_thinking_field="reasoning_content",
+        supports_thinking=normalized_provider == "deepseek",
     )
+    if normalized_provider == "deepseek":
+        model_class = DeepSeekOpenAIChatModel
+    elif requires_single_leading_system_message(
+        provider=token.provider,
+        model=token.model,
+        base_url=token.base_url,
+    ):
+        model_class = QwenVllmOpenAIChatModel
+    else:
+        model_class = OpenAIChatModel
     return model_class(token.model, provider=provider, profile=profile)
 
 

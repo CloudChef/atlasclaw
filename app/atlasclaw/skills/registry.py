@@ -104,6 +104,8 @@ class SkillMetadata(BaseModel):
         location: Skill source, such as `built-in`, `user`, or `workspace`.
         provider_type: Optional provider type, for example `jira`.
         instance_required: Whether the provider instance must be selected first.
+        auto_select_single_option: Whether one visible data candidate from this
+            read-only tool may advance an active workflow automatically.
     """
     name: str
     description: str = ""
@@ -129,6 +131,8 @@ class SkillMetadata(BaseModel):
     live_data: bool = False
     browser_interaction: bool = False
     public_web: bool = False
+    read_only: bool = False
+    auto_select_single_option: bool = False
 
 
 @dataclass
@@ -222,6 +226,8 @@ class SkillRegistry:
                 "live_data": bool(metadata.live_data),
                 "browser_interaction": bool(metadata.browser_interaction),
                 "public_web": bool(metadata.public_web),
+                "read_only": bool(metadata.read_only),
+                "auto_select_single_option": bool(metadata.auto_select_single_option),
             }
 
     def unregister(self, name: str) -> bool:
@@ -272,6 +278,8 @@ class SkillRegistry:
                 "live_data": bool(meta.live_data),
                 "browser_interaction": bool(meta.browser_interaction),
                 "public_web": bool(meta.public_web),
+                "read_only": bool(meta.read_only),
+                "auto_select_single_option": bool(meta.auto_select_single_option),
             }
             for meta, _ in self._skills.values()
             if str(meta.source or "").strip().lower() != "internal_runtime"
@@ -311,6 +319,8 @@ class SkillRegistry:
                 "live_data": bool(meta.live_data),
                 "browser_interaction": bool(meta.browser_interaction),
                 "public_web": bool(meta.public_web),
+                "read_only": bool(meta.read_only),
+                "auto_select_single_option": bool(meta.auto_select_single_option),
             }
             for meta, _ in self._skills.values()
             if meta.name not in md_derived
@@ -349,6 +359,8 @@ class SkillRegistry:
                 "live_data": bool(meta.live_data),
                 "browser_interaction": bool(meta.browser_interaction),
                 "public_web": bool(meta.public_web),
+                "read_only": bool(meta.read_only),
+                "auto_select_single_option": bool(meta.auto_select_single_option),
             }
             normalized.append(record)
         return normalized
@@ -377,6 +389,8 @@ class SkillRegistry:
                     "result_mode": str(meta.result_mode or "").strip(),
                     "success_contract": dict(meta.success_contract or {}),
                     "coordination_only": bool(meta.coordination_only),
+                    "read_only": bool(meta.read_only),
+                    "auto_select_single_option": bool(meta.auto_select_single_option),
                 }
             )
         return normalized

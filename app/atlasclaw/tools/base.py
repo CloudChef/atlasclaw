@@ -88,6 +88,11 @@ class ToolMetadata:
         browser_interaction: Whether the tool performs interactive browser actions.
         public_web: Whether the tool is a generic public-web lookup/fetch/browse
             capability rather than a provider/private-system integration.
+        read_only: Whether the tool is explicitly guaranteed not to mutate
+            external or persisted state.
+        auto_select_single_option: Whether a sole visible data candidate from
+            this read-only tool may continue an active workflow without another
+            user turn. Operation and confirmation tools must leave this false.
         requires_approval: Whether the tool requires explicit approval.
         routing_visibility: Whether the tool should be visible in the broad
             capability surface for non-follow-up requests.
@@ -102,6 +107,8 @@ class ToolMetadata:
     live_data: bool = False
     browser_interaction: bool = False
     public_web: bool = False
+    read_only: bool = False
+    auto_select_single_option: bool = False
     requires_approval: bool = False
     routing_visibility: str = "contextual"
     aliases: list[str] = field(default_factory=list)

@@ -694,6 +694,11 @@ def _register_md_tool_entry(
     if _capability_is_artifact(capability_class) and result_mode == "llm":
         result_mode = "tool_only_ok"
     success_contract = _extract_success_contract(metadata, tool_id=tool_id)
+    read_only = _extract_read_only(metadata, tool_id=tool_id)
+    auto_select_single_option = _extract_auto_select_single_option(
+        metadata,
+        tool_id=tool_id,
+    )
     try:
         invocation_config = _extract_script_invocation_config(metadata, tool_id=tool_id)
         handler = load_handler_from_file(
@@ -749,6 +754,8 @@ def _register_md_tool_entry(
         ),
         result_mode=result_mode,
         success_contract=success_contract,
+        read_only=read_only,
+        auto_select_single_option=auto_select_single_option,
     )
     registry.register(meta, handler)
     registry._md_tool_owners[tool_name] = entry.qualified_name
@@ -928,6 +935,33 @@ def _extract_success_contract(metadata: dict[str, Any], *, tool_id: str = "") ->
     elif "success_contract" in metadata:
         candidate = metadata.get("success_contract", {})
     return dict(candidate) if isinstance(candidate, dict) else {}
+
+
+def _extract_read_only(metadata: dict[str, Any], *, tool_id: str = "") -> bool:
+    """Return an explicit fail-closed read-only declaration for one tool."""
+    candidate: Any = metadata.get("read_only", False)
+    if tool_id and f"tool_{tool_id}_read_only" in metadata:
+        candidate = metadata.get(f"tool_{tool_id}_read_only", False)
+    if isinstance(candidate, bool):
+        return candidate
+    return str(candidate or "").strip().casefold() in {"1", "true", "yes"}
+
+
+def _extract_auto_select_single_option(
+    metadata: dict[str, Any],
+    *,
+    tool_id: str = "",
+) -> bool:
+    """Return whether one data candidate may be selected without user input."""
+    candidate: Any = metadata.get("auto_select_single_option", False)
+    if tool_id and f"tool_{tool_id}_auto_select_single_option" in metadata:
+        candidate = metadata.get(
+            f"tool_{tool_id}_auto_select_single_option",
+            False,
+        )
+    if isinstance(candidate, bool):
+        return candidate
+    return str(candidate or "").strip().casefold() in {"1", "true", "yes"}
 
 
 def _extract_script_invocation_config(

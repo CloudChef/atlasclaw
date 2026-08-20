@@ -141,24 +141,90 @@ class RunnerExecutionFlowStreamMixin:
         state: dict[str, Any],
         messages: list[dict[str, Any]],
         start_index: int,
+        target_tool_names: list[str],
     ) -> None:
+        state.pop("final_user_output_override", None)
+        state.pop("tool_only_answer_override", None)
+        state.pop("force_tool_only_finalize", None)
         build_answer = getattr(self, "_build_tool_only_markdown_answer_from_messages", None)
         if not callable(build_answer):
             return
+        matching_results = _iter_tool_result_payloads(
+            messages=messages,
+            start_index=start_index,
+            target_tool_names=target_tool_names,
+        )
+        if not matching_results:
+            return
+        tool_name, payload = matching_results[-1]
+        if self._tool_payload_reports_failure(payload) or self._extract_tool_error_signature(
+            payload
+        ):
+            return
         answer = str(
             build_answer(
-                messages=messages,
-                start_index=start_index,
+                messages=[
+                    {
+                        "role": "tool",
+                        "tool_name": tool_name,
+                        "content": payload,
+                    }
+                ],
+                start_index=0,
+                max_items=1,
             )
             or ""
         ).strip()
         if not answer:
+            return
+        if self._is_raw_protocol_json(answer):
             return
         looks_raw = getattr(self, "_looks_like_raw_tool_payload_dump", None)
         if callable(looks_raw) and looks_raw(answer):
             return
         state["tool_only_answer_override"] = answer
         state["force_tool_only_finalize"] = True
+
+    @staticmethod
+    def _is_raw_protocol_json(answer: str) -> bool:
+        """Return whether a candidate loop-stop answer is a raw JSON container."""
+        normalized = str(answer or "").strip()
+        if not normalized or normalized[:1] not in {"{", "["}:
+            return False
+        try:
+            parsed = json.loads(normalized)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return False
+        return isinstance(parsed, (dict, list))
+
+    @staticmethod
+    def _tool_payload_reports_failure(payload: Any) -> bool:
+        """Return whether a structured tool payload explicitly reports failure."""
+        if isinstance(payload, str):
+            normalized = payload.strip()
+            if normalized[:1] not in {"{", "["}:
+                return False
+            try:
+                payload = json.loads(normalized)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return False
+        if isinstance(payload, list):
+            return any(
+                RunnerExecutionFlowStreamMixin._tool_payload_reports_failure(item)
+                for item in payload
+            )
+        if not isinstance(payload, dict):
+            return False
+        if payload.get("success") is False or payload.get("is_error") is True:
+            return True
+        status = str(payload.get("status", "") or payload.get("outcome", "")).strip().lower()
+        if status in {"error", "failed", "failure"}:
+            return True
+        if "content" in payload:
+            return RunnerExecutionFlowStreamMixin._tool_payload_reports_failure(
+                payload.get("content")
+            )
+        return False
 
     def _stash_final_user_output_for_finalize(
         self,
@@ -213,6 +279,7 @@ class RunnerExecutionFlowStreamMixin:
         session_manager = state.get("session_manager")
         run_id = state.get("run_id")
         user_message = state.get("user_message")
+        model_user_message = state.get("model_user_message") or user_message
         system_prompt = state.get("system_prompt")
         max_tool_calls = int(state.get("max_tool_calls") or 0)
         runtime_context_window = state.get("runtime_context_window")
@@ -305,11 +372,11 @@ class RunnerExecutionFlowStreamMixin:
                     settings=self.context_pruning_settings,
                     context_window_tokens=runtime_context_window,
                 )
-            runtime_current_messages = self._deduplicate_message_history(runtime_current_messages)
             merged_current_messages = self._merge_runtime_messages_with_session_prefix(
                 session_message_history=session_message_history,
                 runtime_messages=runtime_current_messages,
                 runtime_base_history_len=runtime_base_history_len,
+                current_turn_user_message=model_user_message,
             )
             state["latest_runtime_messages"] = list(runtime_current_messages)
             state["latest_agent_messages"] = list(merged_current_messages)
@@ -554,6 +621,7 @@ class RunnerExecutionFlowStreamMixin:
                         state=state,
                         messages=list(state.get("latest_agent_messages") or state.get("message_history") or []),
                         start_index=persist_run_output_start_index,
+                        target_tool_names=[repeated_tool_name],
                     )
                     state["repeated_tool_loop"] = {
                         "tool_name": repeated_tool_name,
@@ -641,6 +709,7 @@ class RunnerExecutionFlowStreamMixin:
                     agent_run=agent_run,
                     session_message_history=session_message_history,
                     runtime_base_history_len=runtime_base_history_len,
+                    current_turn_user_message=model_user_message,
                     start_index=persist_run_output_start_index,
                     target_tool_names=current_node_tool_names,
                     previous_result_count=tool_result_count_before_dispatch,
@@ -737,6 +806,12 @@ class RunnerExecutionFlowStreamMixin:
                     ),
                 )
                 if repeated_failure is not None:
+                    self._stash_tool_only_answer_for_loop_stop(
+                        state=state,
+                        messages=latest_messages,
+                        start_index=persist_run_output_start_index,
+                        target_tool_names=[str(repeated_failure["tool_name"])],
+                    )
                     state["repeated_tool_failure"] = repeated_failure
                     yield StreamEvent.runtime_update(
                         "warning",
@@ -766,6 +841,7 @@ class RunnerExecutionFlowStreamMixin:
                         state=state,
                         messages=latest_messages,
                         start_index=persist_run_output_start_index,
+                        target_tool_names=[str(repeated_no_progress["tool_name"])],
                     )
                     state["repeated_tool_no_progress"] = repeated_no_progress
                     yield StreamEvent.runtime_update(
@@ -1116,6 +1192,7 @@ class RunnerExecutionFlowStreamMixin:
         agent_run: Any,
         session_message_history: list[dict[str, Any]],
         runtime_base_history_len: int,
+        current_turn_user_message: str,
         start_index: int,
         target_tool_names: list[str],
         previous_result_count: int,
@@ -1128,11 +1205,11 @@ class RunnerExecutionFlowStreamMixin:
         for attempt in range(safe_attempts):
             latest_runtime_messages = self.history.normalize_messages(agent_run.all_messages())
             latest_runtime_messages = self.history.prune_summary_messages(latest_runtime_messages)
-            latest_runtime_messages = self._deduplicate_message_history(latest_runtime_messages)
             latest_messages = self._merge_runtime_messages_with_session_prefix(
                 session_message_history=session_message_history,
                 runtime_messages=latest_runtime_messages,
                 runtime_base_history_len=runtime_base_history_len,
+                current_turn_user_message=current_turn_user_message,
             )
             latest_messages = overlay_synthetic_tool_messages(
                 messages=latest_messages,

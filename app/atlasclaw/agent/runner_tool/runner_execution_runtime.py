@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import asynccontextmanager, nullcontext
 from typing import Any, AsyncIterator, Optional
 
@@ -245,6 +246,10 @@ class RunnerExecutionRuntimeMixin:
                 node_type = type(node).__name__.lower()
                 if node_type == "end":
                     return
+                if "calltools" in node_type:
+                    self._deduplicate_identical_function_tool_calls(
+                        node,
+                    )
                 following_node = await next_fn(node)
                 try:
                     setattr(node, "_atlas_next_node", following_node)
@@ -260,7 +265,74 @@ class RunnerExecutionRuntimeMixin:
                 node = await iterator.__anext__()
             except StopAsyncIteration:
                 return
+            if "calltools" in type(node).__name__.lower():
+                self._deduplicate_identical_function_tool_calls(
+                    node,
+                )
             yield node
+
+    @staticmethod
+    def _canonical_tool_call_args(raw_args: Any) -> Optional[str]:
+        """Return a stable in-memory signature for JSON-compatible tool arguments."""
+        value = raw_args
+        if isinstance(raw_args, str):
+            try:
+                value = json.loads(raw_args)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                return f"raw:{raw_args}"
+        try:
+            return json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _deduplicate_identical_function_tool_calls(
+        cls,
+        node: Any,
+    ) -> None:
+        """Keep the first identical ordinary function call in the current turn.
+
+        Tool call IDs are intentionally excluded from the signature because models
+        may emit the same call twice with different protocol IDs. Calls with
+        different arguments and non-function tool parts remain untouched.
+        """
+        model_response = getattr(node, "model_response", None)
+        parts = getattr(model_response, "parts", None)
+        if not isinstance(parts, list):
+            return
+
+        # Duplicate suppression is intentionally scoped to one model response.
+        # A later identical read may be a fresh poll or revalidation after
+        # external state changed, so signatures must not survive this node.
+        seen: set[tuple[str, str]] = set()
+        deduplicated: list[Any] = []
+        changed = False
+        for part in parts:
+            part_kind = str(getattr(part, "part_kind", "") or "").replace("_", "-")
+            tool_kind = getattr(part, "tool_kind", None)
+            tool_name = str(getattr(part, "tool_name", "") or "").strip()
+            if part_kind != "tool-call" or tool_kind is not None or not tool_name:
+                deduplicated.append(part)
+                continue
+            canonical_args = cls._canonical_tool_call_args(getattr(part, "args", None))
+            if canonical_args is None:
+                deduplicated.append(part)
+                continue
+            signature = (tool_name, canonical_args)
+            if signature in seen:
+                changed = True
+                continue
+            seen.add(signature)
+            deduplicated.append(part)
+
+        if changed:
+            model_response.parts = deduplicated
+
     def _is_model_request_node(self, node: Any) -> bool:
         """Return whether a node represents a model request boundary."""
         node_type = type(node).__name__.lower()

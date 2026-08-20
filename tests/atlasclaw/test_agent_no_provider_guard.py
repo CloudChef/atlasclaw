@@ -72,12 +72,25 @@ class _PromptOnlyNoToolAgent:
         self.override_calls.append(dict(kwargs))
         yield
 
-    async def run(self, user_message, *, deps):
-        self.run_calls.append({"user_message": user_message, "deps": deps})
+    async def run(
+        self,
+        user_message,
+        *,
+        deps,
+        output_type=None,
+        retries=None,
+        model_settings=None,
+    ):
+        self.run_calls.append(
+            {
+                "user_message": user_message,
+                "deps": deps,
+                "retries": retries,
+                "model_settings": model_settings,
+            }
+        )
         prompt_text = str(user_message or "")
-        if "Classify the latest turn when no runtime capability is available." in prompt_text:
-            raise AssertionError("A valid capability selector outcome must skip the fallback classifier")
-        if "Select authorized capability targets for this turn." in prompt_text:
+        if prompt_text.startswith("Plan the current user turn."):
             request_text = prompt_text.split("User request:\n", 1)[-1].split(
                 "\n\nRecent history:",
                 1,
@@ -86,19 +99,15 @@ class _PromptOnlyNoToolAgent:
                 marker in request_text
                 for marker in ("申请", "确定", "VM", "vm")
             )
-            return SimpleNamespace(
-                output=json.dumps(
-                    {
-                        "outcome": (
-                            "unavailable_capability"
-                            if needs_runtime
-                            else "ordinary_conversation"
-                        ),
-                        "targets": [],
-                        "reason": "Deterministic no-provider selector outcome.",
-                    }
-                )
-            )
+            payload = {
+                "route": "start_new" if needs_runtime else "ordinary",
+                "action": "use_tools" if needs_runtime else "respond",
+                "target_capability_ids": [],
+                "reason": "prompt_only_test_plan",
+            }
+            output_model = getattr(output_type, "output", output_type)
+            output = output_model.model_validate(payload) if output_type else payload
+            return SimpleNamespace(output=output)
         return SimpleNamespace(output="direct recovery was not expected")
 
     @asynccontextmanager

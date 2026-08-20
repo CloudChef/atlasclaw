@@ -9,7 +9,7 @@ import logging
 from pathlib import Path
 import re
 import time
-from typing import Any, AsyncIterator, Optional
+from typing import Any, AsyncIterator, Iterator, Optional
 
 from app.atlasclaw.agent.prompt_builder import PromptMode
 from app.atlasclaw.agent.context_pruning import prune_context_messages, should_apply_context_pruning
@@ -33,6 +33,7 @@ from app.atlasclaw.agent.selected_capability import (
 )
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import normalize_tool_result_mode
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
+    project_explicit_read_only_tools,
     project_minimal_toolset,
     tool_is_coordination_support,
     turn_action_requires_tool_execution,
@@ -42,6 +43,9 @@ from app.atlasclaw.agent.thinking_stream import ThinkingStreamEmitter
 from app.atlasclaw.agent.tool_gate import CapabilityMatcher
 from app.atlasclaw.agent.tool_gate_models import (
     CapabilitySelectorOutcome,
+    ConversationTurnAction,
+    ConversationTurnPlan,
+    ConversationTurnRoute,
     ToolGateDecision,
     ToolIntentAction,
     ToolIntentPlan,
@@ -145,8 +149,13 @@ def should_resolve_target_md_skill(intent_plan: ToolIntentPlan | None) -> bool:
     return turn_action_requires_tool_execution(intent_plan)
 
 
-def build_user_selected_tool_intent_plan(deps: SkillDeps) -> ToolIntentPlan | None:
-    """Translate a validated slash capability into a runtime tool plan."""
+def build_user_selected_capability_scope(deps: SkillDeps) -> ToolIntentPlan | None:
+    """Translate a validated explicit capability into a planning scope.
+
+    A selection constrains which capability a turn may start; it does not prove
+    that the current user message needs an external action.  The conversation
+    planner decides whether the scoped turn collects input or uses tools.
+    """
     selected = get_selected_capability_from_deps(deps)
     if not selected:
         return None
@@ -156,7 +165,7 @@ def build_user_selected_tool_intent_plan(deps: SkillDeps) -> ToolIntentPlan | No
         return None
 
     return ToolIntentPlan(
-        action=ToolIntentAction.USE_TOOLS,
+        action=ToolIntentAction.DIRECT_ANSWER,
         target_provider_instances=targets.provider_instances,
         target_provider_types=targets.provider_types,
         target_provider_skill_names=targets.provider_skill_names,
@@ -166,6 +175,29 @@ def build_user_selected_tool_intent_plan(deps: SkillDeps) -> ToolIntentPlan | No
         target_tool_names=targets.tool_names,
         reason="user_selected_capability",
     )
+
+
+def _restrict_capability_index_to_selected_scope(
+    *,
+    capability_index: list[dict[str, Any]],
+    scope_plan: ToolIntentPlan | None,
+) -> list[dict[str, Any]]:
+    """Keep only capability entries covered by one validated explicit selection."""
+    if scope_plan is None:
+        return list(capability_index)
+    selected_ids = {
+        _normalize_text(capability_id).lower()
+        for capability_id in selected_capability_ids_from_intent_plan(scope_plan)
+        if _normalize_text(capability_id)
+    }
+    if not selected_ids:
+        return []
+    return [
+        entry
+        for entry in capability_index
+        if isinstance(entry, dict)
+        and _normalize_text(entry.get("capability_id", "")).lower() in selected_ids
+    ]
 
 
 def _selected_plan_matches_active_capability(
@@ -472,6 +504,31 @@ def _recent_tool_names_from_transcript(
                 continue
             _append_tool_name(summary.get("name", "") or summary.get("tool_name", ""))
     return recent_tool_names
+
+
+def _iter_transcript_tool_results(
+    message: dict[str, Any],
+) -> Iterator[tuple[str, Any]]:
+    """Yield real tool results from either persisted transcript representation.
+
+    Session history can preserve a tool return as a standalone ``role=tool``
+    message or as an entry in an assistant message's ``tool_results`` list.
+    Both forms are produced by the runtime and carry equivalent provenance, so
+    trace-bound workflow handling must consume them identically.
+    """
+    role = str(message.get("role", "") or "").strip().lower()
+    if role in {"tool", "toolresult", "tool_result"}:
+        tool_name = str(message.get("tool_name", "") or message.get("name", "")).strip()
+        yield tool_name, message.get("content")
+
+    tool_results = message.get("tool_results", []) or []
+    if not isinstance(tool_results, list):
+        return
+    for result in tool_results:
+        if not isinstance(result, dict):
+            continue
+        tool_name = str(result.get("tool_name", "") or result.get("name", "")).strip()
+        yield tool_name, result.get("content")
 
 
 def _infer_active_skill_from_transcript(
@@ -1045,6 +1102,8 @@ def _parse_target_md_skill_workflow_metadata(value: Any) -> Any:
 
 def _infer_active_request_trace_id(
     recent_history: list[dict[str, Any]],
+    *,
+    allowed_tool_names: Optional[set[str]] = None,
 ) -> Optional[str]:
     """Infer the active internal_request_trace_id from recent tool metadata.
 
@@ -1057,32 +1116,60 @@ def _infer_active_request_trace_id(
     for message in reversed(recent_history):
         if not isinstance(message, dict):
             continue
-        if str(message.get("role", "") or "").strip().lower() != "tool":
-            continue
-        content = message.get("content")
-        if not isinstance(content, dict):
-            continue
-        internal = content.get("_internal")
-        if internal is None:
-            continue
-        # _internal may be a JSON string or a dict/list
-        if isinstance(internal, str):
-            try:
-                internal = json.loads(internal)
-            except (TypeError, ValueError, json.JSONDecodeError):
+        tool_results = list(_iter_transcript_tool_results(message))
+        for tool_name, content in reversed(tool_results):
+            if (
+                allowed_tool_names is not None
+                and tool_name.strip().lower() not in allowed_tool_names
+            ):
                 continue
-        # Could be a list of entries or a single dict
-        if isinstance(internal, list):
-            for item in reversed(internal):
-                if isinstance(item, dict):
-                    trace_id = item.get("internal_request_trace_id")
-                    if isinstance(trace_id, str) and trace_id.strip():
-                        return trace_id.strip()
-        elif isinstance(internal, dict):
-            trace_id = internal.get("internal_request_trace_id")
-            if isinstance(trace_id, str) and trace_id.strip():
-                return trace_id.strip()
+            if not isinstance(content, dict):
+                continue
+            internal = _parse_target_md_skill_workflow_metadata(content.get("_internal"))
+            trace_id = _extract_trace_id_from_metadata(internal)
+            if trace_id:
+                return trace_id
     return None
+
+
+def _choice_prompt_has_causal_active_tool_result(
+    message_history: list[dict[str, Any]],
+    *,
+    prompt_message_index: int,
+    allowed_tool_names: set[str],
+    active_trace_id: str,
+    expected_provider_instance_refs: set[str],
+) -> bool:
+    """Bind a visible choice prompt to its immediately preceding workflow result."""
+
+    if not 0 <= prompt_message_index < len(message_history):
+        return False
+    for message_index in range(prompt_message_index, -1, -1):
+        message = message_history[message_index]
+        if not isinstance(message, dict):
+            continue
+        results = list(_iter_transcript_tool_results(message))
+        if results:
+            tool_name, content = results[-1]
+            normalized_name = str(tool_name or "").strip().casefold()
+            if normalized_name not in allowed_tool_names or not isinstance(content, dict):
+                return False
+            internal = _parse_target_md_skill_workflow_metadata(content.get("_internal"))
+            if _extract_trace_id_from_metadata(internal) != active_trace_id:
+                return False
+            observed_provider_refs = _extract_provider_instance_refs_from_metadata(internal)
+            return (
+                not expected_provider_instance_refs
+                or observed_provider_refs == expected_provider_instance_refs
+            )
+        if message_index == prompt_message_index:
+            continue
+        role = str(message.get("role", "") or "").strip().lower()
+        if role == "user":
+            return False
+        if role == "assistant" and str(message.get("content", "") or "").strip():
+            return False
+    return False
 
 
 def _extract_trace_id_from_metadata(metadata: Any) -> Optional[str]:
@@ -1098,6 +1185,20 @@ def _extract_trace_id_from_metadata(metadata: Any) -> Optional[str]:
                 if isinstance(trace_id, str) and trace_id.strip():
                     return trace_id.strip()
     return None
+
+
+def _extract_provider_instance_refs_from_metadata(metadata: Any) -> set[str]:
+    """Extract normalized Provider instance references from workflow metadata."""
+
+    entries = metadata if isinstance(metadata, list) else [metadata]
+    refs: set[str] = set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        provider_instance_ref = str(entry.get("provider_instance_ref", "") or "").strip()
+        if provider_instance_ref:
+            refs.add(provider_instance_ref.casefold())
+    return refs
 
 
 def _extract_workflow_candidate_items_from_metadata(
@@ -1122,7 +1223,7 @@ def _extract_workflow_candidate_items_from_metadata(
 
 def _workflow_candidate_selection_tokens(item: dict[str, Any]) -> set[str]:
     tokens: set[str] = set()
-    for key in ("id", "entityId", "key", "code"):
+    for key in ("id", "key", "code"):
         value = str(item.get(key) or "").strip()
         if value:
             tokens.add(value)
@@ -1138,7 +1239,7 @@ def _normalize_workflow_candidate_text(value: Any) -> str:
 
 def _workflow_candidate_mention_tokens(item: dict[str, Any]) -> set[str]:
     tokens: set[str] = set()
-    for key in ("name", "nameZh", "label", "title", "displayName", "display_name"):
+    for key in ("name", "label", "title", "displayName", "display_name"):
         token = _normalize_workflow_candidate_text(item.get(key))
         if len(token) >= 2 and not token.isdigit():
             tokens.add(token)
@@ -1253,13 +1354,13 @@ def _collect_same_flow_following_messages(
     following_messages: list[dict[str, Any]] = []
     for message in recent_history[start_index + 1 :]:
         if entry_trace_id and isinstance(message, dict):
-            if str(message.get("role", "") or "").strip().lower() == "tool":
-                content = message.get("content")
-                if isinstance(content, dict) and "_internal" in content:
-                    parsed_metadata = _parse_target_md_skill_workflow_metadata(content.get("_internal"))
-                    following_trace_id = _extract_trace_id_from_metadata(parsed_metadata)
-                    if following_trace_id and following_trace_id != entry_trace_id:
-                        break
+            for _, content in _iter_transcript_tool_results(message):
+                if not isinstance(content, dict) or "_internal" not in content:
+                    continue
+                parsed_metadata = _parse_target_md_skill_workflow_metadata(content.get("_internal"))
+                following_trace_id = _extract_trace_id_from_metadata(parsed_metadata)
+                if following_trace_id and following_trace_id != entry_trace_id:
+                    return following_messages
         following_messages.append(message)
     return following_messages
 
@@ -1270,6 +1371,7 @@ def build_target_md_skill_workflow_context(
     active_trace_id: Optional[str] = None,
     max_entries: int = 6,
     max_chars: int = 12000,
+    allow_legacy_fallback: bool = True,
 ) -> Optional[dict[str, Any]]:
     """Collect recent tool metadata for the current selected markdown skill only.
 
@@ -1290,6 +1392,8 @@ def build_target_md_skill_workflow_context(
         resolved_trace_id = active_trace_id.strip()
     else:
         resolved_trace_id = _infer_active_request_trace_id(recent_history)
+    if not resolved_trace_id and not allow_legacy_fallback:
+        return None
 
     safe_max_entries = max(1, int(max_entries or 0))
     safe_max_chars = max(512, int(max_chars or 0))
@@ -1297,74 +1401,75 @@ def build_target_md_skill_workflow_context(
     same_trace_size = 0
     legacy_metadata: list[dict[str, Any]] = []
     legacy_size = 0
+    stop_scan = False
 
     for message_index in range(len(recent_history) - 1, -1, -1):
         message = recent_history[message_index]
         if not isinstance(message, dict):
             continue
-        if str(message.get("role", "") or "").strip().lower() != "tool":
-            continue
-        content = message.get("content")
-        if not isinstance(content, dict):
-            continue
-        if "_internal" not in content:
-            continue
-
-        metadata = _parse_target_md_skill_workflow_metadata(content.get("_internal"))
-        if metadata is None:
-            continue
-
-        # Filter by trace ID if one is active
-        if resolved_trace_id:
-            entry_trace_id = _extract_trace_id_from_metadata(metadata)
-            if entry_trace_id and entry_trace_id != resolved_trace_id:
-                # Belongs to a different request flow instance — skip
+        tool_results = list(_iter_transcript_tool_results(message))
+        for tool_name, content in reversed(tool_results):
+            if not isinstance(content, dict) or "_internal" not in content:
+                continue
+            metadata = _parse_target_md_skill_workflow_metadata(content.get("_internal"))
+            if metadata is None:
                 continue
 
-        entry_trace_id = _extract_trace_id_from_metadata(metadata)
-        metadata = _narrow_target_md_skill_workflow_metadata(
-            metadata,
-            following_messages=_collect_same_flow_following_messages(
-                recent_history=recent_history,
-                start_index=message_index,
-                entry_trace_id=entry_trace_id,
-            ),
-        )
-
-        entry = {
-            "tool_name": str(message.get("tool_name", "") or message.get("name", "")).strip(),
-            "metadata": metadata,
-        }
-        serialized_entry = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
-        if len(serialized_entry) > safe_max_chars:
-            continue
-        if resolved_trace_id:
+            # Filter by trace ID if one is active.
             entry_trace_id = _extract_trace_id_from_metadata(metadata)
-            if entry_trace_id == resolved_trace_id:
-                if same_trace_metadata and same_trace_size + len(serialized_entry) > safe_max_chars:
-                    break
-                same_trace_metadata.append(entry)
-                same_trace_size += len(serialized_entry)
-                if len(same_trace_metadata) >= safe_max_entries:
-                    break
+            if resolved_trace_id and entry_trace_id and entry_trace_id != resolved_trace_id:
                 continue
-            if entry_trace_id:
+
+            metadata = _narrow_target_md_skill_workflow_metadata(
+                metadata,
+                following_messages=_collect_same_flow_following_messages(
+                    recent_history=recent_history,
+                    start_index=message_index,
+                    entry_trace_id=entry_trace_id,
+                ),
+            )
+
+            entry = {"tool_name": tool_name, "metadata": metadata}
+            serialized_entry = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
+            if len(serialized_entry) > safe_max_chars:
+                continue
+            if resolved_trace_id:
+                entry_trace_id = _extract_trace_id_from_metadata(metadata)
+                if entry_trace_id == resolved_trace_id:
+                    if same_trace_metadata and same_trace_size + len(serialized_entry) > safe_max_chars:
+                        stop_scan = True
+                        break
+                    same_trace_metadata.append(entry)
+                    same_trace_size += len(serialized_entry)
+                    if len(same_trace_metadata) >= safe_max_entries:
+                        stop_scan = True
+                        break
+                    continue
+                if entry_trace_id:
+                    continue
+                if legacy_metadata and legacy_size + len(serialized_entry) > safe_max_chars:
+                    continue
+                if len(legacy_metadata) >= safe_max_entries:
+                    continue
+                legacy_metadata.append(entry)
+                legacy_size += len(serialized_entry)
                 continue
             if legacy_metadata and legacy_size + len(serialized_entry) > safe_max_chars:
-                continue
-            if len(legacy_metadata) >= safe_max_entries:
-                continue
+                stop_scan = True
+                break
             legacy_metadata.append(entry)
             legacy_size += len(serialized_entry)
-            continue
-        if legacy_metadata and legacy_size + len(serialized_entry) > safe_max_chars:
-            break
-        legacy_metadata.append(entry)
-        legacy_size += len(serialized_entry)
-        if len(legacy_metadata) >= safe_max_entries:
+            if len(legacy_metadata) >= safe_max_entries:
+                stop_scan = True
+                break
+        if stop_scan:
             break
 
-    recent_tool_metadata = same_trace_metadata if same_trace_metadata else legacy_metadata
+    recent_tool_metadata = (
+        same_trace_metadata
+        if same_trace_metadata
+        else (legacy_metadata if allow_legacy_fallback else [])
+    )
     if not recent_tool_metadata:
         return None
 
@@ -1373,6 +1478,34 @@ def build_target_md_skill_workflow_context(
     if resolved_trace_id:
         result["internal_request_trace_id"] = resolved_trace_id
     return result
+
+
+def _workflow_context_matches_provider_instances(
+    workflow_context: dict[str, Any],
+    intent_plan: ToolIntentPlan,
+) -> bool:
+    """Require traced Provider workflow state to match its authorized instance."""
+
+    expected_refs = {
+        str(item or "").strip().casefold()
+        for item in intent_plan.target_provider_instances or []
+        if str(item or "").strip()
+    }
+    if not expected_refs:
+        return True
+    observed_refs: set[str] = set()
+    for entry in workflow_context.get("recent_tool_metadata", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        metadata = entry.get("metadata")
+        if not isinstance(metadata, dict):
+            continue
+        provider_instance_ref = str(
+            metadata.get("provider_instance_ref", "") or ""
+        ).strip()
+        if provider_instance_ref:
+            observed_refs.add(provider_instance_ref.casefold())
+    return bool(observed_refs) and observed_refs == expected_refs
 
 
 def prune_auto_selected_provider_instance_tools(
@@ -1741,6 +1874,7 @@ class RunnerExecutionPreparePhaseMixin:
         runtime_base_history_len = state.get("runtime_base_history_len")
         persist_run_output_start_index = state.get("persist_run_output_start_index")
         prompt_mode = state.get("prompt_mode") or ""
+        conversation_turn_plan = state.get("conversation_turn_plan")
         try:
             if _emit_lifecycle_bounds:
                 yield StreamEvent.lifecycle_start()
@@ -1832,7 +1966,6 @@ class RunnerExecutionPreparePhaseMixin:
                     settings=self.context_pruning_settings,
                     context_window_tokens=runtime_context_window,
                 )
-            message_history = self._deduplicate_message_history(message_history)
             context_history_for_hooks = list(message_history)
             session_title = str(getattr(session, "title", "") or "")
             await self.runtime_events.trigger_message_received(
@@ -1914,15 +2047,13 @@ class RunnerExecutionPreparePhaseMixin:
             model_user_message = user_message
             if isinstance(deps.extra, dict):
                 deps.extra.pop("current_follow_up_context", None)
-            target_md_skill_workflow_context = build_target_md_skill_workflow_context(
-                recent_history=message_history,
-            )
             transcript_active_skill = None
             transcript_active_provider_skill = None
             capability_index: list[dict[str, Any]] | None = collect_capability_index_snapshot(
                 agent=runtime_agent or self.agent,
                 deps=deps,
             )
+            planning_capability_index = list(capability_index or [])
             md_skills_snapshot = (
                 list(deps.extra.get("md_skills_snapshot") or [])
                 if isinstance(deps.extra, dict)
@@ -1955,14 +2086,16 @@ class RunnerExecutionPreparePhaseMixin:
             has_transcript_active_capability = bool(
                 transcript_active_provider_skill or transcript_active_skill
             )
-            selected_tool_intent_plan = build_user_selected_tool_intent_plan(deps)
+            selected_capability_scope = build_user_selected_capability_scope(deps)
             preselected_md_skill_plan = build_preselected_md_skill_intent_plan(deps)
             authenticated_webhook_authority = (
                 isinstance(getattr(deps, "extra", None), dict)
                 and deps.extra.get("authenticated_webhook_authority") is True
             )
             capability_selector_intent_plan: ToolIntentPlan | None = None
-            capability_selector_result: ToolIntentPlan | None = None
+            conversation_turn_plan: ConversationTurnPlan | None = None
+            workflow_context_for_execution: Optional[dict[str, Any]] = None
+            choice_continuation_fast_path = False
             selector_elapsed_ms = 0
             selector_outcome = ""
             selector_attempted = False
@@ -2007,63 +2140,30 @@ class RunnerExecutionPreparePhaseMixin:
                         preselected_md_skill_plan.target_tool_names
                     ),
                 )
-            elif selected_tool_intent_plan is not None:
-                if _selected_plan_matches_active_capability(
-                    intent_plan=selected_tool_intent_plan,
-                    active_provider_skill=transcript_active_provider_skill,
-                    active_skill=transcript_active_skill,
-                ):
-                    resolved_tool_request, resolved_follow_up_context = (
-                        self._build_active_capability_continuation_request(
-                            user_message=user_message,
-                            recent_history=message_history,
-                        )
-                    )
-                    tool_request_message = resolved_tool_request
-                    used_follow_up_context = resolved_follow_up_context
-                    model_user_message = (
-                        tool_request_message
-                        if resolved_follow_up_context and tool_request_message != user_message
-                        else user_message
-                    )
-                    _log_step(
-                        "user_selected_capability_active_continuation",
-                        target_provider_skill_names=list(
-                            selected_tool_intent_plan.target_provider_skill_names
-                        ),
-                        target_skill_names=list(selected_tool_intent_plan.target_skill_names),
-                        used_follow_up_context=used_follow_up_context,
-                    )
-                metadata_candidates = {
-                    "reason": "user_selected_capability",
-                    "confidence": 1.0,
-                    "preferred_provider_instances": list(
-                        selected_tool_intent_plan.target_provider_instances
-                    ),
-                    "preferred_provider_types": list(selected_tool_intent_plan.target_provider_types),
-                    "preferred_provider_skill_names": list(
-                        selected_tool_intent_plan.target_provider_skill_names
-                    ),
-                    "preferred_group_ids": list(selected_tool_intent_plan.target_group_ids),
-                    "preferred_capability_classes": list(
-                        selected_tool_intent_plan.target_capability_classes
-                    ),
-                    "preferred_tool_names": list(selected_tool_intent_plan.target_tool_names),
-                    "preferred_skill_names": list(selected_tool_intent_plan.target_skill_names),
-                }
-                _log_step(
-                    "user_selected_capability_applied",
-                    target_provider_instances=list(
-                        selected_tool_intent_plan.target_provider_instances
-                    ),
-                    target_provider_types=list(selected_tool_intent_plan.target_provider_types),
-                    target_provider_skill_names=list(
-                        selected_tool_intent_plan.target_provider_skill_names
-                    ),
-                    target_skill_names=list(selected_tool_intent_plan.target_skill_names),
-                    target_tool_names=list(selected_tool_intent_plan.target_tool_names),
-                )
             else:
+                if selected_capability_scope is not None:
+                    planning_capability_index = _restrict_capability_index_to_selected_scope(
+                        capability_index=planning_capability_index,
+                        scope_plan=selected_capability_scope,
+                    )
+                    if not _selected_plan_matches_active_capability(
+                        intent_plan=selected_capability_scope,
+                        active_provider_skill=transcript_active_provider_skill,
+                        active_skill=transcript_active_skill,
+                    ):
+                        transcript_active_provider_skill = None
+                        transcript_active_skill = None
+                        has_transcript_active_capability = False
+                    _log_step(
+                        "user_selected_capability_scope_applied",
+                        target_provider_skill_names=list(
+                            selected_capability_scope.target_provider_skill_names
+                        ),
+                        target_skill_names=list(
+                            selected_capability_scope.target_skill_names
+                        ),
+                        indexed_capability_count=len(planning_capability_index),
+                    )
                 filtered_tools, hidden_implicit_tools = filter_implicit_only_tools(available_tools)
                 if hidden_implicit_tools:
                     available_tools = filtered_tools
@@ -2140,90 +2240,273 @@ class RunnerExecutionPreparePhaseMixin:
                     resolved_tool_request=tool_request_message,
                 )
                 if capability_selector_intent_plan is None:
-                    usage_profile_context = ""
-                    active_memory = getattr(self, "active_memory", None)
-                    usage_recall = getattr(
-                        active_memory,
-                        "recall_usage_profile_for_routing",
-                        None,
-                    )
-                    try:
-                        usage_profile_result = (
-                            await usage_recall(deps=deps, session_key=session_key)
-                            if callable(usage_recall)
-                            else None
-                        )
-                    except Exception as exc:
-                        logger.warning("usage profile routing recall failed open: %s", exc)
-                        usage_profile_result = None
-                    usage_profile_failed = isinstance(usage_profile_result, BaseException)
                     if isinstance(deps.extra, dict):
                         deps.extra["usage_profile_routing"] = {
-                            "status": (
-                                "error"
-                                if usage_profile_failed
-                                else str(getattr(usage_profile_result, "status", "") or "")
-                            ),
-                            "elapsed_ms": int(
-                                getattr(usage_profile_result, "elapsed_ms", 0) or 0
-                            ),
-                            "result_count": int(
-                                getattr(usage_profile_result, "result_count", 0) or 0
-                            ),
+                            "status": "not_used_by_main_turn_planner",
+                            "elapsed_ms": 0,
+                            "result_count": 0,
                         }
-                    usage_profile_context = str(
-                        getattr(usage_profile_result, "context", "") or ""
-                    ).strip()
-                    if usage_profile_context:
-                        _log_step(
-                            "usage_profile_routing_hints_injected",
-                            status=str(getattr(usage_profile_result, "status", "") or ""),
-                            result_count=int(
-                                getattr(usage_profile_result, "result_count", 0) or 0
+                    active_workflow_intent_plan: ToolIntentPlan | None = None
+                    strict_active_workflow_context: Optional[dict[str, Any]] = None
+                    active_skill_instructions = ""
+                    active_trace_id = ""
+                    active_capability_context = ""
+                    if has_transcript_active_capability:
+                        candidate_active_context = (
+                            self._format_active_capability_name(
+                                active_provider_skill=transcript_active_provider_skill or "",
+                                active_skill=transcript_active_skill or "",
+                            )
+                        )
+                        active_workflow_intent_plan = self._coerce_capability_selector_payload(
+                            payload={
+                                "outcome": CapabilitySelectorOutcome.AUTHORIZED_CONTEXT.value,
+                                "targets": [candidate_active_context],
+                                "reason": "Active workflow scope retained for main-model planning.",
+                            },
+                            capability_index=planning_capability_index,
+                        )
+                        active_entry = next(
+                            (
+                                entry
+                                for entry in planning_capability_index
+                                if isinstance(entry, dict)
+                                and str(entry.get("capability_id", "") or "").strip()
+                                == candidate_active_context
                             ),
-                            elapsed_ms=int(getattr(usage_profile_result, "elapsed_ms", 0) or 0),
+                            None,
                         )
-                    selector_user_message = tool_request_message
-                    active_capability_context = (
-                        self._format_active_capability_name(
-                            active_provider_skill=transcript_active_provider_skill or "",
-                            active_skill=transcript_active_skill or "",
+                        active_tool_names = {
+                            str(name or "").strip().lower()
+                            for name in (
+                                (active_entry or {}).get("declared_tool_names", []) or []
+                            )
+                            if str(name or "").strip()
+                        }
+                        active_trace_id = (
+                            _infer_active_request_trace_id(
+                                message_history,
+                                allowed_tool_names=active_tool_names,
+                            )
+                            if active_tool_names
+                            else None
+                        ) or ""
+                        strict_active_workflow_context = build_target_md_skill_workflow_context(
+                            recent_history=message_history,
+                            active_trace_id=active_trace_id or None,
+                            allow_legacy_fallback=False,
                         )
-                        if has_transcript_active_capability
-                        else ""
+                        if (
+                            active_trace_id
+                            and isinstance(strict_active_workflow_context, dict)
+                            and str(
+                                strict_active_workflow_context.get(
+                                    "internal_request_trace_id", ""
+                                )
+                                or ""
+                            ).strip()
+                            == active_trace_id
+                            and active_workflow_intent_plan is not None
+                            and _workflow_context_matches_provider_instances(
+                                strict_active_workflow_context,
+                                active_workflow_intent_plan,
+                            )
+                        ):
+                            active_capability_context = candidate_active_context
+                            planning_target_md_skill = resolve_selected_md_skill_target(
+                                agent=runtime_agent or self.agent,
+                                deps=deps,
+                                intent_plan=active_workflow_intent_plan,
+                                max_file_bytes=int(
+                                    getattr(
+                                        self.prompt_builder.config,
+                                        "md_skills_max_file_bytes",
+                                        262144,
+                                    )
+                                    or 262144
+                                ),
+                            )
+                            active_skill_instructions = str(
+                                (planning_target_md_skill or {}).get("instructions", "") or ""
+                            ).strip()
+                        else:
+                            # A transcript skill name alone is not workflow authority.
+                            # Without same-trace metadata, this turn must be planned as a
+                            # new request rather than inheriting an unrelated workflow.
+                            active_workflow_intent_plan = None
+                            strict_active_workflow_context = None
+                            active_trace_id = ""
+                    exact_choice = (
+                        self._resolve_exact_choice_reply(
+                            user_message=user_message,
+                            recent_history=message_history,
+                        )
+                        if active_workflow_intent_plan is not None
+                        and active_trace_id
+                        and isinstance(strict_active_workflow_context, dict)
+                        else None
                     )
-                    yield StreamEvent.runtime_update(
-                        "reasoning",
-                        "Selecting authorized capabilities.",
-                        metadata={
-                            "phase": "capability_selection",
-                            "elapsed": round(time.monotonic() - start_time, 1),
+                    if exact_choice is not None and not _choice_prompt_has_causal_active_tool_result(
+                        message_history,
+                        prompt_message_index=exact_choice.prompt_message_index,
+                        allowed_tool_names=active_tool_names,
+                        active_trace_id=active_trace_id,
+                        expected_provider_instance_refs={
+                            str(item or "").strip().casefold()
+                            for item in active_workflow_intent_plan.target_provider_instances or []
+                            if str(item or "").strip()
                         },
-                    )
-                    selector_started_at = time.monotonic()
-                    selector_attempted = True
-                    capability_selector_result = await self._select_capability_intent_plan_with_model(
-                        agent=runtime_agent or self.agent,
-                        deps=deps,
-                        user_message=selector_user_message,
-                        recent_history=message_history,
-                        capability_index=capability_index,
-                        usage_profile_context=usage_profile_context,
-                        active_capability_context=active_capability_context,
-                    )
-                    selector_elapsed_ms = round(
-                        (time.monotonic() - selector_started_at) * 1000
-                    )
-                    if capability_selector_result is None:
+                    ):
+                        exact_choice = None
+                    if exact_choice is not None:
+                        choice_continuation_fast_path = True
+                        used_follow_up_context = True
+                        model_user_message = (
+                            f"{tool_request_message}\n\n"
+                            "Core resolved the latest visible choice exactly:\n"
+                            f"Selected option number: {exact_choice.ordinal}.\n"
+                            "Continue the active workflow from this selected value."
+                        ).strip()
+                        conversation_turn_plan = ConversationTurnPlan(
+                            route=ConversationTurnRoute.CONTINUE_ACTIVE,
+                            action=ConversationTurnAction.RESPOND,
+                            reason="Exact visible choice continued the active workflow.",
+                        )
+                        _log_step(
+                            "exact_choice_continuation_resolved",
+                            match_mode=exact_choice.match_mode,
+                            ordinal=exact_choice.ordinal,
+                            active_trace_bound=True,
+                        )
+                    else:
+                        yield StreamEvent.runtime_update(
+                            "reasoning",
+                            "Planning the current conversation turn.",
+                            metadata={
+                                "phase": "conversation_turn_planning",
+                                "elapsed": round(time.monotonic() - start_time, 1),
+                            },
+                        )
+                        selector_started_at = time.monotonic()
+                        selector_attempted = True
+                        conversation_turn_plan = await self._plan_conversation_turn_with_model(
+                            agent=runtime_agent or self.agent,
+                            deps=deps,
+                            # Plan from the real user turn. Synthetic follow-up context
+                            # becomes execution input only after the typed route accepts
+                            # CONTINUE_ACTIVE.
+                            user_message=user_message,
+                            recent_history=message_history,
+                            capability_index=planning_capability_index,
+                            # An explicit selection narrows the authorized start-new
+                            # scope, while active continuations use the strict trace
+                            # context assembled above.
+                            active_capability_context=active_capability_context,
+                            active_skill_instructions=active_skill_instructions,
+                            active_workflow_context=strict_active_workflow_context,
+                        )
+                        selector_elapsed_ms = round(
+                            (time.monotonic() - selector_started_at) * 1000
+                        )
+                    if conversation_turn_plan is None:
                         capability_selector_failed = True
                         capability_selector_intent_plan = ToolIntentPlan(
                             action=ToolIntentAction.DIRECT_ANSWER,
                             selector_outcome=CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY,
                             unavailable_runtime_capability=True,
-                            reason="capability_selector_invalid",
+                            reason="conversation_turn_plan_invalid",
                         )
+                    elif conversation_turn_plan.route is ConversationTurnRoute.CONTINUE_ACTIVE:
+                        if (
+                            active_workflow_intent_plan is None
+                            or not active_trace_id
+                            or not isinstance(strict_active_workflow_context, dict)
+                            or str(
+                                strict_active_workflow_context.get(
+                                    "internal_request_trace_id", ""
+                                )
+                                or ""
+                            ).strip()
+                            != active_trace_id
+                            or not _workflow_context_matches_provider_instances(
+                                strict_active_workflow_context,
+                                active_workflow_intent_plan,
+                            )
+                        ):
+                            capability_selector_failed = True
+                            capability_selector_intent_plan = ToolIntentPlan(
+                                action=ToolIntentAction.DIRECT_ANSWER,
+                                selector_outcome=CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY,
+                                unavailable_runtime_capability=True,
+                                reason="active_workflow_scope_unavailable",
+                            )
+                        else:
+                            if choice_continuation_fast_path:
+                                active_action = ToolIntentAction.DIRECT_ANSWER
+                                active_outcome = (
+                                    CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY
+                                )
+                            else:
+                                active_action = (
+                                    ToolIntentAction.USE_TOOLS
+                                    if conversation_turn_plan.action
+                                    is ConversationTurnAction.USE_TOOLS
+                                    else ToolIntentAction.DIRECT_ANSWER
+                                )
+                                active_outcome = (
+                                    CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY
+                                    if active_action is ToolIntentAction.USE_TOOLS
+                                    else CapabilitySelectorOutcome.AUTHORIZED_CONTEXT
+                                )
+                            capability_selector_intent_plan = active_workflow_intent_plan.model_copy(
+                                update={
+                                    "action": active_action,
+                                    "selector_outcome": active_outcome,
+                                    "reason": conversation_turn_plan.reason
+                                    or "Main-model active workflow plan.",
+                                }
+                            )
+                            workflow_context_for_execution = dict(
+                                strict_active_workflow_context
+                            )
+                            selector_outcome = active_outcome.value
                     else:
-                        capability_selector_intent_plan = capability_selector_result
+                        # A new or ordinary route must not execute an old workflow's
+                        # synthetic continuation prompt.
+                        tool_request_message = user_message
+                        model_user_message = user_message
+                        used_follow_up_context = False
+                        if isinstance(deps.extra, dict):
+                            deps.extra.pop("current_follow_up_context", None)
+                        selector_payload = {
+                            "outcome": (
+                                CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY.value
+                                if conversation_turn_plan.action
+                                is ConversationTurnAction.USE_TOOLS
+                                else CapabilitySelectorOutcome.ORDINARY_CONVERSATION.value
+                            ),
+                            "targets": list(conversation_turn_plan.target_capability_ids),
+                            "reason": conversation_turn_plan.reason,
+                        }
+                        if conversation_turn_plan.route is ConversationTurnRoute.START_NEW:
+                            selector_payload["outcome"] = (
+                                CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY.value
+                                if conversation_turn_plan.action
+                                is ConversationTurnAction.USE_TOOLS
+                                else CapabilitySelectorOutcome.AUTHORIZED_CONTEXT.value
+                            )
+                        capability_selector_intent_plan = self._coerce_capability_selector_payload(
+                            payload=selector_payload,
+                            capability_index=planning_capability_index,
+                        )
+                        if capability_selector_intent_plan is None:
+                            capability_selector_failed = True
+                            capability_selector_intent_plan = ToolIntentPlan(
+                                action=ToolIntentAction.DIRECT_ANSWER,
+                                selector_outcome=CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY,
+                                unavailable_runtime_capability=True,
+                                reason="conversation_turn_plan_target_invalid",
+                            )
                         selector_outcome = (
                             capability_selector_intent_plan.selector_outcome.value
                             if capability_selector_intent_plan.selector_outcome is not None
@@ -2231,9 +2514,17 @@ class RunnerExecutionPreparePhaseMixin:
                         )
                     yield StreamEvent.runtime_update(
                         "reasoning",
-                        "Capability selection completed.",
+                        (
+                            "Selected option resolved. Continuing the active workflow."
+                            if choice_continuation_fast_path
+                            else "Conversation turn planning completed."
+                        ),
                         metadata={
-                            "phase": "capability_selected",
+                            "phase": (
+                                "exact_choice_continuation"
+                                if choice_continuation_fast_path
+                                else "conversation_turn_planned"
+                            ),
                             "elapsed": round(time.monotonic() - start_time, 1),
                             "selector_outcome": (
                                 capability_selector_intent_plan.selector_outcome.value
@@ -2241,8 +2532,9 @@ class RunnerExecutionPreparePhaseMixin:
                                 and capability_selector_intent_plan.selector_outcome is not None
                                 else ""
                             ),
-                            "selector_failed": capability_selector_failed,
-                            "selector_elapsed_ms": selector_elapsed_ms,
+                            "planning_failed": capability_selector_failed,
+                            "planning_elapsed_ms": selector_elapsed_ms,
+                            "planner_skipped": choice_continuation_fast_path,
                         },
                     )
                 metadata_candidates = {
@@ -2372,10 +2664,7 @@ class RunnerExecutionPreparePhaseMixin:
                     metadata_candidates.get("preferred_tool_names", []) or []
                 ),
             )
-            if selected_tool_intent_plan is not None:
-                metadata_tool_intent_plan = selected_tool_intent_plan
-            else:
-                metadata_tool_intent_plan = capability_selector_intent_plan
+            metadata_tool_intent_plan = capability_selector_intent_plan
             metadata_tool_intent_plan, provider_instance_selection_trace = (
                 apply_provider_instance_selection_policy(
                     deps=deps,
@@ -2432,25 +2721,21 @@ class RunnerExecutionPreparePhaseMixin:
                     target_capability_classes=list(metadata_tool_intent_plan.target_capability_classes),
                     target_tool_names=list(metadata_tool_intent_plan.target_tool_names),
                 )
-            if selected_tool_intent_plan is not None:
-                explicit_capability_match = True
-                tool_intent_plan = metadata_tool_intent_plan
-            else:
-                tool_intent_plan = metadata_tool_intent_plan
-                explicit_capability_match = bool(
-                    tool_intent_plan is not None
-                    and any(
-                        [
-                            list(tool_intent_plan.target_provider_instances or []),
-                            list(tool_intent_plan.target_provider_types or []),
-                            list(tool_intent_plan.target_provider_skill_names or []),
-                            list(tool_intent_plan.target_skill_names or []),
-                            list(tool_intent_plan.target_group_ids or []),
-                            list(tool_intent_plan.target_capability_classes or []),
-                            list(tool_intent_plan.target_tool_names or []),
-                        ]
-                    )
+            tool_intent_plan = metadata_tool_intent_plan
+            explicit_capability_match = bool(
+                tool_intent_plan is not None
+                and any(
+                    [
+                        list(tool_intent_plan.target_provider_instances or []),
+                        list(tool_intent_plan.target_provider_types or []),
+                        list(tool_intent_plan.target_provider_skill_names or []),
+                        list(tool_intent_plan.target_skill_names or []),
+                        list(tool_intent_plan.target_group_ids or []),
+                        list(tool_intent_plan.target_capability_classes or []),
+                        list(tool_intent_plan.target_tool_names or []),
+                    ]
                 )
+            )
             artifact_goal = resolve_artifact_goal_from_intent_plan(tool_intent_plan)
             if isinstance(deps.extra, dict):
                 if artifact_goal is not None:
@@ -2615,7 +2900,7 @@ class RunnerExecutionPreparePhaseMixin:
                 )
             target_md_skill = enrich_target_md_skill_with_workflow_context(
                 target_md_skill=target_md_skill,
-                workflow_trace=target_md_skill_workflow_context,
+                workflow_trace=workflow_context_for_execution,
             )
             if isinstance(deps.extra, dict):
                 if isinstance(target_md_skill, dict):
@@ -2623,8 +2908,8 @@ class RunnerExecutionPreparePhaseMixin:
                 else:
                     deps.extra.pop("target_md_skill", None)
                 # Store active trace ID so tool execution can inject it as env var
-                if isinstance(target_md_skill_workflow_context, dict):
-                    _active_trace = target_md_skill_workflow_context.get(
+                if isinstance(workflow_context_for_execution, dict):
+                    _active_trace = workflow_context_for_execution.get(
                         "internal_request_trace_id"
                     )
                     if _active_trace:
@@ -2645,6 +2930,20 @@ class RunnerExecutionPreparePhaseMixin:
                     ),
                 )
             )
+            if choice_continuation_fast_path:
+                available_tools, removed_choice_tools = project_explicit_read_only_tools(
+                    available_tools
+                )
+                _log_step(
+                    "exact_choice_read_only_projection_applied",
+                    visible_tools=[
+                        str(tool.get("name", "") or "").strip()
+                        for tool in available_tools
+                        if isinstance(tool, dict)
+                        and str(tool.get("name", "") or "").strip()
+                    ],
+                    removed_tool_count=len(removed_choice_tools),
+                )
             runtime_allowed_tool_names = [
                 str(tool.get("name", "") or "").strip()
                 for tool in available_tools
@@ -3025,6 +3324,7 @@ class RunnerExecutionPreparePhaseMixin:
                 "reasoning_retry_count": reasoning_retry_count,
                 "run_output_start_index": run_output_start_index,
                 "tool_execution_required": tool_execution_required,
+                "conversation_turn_plan": conversation_turn_plan,
                 "buffer_direct_answer_output": (not tool_execution_required and not bool(available_tools)),
                 "reasoning_retry_limit": reasoning_retry_limit,
                 "model_stream_timed_out": model_stream_timed_out,

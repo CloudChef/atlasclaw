@@ -327,9 +327,7 @@ def build_tool_policy(
     )
     if mode == "use_tools":
         lines.append("This turn requires real tool execution before a final answer.")
-        lines.append(
-            "Do exactly one of the following: issue a real tool call from the preferred tool set, or ask a focused clarification question if inputs are missing."
-        )
+        lines.append("Issue a real tool call from the preferred tool set before any confirmation, clarification, or narrative response.")
         lines.append("Do not provide narrative analysis or pretend tool results before the first real tool call.")
         if execution_hint == "provider_tool_first":
             lines.append("Prefer provider/skill tools before generic web or fallback tools.")

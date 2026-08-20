@@ -6,6 +6,7 @@ from __future__ import annotations
 from contextlib import nullcontext
 import hashlib
 import json
+import re
 from typing import Any, Optional
 
 from app.atlasclaw.agent.runner_tool.runner_agent_override import resolve_override_tools
@@ -106,72 +107,35 @@ def _looks_like_provider_auth_failure(value: Any) -> bool:
     text = str(value or "").strip().lower()
     if not text:
         return False
-    has_provider_auth_context = any(
-        marker in text
-        for marker in (
-            "auth",
-            "credential",
-            "token",
-            "configuration",
-            "config",
-            "unauthorized",
-            "forbidden",
-            "permission",
-            "access denied",
-        )
-    )
-    has_failure_context = any(
-        marker in text
-        for marker in (
-            "not configured",
-            "not available",
-            "missing",
-            "no usable",
-            "unavailable",
-            "rejected",
-            "invalid",
-            "expired",
-            "denied",
-            "failed",
-        )
-    )
-    has_auth_required_context = any(
-        marker in text
-        for marker in (
-            "auth required",
-            "authentication required",
-            "credential required",
-            "token required",
-            "provider access required",
-            "permission required",
-        )
-    )
     has_http_auth_status = any(
         marker in text
         for marker in (
             "http 401",
-            "http 403",
             "status 401",
-            "status 403",
             "401 unauthorized",
-            "403 forbidden",
         )
     )
-    has_backend_detail = any(
-        marker in text
-        for marker in (
-            "atlasclaw.json",
-            "service_providers",
-            "provider_config",
-            "environment variable",
-            "http request",
+    has_explicit_auth_failure = bool(
+        re.search(
+            r"\b(authentication|credentials?|access tokens?|provider tokens?|tokens?)\b"
+            r".{0,48}\b(not configured|not available|missing|required|unavailable|rejected|invalid|expired|denied|failed)\b",
+            text,
+            flags=re.DOTALL,
+        )
+        or re.search(
+            r"\b(not configured|missing|required|rejected|invalid|expired|denied|failed)\b"
+            r".{0,32}\b(authentication|credentials?|access tokens?|provider tokens?|tokens?)\b",
+            text,
+            flags=re.DOTALL,
+        )
+        or re.search(
+            r"\bprovider (instance|configuration)\b.{0,48}"
+            r"\b(not configured|not available|missing|unavailable|unauthorized)\b",
+            text,
+            flags=re.DOTALL,
         )
     )
-    return (
-        has_http_auth_status
-        or (has_provider_auth_context and (has_failure_context or has_auth_required_context))
-        or has_backend_detail
-    )
+    return has_http_auth_status or has_explicit_auth_failure
 
 
 def _sanitize_provider_auth_text(value: Any, diagnostic: dict[str, Any] | None) -> str:
@@ -200,7 +164,9 @@ def select_provider_auth_diagnostic(
     for result in tool_results or []:
         if isinstance(result, dict):
             evidence_texts.append(str(result.get("content", "") or ""))
-    if evidence_texts and not any(_looks_like_provider_auth_failure(text) for text in evidence_texts):
+    if not evidence_texts or not any(
+        _looks_like_provider_auth_failure(text) for text in evidence_texts
+    ):
         return None
 
     attempted_tool_names: set[str] = set()
@@ -225,6 +191,18 @@ def select_provider_auth_diagnostic(
             if provider_type:
                 provider_types.add(provider_type)
 
+    selected_instance_names = {
+        str(extra.get("provider_instance_name", "") or "").strip().casefold()
+    }
+    selections = extra.get("provider_instance_selections")
+    if isinstance(selections, dict):
+        selected_instance_names.update(
+            str(value or "").strip().casefold()
+            for value in selections.values()
+            if str(value or "").strip()
+        )
+    selected_instance_names.discard("")
+
     candidates: list[dict[str, Any]] = []
     for provider_type, instances in diagnostics.items():
         normalized_provider_type = str(provider_type or "").strip().lower()
@@ -232,9 +210,21 @@ def select_provider_auth_diagnostic(
             continue
         if not isinstance(instances, dict):
             continue
-        for diagnostic in instances.values():
+        for instance_name, diagnostic in instances.items():
+            normalized_instance_name = str(instance_name or "").strip()
+            if (
+                selected_instance_names
+                and normalized_instance_name.casefold() not in selected_instance_names
+            ):
+                continue
             if isinstance(diagnostic, dict):
-                candidates.append(diagnostic)
+                candidates.append(
+                    {
+                        **diagnostic,
+                        "provider_type": normalized_provider_type,
+                        "instance_name": normalized_instance_name,
+                    }
+                )
 
     if not candidates:
         # Do not borrow diagnostics from unrelated providers; generic failure text
@@ -622,57 +612,12 @@ class RunnerExecutionPayloadMixin:
                 return True
         return False
     @staticmethod
-    def _deduplicate_message_history(messages: list[dict]) -> list[dict]:
-        if len(messages) <= 1:
-            return messages
-
-        head_system: Optional[dict] = None
-        core_messages = messages
-        first = messages[0]
-        if isinstance(first, dict) and str(first.get("role", "")).strip().lower() == "system":
-            head_system = first
-            core_messages = messages[1:]
-
-        seen_signatures: set[str] = set()
-        dedup_reversed: list[dict] = []
-        for msg in reversed(core_messages):
-            if not isinstance(msg, dict):
-                dedup_reversed.append(msg)
-                continue
-            role = str(msg.get("role", "")).strip().lower()
-            if role != "user":
-                dedup_reversed.append(msg)
-                continue
-            if msg.get("tool_calls") or msg.get("tool_name") or msg.get("tool_call_id"):
-                dedup_reversed.append(msg)
-                continue
-            normalized_content = " ".join(str(msg.get("content", "") or "").split()).strip()
-            if not normalized_content:
-                dedup_reversed.append(msg)
-                continue
-            user_identity = str(
-                msg.get("user_id")
-                or msg.get("name")
-                or msg.get("sender_id")
-                or "current_user"
-            ).strip().lower()
-            signature = f"{role}:{user_identity}:{normalized_content}"
-            if signature in seen_signatures:
-                continue
-            seen_signatures.add(signature)
-            dedup_reversed.append(msg)
-
-        deduped = list(reversed(dedup_reversed))
-        if head_system is not None:
-            return [head_system, *deduped]
-        return deduped
-
-    @staticmethod
     def _merge_runtime_messages_with_session_prefix(
         *,
         session_message_history: list[dict],
         runtime_messages: list[dict],
         runtime_base_history_len: int,
+        current_turn_user_message: str | None = None,
     ) -> list[dict]:
         """Merge trimmed runtime history back onto the persisted session prefix.
 
@@ -682,14 +627,10 @@ class RunnerExecutionPayloadMixin:
         session prefix and appending only the new suffix produced in the runtime
         loop.
 
-        NOTE: pydantic-ai's internal ``_clean_message_history`` may merge
-        consecutive ModelRequest/ModelResponse objects, reducing the model-message
-        count below the original dict count.  After normalization back to dicts the
-        "history portion" of ``runtime_messages`` may therefore contain *fewer*
-        items than ``runtime_base_history_len``.  To avoid accidentally discarding
-        the current turn's user message we locate the actual boundary by scanning
-        backwards for the first user-role message that does NOT appear in the
-        session prefix tail.
+        PydanticAI may merge model messages or expand one persisted tool row into
+        several normalized tool-result rows. The current-turn user message is the
+        stable boundary across both transformations. Its latest matching occurrence
+        is used so repeated text from separate fresh turns remains distinct.
         """
         session_prefix = list(session_message_history or [])
         normalized_runtime = list(runtime_messages or [])
@@ -708,25 +649,32 @@ class RunnerExecutionPayloadMixin:
         if nominal_cut <= 0:
             return session_prefix + normalized_runtime
 
-        # Heuristic: if the nominal cut already places a user message as the first
-        # item in the suffix, that's the expected normal case — use it directly.
-        if nominal_cut < len(normalized_runtime):
-            first_suffix = normalized_runtime[nominal_cut]
-            if isinstance(first_suffix, dict) and first_suffix.get("role") == "user":
-                return session_prefix + normalized_runtime[nominal_cut:]
+        current_user_content = str(current_turn_user_message or "").strip()
+        if current_user_content:
+            matching_current_user_indexes = [
+                index
+                for index, message in enumerate(normalized_runtime)
+                if isinstance(message, dict)
+                and str(message.get("role", "") or "").strip().lower() == "user"
+                and str(message.get("content", "") or "").strip()
+                == current_user_content
+            ]
+            if matching_current_user_indexes:
+                current_turn_start = matching_current_user_indexes[-1]
+                return session_prefix + normalized_runtime[current_turn_start:]
 
-        # Otherwise, scan backwards from nominal_cut to find where the new content
-        # actually starts.  The new content starts at the first user-role message
-        # (scanning from the end of the history zone) whose content does not match
-        # the last user message in session_prefix.
-        last_session_user_content: str | None = None
-        for msg in reversed(session_prefix):
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                last_session_user_content = str(msg.get("content", "")).strip()
-                break
+        # If the normalized prefix expanded, the fresh user message moves forward
+        # from the nominal cut. Prefer that boundary before considering shrinkage.
+        for index in range(nominal_cut, len(normalized_runtime)):
+            candidate = normalized_runtime[index]
+            if not isinstance(candidate, dict):
+                continue
+            if str(candidate.get("role", "") or "").strip().lower() != "user":
+                continue
+            return session_prefix + normalized_runtime[index:]
 
-        # Scan normalized_runtime from nominal_cut backwards looking for the
-        # turn's new user message that got shifted into the history zone.
+        # If the normalized prefix shrank, the fresh user message may move a few
+        # rows behind the nominal cut. Preserve it regardless of repeated content.
         adjusted_cut = nominal_cut
         search_start = max(0, nominal_cut - 3)  # don't search too far back
         for idx in range(nominal_cut - 1, search_start - 1, -1):
@@ -735,12 +683,6 @@ class RunnerExecutionPayloadMixin:
                 continue
             if candidate.get("role") != "user":
                 continue
-            candidate_content = str(candidate.get("content", "")).strip()
-            # Skip if it matches the last user message already in session prefix
-            if candidate_content and candidate_content == last_session_user_content:
-                continue
-            # Found a user message that is NOT in session prefix — this is
-            # the start of the new turn content.
             adjusted_cut = idx
             break
 

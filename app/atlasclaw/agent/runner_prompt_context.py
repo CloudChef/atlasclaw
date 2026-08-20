@@ -570,6 +570,8 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
         live_data: Any = None,
         browser_interaction: Any = None,
         public_web: Any = None,
+        read_only: Any = None,
+        auto_select_single_option: Any = None,
         success_contract: Any = None,
     ) -> None:
         normalized_name = str(name or "").strip()
@@ -710,6 +712,14 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             tool_record["browser_interaction"] = True
         if bool(public_web if public_web is not None else indexed_meta.get("public_web", False)):
             tool_record["public_web"] = True
+        if bool(read_only if read_only is not None else indexed_meta.get("read_only", False)):
+            tool_record["read_only"] = True
+        if bool(
+            auto_select_single_option
+            if auto_select_single_option is not None
+            else indexed_meta.get("auto_select_single_option", False)
+        ):
+            tool_record["auto_select_single_option"] = True
 
         explicit_capability_class = _normalize_optional_text(
             capability_class,
@@ -751,6 +761,8 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             live_data=tool.get("live_data"),
             browser_interaction=tool.get("browser_interaction"),
             public_web=tool.get("public_web"),
+            read_only=tool.get("read_only"),
+            auto_select_single_option=tool.get("auto_select_single_option"),
             success_contract=tool.get("success_contract"),
         )
 
@@ -778,6 +790,8 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             live_data = tool.get("live_data")
             browser_interaction = tool.get("browser_interaction")
             public_web = tool.get("public_web")
+            read_only = tool.get("read_only")
+            auto_select_single_option = tool.get("auto_select_single_option")
             coordination_only = tool.get("coordination_only")
         else:
             name = getattr(tool, "name", None) or getattr(tool, "__name__", None)
@@ -853,6 +867,18 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
                 getattr(tool, "public_web", None)
                 or getattr(getattr(tool, "metadata", None), "public_web", None)
             )
+            read_only = (
+                getattr(tool, "read_only", None)
+                or getattr(getattr(tool, "metadata", None), "read_only", None)
+            )
+            auto_select_single_option = (
+                getattr(tool, "auto_select_single_option", None)
+                or getattr(
+                    getattr(tool, "metadata", None),
+                    "auto_select_single_option",
+                    None,
+                )
+            )
             coordination_only = (
                 getattr(tool, "coordination_only", None)
                 or getattr(getattr(tool, "metadata", None), "coordination_only", None)
@@ -877,6 +903,8 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             live_data=live_data,
             browser_interaction=browser_interaction,
             public_web=public_web,
+            read_only=read_only,
+            auto_select_single_option=auto_select_single_option,
             success_contract=success_contract,
         )
 
@@ -906,6 +934,8 @@ def collect_tools_snapshot(*, agent: Any, deps=None) -> list[dict]:
             live_data=item.get("live_data"),
             browser_interaction=item.get("browser_interaction"),
             public_web=item.get("public_web"),
+            read_only=item.get("read_only"),
+            auto_select_single_option=item.get("auto_select_single_option"),
             success_contract=item.get("success_contract"),
         )
 
@@ -1004,6 +1034,10 @@ def _build_skill_metadata_index(
             "live_data": bool(item.get("live_data", False)),
             "browser_interaction": bool(item.get("browser_interaction", False)),
             "public_web": bool(item.get("public_web", False)),
+            "read_only": bool(item.get("read_only", False)),
+            "auto_select_single_option": bool(
+                item.get("auto_select_single_option", False)
+            ),
         }
 
     for entry in md_skills_snapshot:
@@ -1048,6 +1082,16 @@ def _build_skill_metadata_index(
                 "live_data": bool(metadata.get("live_data", False)),
                 "browser_interaction": bool(metadata.get("browser_interaction", False)),
                 "public_web": bool(metadata.get("public_web", False)),
+                "read_only": _extract_md_tool_metadata_bool(
+                    entry,
+                    tool_name=tool_name,
+                    key_suffix="read_only",
+                ),
+                "auto_select_single_option": _extract_md_tool_metadata_bool(
+                    entry,
+                    tool_name=tool_name,
+                    key_suffix="auto_select_single_option",
+                ),
             }
 
     return index
@@ -1148,6 +1192,34 @@ def _extract_md_tool_metadata_dict(
     return {}
 
 
+def _extract_md_tool_metadata_bool(
+    entry: dict[str, Any],
+    *,
+    tool_name: str,
+    key_suffix: str,
+) -> bool:
+    """Read one per-tool boolean without treating arbitrary text as true."""
+    metadata = entry.get("metadata", {})
+    if not isinstance(metadata, dict):
+        return False
+
+    candidate: Any = metadata.get(key_suffix, False)
+    normalized_tool_name = str(tool_name or "").strip()
+    if normalized_tool_name:
+        for key, value in metadata.items():
+            key_text = str(key or "").strip()
+            if not key_text.startswith("tool_") or not key_text.endswith("_name"):
+                continue
+            if str(value or "").strip() != normalized_tool_name:
+                continue
+            tool_id = key_text[len("tool_") : -len("_name")]
+            candidate = metadata.get(f"tool_{tool_id}_{key_suffix}", False)
+            break
+    if isinstance(candidate, bool):
+        return candidate
+    return str(candidate or "").strip().casefold() in {"1", "true", "yes"}
+
+
 def _qualified_name_provider(qualified_name: str) -> str:
     normalized = str(qualified_name or "").strip()
     if ":" not in normalized:
@@ -1220,6 +1292,8 @@ def _normalize_snapshot_tool(item: dict[str, Any]) -> dict[str, Any]:
     live_data = bool(item.get("live_data", False))
     browser_interaction = bool(item.get("browser_interaction", False))
     public_web = bool(item.get("public_web", False))
+    read_only = bool(item.get("read_only", False))
+    auto_select_single_option = bool(item.get("auto_select_single_option", False))
 
     if provider_type:
         normalized["provider_type"] = provider_type
@@ -1264,6 +1338,10 @@ def _normalize_snapshot_tool(item: dict[str, Any]) -> dict[str, Any]:
         normalized["browser_interaction"] = True
     if public_web:
         normalized["public_web"] = True
+    if read_only:
+        normalized["read_only"] = True
+    if auto_select_single_option:
+        normalized["auto_select_single_option"] = True
     parameters_schema = _normalize_parameters_schema(item.get("parameters_schema", {}))
     if parameters_schema:
         normalized["parameters_schema"] = parameters_schema
