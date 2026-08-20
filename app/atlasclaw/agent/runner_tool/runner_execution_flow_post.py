@@ -40,6 +40,35 @@ class RunnerExecutionFlowPostMixin:
     """Finalize runner output, evidence checks, and recovery responses."""
 
     @staticmethod
+    def _remove_hidden_single_choice_pairs(
+        *,
+        messages: list[dict[str, Any]],
+        hidden_pairs: list[Any],
+    ) -> list[dict[str, Any]]:
+        """Remove exact internal single-choice prompt/reply pairs before persistence."""
+        visible_messages = list(messages)
+        for hidden_pair in hidden_pairs:
+            if not isinstance(hidden_pair, dict):
+                continue
+            assistant_text = str(hidden_pair.get("assistant", "") or "")
+            user_text = str(hidden_pair.get("user", "") or "")
+            for index in range(len(visible_messages) - 1, 0, -1):
+                current = visible_messages[index]
+                previous = visible_messages[index - 1]
+                if not isinstance(current, dict) or not isinstance(previous, dict):
+                    continue
+                if (
+                    str(current.get("role", "") or "").strip().lower() == "user"
+                    and str(current.get("content", "") or "") == user_text
+                    and str(previous.get("role", "") or "").strip().lower()
+                    == "assistant"
+                    and str(previous.get("content", "") or "") == assistant_text
+                ):
+                    del visible_messages[index - 1 : index + 1]
+                    break
+        return visible_messages
+
+    @staticmethod
     def _strip_workspace_download_link_paths(answer: str, download_keys: list[str] | set[str]) -> str:
         """Replace generated-file markdown links with filename-only text."""
         if not answer or not download_keys:
@@ -303,7 +332,9 @@ class RunnerExecutionFlowPostMixin:
                 payload_items.append(
                     (
                         str(message.get("tool_name", "") or message.get("name", "")).strip() or "tool",
-                        message.get("content"),
+                        message
+                        if message.get("is_error") is True
+                        else message.get("content"),
                     )
                 )
             for result in message.get("tool_results", []) or []:
@@ -311,11 +342,59 @@ class RunnerExecutionFlowPostMixin:
                     payload_items.append(
                         (
                             str(result.get("tool_name", "") or result.get("name", "")).strip() or "tool",
-                            result.get("content", result),
+                            result
+                            if result.get("is_error") is True
+                            else result.get("content", result),
                         )
                     )
             for tool_name, payload in payload_items:
                 signature = extract_tool_error(payload) if callable(extract_tool_error) else ""
+                if isinstance(payload, dict):
+                    error_kind = str(payload.get("error_kind", "") or "").strip().lower()
+                    if error_kind in {"authentication", "authorization"}:
+                        detail = str(
+                            payload.get("error") or payload.get("output") or ""
+                        ).strip()
+                        signature = f"{error_kind} failure: {detail}"[:240]
+                if (
+                    not signature
+                    and isinstance(payload, dict)
+                    and payload.get("is_error") is True
+                ):
+                    explicit_error = payload.get("error") or payload.get("content")
+                    if isinstance(explicit_error, str):
+                        signature = explicit_error.strip()[:240]
+                    elif explicit_error:
+                        signature = json.dumps(
+                            explicit_error,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )[:240]
+                payload_reports_failure = getattr(
+                    self,
+                    "_tool_payload_reports_failure",
+                    None,
+                )
+                explicit_failure = isinstance(payload, dict) and (
+                    payload.get("success") is False
+                    or payload.get("is_error") is True
+                    or str(
+                        payload.get("status", "")
+                        or payload.get("outcome", "")
+                    ).strip().lower()
+                    in {"error", "failed", "failure"}
+                )
+                if callable(payload_reports_failure):
+                    explicit_failure = bool(payload_reports_failure(payload))
+                if not signature and explicit_failure and isinstance(payload, dict):
+                    explicit_error = (
+                        payload.get("message")
+                        or payload.get("output")
+                        or payload.get("status")
+                        or payload.get("outcome")
+                    )
+                    if isinstance(explicit_error, str):
+                        signature = explicit_error.strip()[:240]
                 if not signature or signature in seen_error_signatures:
                     continue
                 seen_error_signatures.add(signature)
@@ -414,8 +493,6 @@ class RunnerExecutionFlowPostMixin:
             return True
         if '"_internal"' in normalized or '"returncode"' in normalized or '"success"' in normalized:
             return True
-        if lowered.startswith("found ") and ("catalog" in lowered or "business group" in lowered):
-            return True
         try:
             parsed = json.loads(normalized)
         except Exception:
@@ -440,8 +517,6 @@ class RunnerExecutionFlowPostMixin:
             if {"_internal", "success"} <= keys:
                 return True
             if "_internal" in keys or "returncode" in keys:
-                return True
-            if "catalogs" in keys and ("success" in keys or "returncode" in keys):
                 return True
             return False
 
@@ -610,6 +685,9 @@ class RunnerExecutionFlowPostMixin:
             session_message_history=state.get("session_message_history") or [],
             runtime_messages=runtime_final_messages,
             runtime_base_history_len=int(state.get("runtime_base_history_len") or 0),
+            current_turn_user_message=(
+                state.get("model_user_message") or state.get("user_message")
+            ),
         )
         tool_result_start_index = int(
             state.get("persist_run_output_start_index") or state.get("run_output_start_index") or 0
@@ -643,8 +721,6 @@ class RunnerExecutionFlowPostMixin:
             )
             if fresher_tool_record_count > final_tool_record_count:
                 final_messages = fresher_messages
-        state["latest_agent_messages"] = list(final_messages)
-
         persist_override_messages = state.get("persist_override_messages")
         persist_override_base_len = int(state.get("persist_override_base_len") or 0)
         if persist_override_messages is not None:
@@ -658,6 +734,12 @@ class RunnerExecutionFlowPostMixin:
                 synthetic_tool_messages=list(state.get("synthetic_tool_messages") or []),
                 start_index=int(state.get("run_output_start_index") or 0),
             )
+
+        final_messages = self._remove_hidden_single_choice_pairs(
+            messages=final_messages,
+            hidden_pairs=list(state.get("hidden_single_choice_pairs") or []),
+        )
+        state["latest_agent_messages"] = list(final_messages)
 
         run_output_start_index = int(state.get("run_output_start_index") or 0)
         persist_run_output_start_index = int(
@@ -806,11 +888,7 @@ class RunnerExecutionFlowPostMixin:
                 extra=getattr(deps, "extra", {}),
                 attempted_tools=tool_call_summaries,
                 failure_reasons=failure_reasons_for_auth,
-                tool_results=self._collect_recent_tool_result_records(
-                    final_messages=final_messages,
-                    start_index=persist_run_output_start_index,
-                    max_items=3,
-                ),
+                tool_results=[],
             ) is not None
 
         should_fail_for_missing_evidence = artifact_completion_missing or (
@@ -909,7 +987,7 @@ class RunnerExecutionFlowPostMixin:
             and bool(tool_intent_plan.unavailable_runtime_capability)
             and not state.get("available_tools")
         ):
-            if state.get("selector_failed"):
+            if state.get("selector_failed") and state.get("all_available_tools"):
                 final_assistant = build_capability_selection_failure_answer()
                 _log_step("capability_selection_failure_answer_applied")
             else:
@@ -1061,16 +1139,19 @@ class RunnerExecutionFlowPostMixin:
             should_fail_for_missing_evidence = True
             should_block_assistant_emit = True
 
+        provider_auth_failure_reasons = self._build_missing_tool_evidence_failure_reasons(
+            state=state,
+            missing_required_tools=missing_required_tools,
+            final_messages=final_messages,
+            start_index=persist_run_output_start_index,
+            planned_tool_names=planned_tool_names,
+        )
         provider_auth_message = provider_auth_diagnostic_user_message(
             select_provider_auth_diagnostic(
                 extra=getattr(deps, "extra", {}),
                 attempted_tools=tool_call_summaries or list(state.get("executed_tool_names") or []),
-                failure_reasons=[final_assistant] if final_assistant else [],
-                tool_results=self._collect_recent_tool_result_records(
-                    final_messages=final_messages,
-                    start_index=persist_run_output_start_index,
-                    max_items=3,
-                ),
+                failure_reasons=provider_auth_failure_reasons,
+                tool_results=[],
             )
         )
         if provider_auth_message and final_assistant:

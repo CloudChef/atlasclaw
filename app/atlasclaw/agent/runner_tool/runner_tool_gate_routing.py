@@ -5,11 +5,23 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from dataclasses import dataclass, replace
 from typing import Any, Optional
 
 from app.atlasclaw.agent.tool_gate import CapabilityMatcher
 from app.atlasclaw.agent.tool_gate_models import CapabilityMatchResult, ToolGateDecision, ToolPolicyMode
 from app.atlasclaw.core.deps import SkillDeps
+
+
+@dataclass(frozen=True)
+class _ExactChoiceMatch:
+    """One exact selection resolved from the latest visible option list."""
+
+    ordinal: int
+    label: str
+    visible_line: str
+    match_mode: str
+    prompt_message_index: int = -1
 
 
 class RunnerToolGateRoutingMixin:
@@ -22,6 +34,152 @@ class RunnerToolGateRoutingMixin:
             return True
         compact_len = len(re.sub(r"\s+", "", normalized))
         return compact_len <= 8
+
+    @staticmethod
+    def _normalize_visible_choice_text(value: Any) -> str:
+        """Normalize text as rendered by the Markdown option prompt."""
+        normalized = unicodedata.normalize("NFKC", str(value or ""))
+        normalized = re.sub(r"\[([^\]]+)\]\([^\)]+\)", r"\1", normalized)
+        normalized = re.sub(r"(?:\*\*|__|~~|`)", "", normalized)
+        return " ".join(normalized.split()).strip()
+
+    @classmethod
+    def _normalize_choice_match_key(cls, value: Any) -> str:
+        """Build an exact visible-text key while ignoring all whitespace."""
+        return re.sub(r"\s+", "", cls._normalize_visible_choice_text(value))
+
+    @classmethod
+    def _visible_choice_rows(cls, assistant_prompt: str) -> list[_ExactChoiceMatch]:
+        """Parse one unambiguous numbered option list from visible assistant text."""
+        rows: list[_ExactChoiceMatch] = []
+        seen_ordinals: set[int] = set()
+        row_pattern = re.compile(
+            r"^\s*(?:\[(\d+)\]|(\d+)[\.\)\u3001])\s+(.+?)\s*$"
+        )
+        for raw_line in str(assistant_prompt or "").splitlines():
+            match = row_pattern.match(raw_line)
+            if match is None:
+                continue
+            ordinal = int(match.group(1) or match.group(2))
+            label = cls._normalize_visible_choice_text(match.group(3))
+            visible_line = cls._normalize_visible_choice_text(raw_line)
+            if ordinal <= 0 or not label or ordinal in seen_ordinals:
+                return []
+            seen_ordinals.add(ordinal)
+            rows.append(
+                _ExactChoiceMatch(
+                    ordinal=ordinal,
+                    label=label,
+                    visible_line=visible_line,
+                    match_mode="",
+                )
+            )
+        return rows
+
+    @classmethod
+    def _resolve_single_visible_choice_prompt(
+        cls,
+        assistant_prompt: str,
+    ) -> _ExactChoiceMatch | None:
+        """Resolve a sole visible option that is safe for an internal continuation.
+
+        Confirmation and operation prompts remain user decisions even when their
+        rendered list happens to contain one row.
+        """
+        normalized_prompt = cls._normalize_visible_choice_text(assistant_prompt)
+        if not normalized_prompt:
+            return None
+        folded_prompt = normalized_prompt.casefold()
+        if re.search(
+            r"(?:\bplease\s+confirm\b|\bconfirm\s+(?:this|the|whether)\b|"
+            r"\bdo\s+you\s+(?:want|wish)\s+to\b|\bshall\s+i\b|"
+            r"请确认|是否确认|确认是否|请问是否|"
+            r"是否(?:继续|执行|提交|删除|重启))",
+            folded_prompt,
+        ):
+            return None
+        if re.search(
+            r"(?:\b(?:choose|select|option|number)\b|选择|选项|编号|序号|数字)",
+            folded_prompt,
+        ) is None:
+            return None
+        rows = cls._visible_choice_rows(assistant_prompt)
+        if len(rows) != 1:
+            return None
+        return replace(rows[0], match_mode="single_auto")
+
+    @classmethod
+    def _resolve_exact_choice_reply(
+        cls,
+        *,
+        user_message: str,
+        recent_history: list[dict[str, Any]],
+    ) -> _ExactChoiceMatch | None:
+        """Resolve a bare number or exact visible option row from the latest prompt.
+
+        This matcher intentionally accepts only the two deterministic forms.  Any
+        extra prose, ambiguous label, malformed list, or out-of-range number is
+        left to the normal conversation planner.
+        """
+        reply = cls._normalize_visible_choice_text(user_message)
+        if not reply:
+            return None
+        reply_key = cls._normalize_choice_match_key(reply)
+
+        assistant_prompt = ""
+        assistant_prompt_index = -1
+        for message_index in range(len(recent_history) - 1, -1, -1):
+            message = recent_history[message_index]
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get("role", "") or "").strip().lower()
+            if role == "assistant":
+                assistant_prompt = str(message.get("content", "") or "").strip()
+                assistant_prompt_index = message_index
+                break
+            if role == "user":
+                return None
+        if not assistant_prompt:
+            return None
+
+        rows = cls._visible_choice_rows(assistant_prompt)
+        if not rows:
+            return None
+        if not cls._looks_like_follow_up_request(assistant_prompt):
+            prompt_text = cls._normalize_visible_choice_text(assistant_prompt).casefold()
+            if re.search(
+                r"(?:choose|select|reply|enter|input|选择|回复|输入)",
+                prompt_text,
+            ) is None:
+                return None
+
+        if re.fullmatch(r"[1-9]\d*", reply_key):
+            ordinal = int(reply_key)
+            matches = [row for row in rows if row.ordinal == ordinal]
+            if len(matches) != 1:
+                return None
+            return replace(
+                matches[0],
+                match_mode="number",
+                prompt_message_index=assistant_prompt_index,
+            )
+
+        matches = [
+            row
+            for row in rows
+            if reply_key
+            in {
+                cls._normalize_choice_match_key(row.visible_line),
+                cls._normalize_choice_match_key(row.label),
+            }
+        ]
+        if len(matches) != 1:
+            return None
+        return replace(
+            matches[0],
+            match_mode="full_line",
+            prompt_message_index=assistant_prompt_index,
+        )
 
     @classmethod
     def _is_context_route_change_request(

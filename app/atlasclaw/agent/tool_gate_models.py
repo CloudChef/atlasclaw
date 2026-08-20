@@ -6,7 +6,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ToolPolicyMode(str, Enum):
@@ -34,6 +34,21 @@ class CapabilitySelectorOutcome(str, Enum):
     AUTHORIZED_CONTEXT = "authorized_context"
     UNAVAILABLE_CAPABILITY = "unavailable_capability"
     ASK_CLARIFICATION = "ask_clarification"
+
+
+class ConversationTurnRoute(str, Enum):
+    """Scope chosen by the toolless main-model planning pass."""
+
+    CONTINUE_ACTIVE = "continue_active"
+    START_NEW = "start_new"
+    ORDINARY = "ordinary"
+
+
+class ConversationTurnAction(str, Enum):
+    """User-visible action selected before any runtime tool is exposed."""
+
+    RESPOND = "respond"
+    USE_TOOLS = "use_tools"
 
 
 class ToolCandidate(BaseModel):
@@ -75,6 +90,17 @@ class ToolIntentPlan(BaseModel):
     missing_inputs: list[str] = Field(default_factory=list)
     unavailable_runtime_capability: bool = False
     reason: str = ""
+
+
+class ConversationTurnPlan(BaseModel):
+    """Toolless main-model plan validated before opening a runtime tool scope."""
+
+    route: ConversationTurnRoute
+    action: ConversationTurnAction
+    target_capability_ids: list[str] = Field(default_factory=list)
+    reason: str = ""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class CapabilityMatchResult(BaseModel):

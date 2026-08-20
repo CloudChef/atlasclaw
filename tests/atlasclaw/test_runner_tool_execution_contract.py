@@ -10,7 +10,13 @@ from types import SimpleNamespace
 import time
 
 import pytest
-from pydantic_ai.messages import ModelRequest, ToolReturnPart
+from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 
 from app.atlasclaw.agent.runner_tool.runner_execution_flow_error import RunnerExecutionFlowErrorMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_flow import RunnerExecutionFlowPhaseMixin
@@ -26,11 +32,13 @@ from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     select_provider_auth_diagnostic,
 )
 from app.atlasclaw.agent.runner_tool.runner_execution_retry import RunnerExecutionRetryMixin
+from app.atlasclaw.agent.runner_tool.runner_execution_runtime import RunnerExecutionRuntimeMixin
 from app.atlasclaw.agent.runner_tool.runner_tool_messages import (
     extract_synthetic_tool_messages_from_next_node,
     overlay_synthetic_tool_messages,
 )
 from app.atlasclaw.agent.runner_tool.runner_tool_gate_policy import RunnerToolGatePolicyMixin
+from app.atlasclaw.agent.runner_tool.runner_tool_gate_routing import RunnerToolGateRoutingMixin
 from app.atlasclaw.agent.runner_tool_evidence import RunnerToolEvidenceMixin
 from app.atlasclaw.agent.tool_gate_models import ToolGateDecision, ToolIntentAction, ToolIntentPlan, ToolPolicyMode
 
@@ -175,6 +183,53 @@ def test_provider_auth_diagnostic_does_not_treat_schema_required_as_auth_failure
             {
                 "tool_name": "smartcmp_design_form_schema",
                 "content": f"Schema JSON:\n```json\n{schema_output}\n```",
+            }
+        ],
+    )
+
+    assert diagnostic is None
+
+
+def test_provider_auth_diagnostic_ignores_successful_request_validation_fields() -> None:
+    validation_output = json.dumps(
+        {
+            "success": True,
+            "valid": False,
+            "configurationWarnings": [],
+            "missingInputs": ["location"],
+            "fields": [
+                {
+                    "key": "credentialField",
+                    "required": True,
+                    "value": "********",
+                }
+            ],
+        }
+    )
+
+    diagnostic = select_provider_auth_diagnostic(
+        extra={
+            "provider_auth_diagnostics": {
+                "providerx": {
+                    "default": {
+                        "provider_type": "providerx",
+                        "instance_name": "default",
+                        "missing_user_token": False,
+                        "user_token_configured": True,
+                        "contact_admin": False,
+                    }
+                }
+            },
+            "tools_snapshot": [
+                {"name": "providerx_validate_request", "provider_type": "providerx"},
+            ],
+        },
+        attempted_tools=[{"name": "providerx_validate_request"}],
+        failure_reasons=[],
+        tool_results=[
+            {
+                "tool_name": "providerx_validate_request",
+                "content": validation_output,
             }
         ],
     )
@@ -369,6 +424,30 @@ class _PostRunner(
         return None
 
 
+def test_provider_auth_failure_reasons_preserve_explicit_text_error() -> None:
+    runner = _PostRunner()
+    runner._extract_tool_error_signature = (
+        RunnerExecutionFlowStreamMixin._extract_tool_error_signature
+    )
+
+    reasons = runner._build_missing_tool_evidence_failure_reasons(
+        state={},
+        missing_required_tools=[],
+        final_messages=[
+            {
+                "role": "tool",
+                "tool_name": "providerx_list_services",
+                "is_error": True,
+                "content": "HTTP 401: {}",
+            }
+        ],
+        start_index=0,
+        planned_tool_names=["providerx_list_services"],
+    )
+
+    assert reasons == ["providerx_list_services error: HTTP 401: {}"]
+
+
 class _SlowRuntimeEvents(_RuntimeEvents):
     async def trigger_llm_completed(self, **kwargs):
         await asyncio.sleep(0.2)
@@ -449,7 +528,7 @@ class _FlowHistory:
         return list(messages)
 
 
-class _LoopRunner(RunnerExecutionFlowPhaseMixin):
+class _LoopRunner(RunnerToolGateRoutingMixin, RunnerExecutionFlowPhaseMixin):
     def __init__(self) -> None:
         self.history = _FlowHistory()
         self.compaction = SimpleNamespace(
@@ -480,6 +559,23 @@ class _LoopRunner(RunnerExecutionFlowPhaseMixin):
             yield None
         return
 
+    @staticmethod
+    def _merge_runtime_messages_with_session_prefix(
+        *,
+        session_message_history,
+        runtime_messages,
+        runtime_base_history_len,
+        current_turn_user_message,
+    ):
+        return list(runtime_messages)
+
+    @staticmethod
+    def _extract_latest_assistant_from_messages(*, messages, start_index):
+        for message in reversed(messages[start_index:]):
+            if message.get("role") == "assistant" and message.get("content"):
+                return str(message["content"])
+        return ""
+
 
 class _ErrorRunner(RunnerToolEvidenceMixin, RunnerExecutionRetryMixin, RunnerExecutionFlowErrorMixin):
     def __init__(self) -> None:
@@ -499,6 +595,51 @@ class _StreamRunner(RunnerExecutionFlowStreamMixin):
 
 class _StreamRunnerWithEvidence(RunnerToolGatePolicyMixin, RunnerToolEvidenceMixin, RunnerExecutionFlowStreamMixin):
     pass
+
+
+class _RuntimeRunner(RunnerExecutionRuntimeMixin):
+    pass
+
+
+class CallToolsNode:
+    """Minimal call-tools node used to observe pre-execution filtering."""
+
+    def __init__(self, parts):
+        self.model_response = ModelResponse(parts=list(parts))
+
+
+class End:
+    """Terminal node for the stepped runtime test fixture."""
+
+    pass
+
+
+class _SteppedAgentRun:
+    def __init__(self, node):
+        self.next_node = node
+        self.executed_parts = []
+
+    async def next(self, node):
+        self.executed_parts.extend(node.model_response.parts)
+        return End()
+
+
+class _RepeatedSteppedAgentRun:
+    def __init__(self, first_node, repeated_node, *, allow_repeated_advance=False):
+        self.next_node = first_node
+        self.repeated_node = repeated_node
+        self.allow_repeated_advance = allow_repeated_advance
+        self.executed_parts = []
+        self.next_calls = 0
+
+    async def next(self, node):
+        self.next_calls += 1
+        self.executed_parts.extend(node.model_response.parts)
+        if self.next_calls == 1:
+            return self.repeated_node
+        if self.allow_repeated_advance:
+            return End()
+        raise AssertionError("A duplicate-only node must stop before runtime advancement.")
 
 
 class _RefreshingHistory:
@@ -553,15 +694,12 @@ class _RefreshingStreamRunner(RunnerExecutionFlowStreamMixin):
         self.history = _RefreshingHistory()
 
     @staticmethod
-    def _deduplicate_message_history(messages):
-        return list(messages)
-
-    @staticmethod
     def _merge_runtime_messages_with_session_prefix(
         *,
         session_message_history,
         runtime_messages,
         runtime_base_history_len,
+        current_turn_user_message,
     ):
         return list(runtime_messages)
 
@@ -1190,6 +1328,157 @@ async def test_run_loop_phase_preserves_explicit_empty_runtime_history() -> None
     assert state["run_output_start_index"] == 0
 
 
+def test_single_choice_continuation_keeps_only_read_only_tools_and_hides_internal_pair() -> None:
+    runner = _LoopRunner()
+    prompt = "Please select an image:\n1. Redhat 8.10 Full\nReply with the option number."
+    messages = [
+        {"role": "user", "content": "Request Linux"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call-1", "name": "list_images", "args": {}}],
+        },
+        {
+            "role": "tool",
+            "tool_name": "list_images",
+            "tool_call_id": "call-1",
+            "content": {
+                "success": True,
+                "items": [{"id": "image-1", "name": "Redhat 8.10 Full"}],
+            },
+        },
+        {"role": "assistant", "content": prompt},
+    ]
+    state = {
+        "available_tools": [
+            {
+                "name": "list_images",
+                "read_only": True,
+                "auto_select_single_option": True,
+            },
+            {"name": "submit_request", "read_only": False},
+        ],
+        "executed_tool_names": ["list_images"],
+        "persist_run_output_start_index": 0,
+        "runtime_base_history_len": 0,
+        "session_message_history": [],
+        "model_user_message": "Request Linux",
+        "user_message": "Request Linux",
+        "deps": SimpleNamespace(extra={}),
+        "buffered_assistant_events": [object()],
+        "latest_runtime_messages": [
+            {"role": "user", "content": "Compacted request context"}
+        ],
+    }
+
+    continuation = runner._prepare_single_choice_continuation(
+        agent_run=_AgentRun(messages),
+        state=state,
+        continuation_index=0,
+        _log_step=lambda *args, **kwargs: None,
+    )
+
+    assert continuation is not None
+    assert continuation[0] == [
+        {"role": "user", "content": "Compacted request context"}
+    ]
+    assert [tool["name"] for tool in state["available_tools"]] == ["list_images"]
+    assert state["deps"].extra["runtime_allowed_tool_names"] == ["list_images"]
+    assert state["buffered_assistant_events"] == []
+    internal_reply = continuation[1]
+    assert "Redhat 8.10 Full" not in internal_reply
+    assert state["consumed_single_choice_result_ids"] == ["call-1"]
+    assert runner._prepare_single_choice_continuation(
+        agent_run=_AgentRun(messages),
+        state=state,
+        continuation_index=1,
+        _log_step=lambda *args, **kwargs: None,
+    ) is None
+
+    state["consumed_single_choice_result_ids"] = []
+    ambiguous_messages = [dict(message) for message in messages]
+    ambiguous_messages[2] = {
+        **messages[2],
+        "content": {
+            "success": True,
+            "items": [
+                {"id": "image-1", "name": "Redhat 8.10 Full"},
+                {"id": "image-2", "name": "Redhat 9.0"},
+            ],
+        },
+    }
+    assert runner._prepare_single_choice_continuation(
+        agent_run=_AgentRun(ambiguous_messages),
+        state=state,
+        continuation_index=1,
+        _log_step=lambda *args, **kwargs: None,
+    ) is None
+
+    nested_singleton_messages = [dict(message) for message in messages]
+    nested_singleton_messages[2] = {
+        **messages[2],
+        "content": {
+            "success": True,
+            "items": [
+                {"id": "image-1", "name": "Redhat 8.10 Full"},
+                {"id": "image-2", "name": "Redhat 9.0"},
+            ],
+            "preview": {
+                "items": [{"id": "image-1", "name": "Redhat 8.10 Full"}],
+            },
+        },
+    }
+    assert runner._prepare_single_choice_continuation(
+        agent_run=_AgentRun(nested_singleton_messages),
+        state=state,
+        continuation_index=1,
+        _log_step=lambda *args, **kwargs: None,
+    ) is None
+
+    newer_unrelated_result = messages[:-1] + [
+        {
+            "role": "tool",
+            "tool_name": "other_lookup",
+            "tool_call_id": "call-2",
+            "content": {
+                "success": True,
+                "items": [{"id": "other-1", "name": "Other"}],
+            },
+        },
+        messages[-1],
+    ]
+    assert runner._prepare_single_choice_continuation(
+        agent_run=_AgentRun(newer_unrelated_result),
+        state=state,
+        continuation_index=1,
+        _log_step=lambda *args, **kwargs: None,
+    ) is None
+
+    state["consumed_single_choice_result_ids"] = []
+    state["available_tools"][0]["auto_select_single_option"] = False
+    assert runner._prepare_single_choice_continuation(
+        agent_run=_AgentRun(messages),
+        state=state,
+        continuation_index=1,
+        _log_step=lambda *args, **kwargs: None,
+    ) is None
+    visible = runner._remove_hidden_single_choice_pairs(
+        messages=messages + [{"role": "user", "content": internal_reply}],
+        hidden_pairs=state["hidden_single_choice_pairs"],
+    )
+    assert {"role": "assistant", "content": prompt} not in visible
+    assert {"role": "user", "content": internal_reply} not in visible
+
+    state["available_tools"][0]["auto_select_single_option"] = True
+    state["persist_override_messages"] = [{"role": "system", "content": "summary"}]
+    assert runner._prepare_single_choice_continuation(
+        agent_run=_AgentRun(messages),
+        state=state,
+        continuation_index=1,
+        _log_step=lambda *args, **kwargs: None,
+    ) is None
+
+
 def test_repeated_tool_loop_limit_detects_same_tool_before_dispatch() -> None:
     exceeded = _StreamRunner._collect_repeated_tool_names(
         planned_tool_calls=[{"name": "web_search"}],
@@ -1208,6 +1497,92 @@ def test_repeated_tool_loop_limit_does_not_block_standard_skill_runtime_tools() 
     )
 
     assert exceeded == []
+
+
+@pytest.mark.asyncio
+async def test_identical_function_tool_calls_are_deduplicated_before_execution() -> None:
+    first = ToolCallPart(
+        "submit_request",
+        {"request": {"name": "example", "size": 1}},
+        tool_call_id="call-1",
+    )
+    duplicate = ToolCallPart(
+        "submit_request",
+        '{"request":{"size":1,"name":"example"}}',
+        tool_call_id="call-2",
+    )
+    different = ToolCallPart(
+        "submit_request",
+        {"request": {"name": "example", "size": 2}},
+        tool_call_id="call-3",
+    )
+    agent_run = _SteppedAgentRun(CallToolsNode([first, duplicate, different]))
+
+    nodes = [node async for node in _RuntimeRunner()._iter_agent_nodes(agent_run)]
+
+    assert len(nodes) == 1
+    assert [part.tool_call_id for part in agent_run.executed_parts] == ["call-1", "call-3"]
+    assert _StreamRunner._collect_repeated_tool_names(
+        planned_tool_calls=agent_run.executed_parts[:1],
+        executed_tool_names=["submit_request"],
+        repeat_limit=2,
+    ) == []
+
+
+@pytest.mark.asyncio
+async def test_identical_call_in_later_node_remains_a_fresh_operation() -> None:
+    first = ToolCallPart(
+        "submit_request",
+        {"request": {"name": "example", "size": 1}},
+        tool_call_id="call-1",
+    )
+    repeated = ToolCallPart(
+        "submit_request",
+        '{"request":{"size":1,"name":"example"}}',
+        tool_call_id="call-2",
+    )
+    repeated_node = CallToolsNode([repeated])
+    agent_run = _RepeatedSteppedAgentRun(
+        CallToolsNode([first]),
+        repeated_node,
+        allow_repeated_advance=True,
+    )
+
+    nodes = [node async for node in _RuntimeRunner()._iter_agent_nodes(agent_run)]
+
+    assert nodes == [agent_run.next_node, repeated_node]
+    assert agent_run.next_calls == 2
+    assert [part.tool_call_id for part in agent_run.executed_parts] == ["call-1", "call-2"]
+    assert repeated_node.model_response.parts == [repeated]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_call_with_text_preserves_output_and_advances_runtime() -> None:
+    first = ToolCallPart(
+        "submit_request",
+        {"request": {"name": "example", "size": 1}},
+        tool_call_id="call-1",
+    )
+    text = TextPart("The request was already submitted.")
+    repeated = ToolCallPart(
+        "submit_request",
+        '{"request":{"size":1,"name":"example"}}',
+        tool_call_id="call-2",
+    )
+    repeated_node = CallToolsNode([text, repeated])
+    agent_run = _RepeatedSteppedAgentRun(
+        CallToolsNode([first]),
+        repeated_node,
+        allow_repeated_advance=True,
+    )
+
+    nodes = [node async for node in _RuntimeRunner()._iter_agent_nodes(agent_run)]
+
+    assert nodes == [agent_run.next_node, repeated_node]
+    assert agent_run.next_calls == 2
+    assert repeated_node.model_response.parts == [text, repeated]
+    assert text.content == "The request was already submitted."
+    assert not hasattr(repeated_node, "_atlas_suppressed_duplicate_tool_names")
 
 
 def test_repeated_tool_loop_stashes_tool_only_answer_before_stop() -> None:
@@ -1237,11 +1612,83 @@ def test_repeated_tool_loop_stashes_tool_only_answer_before_stop() -> None:
             },
         ],
         start_index=1,
+        target_tool_names=["markdown_vault_search"],
     )
 
     assert state["force_tool_only_finalize"] is True
     assert "OA 系统对接" in str(state["tool_only_answer_override"])
     assert '"results"' not in str(state["tool_only_answer_override"])
+
+
+def test_loop_stop_uses_only_latest_matching_tool_result() -> None:
+    runner = _StreamRunnerWithEvidence()
+    state: dict[str, object] = {}
+
+    runner._stash_tool_only_answer_for_loop_stop(
+        state=state,
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "catalog_lookup",
+                "content": {"success": True, "output": "Stale catalog summary."},
+            },
+            {
+                "role": "tool",
+                "tool_name": "bundle_lookup",
+                "content": {"success": True, "output": "Current bundle result."},
+            },
+        ],
+        start_index=0,
+        target_tool_names=["bundle_lookup"],
+    )
+
+    assert state["force_tool_only_finalize"] is True
+    assert "Current bundle result" in str(state["tool_only_answer_override"])
+    assert "Stale catalog summary" not in str(state["tool_only_answer_override"])
+
+    failed_state: dict[str, object] = {
+        "final_user_output_override": "Earlier successful result.",
+        "tool_only_answer_override": "Earlier successful result.",
+        "force_tool_only_finalize": True,
+    }
+    runner._stash_tool_only_answer_for_loop_stop(
+        state=failed_state,
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "bundle_lookup",
+                "content": {"success": True, "output": "Earlier successful result."},
+            },
+            {
+                "role": "tool",
+                "tool_name": "bundle_lookup",
+                "content": {"success": False, "error": "Current lookup failed."},
+            },
+        ],
+        start_index=0,
+        target_tool_names=["bundle_lookup"],
+    )
+
+    assert "final_user_output_override" not in failed_state
+    assert "tool_only_answer_override" not in failed_state
+    assert "force_tool_only_finalize" not in failed_state
+
+    raw_state: dict[str, object] = {}
+    runner._stash_tool_only_answer_for_loop_stop(
+        state=raw_state,
+        messages=[
+            {
+                "role": "tool",
+                "tool_name": "bundle_lookup",
+                "content": {"success": True, "status": "unchanged"},
+            }
+        ],
+        start_index=0,
+        target_tool_names=["bundle_lookup"],
+    )
+
+    assert "tool_only_answer_override" not in raw_state
+    assert "force_tool_only_finalize" not in raw_state
 
 
 def test_final_user_output_uses_only_latest_dispatch_result() -> None:
@@ -1594,6 +2041,130 @@ def test_merge_runtime_messages_with_session_prefix_restores_full_turn_view() ->
         {"role": "assistant", "content": "好的，我来查。"},
         {"role": "user", "content": "上海周边有哪些自行车骑行公园"},
         {"role": "assistant", "content": "我来帮你找。"},
+    ]
+
+
+def test_merge_runtime_messages_preserves_repeated_fresh_user_turn() -> None:
+    request_text = "Freshly query request REQ-1."
+    session_history = [
+        {"role": "user", "content": request_text},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "status-1", "name": "request_status", "args": {"request_id": "REQ-1"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_name": "request_status",
+            "tool_call_id": "status-1",
+            "content": {"success": True, "status": "STARTED"},
+        },
+        {"role": "assistant", "content": "The request is still running."},
+    ]
+    runtime_messages = [
+        session_history[1],
+        session_history[2],
+        session_history[3],
+        {"role": "user", "content": request_text},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "status-2", "name": "request_status", "args": {"request_id": "REQ-1"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_name": "request_status",
+            "tool_call_id": "status-2",
+            "content": {"success": True, "status": "FINISHED"},
+        },
+    ]
+
+    merged = _PayloadRunner._merge_runtime_messages_with_session_prefix(
+        session_message_history=session_history,
+        runtime_messages=runtime_messages,
+        runtime_base_history_len=len(session_history),
+        current_turn_user_message=request_text,
+    )
+
+    assert merged == [*session_history, *runtime_messages[3:]]
+    assert merged[-3]["content"] == request_text
+    assert merged[-1]["tool_call_id"] == merged[-2]["tool_calls"][0]["id"]
+
+
+def test_merge_runtime_messages_skips_expanded_prior_tool_results() -> None:
+    request_text = "Freshly query request REQ-1."
+    session_history = [
+        {"role": "user", "content": "Prepare the request."},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "lookup-1", "name": "catalog_lookup", "args": {}},
+                {"id": "lookup-2", "name": "network_lookup", "args": {}},
+                {"id": "lookup-3", "name": "profile_lookup", "args": {}},
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_name": "catalog_lookup",
+            "tool_call_id": "lookup-1",
+            "content": {"success": True, "items": ["catalog"]},
+            "tool_results": [
+                {
+                    "tool_name": "network_lookup",
+                    "tool_call_id": "lookup-2",
+                    "content": {"success": True, "items": ["network"]},
+                },
+                {
+                    "tool_name": "profile_lookup",
+                    "tool_call_id": "lookup-3",
+                    "content": {"success": True, "items": ["profile"]},
+                },
+            ],
+        },
+        {"role": "assistant", "content": "The request draft is ready."},
+    ]
+    runtime_messages = [
+        session_history[0],
+        session_history[1],
+        {
+            "role": "tool",
+            "tool_name": "catalog_lookup",
+            "tool_call_id": "lookup-1",
+            "content": {"success": True, "items": ["catalog"]},
+        },
+        {
+            "role": "tool",
+            "tool_name": "network_lookup",
+            "tool_call_id": "lookup-2",
+            "content": {"success": True, "items": ["network"]},
+        },
+        {
+            "role": "tool",
+            "tool_name": "profile_lookup",
+            "tool_call_id": "lookup-3",
+            "content": {"success": True, "items": ["profile"]},
+        },
+        session_history[3],
+        {"role": "user", "content": request_text},
+        {"role": "assistant", "content": "The request is complete."},
+    ]
+
+    merged = _PayloadRunner._merge_runtime_messages_with_session_prefix(
+        session_message_history=session_history,
+        runtime_messages=runtime_messages,
+        runtime_base_history_len=len(session_history),
+        current_turn_user_message=request_text,
+    )
+
+    assert merged == [
+        *session_history,
+        {"role": "user", "content": request_text},
+        {"role": "assistant", "content": "The request is complete."},
     ]
 
 
@@ -3422,6 +3993,7 @@ async def test_refresh_messages_after_tool_dispatch_waits_for_new_tool_results()
         agent_run=agent_run,
         session_message_history=[],
         runtime_base_history_len=0,
+        current_turn_user_message="上海周边有哪些自行车骑行公园",
         start_index=1,
         target_tool_names=["web_search"],
         previous_result_count=1,
@@ -3436,6 +4008,62 @@ async def test_refresh_messages_after_tool_dispatch_waits_for_new_tool_results()
     )
     assert repeated is not None
     assert repeated["tool_name"] == "web_search"
+
+
+@pytest.mark.asyncio
+async def test_refresh_messages_preserves_repeated_user_turns_and_tool_pairs() -> None:
+    runner = _RefreshingStreamRunner()
+    request_text = "Freshly query request REQ-1."
+    messages = [
+        {"role": "user", "content": request_text},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "status-1", "name": "request_status", "args": {"request_id": "REQ-1"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_name": "request_status",
+            "tool_call_id": "status-1",
+            "content": {"success": True, "status": "STARTED"},
+        },
+        {"role": "assistant", "content": "The request is still running."},
+        {"role": "user", "content": request_text},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"id": "status-2", "name": "request_status", "args": {"request_id": "REQ-1"}}
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_name": "request_status",
+            "tool_call_id": "status-2",
+            "content": {"success": True, "status": "FINISHED"},
+        },
+    ]
+
+    latest_runtime_messages, latest_messages = await runner._refresh_messages_after_tool_dispatch(
+        agent_run=_SequencedAgentRun([messages]),
+        session_message_history=[],
+        runtime_base_history_len=0,
+        current_turn_user_message=request_text,
+        start_index=0,
+        target_tool_names=["request_status"],
+        previous_result_count=1,
+    )
+
+    assert latest_runtime_messages == messages
+    assert latest_messages == messages
+    assert [item["content"] for item in messages if item.get("role") == "user"] == [
+        request_text,
+        request_text,
+    ]
+    assert messages[2]["tool_call_id"] == messages[1]["tool_calls"][0]["id"]
+    assert messages[6]["tool_call_id"] == messages[5]["tool_calls"][0]["id"]
 
 
 def test_extract_synthetic_tool_messages_from_next_node_returns_tool_rows() -> None:

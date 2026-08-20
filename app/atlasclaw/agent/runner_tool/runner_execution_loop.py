@@ -182,6 +182,7 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             "reasoning_retry_count": reasoning_retry_count,
             "run_output_start_index": run_output_start_index,
             "tool_execution_required": tool_execution_required,
+            "conversation_turn_plan": None,
             "reasoning_retry_limit": reasoning_retry_limit,
             "model_stream_timed_out": model_stream_timed_out,
             "model_timeout_error_message": model_timeout_error_message,

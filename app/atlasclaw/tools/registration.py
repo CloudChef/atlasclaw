@@ -509,6 +509,8 @@ def register_builtin_tools(
             live_data=bool(tool_meta.live_data),
             browser_interaction=bool(tool_meta.browser_interaction),
             public_web=bool(tool_meta.public_web),
+            read_only=bool(tool_meta.read_only),
+            auto_select_single_option=bool(tool_meta.auto_select_single_option),
         )
         registry.register(skill_meta, handler)
         registered.append(tool_name)

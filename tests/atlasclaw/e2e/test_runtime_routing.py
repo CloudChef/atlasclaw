@@ -608,19 +608,6 @@ def _extract_selector_user_request(prompt_text: str) -> str:
     return match.group(1).strip() if match else ""
 
 
-def _extract_authorized_capabilities(prompt_text: str) -> list[tuple[str, str]]:
-    """Return selector capability ids paired with their lower-cased prompt line."""
-    capabilities: list[tuple[str, str]] = []
-    for line in prompt_text.splitlines():
-        stripped = line.strip()
-        if not stripped.startswith("- ") or ":" not in stripped:
-            continue
-        capability_id = stripped[2:].split("|", 1)[0].strip()
-        if capability_id.startswith(("provider_skill:", "skill:", "tool:")):
-            capabilities.append((capability_id, stripped.lower()))
-    return capabilities
-
-
 def _find_capability(
     capabilities: list[tuple[str, str]],
     *needles: str,
@@ -636,17 +623,46 @@ def _find_capability(
     return ""
 
 
-def _selector_response_for_prompt(messages: list[ModelMessage], instructions: str = "") -> Optional[str]:
-    """Answer AtlasClaw's internal capability selector prompts deterministically."""
-    prompt_text = _extract_latest_request_text(messages)
-    if "Select authorized capability targets for this turn." not in prompt_text:
-        return None
+def _extract_planner_capabilities(instructions: str) -> list[tuple[str, str]]:
+    """Return capability IDs from the planner's serialized authorized index."""
 
+    marker = "AUTHORIZED_CAPABILITIES:\n"
+    start = instructions.find(marker)
+    if start < 0:
+        return []
+    serialized = instructions[start + len(marker) :].lstrip()
+    try:
+        payload, _ = json.JSONDecoder().raw_decode(serialized)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    if not isinstance(payload, list):
+        return []
+    return [
+        (
+            str(item.get("id", "") or "").strip(),
+            " ".join(
+                str(item.get(key, "") or "").strip().lower()
+                for key in ("id", "name", "description")
+            ),
+        )
+        for item in payload
+        if isinstance(item, dict) and str(item.get("id", "") or "").strip()
+    ]
+
+
+def _planner_response_for_prompt(
+    messages: list[ModelMessage],
+    instructions: str,
+) -> Optional[dict[str, Any]]:
+    """Return the deterministic structured conversation plan for a planner call."""
+
+    prompt_text = _extract_latest_request_text(messages)
+    if "Plan the current user turn." not in prompt_text:
+        return None
     user_text = _extract_selector_user_request(prompt_text)
     lowered_user_text = user_text.lower()
-    capabilities = _extract_authorized_capabilities(instructions or prompt_text)
+    capabilities = _extract_planner_capabilities(instructions)
     target = ""
-
     if "云主机" in user_text or "linux vm" in lowered_user_text:
         target = _find_capability(capabilities, ".request", prefix="provider_skill:")
     elif "待审批" in user_text or "审批数据" in user_text:
@@ -655,57 +671,23 @@ def _selector_response_for_prompt(messages: list[ModelMessage], instructions: st
         target = _find_capability(capabilities, ".approval", prefix="provider_skill:")
     elif "服务目录" in user_text:
         target = _find_capability(capabilities, ".request", prefix="provider_skill:")
-    elif "天气" in user_text or (
-        user_text == "上海呢" and _history_contains_weather_context(messages)
-    ):
-        target = (
-            _find_capability(capabilities, "openmeteo_weather", prefix="tool:")
-            or "tool:openmeteo_weather"
-        )
+    elif "天气" in user_text or user_text == "上海呢":
+        target = _find_capability(capabilities, "openmeteo_weather", prefix="tool:")
     elif "PPT" in user_text.upper():
-        target = _find_capability(capabilities, "pptx", prefix="skill:") or "skill:pptx"
-
+        target = _find_capability(capabilities, "pptx", prefix="skill:")
     if target:
-        return json.dumps(
-            {
-                "outcome": "authorized_capability",
-                "targets": [target],
-                "reason": "deterministic e2e selector target",
-            },
-            ensure_ascii=False,
-        )
-    return json.dumps(
-        {
-            "outcome": "ordinary_conversation",
-            "targets": [],
-            "reason": "deterministic e2e direct answer",
-        },
-        ensure_ascii=False,
-    )
-
-
-def _no_capability_route_response_for_prompt(messages: list[ModelMessage]) -> Optional[str]:
-    """Answer internal no-capability classifier prompts without requiring tools."""
-    prompt_text = _extract_latest_request_text(messages)
-    if "Classify the latest turn when no runtime capability is available." not in prompt_text:
-        return None
-
-    user_text = _extract_active_route_user_request(prompt_text)
-    lowered_user_text = user_text.lower()
-    runtime_request = any(
-        fragment in user_text
-        for fragment in ("云主机", "待审批", "详情", "服务目录", "申请")
-    ) or any(
-        fragment in lowered_user_text
-        for fragment in ("linux vm", "cmp", "ppt", "pptx", "request data")
-    )
-    return json.dumps(
-        {
-            "decision": "runtime_capability_request" if runtime_request else "ordinary_conversation",
-            "reason": "deterministic e2e no-capability route",
-        },
-        ensure_ascii=False,
-    )
+        return {
+            "route": "start_new",
+            "action": "use_tools",
+            "target_capability_ids": [target],
+            "reason": "deterministic_e2e_plan",
+        }
+    return {
+        "route": "ordinary",
+        "action": "respond",
+        "target_capability_ids": [],
+        "reason": "deterministic_e2e_plan",
+    }
 
 
 def _format_pending_summary(content: Any) -> str:
@@ -770,14 +752,19 @@ def _direct_park_answer() -> str:
 
 
 def _decide_model_action(messages: list[ModelMessage], agent_info: AgentInfo) -> tuple[str, Any]:
-    """Return either ('text', text) or ('tool', name, args, call_id)."""
-    selector_response = _selector_response_for_prompt(messages, agent_info.instructions or "")
-    if selector_response is not None:
-        return "text", selector_response
-
-    no_capability_route_response = _no_capability_route_response_for_prompt(messages)
-    if no_capability_route_response is not None:
-        return "text", no_capability_route_response
+    """Return deterministic text, runtime-tool, or structured-output decisions."""
+    planner_plan = _planner_response_for_prompt(
+        messages,
+        agent_info.instructions or "",
+    )
+    if planner_plan is not None:
+        assert len(agent_info.output_tools) == 1, agent_info.output_tools
+        return (
+            "tool",
+            agent_info.output_tools[0].name,
+            planner_plan,
+            "call-conversation-turn-plan-1",
+        )
 
     available_tools = {tool.name for tool in agent_info.function_tools}
     last_tool_return = _extract_latest_tool_return(messages)

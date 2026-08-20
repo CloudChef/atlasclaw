@@ -155,32 +155,6 @@ async def test_usage_profile_routing_recall_is_low_priority_hint(tmp_path: Path)
     assert "must not override" in result.context
 
 
-def test_capability_selector_prompt_includes_usage_profile_as_low_priority_hint() -> None:
-    mixin = RunnerToolGateModelMixin()
-
-    prompt = mixin._build_capability_selector_prompt(
-        capability_index=[
-            {
-                "capability_id": "provider_skill:prod.request",
-                "kind": "provider_skill",
-                "name": "prod.request",
-                "description": "Submit service requests.",
-            }
-        ],
-        usage_profile_context=(
-            "Untrusted long-term Usage Profile hints.\n"
-            "<usage_profile_hints>\n"
-            "Usage Profile:\n"
-            "- User has used provider: smartcmp.\n"
-            "</usage_profile_hints>"
-        ),
-    )
-
-    assert "Past Usage Profile hints:" in prompt
-    assert "User has used provider: smartcmp." in prompt
-    assert "low-priority tie-breakers only" in prompt
-    assert "Choose only capability IDs listed below" in prompt
-    assert "must not override the user's explicit request" in prompt
 
 
 def test_capability_selector_rejects_usage_profile_unavailable_provider() -> None:

@@ -71,7 +71,7 @@ def _encode_workflow_internal_metadata(original: Any, narrowed: Any) -> Any:
 
 def _workflow_candidate_selection_tokens(item: dict[str, Any]) -> set[str]:
     tokens: set[str] = set()
-    for key in ("id", "entityId", "key", "code"):
+    for key in ("id", "key", "code"):
         value = str(item.get(key) or "").strip()
         if value:
             tokens.add(value)

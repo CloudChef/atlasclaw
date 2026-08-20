@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import ModelRequestParameters
-from pydantic_ai.models.openai import OpenAIChatModel
+from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
 
 
 def requires_single_leading_system_message(
@@ -91,3 +91,35 @@ class QwenVllmOpenAIChatModel(OpenAIChatModel):
     ) -> list[Any]:
         mapped_messages = await super()._map_messages(messages, model_request_parameters)
         return normalize_openai_chat_system_messages(mapped_messages)
+
+
+class DeepSeekOpenAIChatModel(OpenAIChatModel):
+    """OpenAI-compatible DeepSeek model with explicit thinking-mode toggles."""
+
+    async def _completions_create(
+        self,
+        messages: list[ModelMessage],
+        stream: bool,
+        model_settings: OpenAIChatModelSettings,
+        model_request_parameters: ModelRequestParameters,
+    ) -> Any:
+        thinking = model_request_parameters.thinking
+        if thinking is not None:
+            settings = dict(model_settings)
+            existing_extra_body = settings.get("extra_body")
+            extra_body = (
+                dict(existing_extra_body)
+                if isinstance(existing_extra_body, Mapping)
+                else {}
+            )
+            extra_body["thinking"] = {
+                "type": "disabled" if thinking is False else "enabled"
+            }
+            settings["extra_body"] = extra_body
+            model_settings = OpenAIChatModelSettings(**settings)
+        return await super()._completions_create(
+            messages,
+            stream,
+            model_settings,
+            model_request_parameters,
+        )
