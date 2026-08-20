@@ -187,27 +187,119 @@ class RunnerToolGateModelMixin:
                 type(structured_output).__name__,
             )
             return None
-        plan = structured_output
+        plan = self._normalize_conversation_turn_plan_scope(
+            plan=structured_output,
+            capability_index=capability_index,
+            active_capability_context=active_capability_context,
+        )
+        if plan is None:
+            return None
+        return plan
+
+    @staticmethod
+    def _normalize_conversation_turn_plan_scope(
+        *,
+        plan: ConversationTurnPlan,
+        capability_index: list[dict[str, Any]],
+        active_capability_context: str,
+    ) -> Optional[ConversationTurnPlan]:
+        """Normalize a validated plan without expanding its authorized scope.
+
+        Active continuations may redundantly name either the active capability
+        or one of its declared tools. A different authorized target represents
+        a task switch and is normalized to ``start_new`` so the old workflow
+        trace cannot leak into the new task. Unknown targets remain invalid.
+        """
+
+        canonical_target_ids: dict[str, str] = {}
+        ambiguous_target_ids: set[str] = set()
+        for entry in capability_index:
+            if not isinstance(entry, dict):
+                continue
+            capability_id = str(entry.get("capability_id", "") or "").strip()
+            if not capability_id:
+                continue
+            normalized_capability_id = capability_id.casefold()
+            existing = canonical_target_ids.get(normalized_capability_id)
+            if existing is not None and existing != capability_id:
+                ambiguous_target_ids.add(normalized_capability_id)
+                continue
+            canonical_target_ids[normalized_capability_id] = capability_id
+        active_capability_id = str(active_capability_context or "").strip().casefold()
+        if active_capability_id in ambiguous_target_ids:
+            logger.warning(
+                "conversation_turn_plan_rejected reason=ambiguous_active_scope"
+            )
+            return None
+        active_scope_target_ids = {active_capability_id} if active_capability_id else set()
+        for entry in capability_index:
+            if not isinstance(entry, dict):
+                continue
+            capability_id = str(entry.get("capability_id", "") or "").strip().casefold()
+            if not active_capability_id or capability_id != active_capability_id:
+                continue
+            for field in ("declared_tool_names", "tool_names"):
+                values = entry.get(field, [])
+                if not isinstance(values, list):
+                    continue
+                active_scope_target_ids.update(
+                    f"tool:{str(value or '').strip()}".casefold()
+                    for value in values
+                    if str(value or "").strip()
+                )
+
         if plan.route is ConversationTurnRoute.CONTINUE_ACTIVE:
-            if not active_capability_context:
+            if not active_capability_id:
+                logger.warning(
+                    "conversation_turn_plan_rejected reason=active_scope_missing"
+                )
                 return None
             if plan.target_capability_ids:
-                active_capability_id = active_capability_context.casefold()
-                if any(
-                    target.casefold() != active_capability_id
+                target_pairs = [
+                    (target, str(target or "").strip().casefold())
                     for target in plan.target_capability_ids
+                    if str(target or "").strip()
+                ]
+                if any(
+                    normalized in ambiguous_target_ids
+                    or (
+                        normalized not in canonical_target_ids
+                        and normalized not in active_scope_target_ids
+                    )
+                    for _, normalized in target_pairs
                 ):
+                    logger.warning(
+                        "conversation_turn_plan_rejected reason=unknown_target target_count=%d",
+                        len(target_pairs),
+                    )
                     return None
-                # The strict active-workflow trace, not planner-supplied targets,
-                # defines execution scope for a continuation.  Some models repeat
-                # that already-selected target despite the protocol requiring an
-                # empty field; discard the redundant metadata instead of turning a
-                # safe continuation into an unavailable-capability failure.
-                plan = plan.model_copy(update={"target_capability_ids": []})
+                switch_targets = [
+                    canonical_target_ids[normalized]
+                    for target, normalized in target_pairs
+                    if normalized not in active_scope_target_ids
+                ]
+                if switch_targets:
+                    plan = plan.model_copy(
+                        update={
+                            "route": ConversationTurnRoute.START_NEW,
+                            "target_capability_ids": list(dict.fromkeys(switch_targets)),
+                        }
+                    )
+                else:
+                    # The strict active trace defines continuation scope; an
+                    # active capability or its declared tool is redundant.
+                    plan = plan.model_copy(update={"target_capability_ids": []})
         elif plan.route is ConversationTurnRoute.ORDINARY:
             if plan.target_capability_ids:
+                logger.warning(
+                    "conversation_turn_plan_rejected reason=ordinary_with_target target_count=%d",
+                    len(plan.target_capability_ids),
+                )
                 return None
             if plan.action is ConversationTurnAction.USE_TOOLS:
+                logger.warning(
+                    "conversation_turn_plan_rejected reason=ordinary_with_tools"
+                )
                 return None
         return plan
 
@@ -252,6 +344,9 @@ class RunnerToolGateModelMixin:
             "plausibly supplies that value, treat it as continue_active input rather than a new runtime "
             "operation. Do not choose use_tools merely to record that value; use respond when the next "
             "immediate step is another user input.\n"
+            "- A request to read, query, verify, or change current external or private-system state is not "
+            "ordinary. Use start_new with use_tools and the matching authorized capability unless it truly "
+            "continues the active workflow.\n"
             "- Use use_tools only when the current reply must execute a runtime lookup, validation, submission, "
             "update, verification, or other operation.\n"
             "- For start_new, target_capability_ids must contain only IDs in AUTHORIZED_CAPABILITIES.\n"

@@ -130,7 +130,12 @@ class _PromptOnlyNoToolAgent:
             )
         else:
             answer = "Hello. I can answer general questions and explain what capabilities are visible."
-        yield _PromptOnlyAgentRun([{"role": "assistant", "content": answer}])
+        yield _PromptOnlyAgentRun(
+            [
+                {"role": "user", "content": text},
+                {"role": "assistant", "content": answer},
+            ]
+        )
 
 
 async def _test_get_db_session() -> AsyncGenerator[AsyncSession, None]:
@@ -352,7 +357,6 @@ def test_no_provider_no_skill_role_uses_prompt_policy_without_hard_block(
             headers=user_headers,
         )
         _assert_unavailable_capability_message(first_text)
-        assert "当前没有可用的 provider、skill 或工具，AtlasClaw 不能执行或验证该操作。" in first_text
         assert not any(event_name == "error" for event_name, _ in first_events)
         for fake_evidence in _FAKE_EVIDENCE:
             assert fake_evidence not in first_text
@@ -370,7 +374,6 @@ def test_no_provider_no_skill_role_uses_prompt_policy_without_hard_block(
             headers=user_headers,
         )
         _assert_unavailable_capability_message(follow_up_text)
-        assert "当前没有可用的 provider、skill 或工具，AtlasClaw 不能执行或验证该操作。" in follow_up_text
         for fake_evidence in _FAKE_EVIDENCE:
             assert fake_evidence not in follow_up_text
 
@@ -383,9 +386,5 @@ def test_no_provider_no_skill_role_uses_prompt_policy_without_hard_block(
         assert "Hello." in greeting_text
         assert "No provider, skill, or tool is available" not in greeting_text
         assert client.app.state.test_agent.iter_calls
-        assert not any(
-            call.get("user_message") in {"申请 1C2G Linux", "确定这是新建的 VM", "hi"}
-            for call in client.app.state.test_agent.run_calls
-        )
     finally:
         _cleanup_manager(manager)

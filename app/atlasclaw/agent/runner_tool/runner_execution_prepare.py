@@ -2412,8 +2412,8 @@ class RunnerExecutionPreparePhaseMixin:
                         capability_selector_failed = True
                         capability_selector_intent_plan = ToolIntentPlan(
                             action=ToolIntentAction.DIRECT_ANSWER,
-                            selector_outcome=CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY,
-                            unavailable_runtime_capability=True,
+                            selector_outcome=CapabilitySelectorOutcome.ORDINARY_CONVERSATION,
+                            unavailable_runtime_capability=False,
                             reason="conversation_turn_plan_invalid",
                         )
                     elif conversation_turn_plan.route is ConversationTurnRoute.CONTINUE_ACTIVE:
@@ -2436,8 +2436,8 @@ class RunnerExecutionPreparePhaseMixin:
                             capability_selector_failed = True
                             capability_selector_intent_plan = ToolIntentPlan(
                                 action=ToolIntentAction.DIRECT_ANSWER,
-                                selector_outcome=CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY,
-                                unavailable_runtime_capability=True,
+                                selector_outcome=CapabilitySelectorOutcome.ORDINARY_CONVERSATION,
+                                unavailable_runtime_capability=False,
                                 reason="active_workflow_scope_unavailable",
                             )
                         else:
@@ -2503,8 +2503,8 @@ class RunnerExecutionPreparePhaseMixin:
                             capability_selector_failed = True
                             capability_selector_intent_plan = ToolIntentPlan(
                                 action=ToolIntentAction.DIRECT_ANSWER,
-                                selector_outcome=CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY,
-                                unavailable_runtime_capability=True,
+                                selector_outcome=CapabilitySelectorOutcome.ORDINARY_CONVERSATION,
+                                unavailable_runtime_capability=False,
                                 reason="conversation_turn_plan_target_invalid",
                             )
                         selector_outcome = (
