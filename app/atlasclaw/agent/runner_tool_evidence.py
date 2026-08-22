@@ -1095,13 +1095,71 @@ class RunnerToolEvidenceMixin:
         return sanitized
 
     @staticmethod
+    def _validated_context_scope_from_deps(deps: Any) -> dict[str, str]:
+        """Return the server-validated page object and Skill identity for one run."""
+        extra = getattr(deps, "extra", {})
+        request_context = extra.get("context") if isinstance(extra, dict) else None
+        turn_context = (
+            request_context.get("turn_context")
+            if isinstance(request_context, dict)
+            else None
+        )
+        if not isinstance(turn_context, dict):
+            return {}
+
+        default_skill = turn_context.get("default_skill")
+        current_object = turn_context.get("object")
+        if not isinstance(default_skill, dict) or not isinstance(current_object, dict):
+            return {}
+
+        scope = {
+            "provider_type": str(default_skill.get("provider_type") or "").strip(),
+            "provider_instance": str(default_skill.get("provider_instance") or "").strip(),
+            "skill_ref": str(default_skill.get("ref") or "").strip(),
+            "object_type": str(current_object.get("type") or "").strip(),
+            "object_id": str(current_object.get("id") or "").strip(),
+        }
+        return scope if all(scope.values()) else {}
+
+    @staticmethod
+    def _latest_persisted_context_scope(
+        message_history: list[dict[str, Any]],
+    ) -> dict[str, str]:
+        """Return the Context scope attached to the latest prior user turn."""
+        for message in reversed(message_history):
+            if not isinstance(message, dict):
+                continue
+            if str(message.get("role") or "").strip().lower() != "user":
+                continue
+            metadata = message.get("metadata")
+            scope = metadata.get("context_scope") if isinstance(metadata, dict) else None
+            if not isinstance(scope, dict):
+                return {}
+            normalized = {
+                key: str(scope.get(key) or "").strip()
+                for key in (
+                    "provider_type",
+                    "provider_instance",
+                    "skill_ref",
+                    "object_type",
+                    "object_id",
+                )
+            }
+            return normalized if all(normalized.values()) else {}
+        return {}
+
+    @staticmethod
     def _persist_user_message_metadata_from_deps(deps: Any) -> dict[str, Any]:
         """Return user-message metadata derived from API run context."""
+        metadata: dict[str, Any] = {}
         extra = getattr(deps, "extra", {})
         context = extra.get("context") if isinstance(extra, dict) else None
         if isinstance(context, dict) and context.get("visible_user_turn") is False:
-            return {"visible_user_turn": False}
-        return {}
+            metadata["visible_user_turn"] = False
+        context_scope = RunnerToolEvidenceMixin._validated_context_scope_from_deps(deps)
+        if context_scope:
+            metadata["context_scope"] = context_scope
+        return metadata
 
     def _collect_matched_tool_call_keys(
         self,

@@ -384,11 +384,30 @@ def build_direct_answer_recovery_payload(
     *,
     user_message: str,
     invalid_output: str,
+    workflow_system_prompt: str = "",
 ) -> dict[str, str]:
-    """Build a recovery payload for direct-answer turns that emitted fake tool markup."""
+    """Build a recovery payload for direct-answer turns that emitted fake tool markup.
+
+    An authorized context-only workflow must retain its generated workflow prompt during
+    recovery. Otherwise the recovery model sees an intentionally empty tool list as proof
+    that the provider capability is unavailable and returns a false capability error.
+    """
     invalid_preview = str(invalid_output or "").strip() or "(empty draft)"
-    return {
-        "system_prompt": (
+    active_workflow_prompt = str(workflow_system_prompt or "").strip()
+    if active_workflow_prompt:
+        system_prompt = (
+            f"{active_workflow_prompt}\n\n"
+            "## Direct Answer Recovery\n\n"
+            "The current provider and skill workflow remains authorized and active. Tool execution "
+            "is paused only for this recovery call. Do not claim that any provider, skill, or tool "
+            "is missing or unavailable.\n"
+            "Discard the invalid tool-style draft and respond with the next clarification, input "
+            "summary, draft, or confirmation required by the active workflow. Do not emit tool-call "
+            "markup, XML tags, pseudo tool invocations, or claim that an external action succeeded "
+            "or failed. Return a concise markdown answer."
+        )
+    else:
+        system_prompt = (
             "You are the assistant. No tools are available in this turn.\n"
             "Answer the user directly from model knowledge.\n"
             "Do not emit tool-call markup, XML tags, or pseudo tool invocations such as "
@@ -416,7 +435,9 @@ def build_direct_answer_recovery_payload(
             "from this turn, do not say records are absent, results are empty, an object does not exist, "
             "an operation succeeded or failed, or logs, timestamps, statuses, and verification evidence exist.\n"
             "Return a concise markdown answer."
-        ),
+        )
+    return {
+        "system_prompt": system_prompt,
         "user_prompt": (
             f"User request:\n{str(user_message or '').strip()}\n\n"
             f"Discard this invalid draft:\n{invalid_preview}\n\n"

@@ -159,6 +159,18 @@ class RunnerToolGateModelMixin:
             user_message=user_message,
             recent_history=recent_history,
         )
+        model_settings: dict[str, Any] = {"thinking": False}
+        selected_token = (
+            self.token_policy.get_session_token(deps.session_key)
+            if self.token_policy is not None
+            else None
+        )
+        selected_provider = str(getattr(selected_token, "provider", "") or "").strip().lower()
+        selected_model = str(getattr(selected_token, "model", "") or "").strip().lower()
+        if selected_provider == "openrouter" and selected_model.startswith("qwen"):
+            model_settings["extra_body"] = {"reasoning": {"effort": "none"}}
+        elif selected_provider == "qwen":
+            model_settings["extra_body"] = {"enable_thinking": False}
         try:
             structured_output = await self._run_single_with_optional_override(
                 agent=agent,
@@ -176,9 +188,12 @@ class RunnerToolGateModelMixin:
                     ),
                     max_retries=0,
                 ),
-                model_settings={"thinking": False},
+                model_settings=model_settings,
             )
         except Exception as exc:
+            token_access_failure = getattr(self, "_is_token_access_failure", None)
+            if callable(token_access_failure) and token_access_failure(exc):
+                raise
             logger.warning("conversation_turn_planning_failed: %s", exc)
             return None
         if not isinstance(structured_output, ConversationTurnPlan):
@@ -342,8 +357,9 @@ class RunnerToolGateModelMixin:
             "confirmation. It never carries a user-visible reply.\n"
             "- When the latest assistant turn explicitly requests one input and the current user reply "
             "plausibly supplies that value, treat it as continue_active input rather than a new runtime "
-            "operation. Do not choose use_tools merely to record that value; use respond when the next "
-            "immediate step is another user input.\n"
+            "operation. Determine the next immediate step from the active skill instructions: use respond "
+            "only when another user input or confirmation is required; use use_tools in the same turn when "
+            "the supplied value completes the inputs for the next runtime operation.\n"
             "- A request to read, query, verify, or change current external or private-system state is not "
             "ordinary. Use start_new with use_tools and the matching authorized capability unless it truly "
             "continues the active workflow.\n"
