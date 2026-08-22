@@ -4114,7 +4114,9 @@ describe('chat-ui.js handler mode', () => {
             })
         );
         const runRequest = global.fetch.mock.calls.find(([url]) => String(url).endsWith('/api/agent/run'));
-        expect(JSON.parse(runRequest[1].body).context.visible_user_turn).toBe(false);
+        const runContext = JSON.parse(runRequest[1].body).context;
+        expect(runContext.visible_user_turn).toBe(false);
+        expect(runContext.object_action_turn).toBe(true);
         expect(onUserTurnStarted).not.toHaveBeenCalled();
         expect(element.addMessage.mock.calls.some(([message]) => message?.role === 'user')).toBe(false);
 

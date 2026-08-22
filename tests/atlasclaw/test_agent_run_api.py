@@ -168,7 +168,7 @@ def _assert_static_slash_denial(client, ctx, runner, session_key: str, run) -> N
         ctx.session_manager_router.for_session_key(session_key).load_transcript(session_key)
     )
     assert [entry.role for entry in entries] == ["user", "assistant"]
-    assert "没有可用的 provider、skill 或工具" in entries[-1].content
+    assert "No provider, skill, or tool is available" in entries[-1].content
 
 
 def test_agent_run_stream_does_not_duplicate_lifecycle_or_assistant_events(tmp_path):
