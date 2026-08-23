@@ -1956,6 +1956,28 @@ def test_host_page_context_cannot_close_markdown_or_inject_a_heading() -> None:
     assert "\\u003cscript\\u003e" in prompt
 
 
+def test_host_page_context_binds_action_only_requests_without_confirming_them(
+) -> None:
+    prompt = prompt_sections.build_current_host_page_context(
+        {
+            "object": {
+                "type": "virtual_machine",
+                "id": "RESOURCE-1",
+                "name": "vm-a",
+            }
+        }
+    )
+
+    assert "an action-only command inherits the current page object" in prompt
+    assert "Do not ask whether the user meant the current page object" in prompt
+    assert "Treat that target as already resolved and state it as a fact" in prompt
+    assert "ask only the action confirmation" in prompt
+    assert "Never phrase it as target clarification" in prompt
+    assert "does not itself confirm a state-changing action" in prompt
+    assert "owning Skill's validation or confirmation rules" in prompt
+    assert "If the user names a different target" in prompt
+
+
 def test_execution_prompt_context_excludes_selector_only_default_skill() -> None:
     """Execution sees the current object but not the selector's default Skill hint."""
     deps = SimpleNamespace(
