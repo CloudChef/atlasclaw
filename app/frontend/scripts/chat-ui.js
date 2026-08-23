@@ -1019,6 +1019,9 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     if (options.visibleUserTurn === false) {
       requestContext.visible_user_turn = false
     }
+    if (options.objectActionTurn === true) {
+      requestContext.object_action_turn = true
+    }
     const explicitTurnContext = normalizeEmbedActionTurnContext(options.turnContext)
     if (explicitTurnContext) {
       Object.assign(requestContext, explicitTurnContext)
@@ -2416,6 +2419,7 @@ function submitObjectActionDirectly(message, callbacks = {}, submissionContext =
     // Object actions are follow-up commands, not new visible user turns in the conversation history.
     void runAgentMessage(message, null, signals, {
       visibleUserTurn: false,
+      objectActionTurn: true,
       turnContext,
       onRunCreationError: submissionContext.onRunCreationError
     }).then((created) => {

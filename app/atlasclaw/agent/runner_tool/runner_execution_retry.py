@@ -157,12 +157,41 @@ class RunnerExecutionRetryMixin:
 
     def _is_hard_token_failure(self, error: Exception) -> bool:
         """Return true when an error indicates the current token should be evicted."""
+        if self._is_token_access_failure(error):
+            return True
         lowered = str(error).lower()
         hard_markers = (
+            "invalid response from openai chat completions endpoint",
+            "validation errors for chatcompletion",
+            "validation error for chatcompletion",
+            "input should be a valid string",
+            "input should be a valid list",
+            "object input should be 'chat.completion'",
+            "pydantic validation error",
+        )
+        return any(marker in lowered for marker in hard_markers)
+
+    @staticmethod
+    def _is_token_access_failure(error: Exception) -> bool:
+        """Return true for provider failures that another model token may resolve."""
+
+        status_code = getattr(error, "status_code", None)
+        if status_code is None:
+            response = getattr(error, "response", None)
+            status_code = getattr(response, "status_code", None)
+        if status_code in {401, 402, 403, 429}:
+            return True
+
+        lowered = str(error).lower()
+        access_markers = (
             "status_code: 401",
-            "status_code: 403",
             "status_code: 402",
+            "status_code: 403",
             "status_code: 429",
+            "http 401",
+            "http 402",
+            "http 403",
+            "http 429",
             "authenticationerror",
             "accountoverdueerror",
             "forbidden",
@@ -175,12 +204,5 @@ class RunnerExecutionRetryMixin:
             "rate-limited upstream",
             "too many requests",
             "rate limit",
-            "invalid response from openai chat completions endpoint",
-            "validation errors for chatcompletion",
-            "validation error for chatcompletion",
-            "input should be a valid string",
-            "input should be a valid list",
-            "object input should be 'chat.completion'",
-            "pydantic validation error",
         )
-        return any(marker in lowered for marker in hard_markers)
+        return any(marker in lowered for marker in access_markers)

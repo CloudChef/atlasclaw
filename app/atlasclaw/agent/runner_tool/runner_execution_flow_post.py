@@ -457,12 +457,14 @@ class RunnerExecutionFlowPostMixin:
         *,
         user_message: str,
         invalid_output: str,
+        workflow_system_prompt: str,
         deps: Any,
         agent: Any,
     ) -> str:
         payload = build_direct_answer_recovery_payload(
             user_message=user_message,
             invalid_output=invalid_output,
+            workflow_system_prompt=workflow_system_prompt,
         )
         run_single = getattr(self, "run_single", None)
         if not callable(run_single):
@@ -997,6 +999,11 @@ class RunnerExecutionFlowPostMixin:
             final_assistant = build_no_runtime_capability_answer(provider_auth_diagnostic)
             _log_step("no_runtime_capability_answer_applied")
 
+        tool_policy = (getattr(deps, "extra", {}) or {}).get("tool_policy", {})
+        authorized_workflow_recovery = (
+            isinstance(tool_policy, dict)
+            and str(tool_policy.get("mode", "") or "").strip() == "context_only"
+        )
         if (
             not tool_execution_required
             and not state.get("available_tools")
@@ -1026,6 +1033,7 @@ class RunnerExecutionFlowPostMixin:
                 recovered_answer = await self._generate_direct_answer_recovery_answer(
                     user_message=user_message,
                     invalid_output=final_assistant,
+                    workflow_system_prompt=system_prompt if authorized_workflow_recovery else "",
                     deps=deps,
                     agent=state.get("runtime_agent") or getattr(self, "agent", None),
                 )

@@ -444,6 +444,24 @@ def test_continue_active_targets_continue_or_switch_within_authorized_scope() ->
     assert ambiguous is None
 
 
+def test_conversation_planner_defers_required_input_handling_to_active_skill() -> None:
+    """Let the active skill decide whether missing input requires a tool call."""
+
+    prompt = _GateRunner()._build_conversation_turn_planner_prompt(
+        capability_index=[],
+        active_capability_context="provider_skill:primary.item",
+        active_skill_instructions="An update requires a non-empty reason.",
+        active_workflow_context={"item_id": "ITEM-1"},
+    )
+
+    assert "Determine the next immediate step from the active skill instructions" in prompt
+    assert "use use_tools in the same turn" in prompt
+    assert "current external or private-system state" in prompt
+    assert "required input for the requested operation is still missing" not in prompt
+    assert "Do not choose use_tools until" not in prompt
+    assert "Do not choose use_tools merely to record that value" not in prompt
+
+
 def test_active_preview_confirmation_projects_selected_workflow_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -523,19 +541,7 @@ def test_active_preview_confirmation_projects_selected_workflow_tools(
     deps = SkillDeps(
         session_key="preview-confirmation-session",
         channel="api",
-        extra={
-            "context": {
-                "turn_context": {
-                    "default_skill": {
-                        "ref": "example:item",
-                        "name": "primary.item",
-                        "provider_type": "example",
-                        "provider_instance": "primary",
-                    },
-                    "object": {"type": "item", "id": "item-1"},
-                }
-            },
-        },
+        extra={},
     )
     state = _prepare_phase_state(deps=deps)
     state["user_message"] = "Yes"
@@ -548,6 +554,9 @@ def test_active_preview_confirmation_projects_selected_workflow_tools(
         "example_submit_request",
     ]
     assert state["tool_execution_required"] is True
+    assert "Latest assistant follow-up prompt:" in state["model_user_message"]
+    assert "Request preview: example item." in state["model_user_message"]
+    assert "User reply to that prompt:\nYes" in state["model_user_message"]
     assert next(
         data["policy"] for step, data in logs if step == "tool_gate_decided"
     ) == ToolPolicyMode.MUST_USE_TOOL.value
@@ -713,6 +722,298 @@ def test_active_numeric_selection_skips_planner_and_projects_only_read_tools(
     )
 
 
+def test_context_object_action_overrides_transcript_active_skill(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Route a floating Context action through its current page Skill."""
+
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "# Resource workflow\n\nAnalyze the resource with the declared tool.",
+        encoding="utf-8",
+    )
+    tools = [
+        {
+            "name": "example_submit_request",
+            "provider_type": "example",
+            "provider_skill_name": "primary.request",
+            "qualified_skill_name": "example:request",
+            "skill_name": "request",
+        },
+        {
+            "name": "example_analyze_resource",
+            "provider_type": "example",
+            "provider_skill_name": "primary.resource",
+            "qualified_skill_name": "example:resource",
+            "skill_name": "resource",
+            "read_only": True,
+        },
+    ]
+    capability_index = [
+        {
+            "capability_id": "provider_skill:primary.request",
+            "kind": "provider_skill",
+            "name": "primary.request",
+            "provider_type": "example",
+            "provider_name": "primary",
+            "instance_name": "primary",
+            "qualified_skill_name": "example:request",
+            "target_provider_instances": ["example.primary"],
+            "target_provider_types": ["example"],
+            "target_provider_skill_names": ["primary.request"],
+            "declared_tool_names": ["example_submit_request"],
+            "locator": str(skill_path),
+        },
+        {
+            "capability_id": "provider_skill:primary.resource",
+            "kind": "provider_skill",
+            "name": "primary.resource",
+            "provider_type": "example",
+            "provider_name": "primary",
+            "instance_name": "primary",
+            "qualified_skill_name": "example:resource",
+            "target_provider_instances": ["example.primary"],
+            "target_provider_types": ["example"],
+            "target_provider_skill_names": ["primary.resource"],
+            "declared_tool_names": ["example_analyze_resource"],
+            "locator": str(skill_path),
+        },
+    ]
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_tools_snapshot",
+        lambda **kwargs: list(tools),
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_capability_index_snapshot",
+        lambda **kwargs: [dict(entry) for entry in capability_index],
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "_infer_active_provider_skill_from_transcript",
+        lambda **kwargs: "primary.request",
+    )
+    runner = _build_prepare_runner(_PrepareSessionManager())
+
+    async def _unexpected_plan(**kwargs):
+        raise AssertionError("a Context object action must not use conversation planning")
+
+    runner._plan_conversation_turn_with_model = _unexpected_plan
+    deps = SkillDeps(
+        session_key="context-object-action-session",
+        channel="api",
+        extra={
+            "context": {
+                "object_action_turn": True,
+                "turn_context": {
+                    "default_skill": {
+                        "ref": "example:resource",
+                        "provider_type": "example",
+                        "provider_instance": "primary",
+                    },
+                    "object": {"type": "resource", "id": "RESOURCE-1"},
+                },
+            }
+        },
+    )
+    state = _prepare_phase_state(deps=deps)
+    state["user_message"] = "Analyze RESOURCE-1"
+
+    logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert deps.extra["runtime_allowed_tool_names"] == ["example_analyze_resource"]
+    assert state["tool_execution_required"] is True
+    assert state["tool_intent_plan"].target_provider_skill_names == [
+        "primary.resource"
+    ]
+    assert any(step == "object_action_context_skill_resolved" for step, _data in logs)
+    assert not any(step == "object_action_continuation_resolved" for step, _data in logs)
+
+
+def test_context_text_turn_switches_scope_and_continues_without_tool_trace(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    """Use the current Context Skill for typed operations and their confirmation."""
+
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "# Resource workflow\n\nConfirm destructive operations before using the declared tool.",
+        encoding="utf-8",
+    )
+    tools = [
+        {
+            "name": "example_submit_request",
+            "provider_type": "example",
+            "provider_skill_name": "primary.request",
+            "qualified_skill_name": "example:request",
+            "skill_name": "request",
+        },
+        {
+            "name": "example_operate_resource",
+            "provider_type": "example",
+            "provider_skill_name": "primary.resource",
+            "qualified_skill_name": "example:resource",
+            "skill_name": "resource",
+        },
+    ]
+    capability_index = [
+        {
+            "capability_id": "provider_skill:primary.request",
+            "kind": "provider_skill",
+            "name": "primary.request",
+            "provider_type": "example",
+            "provider_name": "primary",
+            "instance_name": "primary",
+            "qualified_skill_name": "example:request",
+            "target_provider_instances": ["example.primary"],
+            "target_provider_types": ["example"],
+            "target_provider_skill_names": ["primary.request"],
+            "declared_tool_names": ["example_submit_request"],
+            "locator": str(skill_path),
+        },
+        {
+            "capability_id": "provider_skill:primary.resource",
+            "kind": "provider_skill",
+            "name": "primary.resource",
+            "provider_type": "example",
+            "provider_name": "primary",
+            "instance_name": "primary",
+            "qualified_skill_name": "example:resource",
+            "target_provider_instances": ["example.primary"],
+            "target_provider_types": ["example"],
+            "target_provider_skill_names": ["primary.resource"],
+            "declared_tool_names": ["example_operate_resource"],
+            "locator": str(skill_path),
+        },
+    ]
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_tools_snapshot",
+        lambda **kwargs: list(tools),
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_capability_index_snapshot",
+        lambda **kwargs: [dict(entry) for entry in capability_index],
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "_infer_active_provider_skill_from_transcript",
+        lambda **kwargs: "primary.request",
+    )
+
+    current_scope = {
+        "provider_type": "example",
+        "provider_instance": "primary",
+        "skill_ref": "example:resource",
+        "object_type": "resource",
+        "object_id": "RESOURCE-1",
+    }
+    deps = SkillDeps(
+        session_key="context-text-operation-session",
+        channel="api",
+        extra={
+            "context": {
+                "turn_context": {
+                    "default_skill": {
+                        "ref": "example:resource",
+                        "provider_type": "example",
+                        "provider_instance": "primary",
+                    },
+                    "object": {"type": "resource", "id": "RESOURCE-1"},
+                }
+            }
+        },
+    )
+    assert AgentRunner._persist_user_message_metadata_from_deps(deps) == {
+        "context_scope": current_scope
+    }
+
+    switched_runner = _build_prepare_runner(
+        _PrepareSessionManager(
+            transcript=[
+                {
+                    "role": "user",
+                    "content": "Request a service",
+                    "metadata": {
+                        "context_scope": {
+                            **current_scope,
+                            "skill_ref": "example:request",
+                            "object_type": "request",
+                            "object_id": "REQUEST-1",
+                        }
+                    },
+                },
+                {"role": "assistant", "content": "Which catalog do you need?"},
+            ]
+        )
+    )
+
+    async def _plan_switched_context(**kwargs):
+        assert kwargs["active_capability_context"] == "provider_skill:primary.resource"
+        assert kwargs["active_workflow_context"] == {"context_scope": current_scope}
+        assert [entry["capability_id"] for entry in kwargs["capability_index"]] == [
+            "provider_skill:primary.resource"
+        ]
+        return ConversationTurnPlan(
+            route=ConversationTurnRoute.CONTINUE_ACTIVE,
+            action=ConversationTurnAction.USE_TOOLS,
+            reason="The typed operation targets the current resource Context.",
+        )
+
+    switched_runner._plan_conversation_turn_with_model = _plan_switched_context
+    switched_state = _prepare_phase_state(deps=deps)
+    switched_state["user_message"] = "Delete the current resource"
+    switched_logs = asyncio.run(
+        _run_prepare_until_tool_policy(switched_runner, state=switched_state)
+    )
+
+    assert deps.extra["runtime_allowed_tool_names"] == ["example_operate_resource"]
+    assert any(
+        step == "turn_context_scope_resolved" and data["same_context_scope"] is False
+        for step, data in switched_logs
+    )
+
+    continued_runner = _build_prepare_runner(
+        _PrepareSessionManager(
+            transcript=[
+                {
+                    "role": "user",
+                    "content": "Delete the current resource",
+                    "metadata": {"context_scope": current_scope},
+                },
+                {"role": "assistant", "content": "Confirm tear down on RESOURCE-1?"},
+            ]
+        )
+    )
+
+    async def _plan_context_confirmation(**kwargs):
+        assert kwargs["active_capability_context"] == "provider_skill:primary.resource"
+        assert kwargs["active_workflow_context"] == {"context_scope": current_scope}
+        return ConversationTurnPlan(
+            route=ConversationTurnRoute.CONTINUE_ACTIVE,
+            action=ConversationTurnAction.USE_TOOLS,
+            reason="The reply confirms the current Context operation.",
+        )
+
+    continued_runner._plan_conversation_turn_with_model = _plan_context_confirmation
+    continued_state = _prepare_phase_state(deps=deps)
+    continued_state["user_message"] = "Confirm"
+    continued_logs = asyncio.run(
+        _run_prepare_until_tool_policy(continued_runner, state=continued_state)
+    )
+
+    assert deps.extra["runtime_allowed_tool_names"] == ["example_operate_resource"]
+    assert continued_state["tool_execution_required"] is True
+    assert any(
+        step == "turn_context_scope_resolved" and data["same_context_scope"] is True
+        for step, data in continued_logs
+    )
+
+
 def test_start_new_plan_clears_prior_workflow_trace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -789,8 +1090,13 @@ def test_start_new_plan_clears_prior_workflow_trace(
     )
     runner = _build_prepare_runner(_PrepareSessionManager(transcript=transcript))
 
+    user_message = (
+        "Create a report. 备注：查看待处理。 "
+        "Action: approve. Error: please provide an owner."
+    )
+
     async def _plan_new_workflow(**kwargs):
-        assert kwargs["user_message"] == "Create a report."
+        assert kwargs["user_message"] == user_message
         assert kwargs["active_workflow_context"]["internal_request_trace_id"] == "trace-old"
         return ConversationTurnPlan(
             route=ConversationTurnRoute.START_NEW,
@@ -802,14 +1108,14 @@ def test_start_new_plan_clears_prior_workflow_trace(
     runner._plan_conversation_turn_with_model = _plan_new_workflow
     deps = SkillDeps(session_key="new-workflow-session", channel="api", extra={})
     state = _prepare_phase_state(deps=deps)
-    state["user_message"] = "Create a report."
+    state["user_message"] = user_message
 
     asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
 
     assert state["tool_intent_plan"].target_provider_skill_names == ["primary.report"]
     assert "active_internal_request_trace_id" not in deps.extra
-    assert state["model_user_message"] == "Create a report."
-    assert state["tool_request_message"] == "Create a report."
+    assert state["model_user_message"] == user_message
+    assert state["tool_request_message"] == user_message
     assert "current_follow_up_context" not in deps.extra
 
 
@@ -879,7 +1185,7 @@ def test_authorized_context_does_not_inject_standalone_skill_runtime_tools(
     assert "standard_skill_runtime_tools_visible" not in deps.extra
 
 
-def test_page_default_does_not_block_active_workflow_or_clear_capability_switch(
+def test_unavailable_page_context_skill_does_not_fall_back_to_other_capabilities(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tools = [
@@ -930,18 +1236,8 @@ def test_page_default_does_not_block_active_workflow_or_clear_capability_switch(
         transcript=[{"role": "assistant", "content": "Which item should I update?"}]
     )
     runner = _build_prepare_runner(manager)
-    selector_calls = 0
-
     async def _plan_turn(**kwargs):
-        nonlocal selector_calls
-        selector_calls += 1
-        assert kwargs["active_capability_context"] == ""
-        return ConversationTurnPlan(
-            route=ConversationTurnRoute.START_NEW,
-            action=ConversationTurnAction.USE_TOOLS,
-            target_capability_ids=["provider_skill:example:report"],
-            reason="switch_to_report_workflow",
-        )
+        raise AssertionError("an unavailable Context Skill must fail closed")
 
     runner._plan_conversation_turn_with_model = _plan_turn
     deps = SkillDeps(
@@ -963,11 +1259,19 @@ def test_page_default_does_not_block_active_workflow_or_clear_capability_switch(
     )
     state = _prepare_phase_state(deps=deps)
 
-    asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+    logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
 
-    assert selector_calls == 1
-    assert state["tool_intent_plan"].reason == "switch_to_report_workflow"
-    assert state["tool_intent_plan"].target_provider_skill_names == ["example:report"]
+    assert deps.extra["runtime_allowed_tool_names"] == []
+    assert state["tool_intent_plan"].reason == "turn_context_skill_unavailable"
+    assert state["tool_intent_plan"].unavailable_runtime_capability is True
+    assert (
+        state["tool_intent_plan"].selector_outcome
+        is CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY
+    )
+    assert any(
+        step == "turn_context_scope_resolved" and data["available"] is False
+        for step, data in logs
+    )
 
 
 def test_coordination_only_toolset_is_not_executable_runtime_capability() -> None:
@@ -1601,39 +1905,6 @@ def test_normalize_external_intent_does_not_force_must_use_tool() -> None:
     assert normalized.needs_tool is True
 
 
-def test_align_external_system_intent_keeps_prefer_tool_policy() -> None:
-    runner = _GateRunner()
-    available_tools = [
-        {
-            "name": "cmp_list_pending",
-            "description": "List CMP pending requests",
-            "capability_class": "provider:smartcmp",
-            "provider_type": "smartcmp",
-        }
-    ]
-    initial_decision = ToolGateDecision(
-        needs_tool=True,
-        needs_external_system=True,
-        suggested_tool_classes=[],
-        confidence=0.30,
-        reason="external request",
-        policy=ToolPolicyMode.ANSWER_DIRECT,
-    )
-    initial_match = CapabilityMatcher(available_tools=available_tools).match(["provider:smartcmp"])
-
-    aligned_decision, _ = runner._align_external_system_intent(
-        decision=initial_decision,
-        match_result=initial_match,
-        available_tools=available_tools,
-        user_message="List pending CMP approvals",
-        recent_history=[],
-        deps=None,
-    )
-
-    assert aligned_decision.policy is ToolPolicyMode.PREFER_TOOL
-    assert aligned_decision.suggested_tool_classes == ["provider:smartcmp"]
-
-
 def test_normalize_live_data_only_intent_keeps_answer_direct_without_tool_hints() -> None:
     runner = _GateRunner()
     decision = ToolGateDecision(
@@ -1755,84 +2026,6 @@ def test_direct_answer_gate_decision_keeps_hint_classes_without_requiring_tool_e
     assert decision.suggested_tool_classes == ["provider:smartcmp"]
 
 
-def test_classifier_history_ignores_recent_history_for_complete_new_request() -> None:
-    runner = _GateRunner()
-
-    history = runner._build_classifier_history(
-        user_message="What is the weather in Shanghai tomorrow?",
-        recent_history=[
-            {"role": "user", "content": "List all current pending approvals in CMP"},
-            {"role": "assistant", "content": "I will look that up."},
-        ],
-        used_follow_up_context=False,
-    )
-
-    assert history == []
-
-
-def test_resolve_contextual_tool_request_keeps_rich_identifier_query_self_contained() -> None:
-    runner = _GateRunner()
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="Show details for TIC20260316000001",
-        recent_history=[
-            {"role": "user", "content": "List all current pending approvals in CMP"},
-            {"role": "assistant", "content": "I will list them."},
-        ],
-    )
-
-    assert resolved == "Show details for TIC20260316000001"
-    assert used_follow_up_context is False
-
-
-def test_resolve_contextual_tool_request_reuses_previous_user_message_for_low_information_follow_up() -> None:
-    runner = _GateRunner()
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="Shanghai",
-        recent_history=[
-            {"role": "user", "content": "What is the weather in Beijing tomorrow?"},
-            {"role": "assistant", "content": "Weather for Beijing, China\nDaily forecast:\n| 2026-04-15 | Slight rain showers |"},
-        ],
-    )
-
-    assert resolved == "What is the weather in Beijing tomorrow?\nShanghai"
-    assert used_follow_up_context is True
-
-
-def test_resolve_contextual_tool_request_keeps_provider_route_query_self_contained() -> None:
-    runner = _GateRunner()
-    deps = SimpleNamespace(
-        extra={
-            "provider_instances": {
-                "markdown-vault": {
-                    "knowledgebase": {
-                        "usage_hint": "Use for SmartCMP knowledge-base questions.",
-                    },
-                    "atlasclaw-docs": {
-                        "usage_hint": "Use for AtlasClaw product documentation.",
-                    },
-                }
-            }
-        }
-    )
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="How does the SmartCMP knowledge base relate service requests to deployment logs?",
-        recent_history=[
-            {"role": "user", "content": "According to the AtlasClaw documentation, what should a standard user check after first login?"},
-            {
-                "role": "assistant",
-                "content": "Provide the section or specific question to search for.",
-            },
-        ],
-        deps=deps,
-    )
-
-    assert resolved == "How does the SmartCMP knowledge base relate service requests to deployment logs?"
-    assert used_follow_up_context is False
-
-
 def test_provider_skill_projection_does_not_append_generic_coordination_tools() -> None:
     deps = SimpleNamespace(
         extra={
@@ -1907,96 +2100,6 @@ def test_provider_skill_projection_does_not_append_generic_coordination_tools() 
     assert {tool["name"] for tool in pruned} == {"markdown_vault_search"}
 
 
-def test_resolve_contextual_tool_request_reuses_previous_request_for_structured_follow_up_reply() -> None:
-    runner = _GateRunner()
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="linuxVM23, root, Passw0rd",
-        recent_history=[
-            {"role": "user", "content": "Request a 2C4G cloud resource"},
-            {
-                "role": "assistant",
-                "content": (
-                    "Provide the following information:\n"
-                    "1. Resource name:\n"
-                    "2. Username:\n"
-                    "3. Password:"
-                ),
-            },
-        ],
-    )
-
-    assert resolved == "Request a 2C4G cloud resource\nlinuxVM23, root, Passw0rd"
-    assert used_follow_up_context is True
-
-
-def test_resolve_contextual_tool_request_reuses_previous_request_for_whitespace_separated_fields() -> None:
-    runner = _GateRunner()
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="Username root Password Passw0rd Name linux-test123",
-        recent_history=[
-            {"role": "user", "content": "Request a 2C4G Linux virtual machine"},
-            {
-                "role": "assistant",
-                "content": (
-                    "Provide the following information before submission:\n"
-                    "1. Resource name\n"
-                    "2. Username\n"
-                    "3. Password"
-                ),
-            },
-        ],
-    )
-
-    assert resolved == "Request a 2C4G Linux virtual machine\nUsername root Password Passw0rd Name linux-test123"
-    assert used_follow_up_context is True
-
-
-def test_resolve_contextual_tool_request_reuses_previous_request_for_prompt_derived_field_labels() -> None:
-    runner = _GateRunner()
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="Project Code alpha-1 Owner alice Region cn-east-1",
-        recent_history=[
-            {"role": "user", "content": "Create an environment for analytics"},
-            {
-                "role": "assistant",
-                "content": (
-                    "Please provide the following details:\n"
-                    "1. Project Code:\n"
-                    "2. Owner:\n"
-                    "3. Region:"
-                ),
-            },
-        ],
-    )
-
-    assert resolved == "Create an environment for analytics\nProject Code alpha-1 Owner alice Region cn-east-1"
-    assert used_follow_up_context is True
-
-
-def test_resolve_contextual_tool_request_reuses_single_labeled_option_selection() -> None:
-    runner = _GateRunner()
-    assistant_prompt = (
-        "Select an availability zone (available_zone_id) by number:\n"
-        "1. cn-north-1a\n"
-        "2. cn-north-1b\n"
-        "Select the availability zone to deploy into."
-    )
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="available_zone_id selection 1 (cn-north-1a)",
-        recent_history=[
-            {"role": "user", "content": "Request a cloud virtual machine"},
-            {"role": "assistant", "content": assistant_prompt},
-        ],
-    )
-
-    assert resolved == "Request a cloud virtual machine\navailable_zone_id selection 1 (cn-north-1a)"
-    assert used_follow_up_context is True
-
-
 def test_exact_choice_match_accepts_only_number_or_complete_visible_option() -> None:
     runner = _GateRunner()
     history = [
@@ -2059,9 +2162,11 @@ def test_exact_choice_match_accepts_only_number_or_complete_visible_option() -> 
         "Only Option",
         "single_auto",
     )
-    assert runner._resolve_single_visible_choice_prompt(
-        "Please confirm the operation:\n1. Execute deletion\nReply with 1."
-    ) is None
+    structural = runner._resolve_single_visible_choice_prompt(
+        "Display text is not an authority signal:\n1. Only Row"
+    )
+    assert structural is not None
+    assert structural.label == "Only Row"
     assert runner._resolve_single_visible_choice_prompt(
         "Please select an image:\n1. Redhat 8.10\n"
         "After selection, collect the previously confirmed required fields."
@@ -2069,207 +2174,6 @@ def test_exact_choice_match_accepts_only_number_or_complete_visible_option() -> 
     assert runner._resolve_single_visible_choice_prompt(
         "Please select an image:\n1. First\n2. Second\nReply with a number."
     ) is None
-
-
-def test_resolve_contextual_tool_request_reuses_selection_with_returned_option_id() -> None:
-    runner = _GateRunner()
-    assistant_prompt = (
-        "Select a network for the vSphere resource pool. One network is available:\n"
-        "1. 192.168.24.0/22 — vSphere network\n"
-        "Select the network by replying with 1."
-    )
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="networkId select 1 (network-361)",
-        recent_history=[
-            {"role": "user", "content": "2 cc160480-482-finaltest"},
-            {"role": "assistant", "content": assistant_prompt},
-        ],
-    )
-
-    assert resolved == "2 cc160480-482-finaltest\nnetworkId select 1 (network-361)"
-    assert used_follow_up_context is True
-
-
-def test_resolve_contextual_tool_request_keeps_unprompted_single_selection_self_contained() -> None:
-    runner = _GateRunner()
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="networkId selection 1 (network-361)",
-        recent_history=[
-            {"role": "user", "content": "Show the current network configuration."},
-            {
-                "role": "assistant",
-                "content": "The configuration is available. Tell me what you want next.",
-            },
-        ],
-    )
-
-    assert resolved == "networkId selection 1 (network-361)"
-    assert used_follow_up_context is False
-
-
-def test_resolve_contextual_tool_request_does_not_merge_prompt_shaped_fields_without_follow_up_prompt() -> None:
-    runner = _GateRunner()
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="Project Code alpha-1 Owner alice Region cn-east-1",
-        recent_history=[
-            {"role": "user", "content": "Create an environment for analytics"},
-            {
-                "role": "assistant",
-                "content": "I checked the catalog and can proceed once you tell me what you want next.",
-            },
-        ],
-    )
-
-    assert resolved == "Project Code alpha-1 Owner alice Region cn-east-1"
-    assert used_follow_up_context is False
-
-
-def test_resolve_contextual_tool_request_recognizes_enumerated_field_prompt_without_markers() -> None:
-    runner = _GateRunner()
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="linuxVM23, root, Passw0rd",
-        recent_history=[
-            {"role": "user", "content": "Request a 2C4G cloud resource"},
-            {
-                "role": "assistant",
-                "content": (
-                    "1. Resource Name:\n"
-                    "2. Username:\n"
-                    "3. Password:"
-                ),
-            },
-        ],
-    )
-
-    assert resolved == "Request a 2C4G cloud resource\nlinuxVM23, root, Passw0rd"
-    assert used_follow_up_context is True
-
-
-def test_resolve_contextual_tool_request_recognizes_bracketed_selection_prompt() -> None:
-    runner = _GateRunner()
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="2",
-        recent_history=[
-            {"role": "user", "content": "Request a 2C4G cloud resource"},
-            {
-                "role": "assistant",
-                "content": (
-                    "[1] team1\n"
-                    "[2] My business group\n"
-                    "Select a business group by number:"
-                ),
-            },
-        ],
-    )
-
-    assert "Original user request:\nRequest a 2C4G cloud resource" in resolved
-    assert "Latest assistant follow-up prompt:" in resolved
-    assert "[2] My business group" in resolved
-    assert "User reply to that prompt:\n2" in resolved
-    assert "Resolved latest visible selection:" not in resolved
-    assert used_follow_up_context is True
-
-
-def test_resolve_contextual_tool_request_preserves_latest_prompt_for_repeated_numeric_choices() -> None:
-    runner = _GateRunner()
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="1",
-        recent_history=[
-            {"role": "user", "content": "I want to request a Linux VM"},
-            {
-                "role": "assistant",
-                "content": (
-                    "Select the business group for the request:\n"
-                    "Development\n"
-                    "Testing\n"
-                    "Which business group should own the Linux VM?"
-                ),
-            },
-            {"role": "user", "content": "1"},
-            {
-                "role": "assistant",
-                "content": (
-                    "Development selected.\n\n"
-                    "Please select the required size and reply with a number:\n"
-                    "Tiny — 1C1G\n"
-                    "Small — 1C2G\n"
-                    "Medium — 2C4G\n"
-                    "Large — 4C8G\n"
-                    "Which size do you need?"
-                ),
-            },
-        ],
-    )
-
-    assert "Original user request:\nI want to request a Linux VM" in resolved
-    assert "Recent follow-up context:" in resolved
-    assert "User: 1" in resolved
-    assert "Latest assistant follow-up prompt:" in resolved
-    assert "Tiny — 1C1G" in resolved
-    assert "User reply to that prompt:\n1" in resolved
-    assert "Resolved latest visible selection:" not in resolved
-    assert resolved != "I want to request a Linux VM 1"
-    assert used_follow_up_context is True
-
-
-def test_resolve_contextual_tool_request_preserves_selection_chain_for_third_numeric_choice() -> None:
-    runner = _GateRunner()
-
-    resolved, used_follow_up_context = runner._resolve_contextual_tool_request(
-        user_message="1",
-        recent_history=[
-            {"role": "user", "content": "I want to request a Linux VM"},
-            {
-                "role": "assistant",
-                "content": (
-                    "Select the business group for the request:\n"
-                    "Development\n"
-                    "Testing\n"
-                    "Which business group should own the Linux VM?"
-                ),
-            },
-            {"role": "user", "content": "1"},
-            {
-                "role": "assistant",
-                "content": (
-                    "Development selected.\n\n"
-                    "Please select the required size and reply with a number:\n"
-                    "Tiny — 1C1G\n"
-                    "Small — 1C2G\n"
-                    "Which size do you need?"
-                ),
-            },
-            {"role": "user", "content": "1"},
-            {
-                "role": "assistant",
-                "content": (
-                    "Tiny selected.\n\n"
-                    "Please select the resource environment and reply with a number:\n"
-                    "Development\n"
-                    "Production\n"
-                    "Which resource environment do you need?"
-                ),
-            },
-        ],
-    )
-
-    assert "Original user request:\nI want to request a Linux VM" in resolved
-    assert "Recent follow-up context:" in resolved
-    assert "Select the business group for the request" in resolved
-    assert "Please select the required size" in resolved
-    assert resolved.count("User: 1") == 2
-    assert "Latest assistant follow-up prompt:" in resolved
-    assert "Please select the resource environment" in resolved
-    assert "Development" in resolved
-    assert "User reply to that prompt:\n1" in resolved
-    assert "Resolved latest visible selection:" not in resolved
-    assert used_follow_up_context is True
 
 
 def test_transcript_active_provider_skill_infers_from_assistant_tool_calls() -> None:

@@ -408,6 +408,54 @@ def _normalize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _resolve_turn_context_capability_id(
+    *,
+    deps: SkillDeps,
+    capability_index: list[dict[str, Any]],
+) -> tuple[bool, str]:
+    """Resolve a server-validated page Context Skill against authorized capabilities.
+
+    The boolean distinguishes a run without page Context from a page-bound
+    Skill that is no longer available. The resolved capability scopes both
+    object-action buttons and natural-language turns about the current object.
+    """
+    extra = getattr(deps, "extra", None)
+    request_context = extra.get("context") if isinstance(extra, dict) else None
+    turn_context = (
+        request_context.get("turn_context")
+        if isinstance(request_context, dict)
+        else None
+    )
+    default_skill = (
+        turn_context.get("default_skill")
+        if isinstance(turn_context, dict)
+        else None
+    )
+    if not isinstance(default_skill, dict):
+        return False, ""
+
+    provider_type = _normalize_text(default_skill.get("provider_type")).casefold()
+    provider_instance = _normalize_text(
+        default_skill.get("provider_instance")
+    ).casefold()
+    qualified_skill_name = _normalize_text(default_skill.get("ref")).casefold()
+    if not provider_type or not provider_instance or not qualified_skill_name:
+        return True, ""
+
+    matches = [
+        _normalize_text(entry.get("capability_id"))
+        for entry in capability_index
+        if isinstance(entry, dict)
+        and _normalize_text(entry.get("kind")).casefold() == "provider_skill"
+        and _normalize_text(entry.get("provider_type")).casefold() == provider_type
+        and _normalize_text(entry.get("instance_name")).casefold() == provider_instance
+        and _normalize_text(entry.get("qualified_skill_name")).casefold()
+        == qualified_skill_name
+        and _normalize_text(entry.get("capability_id"))
+    ]
+    return True, matches[0] if len(matches) == 1 else ""
+
+
 def _build_md_skill_tool_index(
     *,
     md_skills_snapshot: list[dict[str, Any]],
@@ -2096,6 +2144,39 @@ class RunnerExecutionPreparePhaseMixin:
             conversation_turn_plan: ConversationTurnPlan | None = None
             workflow_context_for_execution: Optional[dict[str, Any]] = None
             choice_continuation_fast_path = False
+            request_context = (
+                deps.extra.get("context")
+                if isinstance(getattr(deps, "extra", None), dict)
+                else None
+            )
+            object_action_turn = (
+                isinstance(request_context, dict)
+                and request_context.get("object_action_turn") is True
+            )
+            (
+                has_turn_context_skill,
+                turn_context_capability_id,
+            ) = _resolve_turn_context_capability_id(
+                deps=deps,
+                capability_index=planning_capability_index,
+            )
+            turn_context_intent_plan: ToolIntentPlan | None = None
+            if turn_context_capability_id:
+                turn_context_intent_plan = self._coerce_capability_selector_payload(
+                    payload={
+                        "outcome": CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY.value,
+                        "targets": [turn_context_capability_id],
+                        "reason": "Current page Context selected its server-validated Skill.",
+                    },
+                    capability_index=planning_capability_index,
+                )
+            current_context_scope = self._validated_context_scope_from_deps(deps)
+            previous_context_scope = self._latest_persisted_context_scope(message_history)
+            same_context_scope = bool(
+                current_context_scope
+                and previous_context_scope
+                and current_context_scope == previous_context_scope
+            )
             selector_elapsed_ms = 0
             selector_outcome = ""
             selector_attempted = False
@@ -2139,6 +2220,52 @@ class RunnerExecutionPreparePhaseMixin:
                     target_tool_names=list(
                         preselected_md_skill_plan.target_tool_names
                     ),
+                )
+            elif object_action_turn and has_turn_context_skill:
+                capability_selector_intent_plan = (
+                    turn_context_intent_plan
+                    if turn_context_intent_plan is not None
+                    else ToolIntentPlan(
+                        action=ToolIntentAction.DIRECT_ANSWER,
+                        selector_outcome=CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY,
+                        unavailable_runtime_capability=True,
+                        reason="object_action_context_skill_unavailable",
+                    )
+                )
+                selector_outcome = (
+                    capability_selector_intent_plan.selector_outcome.value
+                    if capability_selector_intent_plan.selector_outcome is not None
+                    else ""
+                )
+                _log_step(
+                    "object_action_context_skill_resolved",
+                    target_provider_instances=list(
+                        capability_selector_intent_plan.target_provider_instances
+                    ),
+                    target_provider_skill_names=list(
+                        capability_selector_intent_plan.target_provider_skill_names
+                    ),
+                    unavailable=turn_context_intent_plan is None,
+                )
+            elif (
+                has_turn_context_skill
+                and current_context_scope
+                and turn_context_intent_plan is None
+            ):
+                capability_selector_intent_plan = ToolIntentPlan(
+                    action=ToolIntentAction.DIRECT_ANSWER,
+                    selector_outcome=CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY,
+                    unavailable_runtime_capability=True,
+                    reason="turn_context_skill_unavailable",
+                )
+                selector_outcome = (
+                    CapabilitySelectorOutcome.UNAVAILABLE_CAPABILITY.value
+                )
+                _log_step(
+                    "turn_context_scope_resolved",
+                    capability_id="",
+                    same_context_scope=same_context_scope,
+                    available=False,
                 )
             else:
                 if selected_capability_scope is not None:
@@ -2185,54 +2312,8 @@ class RunnerExecutionPreparePhaseMixin:
                         reason="tools_require_explicit_selection_or_internal_orchestration",
                         removed_tools=hidden_implicit_tools,
                     )
-                if has_transcript_active_capability:
-                    tool_request_message, used_follow_up_context = (
-                        self._resolve_contextual_tool_request(
-                            user_message=user_message,
-                            recent_history=message_history,
-                            deps=deps,
-                        )
-                    )
-                    if used_follow_up_context:
-                        contextual_request, contextualized = (
-                            self._build_active_capability_continuation_request(
-                                user_message=user_message,
-                                recent_history=message_history,
-                            )
-                        )
-                        if contextualized:
-                            tool_request_message = contextual_request
-                    model_user_message = (
-                        tool_request_message
-                        if used_follow_up_context and tool_request_message != user_message
-                        else user_message
-                    )
-                    _log_step(
-                        "active_capability_continuation_resolved",
-                        reason="contextual_selector_continuation",
-                        active_provider_skill=transcript_active_provider_skill or "",
-                        active_skill=transcript_active_skill or "",
-                        used_follow_up_context=used_follow_up_context,
-                    )
-                else:
-                    tool_request_message, used_follow_up_context = (
-                        self._resolve_contextual_tool_request(
-                            user_message=user_message,
-                            recent_history=message_history,
-                            deps=deps,
-                        )
-                    )
-                    model_user_message = (
-                        tool_request_message
-                        if used_follow_up_context and tool_request_message != user_message
-                        else user_message
-                    )
-
                 if isinstance(deps.extra, dict):
-                    if used_follow_up_context and tool_request_message != user_message:
-                        deps.extra["current_follow_up_context"] = tool_request_message
-                    else:
-                        deps.extra.pop("current_follow_up_context", None)
+                    deps.extra.pop("current_follow_up_context", None)
                 _log_step(
                     "tool_request_resolved",
                     used_follow_up_context=used_follow_up_context,
@@ -2251,7 +2332,58 @@ class RunnerExecutionPreparePhaseMixin:
                     active_skill_instructions = ""
                     active_trace_id = ""
                     active_capability_context = ""
-                    if has_transcript_active_capability:
+                    context_bound_active_workflow = False
+                    context_scoped_turn = bool(
+                        current_context_scope
+                        and turn_context_intent_plan is not None
+                        and selected_capability_scope is None
+                    )
+                    context_scoped_intent_plan = (
+                        turn_context_intent_plan
+                        if context_scoped_turn
+                        else None
+                    )
+                    if context_scoped_turn:
+                        transcript_active_provider_skill = None
+                        transcript_active_skill = None
+                        has_transcript_active_capability = False
+                        planning_capability_index = [
+                            entry
+                            for entry in planning_capability_index
+                            if isinstance(entry, dict)
+                            and _normalize_text(entry.get("capability_id"))
+                            == turn_context_capability_id
+                        ]
+                        if context_scoped_intent_plan is not None:
+                            active_workflow_intent_plan = context_scoped_intent_plan
+                            strict_active_workflow_context = {
+                                "context_scope": dict(current_context_scope)
+                            }
+                            active_capability_context = turn_context_capability_id
+                            planning_target_md_skill = resolve_selected_md_skill_target(
+                                agent=runtime_agent or self.agent,
+                                deps=deps,
+                                intent_plan=active_workflow_intent_plan,
+                                max_file_bytes=int(
+                                    getattr(
+                                        self.prompt_builder.config,
+                                        "md_skills_max_file_bytes",
+                                        262144,
+                                    )
+                                    or 262144
+                                ),
+                            )
+                            active_skill_instructions = str(
+                                (planning_target_md_skill or {}).get("instructions", "") or ""
+                            ).strip()
+                            context_bound_active_workflow = True
+                        _log_step(
+                            "turn_context_scope_resolved",
+                            capability_id=turn_context_capability_id,
+                            same_context_scope=same_context_scope,
+                            available=context_scoped_intent_plan is not None,
+                        )
+                    elif has_transcript_active_capability:
                         candidate_active_context = (
                             self._format_active_capability_name(
                                 active_provider_skill=transcript_active_provider_skill or "",
@@ -2417,22 +2549,23 @@ class RunnerExecutionPreparePhaseMixin:
                             reason="conversation_turn_plan_invalid",
                         )
                     elif conversation_turn_plan.route is ConversationTurnRoute.CONTINUE_ACTIVE:
-                        if (
-                            active_workflow_intent_plan is None
-                            or not active_trace_id
-                            or not isinstance(strict_active_workflow_context, dict)
-                            or str(
+                        trace_bound_active_workflow = (
+                            active_workflow_intent_plan is not None
+                            and bool(active_trace_id)
+                            and isinstance(strict_active_workflow_context, dict)
+                            and str(
                                 strict_active_workflow_context.get(
                                     "internal_request_trace_id", ""
                                 )
                                 or ""
                             ).strip()
-                            != active_trace_id
-                            or not _workflow_context_matches_provider_instances(
+                            == active_trace_id
+                            and _workflow_context_matches_provider_instances(
                                 strict_active_workflow_context,
                                 active_workflow_intent_plan,
                             )
-                        ):
+                        )
+                        if not context_bound_active_workflow and not trace_bound_active_workflow:
                             capability_selector_failed = True
                             capability_selector_intent_plan = ToolIntentPlan(
                                 action=ToolIntentAction.DIRECT_ANSWER,
@@ -2441,6 +2574,30 @@ class RunnerExecutionPreparePhaseMixin:
                                 reason="active_workflow_scope_unavailable",
                             )
                         else:
+                            if not choice_continuation_fast_path:
+                                contextual_request, contextualized = (
+                                    self._build_active_capability_continuation_request(
+                                        user_message=user_message,
+                                        recent_history=message_history,
+                                    )
+                                )
+                                if contextualized:
+                                    tool_request_message = contextual_request
+                                    model_user_message = contextual_request
+                                    used_follow_up_context = True
+                                    if isinstance(deps.extra, dict):
+                                        deps.extra["current_follow_up_context"] = (
+                                            contextual_request
+                                        )
+                                _log_step(
+                                    "active_capability_continuation_resolved",
+                                    reason="typed_planner_continuation",
+                                    active_provider_skill=(
+                                        transcript_active_provider_skill or ""
+                                    ),
+                                    active_skill=transcript_active_skill or "",
+                                    used_follow_up_context=used_follow_up_context,
+                                )
                             if choice_continuation_fast_path:
                                 active_action = ToolIntentAction.DIRECT_ANSWER
                                 active_outcome = (
@@ -2466,8 +2623,10 @@ class RunnerExecutionPreparePhaseMixin:
                                     or "Main-model active workflow plan.",
                                 }
                             )
-                            workflow_context_for_execution = dict(
-                                strict_active_workflow_context
+                            workflow_context_for_execution = (
+                                dict(strict_active_workflow_context)
+                                if isinstance(strict_active_workflow_context, dict)
+                                else None
                             )
                             selector_outcome = active_outcome.value
                     else:
@@ -2507,6 +2666,15 @@ class RunnerExecutionPreparePhaseMixin:
                                 unavailable_runtime_capability=False,
                                 reason="conversation_turn_plan_target_invalid",
                             )
+                        elif (
+                            context_scoped_intent_plan is not None
+                            and current_context_scope
+                            and turn_context_capability_id
+                            in conversation_turn_plan.target_capability_ids
+                        ):
+                            workflow_context_for_execution = {
+                                "context_scope": dict(current_context_scope)
+                            }
                         selector_outcome = (
                             capability_selector_intent_plan.selector_outcome.value
                             if capability_selector_intent_plan.selector_outcome is not None

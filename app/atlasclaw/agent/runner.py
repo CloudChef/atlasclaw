@@ -45,8 +45,7 @@ if TYPE_CHECKING:
 class AgentRunner(RunnerExecutionMixin, RunnerToolGateMixin, RunnerToolEvidenceMixin):
     """Execute a streaming PydanticAI agent with runtime safeguards."""
 
-    REASONING_ONLY_ESCALATION_SECONDS = 4.0
-    REASONING_ONLY_MAX_RETRIES = 0
+    REASONING_ONLY_MAX_RETRIES = 2
     TOOL_GATE_MODEL_TIMEOUT_SECONDS = 120.0
     TOKEN_FAILOVER_MAX_ATTEMPTS = 1
     TOOL_GATE_MUST_USE_MIN_CONFIDENCE = 0.85

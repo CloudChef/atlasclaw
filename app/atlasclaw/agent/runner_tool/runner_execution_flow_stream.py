@@ -884,10 +884,7 @@ class RunnerExecutionFlowStreamMixin:
                 )
                 reasoning_retry_count = int(state.get("reasoning_retry_count") or 0)
                 reasoning_retry_limit = int(state.get("reasoning_retry_limit") or 0)
-                should_escalate = (
-                    elapsed_total >= self.REASONING_ONLY_ESCALATION_SECONDS
-                    or reasoning_retry_count >= reasoning_retry_limit
-                )
+                should_escalate = reasoning_retry_count >= reasoning_retry_limit
                 if should_escalate:
                     if tool_execution_required:
                         yield StreamEvent.runtime_update(
