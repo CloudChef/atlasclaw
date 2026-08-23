@@ -2347,13 +2347,6 @@ class RunnerExecutionPreparePhaseMixin:
                         transcript_active_provider_skill = None
                         transcript_active_skill = None
                         has_transcript_active_capability = False
-                        planning_capability_index = [
-                            entry
-                            for entry in planning_capability_index
-                            if isinstance(entry, dict)
-                            and _normalize_text(entry.get("capability_id"))
-                            == turn_context_capability_id
-                        ]
                         if context_scoped_intent_plan is not None:
                             active_workflow_intent_plan = context_scoped_intent_plan
                             strict_active_workflow_context = {

@@ -956,7 +956,8 @@ def test_context_text_turn_switches_scope_and_continues_without_tool_trace(
         assert kwargs["active_capability_context"] == "provider_skill:primary.resource"
         assert kwargs["active_workflow_context"] == {"context_scope": current_scope}
         assert [entry["capability_id"] for entry in kwargs["capability_index"]] == [
-            "provider_skill:primary.resource"
+            "provider_skill:primary.request",
+            "provider_skill:primary.resource",
         ]
         return ConversationTurnPlan(
             route=ConversationTurnRoute.CONTINUE_ACTIVE,
