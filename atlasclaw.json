@@ -102,7 +102,7 @@
       }
     },
     "markdown-vault": {
-      "knowledgebase": {
+      "cmp-knowledge": {
         "vault_path": "${MARKDOWN_VAULT_REPO_PATH}",
         "usage_hint": "Use for SmartCMP knowledge-base questions about product capabilities, configuration, integrations, deployment, operations, and implementation guidance. If a feature is not supported directly, try to search the related extensibility."
       },
