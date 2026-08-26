@@ -39,6 +39,13 @@ def _tool_msg(tool_name: str, internal: Any) -> dict:
     }
 
 
+def _serialized_tool_msg(tool_name: str, internal: Any) -> dict:
+    """Create the JSON-string tool-result shape persisted by runtime adapters."""
+    message = _tool_msg(tool_name, internal)
+    message["content"] = json.dumps(message["content"], ensure_ascii=False)
+    return message
+
+
 def _user_msg(text: str = "1") -> dict:
     return {"role": "user", "content": text}
 
@@ -72,6 +79,19 @@ class TestInferActiveRequestTraceId:
             _tool_msg("tool_a", [{"internal_request_trace_id": "trace-xyz", "data": "x"}]),
         ]
         assert _infer_active_request_trace_id(history) == "trace-xyz"
+
+    def test_handles_serialized_runtime_tool_result(self):
+        history = [
+            _serialized_tool_msg(
+                "smartcmp_list_recycled_resources",
+                {
+                    "internal_request_trace_id": "trace-recycle",
+                    "affected_scope": {"deployment_id": "deployment-1"},
+                },
+            )
+        ]
+
+        assert _infer_active_request_trace_id(history) == "trace-recycle"
 
     def test_handles_empty_history(self):
         assert _infer_active_request_trace_id([]) is None
@@ -107,6 +127,41 @@ class TestExtractTraceIdFromMetadata:
 # Test A: Same skill, two request flows do not cross-contaminate
 # ---------------------------------------------------------------------------
 class TestTraceIsolation:
+    def test_restores_workflow_context_from_serialized_runtime_tool_result(self):
+        history = [
+            _serialized_tool_msg(
+                "smartcmp_list_recycled_resources",
+                {
+                    "internal_request_trace_id": "trace-recycle",
+                    "affected_scope": {
+                        "deployment_id": "deployment-1",
+                        "resource_ids": ["resource-1", "resource-2"],
+                    },
+                },
+            )
+        ]
+
+        result = build_target_md_skill_workflow_context(
+            recent_history=history,
+            active_trace_id="trace-recycle",
+            allow_legacy_fallback=False,
+        )
+
+        assert result is not None
+        assert result["internal_request_trace_id"] == "trace-recycle"
+        assert result["recent_tool_metadata"] == [
+            {
+                "tool_name": "smartcmp_list_recycled_resources",
+                "metadata": {
+                    "internal_request_trace_id": "trace-recycle",
+                    "affected_scope": {
+                        "deployment_id": "deployment-1",
+                        "resource_ids": ["resource-1", "resource-2"],
+                    },
+                },
+            }
+        ]
+
     def test_only_collects_current_trace(self):
         """Metadata from trace-aaa should not appear when trace-bbb is active."""
         history = [
@@ -313,7 +368,10 @@ class TestLimits:
         # Should be limited by character count
         assert len(result["recent_tool_metadata"]) < 5
 
-    def test_single_oversized_metadata_entry_is_omitted(self):
+    def test_single_oversized_metadata_entry_is_omitted_with_explicit_error(
+        self,
+        caplog,
+    ):
         history = [
             _tool_msg(
                 "smartcmp_list_pending",
@@ -328,6 +386,10 @@ class TestLimits:
             )
             is None
         )
+        assert "workflow_context_metadata_budget_exceeded" in caplog.text
+        assert "reason=single_entry_oversized" in caplog.text
+        assert "tool_name=smartcmp_list_pending" in caplog.text
+        assert "max_chars=6000" in caplog.text
 
 
 # ---------------------------------------------------------------------------

@@ -462,7 +462,7 @@ def test_conversation_planner_defers_required_input_handling_to_active_skill() -
     assert "Do not choose use_tools merely to record that value" not in prompt
 
 
-def test_active_preview_confirmation_projects_selected_workflow_tools(
+def test_serialized_active_preview_confirmation_projects_selected_workflow_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tools = [
@@ -510,13 +510,15 @@ def test_active_preview_confirmation_projects_selected_workflow_tools(
         {
             "role": "tool",
             "tool_name": "example_list_items",
-            "content": {
-                "success": True,
-                "_internal": {
-                    "internal_request_trace_id": "trace-preview",
-                    "provider_instance_ref": "example.primary",
-                },
-            },
+            "content": json.dumps(
+                {
+                    "success": True,
+                    "_internal": {
+                        "internal_request_trace_id": "trace-preview",
+                        "provider_instance_ref": "example.primary",
+                    },
+                }
+            ),
         },
         {
             "role": "assistant",

@@ -564,10 +564,24 @@ def _iter_transcript_tool_results(
     Both forms are produced by the runtime and carry equivalent provenance, so
     trace-bound workflow handling must consume them identically.
     """
+
+    def _normalized_content(value: Any) -> Any:
+        """Restore the object envelope emitted by JSON-string tool adapters."""
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text.startswith("{"):
+            return value
+        try:
+            parsed = json.loads(text)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return value
+        return parsed if isinstance(parsed, dict) else value
+
     role = str(message.get("role", "") or "").strip().lower()
     if role in {"tool", "toolresult", "tool_result"}:
         tool_name = str(message.get("tool_name", "") or message.get("name", "")).strip()
-        yield tool_name, message.get("content")
+        yield tool_name, _normalized_content(message.get("content"))
 
     tool_results = message.get("tool_results", []) or []
     if not isinstance(tool_results, list):
@@ -576,7 +590,7 @@ def _iter_transcript_tool_results(
         if not isinstance(result, dict):
             continue
         tool_name = str(result.get("tool_name", "") or result.get("name", "")).strip()
-        yield tool_name, result.get("content")
+        yield tool_name, _normalized_content(result.get("content"))
 
 
 def _infer_active_skill_from_transcript(
@@ -1480,11 +1494,30 @@ def build_target_md_skill_workflow_context(
             entry = {"tool_name": tool_name, "metadata": metadata}
             serialized_entry = json.dumps(entry, ensure_ascii=False, separators=(",", ":"))
             if len(serialized_entry) > safe_max_chars:
+                logger.error(
+                    "workflow_context_metadata_budget_exceeded "
+                    "reason=single_entry_oversized tool_name=%s entry_chars=%d "
+                    "accumulated_chars=0 max_chars=%d trace_id=%s",
+                    tool_name or "<unknown>",
+                    len(serialized_entry),
+                    safe_max_chars,
+                    entry_trace_id or resolved_trace_id or "<none>",
+                )
                 continue
             if resolved_trace_id:
                 entry_trace_id = _extract_trace_id_from_metadata(metadata)
                 if entry_trace_id == resolved_trace_id:
                     if same_trace_metadata and same_trace_size + len(serialized_entry) > safe_max_chars:
+                        logger.error(
+                            "workflow_context_metadata_budget_exceeded "
+                            "reason=aggregate_limit tool_name=%s entry_chars=%d "
+                            "accumulated_chars=%d max_chars=%d trace_id=%s",
+                            tool_name or "<unknown>",
+                            len(serialized_entry),
+                            same_trace_size,
+                            safe_max_chars,
+                            resolved_trace_id,
+                        )
                         stop_scan = True
                         break
                     same_trace_metadata.append(entry)
@@ -1496,6 +1529,16 @@ def build_target_md_skill_workflow_context(
                 if entry_trace_id:
                     continue
                 if legacy_metadata and legacy_size + len(serialized_entry) > safe_max_chars:
+                    logger.error(
+                        "workflow_context_metadata_budget_exceeded "
+                        "reason=aggregate_limit tool_name=%s entry_chars=%d "
+                        "accumulated_chars=%d max_chars=%d trace_id=%s",
+                        tool_name or "<unknown>",
+                        len(serialized_entry),
+                        legacy_size,
+                        safe_max_chars,
+                        resolved_trace_id,
+                    )
                     continue
                 if len(legacy_metadata) >= safe_max_entries:
                     continue
@@ -1503,6 +1546,15 @@ def build_target_md_skill_workflow_context(
                 legacy_size += len(serialized_entry)
                 continue
             if legacy_metadata and legacy_size + len(serialized_entry) > safe_max_chars:
+                logger.error(
+                    "workflow_context_metadata_budget_exceeded "
+                    "reason=aggregate_limit tool_name=%s entry_chars=%d "
+                    "accumulated_chars=%d max_chars=%d trace_id=<none>",
+                    tool_name or "<unknown>",
+                    len(serialized_entry),
+                    legacy_size,
+                    safe_max_chars,
+                )
                 stop_scan = True
                 break
             legacy_metadata.append(entry)
