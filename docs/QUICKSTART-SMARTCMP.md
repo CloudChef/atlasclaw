@@ -56,7 +56,7 @@ pip install -r requirements.txt
 
 ## 4. Configure SmartCMP Provider
 
-AtlasClaw supports 3 authentication modes for connecting to SmartCMP. The system **auto-detects** the mode based on which fields are configured — no explicit `auth_type` field is needed.
+AtlasClaw supports the following authentication modes for connecting to SmartCMP. The system **auto-detects** the mode based on which fields are configured. For **API Token** mode you can either set `auth_type: "user_token"` explicitly or let auto-detection pick it up from the `user_token` field.
 
 ### Authentication Modes Overview
 
@@ -65,8 +65,9 @@ AtlasClaw supports 3 authentication modes for connecting to SmartCMP. The system
 | **SSO** | Embedded in CMP via Nginx reverse-proxy | Browser host authentication cookie is automatically passed through | `base_url` only |
 | **Cookie** | Have a valid CMP session cookie | Directly use a pre-obtained cookie value | `base_url` + `cookie` |
 | **Credential** | Username/password login | Auto-login to CMP API to obtain a session | `base_url` + `username` + `password` |
+| **API Token** | Personal token (M2M / standalone agent) | Passed via `Authorization: Bearer <token>`; not tied to a browser session | `base_url` + `user_token` (optionally `auth_type: "user_token"`) |
 
-> **Auto-detection priority**: SSO (browser cookie) > Static Cookie > Credential.
+> **Auto-detection priority**: SSO (browser cookie) > Static Cookie > API Token (`user_token`) > Credential.
 > Only fill the fields for your chosen mode. Leave others empty.
 
 ### Option A: SSO Mode (CMP Embedded)
@@ -131,6 +132,31 @@ CMP_USERNAME=your-cmp-username
 CMP_PASSWORD=your-cmp-password-md5-hash
 ```
 
+### Option D: API Token Mode (user_token)
+
+Use a personal API token generated in SmartCMP (**User Settings → API Token**). Tokens starting with `cmp_tk_` are sent as a Bearer token and are not tied to a browser session — ideal for standalone AtlasClaw deployments.
+
+**`atlasclaw.json`:**
+```json
+"service_providers": {
+  "smartcmp": {
+    "default": {
+      "base_url": "${CMP_URL}",
+      "auth_type": "user_token",
+      "user_token": "${CMP_USER_TOKEN}"
+    }
+  }
+}
+```
+
+**`.env`:**
+```ini
+CMP_URL=https://console.smartcmp.cloud
+CMP_USER_TOKEN=cmp_tk_v1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+```
+
+> **Tip**: Prefer API Token over Credential for standalone deployments — the token survives browser logout / password changes and can be revoked independently from the login password.
+
 ---
 
 ## 5. Configure Environment Variables
@@ -163,6 +189,9 @@ CMP_URL=https://console.smartcmp.cloud
 CMP_USERNAME=your-cmp-username
 CMP_PASSWORD=your-cmp-password-md5-hash
 
+# --- API Token Mode (recommended for standalone): fill CMP_URL + CMP_USER_TOKEN ---
+# CMP_USER_TOKEN=cmp_tk_v1_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
 # --- Cookie Mode: fill cookie only ---
 # CMP_COOKIE=eyJhbGciOiJIUzI1NiJ9...
 
@@ -180,9 +209,10 @@ ATLASCLAW_JWT_SECRET=change-me-to-a-secure-secret-key
 |----------|-------------|---------------|
 | `TOKEN_2_MODEL` | LLM model name, **must support Function Calling** | All |
 | `TOKEN_2_API_KEY` | LLM API Key | All |
-| `CMP_URL` | SmartCMP platform URL | Credential |
+| `CMP_URL` | SmartCMP platform URL | Credential / API Token |
 | `CMP_USERNAME` | SmartCMP login username | Credential |
 | `CMP_PASSWORD` | SmartCMP login password (MD5 hash) | Credential |
+| `CMP_USER_TOKEN` | SmartCMP personal API token (`cmp_tk_...`) | API Token |
 | `CMP_COOKIE` | Static CMP session cookie | Cookie |
 
 ---
