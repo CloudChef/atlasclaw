@@ -716,7 +716,7 @@ class _PayloadRunner(RunnerExecutionPayloadMixin):
 
 
 @pytest.mark.asyncio
-async def test_tool_required_turn_does_not_accept_fast_path_text_without_real_tool_execution() -> None:
+async def test_tool_required_turn_without_answer_uses_safe_fallback() -> None:
     runner = _PostRunner()
     state = {
         "start_time": 0.0,
@@ -779,10 +779,14 @@ async def test_tool_required_turn_does_not_accept_fast_path_text_without_real_to
     assert len(answered_states) == 1
     assert "No action was executed" in assistant_text
     assert len(runner.unsupported_calls) == 1
+    assert "matching_tool_available_but_not_executed" not in assistant_text
+    assert "matching_tool_available_but_not_executed" not in (
+        runner.unsupported_calls[0]["system_prompt"] or ""
+    )
 
 
 @pytest.mark.asyncio
-async def test_tool_required_missing_tool_asks_llm_for_safe_answer_without_recursive_retry() -> None:
+async def test_tool_required_turn_accepts_usable_answer_without_tool_execution() -> None:
     runner = _PostRunner()
     session_manager = _SessionManager()
     state = {
@@ -861,7 +865,10 @@ async def test_tool_required_missing_tool_asks_llm_for_safe_answer_without_recur
         agent_run=_AgentRun(
             [
                 {"role": "user", "content": "archive item 1"},
-                {"role": "assistant", "content": "I need to operate that item."},
+                {
+                    "role": "assistant",
+                    "content": "The available conversation context shows that item 1 is archived.",
+                },
             ]
         ),
         state=state,
@@ -883,27 +890,66 @@ async def test_tool_required_missing_tool_asks_llm_for_safe_answer_without_recur
 
     assert failed_states == []
     assert answered_states
-    assert "No action was executed" in assistant_text
-    assert "Supported options are `enable` and `disable`" in assistant_text
-    assert "A grounded tool-backed answer" not in assistant_text
-    assert len(runner.unsupported_calls) == 1
-    assert runner.unsupported_calls[0]["allowed_tool_names"] == []
-    assert "item_operation" in runner.unsupported_calls[0]["user_message"]
-    assert (
-        '"availability_status": "matching_tool_available_but_not_executed"'
-        in runner.unsupported_calls[0]["user_message"]
-    )
-    assert (
-        "matching_tool_available_but_not_executed means a matching tool was available"
-        in runner.unsupported_calls[0]["system_prompt"]
-    )
-    assert "never describe it as unsupported or unavailable" in (
-        runner.unsupported_calls[0]["system_prompt"]
-    )
-    assert '"enable"' in runner.unsupported_calls[0]["user_message"]
-    assert '"disable"' in runner.unsupported_calls[0]["user_message"]
+    assert assistant_text == "The available conversation context shows that item 1 is archived."
+    assert runner.unsupported_calls == []
     await runner._await_background_post_success_tasks()
     assert session_manager.persisted_messages is not None
+
+
+@pytest.mark.asyncio
+async def test_direct_answer_accepts_result_only_response() -> None:
+    runner = _PostRunner()
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-direct-result",
+        "session_manager": _SessionManager(),
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-direct-result",
+        "user_message": "Summarize the prior answer",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(extra={}),
+        "tool_gate_decision": ToolGateDecision(reason="direct answer"),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "available_tools": [],
+        "tool_execution_required": False,
+        "_emit_lifecycle_bounds": False,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "current_model_attempt": 1,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.DIRECT_ANSWER,
+            reason="conversation context is sufficient",
+        ),
+    }
+    result = SimpleNamespace(
+        response=SimpleNamespace(content="The prior answer is already complete.")
+    )
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(
+            [{"role": "user", "content": "Summarize the prior answer"}],
+            result=result,
+        ),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+
+    assert "".join(event.content for event in events if event.type == "assistant") == (
+        "The prior answer is already complete."
+    )
+    assert not any(
+        event.type == "runtime" and event.metadata.get("state") == "failed"
+        for event in events
+    )
 
 
 @pytest.mark.asyncio
@@ -1003,7 +1049,17 @@ async def test_tool_required_turn_without_final_assistant_uses_tool_only_fallbac
 
 
 @pytest.mark.asyncio
-async def test_tool_required_turn_ignores_agent_result_text_and_uses_tool_only_fallback() -> None:
+@pytest.mark.parametrize(
+    ("tool_execution_required", "tool_intent_action"),
+    [
+        (True, ToolIntentAction.USE_TOOLS),
+        (False, ToolIntentAction.DIRECT_ANSWER),
+    ],
+)
+async def test_current_tool_result_ignores_stale_agent_result(
+    tool_execution_required: bool,
+    tool_intent_action: ToolIntentAction,
+) -> None:
     runner = _PostRunner()
     session_manager = _SessionManager()
     stale_result = SimpleNamespace(response=SimpleNamespace(content="上一轮天气答案"))
@@ -1024,7 +1080,7 @@ async def test_tool_required_turn_ignores_agent_result_text_and_uses_tool_only_f
         ),
         "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
         "available_tools": [],
-        "tool_execution_required": True,
+        "tool_execution_required": tool_execution_required,
         "max_tool_calls": 5,
         "timeout_seconds": 60.0,
         "_token_failover_attempt": 0,
@@ -1046,7 +1102,7 @@ async def test_tool_required_turn_ignores_agent_result_text_and_uses_tool_only_f
         "context_history_for_hooks": [],
         "session_title": "",
         "tool_intent_plan": ToolIntentPlan(
-            action=ToolIntentAction.USE_TOOLS,
+            action=tool_intent_action,
             target_group_ids=["group:web"],
             target_capability_classes=["web_search"],
             target_tool_names=["web_search"],
@@ -2407,6 +2463,94 @@ async def test_tool_required_turn_with_tool_error_fails_without_llm_fallback() -
     assert assistant_chunks == []
     await runner._await_background_post_success_tasks()
     assert session_manager.persisted_messages is not None
+
+
+@pytest.mark.asyncio
+async def test_single_provider_auth_failure_is_hard_failure() -> None:
+    runner = _PostRunner()
+    tool_name = "providerx_list_services"
+    state = {
+        "start_time": 0.0,
+        "session_key": "s-provider-auth",
+        "session_manager": _SessionManager(),
+        "session": SimpleNamespace(title=""),
+        "run_id": "run-provider-auth",
+        "user_message": "List services",
+        "system_prompt": "system",
+        "deps": SimpleNamespace(
+            extra={
+                "provider_auth_diagnostics": {
+                    "providerx": {
+                        "default": {
+                            "provider_type": "providerx",
+                            "instance_name": "default",
+                            "user_token_configured": True,
+                        }
+                    }
+                },
+                "tools_snapshot": [
+                    {"name": tool_name, "provider_type": "providerx"}
+                ],
+            }
+        ),
+        "tool_gate_decision": ToolGateDecision(
+            needs_tool=True,
+            needs_external_system=True,
+            reason="provider request",
+            policy=ToolPolicyMode.PREFER_TOOL,
+        ),
+        "tool_match_result": SimpleNamespace(missing_capabilities=[], tool_candidates=[]),
+        "available_tools": [{"name": tool_name, "capability_class": "provider:providerx"}],
+        "tool_execution_required": True,
+        "_emit_lifecycle_bounds": False,
+        "run_output_start_index": 1,
+        "persist_run_output_start_index": 1,
+        "buffered_assistant_events": [],
+        "tool_call_summaries": [{"name": tool_name, "args": {}}],
+        "assistant_output_streamed": False,
+        "model_stream_timed_out": False,
+        "current_model_attempt": 1,
+        "thinking_emitter": SimpleNamespace(assistant_emitted=False),
+        "context_history_for_hooks": [],
+        "session_title": "",
+        "tool_intent_plan": ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_types=["providerx"],
+            target_tool_names=[tool_name],
+            reason="provider request",
+        ),
+    }
+
+    events = []
+    async for event in runner._process_agent_run_outcome(
+        agent_run=_AgentRun(
+            [
+                {"role": "user", "content": "List services"},
+                {"role": "assistant", "content": "I could not access the provider."},
+                {
+                    "role": "tool",
+                    "tool_name": tool_name,
+                    "is_error": True,
+                    "content": "HTTP 401: unauthorized",
+                },
+            ]
+        ),
+        state=state,
+        _log_step=lambda *args, **kwargs: None,
+    ):
+        events.append(event)
+
+    failed_messages = [
+        event.content
+        for event in events
+        if event.type == "runtime" and event.metadata.get("state") == "failed"
+    ]
+    assert failed_messages
+    assert "personal provider access credential was rejected" in failed_messages[0]
+    assert not any(
+        event.type == "runtime" and event.metadata.get("state") == "answered"
+        for event in events
+    )
 
 
 @pytest.mark.asyncio

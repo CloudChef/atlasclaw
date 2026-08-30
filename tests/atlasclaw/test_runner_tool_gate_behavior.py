@@ -307,6 +307,114 @@ def test_authenticated_webhook_authorizes_only_preselected_skill_tools(
     )
 
 
+@pytest.mark.parametrize(
+    "active_provider_skill",
+    [None, "primary.search", "primary.update"],
+)
+def test_explicit_selected_capability_skips_planner(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+    active_provider_skill: str | None,
+) -> None:
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "# Search\n\nSearch the selected knowledge base.",
+        encoding="utf-8",
+    )
+    tools = [
+        {
+            "name": "example_search",
+            "provider_type": "example",
+            "provider_skill_name": "primary.search",
+            "qualified_skill_name": "example:search",
+            "skill_name": "search",
+        },
+        {
+            "name": "example_get",
+            "provider_type": "example",
+            "provider_skill_name": "primary.search",
+            "qualified_skill_name": "example:search",
+            "skill_name": "search",
+        },
+        {
+            "name": "example_update",
+            "provider_type": "example",
+            "provider_skill_name": "primary.update",
+            "qualified_skill_name": "example:update",
+            "skill_name": "update",
+        },
+    ]
+    provider_skill_entry = {
+        "capability_id": "provider_skill:primary.search",
+        "kind": "provider_skill",
+        "name": "primary.search",
+        "provider_type": "example",
+        "provider_name": "primary",
+        "instance_name": "primary",
+        "qualified_skill_name": "example:search",
+        "target_provider_instances": ["example.primary"],
+        "target_provider_types": ["example"],
+        "target_provider_skill_names": ["primary.search"],
+        "declared_tool_names": ["example_search", "example_get"],
+        "locator": str(skill_path),
+    }
+    monkeypatch.setattr(prepare_module, "collect_tools_snapshot", lambda **kwargs: list(tools))
+    monkeypatch.setattr(
+        prepare_module,
+        "collect_capability_index_snapshot",
+        lambda **kwargs: [dict(provider_skill_entry)],
+    )
+    monkeypatch.setattr(
+        prepare_module,
+        "_infer_active_provider_skill_from_transcript",
+        lambda **kwargs: active_provider_skill,
+    )
+    runner = _build_prepare_runner(_PrepareSessionManager())
+
+    async def _unexpected_plan(**kwargs):
+        raise AssertionError("explicit selected capability must skip the planner")
+
+    runner._plan_conversation_turn_with_model = _unexpected_plan
+    deps = SkillDeps(
+        session_key="explicit-selected-capability-session",
+        channel="api",
+        extra={
+            "_selected_capability": {
+                "provider_name": "primary",
+                "provider_type": "example",
+                "instance_name": "primary",
+                "qualified_skill_name": "example:search",
+                "target_provider_instances": ["example.primary"],
+                "target_provider_types": ["example"],
+                "target_provider_skill_names": ["primary.search"],
+                "target_tool_names": ["example_search", "example_get"],
+            },
+            "provider_instances": {
+                "example": {"primary": {"provider_type": "example"}}
+            },
+        },
+    )
+    state = _prepare_phase_state(deps=deps)
+    state["user_message"] = "find the selected phrase"
+
+    logs = asyncio.run(_run_prepare_until_tool_policy(runner, state=state))
+
+    assert state["selector_attempted"] is False
+    assert state["tool_execution_required"] is True
+    assert state["reasoning_retry_limit"] == 1
+    assert deps.extra["runtime_allowed_tool_names"] == [
+        "example_search",
+        "example_get",
+    ]
+    assert deps.extra["tool_policy"]["mode"] == ToolIntentAction.USE_TOOLS.value
+    assert state["metadata_candidates"]["reason"] == "explicit_selected_capability"
+    assert any(
+        step == "capability_selector_skipped"
+        and data["reason"] == "explicit_selected_capability"
+        for step, data in logs
+    )
+
+
 def test_ordinary_menu_prepare_runs_main_turn_planner_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

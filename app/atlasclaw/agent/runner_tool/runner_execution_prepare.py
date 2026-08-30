@@ -2187,6 +2187,10 @@ class RunnerExecutionPreparePhaseMixin:
                 transcript_active_provider_skill or transcript_active_skill
             )
             selected_capability_scope = build_user_selected_capability_scope(deps)
+            selected_capability_executes_directly = bool(
+                selected_capability_scope is not None
+                and selected_capability_scope.target_tool_names
+            )
             preselected_md_skill_plan = build_preselected_md_skill_intent_plan(deps)
             authenticated_webhook_authority = (
                 isinstance(getattr(deps, "extra", None), dict)
@@ -2372,6 +2376,35 @@ class RunnerExecutionPreparePhaseMixin:
                     raw_user_message=user_message,
                     resolved_tool_request=tool_request_message,
                 )
+                if (
+                    selected_capability_executes_directly
+                    and selected_capability_scope is not None
+                ):
+                    capability_selector_intent_plan = selected_capability_scope.model_copy(
+                        update={
+                            "action": ToolIntentAction.USE_TOOLS,
+                            "selector_outcome": (
+                                CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY
+                            ),
+                            "reason": "explicit_selected_capability",
+                        }
+                    )
+                    selector_outcome = (
+                        CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY.value
+                    )
+                    _log_step(
+                        "capability_selector_skipped",
+                        reason="explicit_selected_capability",
+                        target_provider_instances=list(
+                            capability_selector_intent_plan.target_provider_instances
+                        ),
+                        target_provider_skill_names=list(
+                            capability_selector_intent_plan.target_provider_skill_names
+                        ),
+                        target_tool_names=list(
+                            capability_selector_intent_plan.target_tool_names
+                        ),
+                    )
                 if capability_selector_intent_plan is None:
                     if isinstance(deps.extra, dict):
                         deps.extra["usage_profile_routing"] = {
@@ -2751,7 +2784,13 @@ class RunnerExecutionPreparePhaseMixin:
                         },
                     )
                 metadata_candidates = {
-                    "reason": "llm_capability_selector",
+                    "reason": (
+                        "explicit_selected_capability"
+                        if capability_selector_intent_plan is not None
+                        and capability_selector_intent_plan.reason
+                        == "explicit_selected_capability"
+                        else "llm_capability_selector"
+                    ),
                     "confidence": 0.0 if capability_selector_failed else 1.0,
                     "preferred_provider_instances": (
                         list(capability_selector_intent_plan.target_provider_instances)
@@ -3271,7 +3310,7 @@ class RunnerExecutionPreparePhaseMixin:
             tool_execution_required = turn_action_requires_tool_execution(tool_intent_plan)
             reasoning_retry_limit = self.REASONING_ONLY_MAX_RETRIES
             if tool_execution_required:
-                reasoning_retry_limit = 0
+                reasoning_retry_limit = min(reasoning_retry_limit, 1)
             self._inject_tool_policy(
                 deps=deps,
                 intent_plan=tool_intent_plan,

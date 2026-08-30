@@ -844,7 +844,9 @@ The runtime policy has three coordinated parts:
 
 - `ToolNecessityGate` - classifies whether direct answering is allowed after the prompt and capability surface are prepared
 - `CapabilityMatcher` - maps required capability classes to currently visible runtime capabilities
-- `Mandatory Tool Enforcement` - blocks the final answer if the runtime requires tools and no grounded tool path succeeds
+- `Mandatory Tool Enforcement` - prefers the selected tool path while accepting a usable model
+  answer when the conversation already contains enough context; it blocks only when neither a
+  usable answer nor a grounded tool result is produced
 
 Phase 1 is classifier-first, not keyword-first:
 

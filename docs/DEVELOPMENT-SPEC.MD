@@ -695,18 +695,22 @@ def process_user_input(data: dict[str, Any]) -> None:
 
 ### 6.7 Tool Grounding and Anti-Fabrication
 
-When the runtime classifies a request as tool-required, the code must not allow an ungrounded
-final answer to pass through just because the model produced fluent text.
+When the runtime classifies a request as tool-required, the selected tools remain preferred,
+but absence of a current-turn tool call is not by itself a failure when the main model produces
+a usable final answer from the available conversation context.
 
 Required rules:
+- Bypass capability selection when the request already carries a server-validated explicit
+  capability with executable tool targets; do not reinterpret that selection from transcript state.
 - Prefer explicit classifier-driven tool-gate decisions over hard-coded business keyword tables.
 - Model-backed gate classification must be explicitly enabled; do not add hidden blocking classifier round-trips to every request by default.
 - If mandatory capabilities are missing, return an explicit verification failure instead of a
   guessed answer.
-- Do not claim search, lookup, provider retrieval, or browser interaction happened unless tool
-  execution evidence exists in the current run.
+- Do not claim that search, lookup, provider retrieval, or browser interaction happened in the
+  current run unless current-run execution evidence exists.
 - Treat tool results as privileged evidence for the current turn when enforcement requires
   grounded answering.
+- Block the turn only when neither a usable final answer nor a successful tool result is produced.
 - The gate evaluates the visible capability index and runtime guardrails; it does not add a separate planner call or replace the main model's turn-intent decision.
 
 ## 7. Async Patterns

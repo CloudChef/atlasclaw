@@ -695,8 +695,11 @@ capabilities can satisfy required grounding, and whether the final answer must b
 **Runtime integration**:
 - one capability-selector pass handles ordinary routing and active-workflow
   continuation for natural-language turns
-- `authorized_capability` requires current-turn execution, while
-  `authorized_context` loads the selected skill/provider context without
+- a server-validated explicit capability with executable targets bypasses the
+  capability selector and enters its selected tool scope directly
+- `authorized_capability` exposes and prefers the selected runtime capability while allowing
+  the main model to answer from sufficient conversation context without repeating a tool call;
+  `authorized_context` instead loads the selected skill/provider context without
   exposing execution tools; context-only selection requires a `skill:` or
   `provider_skill:` target and preserves that target only for instruction and
   workflow-context loading. The Tool Necessity Gate treats this intentional
@@ -713,7 +716,8 @@ capabilities can satisfy required grounding, and whether the final answer must b
 - `AgentRunner` calls the gate after the prompt and capability surface are prepared
 - explicit injected classifiers may provide the `ToolGateDecision`
 - model-backed classification is available as an opt-in runtime capability and is disabled by default
-- missing required capabilities produce a blocked final answer instead of an ungrounded reply
+- a tool-preferred turn is blocked only when neither the main model nor the selected tool path
+  produces a usable answer
 - tool-gate and enforcement outcomes are emitted to Hook Runtime events
 
 ### 3.3 Prompt Builder (`agent/prompt_builder.py`)

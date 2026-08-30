@@ -26,7 +26,7 @@ from app.atlasclaw.agent.runner_tool.runner_llm_routing import messages_satisfy_
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import has_hidden_lookup_result_content
 from app.atlasclaw.agent.runner_tool.runner_tool_messages import overlay_synthetic_tool_messages
 from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
-    tool_required_turn_has_real_execution,
+    turn_has_real_tool_execution,
     turn_action_requires_tool_execution,
 )
 from app.atlasclaw.agent.stream import StreamEvent
@@ -758,10 +758,10 @@ class RunnerExecutionFlowPostMixin:
             tool_intent_plan
         )
         tool_call_summaries = state.get("tool_call_summaries") or []
-        if buffered_assistant_events and tool_execution_required:
+        if buffered_assistant_events and tool_call_summaries:
             buffered_assistant_events.clear()
         elif buffered_assistant_events and not final_assistant:
-            if not tool_call_summaries and not tool_execution_required:
+            if not tool_call_summaries:
                 while buffered_assistant_events:
                     event = buffered_assistant_events.pop(0)
                     if event.type == "assistant":
@@ -769,6 +769,8 @@ class RunnerExecutionFlowPostMixin:
                         state["assistant_output_streamed"] = True
                     yield event
                 state.get("thinking_emitter").assistant_emitted = bool(final_assistant)
+        elif buffered_assistant_events:
+            buffered_assistant_events.clear()
 
         if final_messages:
             inferred_tool_calls = self._collect_tool_call_summaries_from_messages(
@@ -802,12 +804,14 @@ class RunnerExecutionFlowPostMixin:
         model_timeout_error_message = str(state.get("model_timeout_error_message") or "")
         current_model_attempt = int(state.get("current_model_attempt") or 0)
 
-        tool_required_has_real_execution = tool_required_turn_has_real_execution(
-            intent_plan=tool_intent_plan,
+        current_turn_has_real_tool_execution = turn_has_real_tool_execution(
             tool_call_summaries=tool_call_summaries,
             final_messages=final_messages,
             start_index=persist_run_output_start_index,
             executed_tool_names=state.get("executed_tool_names"),
+        )
+        tool_required_has_real_execution = (
+            current_turn_has_real_tool_execution if tool_execution_required else True
         )
         artifact_goal = state.get("artifact_goal")
         workspace_path = str(getattr(session_manager, "workspace_path", "") or "").strip()
@@ -874,32 +878,24 @@ class RunnerExecutionFlowPostMixin:
             for item in tool_call_summaries
             if isinstance(item, dict) and str(item.get("name", "") or "").strip()
         ]
-        provider_auth_failure_needs_block = False
-        if any(
-            isinstance(state.get(key), dict)
-            for key in ("repeated_tool_failure", "repeated_tool_no_progress", "repeated_tool_loop")
-        ):
-            failure_reasons_for_auth = self._build_missing_tool_evidence_failure_reasons(
-                state=state,
-                missing_required_tools=missing_required_tools,
-                final_messages=final_messages,
-                start_index=persist_run_output_start_index,
-                planned_tool_names=planned_tool_names,
-            )
-            provider_auth_failure_needs_block = select_provider_auth_diagnostic(
-                extra=getattr(deps, "extra", {}),
-                attempted_tools=tool_call_summaries,
-                failure_reasons=failure_reasons_for_auth,
-                tool_results=[],
-            ) is not None
+        failure_reasons_for_auth = self._build_missing_tool_evidence_failure_reasons(
+            state=state,
+            missing_required_tools=missing_required_tools,
+            final_messages=final_messages,
+            start_index=persist_run_output_start_index,
+            planned_tool_names=planned_tool_names,
+        )
+        provider_auth_diagnostic = select_provider_auth_diagnostic(
+            extra=getattr(deps, "extra", {}),
+            attempted_tools=tool_call_summaries,
+            failure_reasons=failure_reasons_for_auth,
+            tool_results=[],
+        )
+        provider_auth_failure_needs_block = provider_auth_diagnostic is not None
 
-        should_fail_for_missing_evidence = artifact_completion_missing or (
-            tool_execution_required
-            and (
-                not tool_required_has_real_execution
-                or bool(missing_required_tools)
-            )
-        ) or provider_auth_failure_needs_block
+        should_fail_for_missing_evidence = (
+            artifact_completion_missing or provider_auth_failure_needs_block
+        )
         should_block_assistant_emit = should_fail_for_missing_evidence
 
         if model_stream_timed_out and not final_assistant.strip():
@@ -954,7 +950,7 @@ class RunnerExecutionFlowPostMixin:
             return
 
         assistant_output_streamed = bool(state.get("assistant_output_streamed"))
-        allow_agent_result_fallback = not tool_execution_required
+        allow_agent_result_fallback = not current_turn_has_real_tool_execution
         if not assistant_output_streamed and not should_block_assistant_emit:
             if (
                 allow_agent_result_fallback
@@ -1146,21 +1142,7 @@ class RunnerExecutionFlowPostMixin:
             should_fail_for_missing_evidence = True
             should_block_assistant_emit = True
 
-        provider_auth_failure_reasons = self._build_missing_tool_evidence_failure_reasons(
-            state=state,
-            missing_required_tools=missing_required_tools,
-            final_messages=final_messages,
-            start_index=persist_run_output_start_index,
-            planned_tool_names=planned_tool_names,
-        )
-        provider_auth_message = provider_auth_diagnostic_user_message(
-            select_provider_auth_diagnostic(
-                extra=getattr(deps, "extra", {}),
-                attempted_tools=tool_call_summaries or list(state.get("executed_tool_names") or []),
-                failure_reasons=provider_auth_failure_reasons,
-                tool_results=[],
-            )
-        )
+        provider_auth_message = provider_auth_diagnostic_user_message(provider_auth_diagnostic)
         if provider_auth_message and final_assistant:
             final_assistant = provider_auth_message
 
@@ -1169,6 +1151,16 @@ class RunnerExecutionFlowPostMixin:
                 final_assistant,
                 state.get("workspace_download_reference_keys") or [],
             )
+        if (
+            tool_execution_required
+            and not final_assistant.strip()
+            and (
+                not tool_required_has_real_execution
+                or bool(missing_required_tools)
+            )
+        ):
+            should_fail_for_missing_evidence = True
+            should_block_assistant_emit = True
         persist_messages = self._sanitize_turn_messages_for_persistence(
             messages=final_messages,
             start_index=persist_run_output_start_index,
@@ -1236,6 +1228,8 @@ class RunnerExecutionFlowPostMixin:
                         "The runtime gathered intermediate data, but it did not actually "
                         f"produce the requested {artifact_label}."
                     )
+            if provider_auth_message:
+                failure_message = provider_auth_message
             recovery_answer = ""
             answer_phase = "unsupported_tool_request"
             missing_tool_execution_needs_answer = (
@@ -1290,15 +1284,8 @@ class RunnerExecutionFlowPostMixin:
                             [tool for tool in state.get("available_tools") or [] if isinstance(tool, dict)]
                         ),
                         "relevant_tools": relevant_tools,
+                        "matching_tool_available": bool(relevant_tools),
                     }
-                    if relevant_tools:
-                        facts["availability_status"] = (
-                            "matching_tool_available_but_not_executed"
-                        )
-                    elif facts["available_tool_count"]:
-                        facts["availability_status"] = "no_matching_tool"
-                    else:
-                        facts["availability_status"] = "no_runtime_tools"
                     run_single = getattr(self, "run_single", None)
                     if callable(run_single):
                         raw_output = await run_single(
@@ -1313,13 +1300,14 @@ class RunnerExecutionFlowPostMixin:
                                 "tool-backed operation requested in this turn. Write a concise "
                                 "final answer in the user's language. Use only the structured "
                                 "facts. State clearly that no action was executed. Follow "
-                                "availability_status exactly: matching_tool_available_but_not_executed "
-                                "means a matching tool was available but was not successfully invoked; "
-                                "never describe it as unsupported or unavailable. no_matching_tool "
-                                "means runtime tools exist but none matches the requested operation. "
-                                "no_runtime_tools means no runtime tool is available. If enum values "
-                                "in a tool schema show supported options, mention them. Do not claim "
-                                "a tool ran or that any external object changed state."
+                                "the structured availability facts without exposing internal status "
+                                "names. If matching_tool_available is true, explain that the matching "
+                                "tool was available but the operation was not completed. If runtime "
+                                "tools exist but none is relevant, explain that no matching operation "
+                                "is available. If no runtime tools exist, explain that no executable "
+                                "tool is available. If enum values in a tool schema show supported "
+                                "options, mention them. Do not claim a tool ran or that any external "
+                                "object changed state."
                             ),
                             agent=state.get("runtime_agent") or getattr(self, "agent", None),
                             allowed_tool_names=[],

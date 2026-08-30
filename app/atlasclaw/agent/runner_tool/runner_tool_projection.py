@@ -304,17 +304,14 @@ def project_minimal_toolset(
     return current, trace
 
 
-def tool_required_turn_has_real_execution(
+def turn_has_real_tool_execution(
     *,
-    intent_plan: ToolIntentPlan | None,
     tool_call_summaries: list[dict[str, Any]],
     final_messages: list[dict[str, Any]],
     start_index: int = 0,
     executed_tool_names: list[str] | None = None,
 ) -> bool:
-    """Return whether a tool-required turn has at least one real tool execution record."""
-    if intent_plan is None or not turn_action_requires_tool_execution(intent_plan):
-        return True
+    """Return whether the current turn contains at least one real tool execution record."""
 
     if executed_tool_names:
         normalized_executed = {
@@ -355,6 +352,26 @@ def tool_required_turn_has_real_execution(
                 if result.get("content") is not None:
                     return True
     return False
+
+
+def tool_required_turn_has_real_execution(
+    *,
+    intent_plan: ToolIntentPlan | None,
+    tool_call_summaries: list[dict[str, Any]],
+    final_messages: list[dict[str, Any]],
+    start_index: int = 0,
+    executed_tool_names: list[str] | None = None,
+) -> bool:
+    """Return whether a tool-required turn has at least one real tool execution record."""
+    if intent_plan is None or not turn_action_requires_tool_execution(intent_plan):
+        return True
+    return turn_has_real_tool_execution(
+        tool_call_summaries=tool_call_summaries,
+        final_messages=final_messages,
+        start_index=start_index,
+        executed_tool_names=executed_tool_names,
+    )
+
 
 def turn_action_requires_tool_execution(intent_plan: ToolIntentPlan | None) -> bool:
     """Return whether the current turn contract requires a real executed tool."""

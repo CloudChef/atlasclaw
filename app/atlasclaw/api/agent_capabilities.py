@@ -473,7 +473,9 @@ def resolve_selected_capability(
     for item in capabilities:
         if requested_kind and _normalize_text(item.get("kind")) != requested_kind:
             continue
-        if requested_command and _normalize_text(item.get("command")) != requested_command:
+        if requested_command and _normalize_lower(item.get("command")) != _normalize_lower(
+            requested_command
+        ):
             continue
         matches.append(item)
 

@@ -234,6 +234,24 @@ def test_resolve_selected_provider_capability_uses_provider_permission(tmp_path)
     assert resolved is None
 
 
+def test_resolve_selected_provider_capability_command_is_case_insensitive(tmp_path):
+    ctx = _build_context(tmp_path)
+
+    resolved = resolve_selected_capability(
+        ctx=ctx,
+        selected={
+            "kind": "provider_skill",
+            "command": "/testvaultmd.linux-vm-request",
+        },
+        provider_instances={
+            "smartcmp": {"testVaultMD": {"base_url": "https://example.test"}}
+        },
+    )
+
+    assert resolved is not None
+    assert resolved["command"] == "/testVaultMD.linux-vm-request"
+
+
 def test_resolve_selected_provider_capability_rejects_bare_skill_payload(tmp_path):
     ctx = _build_context(tmp_path)
     selected = {
