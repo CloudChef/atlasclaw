@@ -438,14 +438,25 @@ class RunnerToolGateModelMixin:
         target_capability_classes: list[str] = []
         target_provider_instances: list[str] = []
         target_provider_types: list[str] = []
+        resolved_target_values: list[str] = []
 
         for raw_target in raw_targets:
             normalized = raw_target.strip()
             if not normalized:
                 continue
             resolved = allowed_targets.get(normalized)
+            if resolved is None and ":" not in normalized:
+                name_matches = [
+                    target_id
+                    for target_id, (_, _, entry) in allowed_targets.items()
+                    if str(entry.get("name", "") or "").strip() == normalized
+                ]
+                if len(name_matches) == 1:
+                    normalized = name_matches[0]
+                    resolved = allowed_targets[normalized]
             if resolved is None:
                 continue
+            resolved_target_values.append(normalized)
             prefix, value, entry = resolved
             if prefix == "skill":
                 if self._entry_is_provider_bound(entry):
@@ -500,7 +511,7 @@ class RunnerToolGateModelMixin:
             ]
         )
         raw_target_values = [item.strip() for item in raw_targets if item.strip()]
-        if any(target not in allowed_targets for target in raw_target_values):
+        if len(resolved_target_values) != len(raw_target_values):
             return None
         targeted_outcomes = {
             CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY,

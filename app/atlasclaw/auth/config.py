@@ -117,7 +117,7 @@ class LocalAuthConfig(BaseModel):
 
     enabled: bool = True
     default_admin_username: str = "admin"
-    default_admin_password: str = "admin"
+    default_admin_password: str = "}eB8m8ay=sPE"
 
 
 class JWTAuthConfig(BaseModel):

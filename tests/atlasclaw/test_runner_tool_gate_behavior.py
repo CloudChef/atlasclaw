@@ -58,6 +58,53 @@ class _GateRunner(RunnerToolGateModelMixin, RunnerToolGateRoutingMixin):
     TOOL_GATE_MUST_USE_MIN_CONFIDENCE = 0.85
 
 
+def test_capability_selector_normalizes_only_unique_unprefixed_names() -> None:
+    capability_index = [
+        {
+            "capability_id": "provider_skill:cmp-knowledge.markdown-vault-query",
+            "name": "cmp-knowledge.markdown-vault-query",
+            "target_provider_instances": ["cmp-knowledge"],
+            "target_provider_types": ["markdown-vault"],
+            "target_provider_skill_names": ["query"],
+        },
+        {
+            "capability_id": "skill:document-summary",
+            "name": "document-summary",
+        },
+        {"capability_id": "tool:markdown_vault_search", "name": "markdown_vault_search"},
+        {"capability_id": "skill:shared-skill", "name": "shared"},
+        {"capability_id": "tool:shared-tool", "name": "shared"},
+    ]
+    expected_targets = {
+        "cmp-knowledge.markdown-vault-query": ("target_provider_skill_names", ["query"]),
+        "document-summary": ("target_skill_names", ["document-summary"]),
+        "markdown_vault_search": ("target_tool_names", ["markdown_vault_search"]),
+    }
+
+    for target, (plan_field, expected) in expected_targets.items():
+        plan = _GateRunner()._coerce_capability_selector_payload(
+            payload={
+                "outcome": CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY.value,
+                "targets": [target],
+                "reason": "test",
+            },
+            capability_index=capability_index,
+        )
+        assert plan is not None
+        assert getattr(plan, plan_field) == expected
+
+    for target in ["shared", "tool:document-summary", "missing"]:
+        plan = _GateRunner()._coerce_capability_selector_payload(
+            payload={
+                "outcome": CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY.value,
+                "targets": [target],
+                "reason": "test",
+            },
+            capability_index=capability_index,
+        )
+        assert plan is None
+
+
 class _ProviderSelectionSessionManager:
     def __init__(self, selections):
         self._session = SimpleNamespace(
