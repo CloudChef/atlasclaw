@@ -80,6 +80,8 @@ Response
 providers/<provider-name>/
 ├── PROVIDER.md              # LLM-facing provider contract (required)
 ├── provider.schema.json     # Runtime/API/UI manifest
+├── runtime-api.json         # Optional provider-owned HTTP routes
+├── http_runtime.py          # Optional handlers named by runtime-api.json
 ├── README.md                # Human-readable package documentation
 ├── assets/                  # Optional icons/images referenced by the manifest
 ├── skills/                  # Provider Skills
@@ -99,6 +101,8 @@ providers/<provider-name>/
 |------|---------|----------|
 | `PROVIDER.md` | LLM-facing provider contract and routing context | Yes |
 | `provider.schema.json` | Machine-readable provider manifest for runtime/API/UI and code-analysis agents | Required for provider definitions/config UI/schema validation |
+| `runtime-api.json` | Provider-owned HTTP route registration manifest | Optional |
+| `http_runtime.py` | Request parsing and domain handlers referenced by `runtime-api.json` | Optional |
 | `README.md` | Human-readable overview | Recommended |
 | `SKILL.md` | Skill definition and usage | Yes |
 | `handler.py` | Skill implementation | Yes |
@@ -208,6 +212,79 @@ Minimal shape:
   }
 }
 ```
+
+### runtime-api.json Manifest
+
+Providers may expose service-to-service or administrator HTTP operations independently
+from their Agent Skills and Tools. Add a fixed-name `runtime-api.json` beside
+`provider.schema.json`:
+
+```json
+{
+  "schema_version": 1,
+  "routes": [
+    {
+      "method": "POST",
+      "path": "records",
+      "module": "http_runtime.py",
+      "handler": "create_record",
+      "capability": "records_write",
+      "access": "admin",
+      "success_status": 201
+    },
+    {
+      "method": "GET",
+      "path": "records/{record_id}",
+      "module": "http_runtime.py",
+      "handler": "get_record",
+      "capability": "records_read",
+      "access": "provider_user"
+    }
+  ]
+}
+```
+
+Every route capability must also appear in `provider.schema.json` under
+`runtime_capabilities`. Core automatically registers validated descriptors and serves
+them through:
+
+```text
+/api/providers/{provider_type}/{provider_instance}/{declared_path}
+```
+
+Core uses one generic dispatcher rather than adding FastAPI routes for each provider.
+It owns authentication, configured-instance lookup, provider-instance RBAC, the
+`admin`/`provider_user` access policy, a 128 MiB ceiling measured from actual ASGI
+body bytes, handler loading, and safe error mapping. Core reads the complete bounded
+body into a disk-backed spool before the handler runs, so handlers that ignore or only
+partially consume a body cannot bypass the ceiling. The provider handler owns request
+parsing, tighter provider-specific limits, domain validation, transformations, and
+storage or upstream API behavior.
+
+An instance configuration may use `tenant_id` when the complete provider instance is
+the tenant boundary. Ordinary discovery and Agent capability projection include only
+the authenticated tenant's instances plus instances owned by `-1`. An administrator
+integration may supply `tenant_id` to capability-filtered discovery to act for a host
+application tenant; the provider remains responsible for validating that same request
+context before domain writes.
+
+Handlers must use `async def`, accept positional `(request, context)` arguments without
+additional required parameters, and return an eager JSON-serializable value. Core
+validates the call signature during registration and does not accept an arbitrary or
+streaming `Response`, which keeps request spool ownership and cleanup bounded to the
+handler call.
+
+Registration rejects absolute or escaping module paths, symlink modules, unsupported
+methods/access policies, undeclared capabilities, any pair of route templates that can
+match the same method/path, missing modules, and missing handlers. Only capabilities
+backed by successfully registered handlers are returned by capability-filtered instance
+discovery. Executable module names come only from the static provider package manifest,
+never from provider instance configuration.
+
+REST registration is independent from Skills and Tools. A REST handler and an Agent
+Tool may call the same provider service module, but REST must not invoke a Skill or
+Tool as an intermediate API layer. Disabling a Skill therefore does not silently
+disable a provider's administrative REST contract.
 
 ### Environment Variables
 
@@ -812,6 +889,7 @@ AtlasClaw discovers Providers through this process:
    - Parse LLM-facing Provider metadata from frontmatter
    - Look for fixed sibling file `provider.schema.json`
    - Load provider definitions/config UI metadata only from `provider.schema.json`
+   - When present, validate and register fixed sibling `runtime-api.json`
 
 3. **Skill Discovery**
    - Scan `skills/` subdirectory
@@ -825,9 +903,10 @@ AtlasClaw discovers Providers through this process:
 2. Scan all Provider locations
 3. Load Provider metadata
 4. Load `provider.schema.json` when present
-5. Discover and load Skills
-6. Register Skills to Agent
-7. Log loaded Providers and Skills
+5. Validate and register `runtime-api.json` when present
+6. Discover and load Skills
+7. Register Skills to Agent
+8. Log loaded Providers, HTTP routes, and Skills
 
 **Dynamic Loading**:
 - File system watchers detect changes
@@ -871,6 +950,8 @@ Create the Provider structure:
 providers/my-provider/
 ├── PROVIDER.md
 ├── provider.schema.json
+├── runtime-api.json      # optional
+├── http_runtime.py       # optional
 ├── README.md
 ├── assets/
 └── skills/

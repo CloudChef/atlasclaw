@@ -11,11 +11,14 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import app.atlasclaw.api.deps_context as deps_context_module
+import app.atlasclaw.api.provider_info_routes as provider_info_routes_module
 import app.atlasclaw.core.config as config_module
 from app.atlasclaw.api.provider_info_routes import router as provider_info_router
 from app.atlasclaw.api.service_provider_schemas import (
     clear_provider_schema_definitions,
 )
+from app.atlasclaw.auth.guards import AuthorizationContext, filter_provider_instances_for_authz
+from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.db.database import DatabaseConfig, init_database
 from app.atlasclaw.db.orm.service_provider_config import ServiceProviderConfigService
 from app.atlasclaw.db.schemas import ServiceProviderConfigCreate
@@ -104,6 +107,83 @@ def test_available_instances_exposes_manifest_providers_and_skips_core_channels(
         "usage_hint": "Use for managed production requests.",
         "config_keys": ["region", "username"],
     }
+    filtered = client.get(
+        "/api/service-providers/available-instances",
+        params={"provider_type": "managed"},
+    )
+    assert filtered.json() == payload
+
+
+def test_provider_instance_tenant_filter_includes_owned_and_cross_tenant_instances():
+    """Verify Chat and capability discovery receive current-tenant plus global instances."""
+    authz = AuthorizationContext(
+        user=UserInfo(user_id="tenant-user", tenant_id="tenant-a"),
+        permissions={"providers": {"allow_all": True}},
+    )
+    instances = {
+        "markdown-vault": {
+            "tenant-a-vault": {"tenant_id": "tenant-a"},
+            "tenant-b-vault": {"tenant_id": "tenant-b"},
+            "global-vault": {"tenant_id": "-1"},
+        }
+    }
+
+    visible = filter_provider_instances_for_authz(authz, instances)
+
+    assert set(visible["markdown-vault"]) == {"tenant-a-vault", "global-vault"}
+
+
+def test_admin_discovery_can_select_cmp_tenant_context(tmp_path, monkeypatch):
+    """Verify the CMP administrator token can discover one tenant plus global Vaults."""
+    config_path = tmp_path / "atlasclaw.json"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ATLASCLAW_CONFIG", str(config_path))
+    config_path.write_text(
+        """
+{
+  "workspace": { "path": ".atlasclaw" },
+  "service_providers": {
+    "managed": {
+      "tenant-a-vault": {"tenant_id": "tenant-a"},
+      "tenant-b-vault": {"tenant_id": "tenant-b"},
+      "global-vault": {"tenant_id": "-1"}
+    }
+  }
+}
+        """.strip(),
+        encoding="utf-8",
+    )
+    authz = AuthorizationContext(
+        user=UserInfo(user_id="cmp-agent-admin", tenant_id="agent-admin"),
+        permissions={"providers": {"allow_all": True}},
+        is_admin=True,
+    )
+
+    async def get_admin_authz(_request):
+        return authz
+
+    monkeypatch.setattr(
+        provider_info_routes_module,
+        "get_optional_authorization_context",
+        get_admin_authz,
+    )
+    app = FastAPI()
+    app.include_router(provider_info_router, prefix="/api")
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/api/service-providers/available-instances",
+            params={"tenant_id": "tenant-b"},
+        )
+
+    assert response.status_code == 200
+    providers = response.json()["providers"]
+    assert {item["instance_name"] for item in providers} == {
+        "tenant-b-vault",
+        "global-vault",
+    }
+    assert all(item["provider_type"] == "managed" for item in providers)
+    assert all("id" not in item and "providerType" not in item for item in providers)
 
 
 def test_available_instances_fall_back_to_schema_defaults_when_base_url_missing(tmp_path, monkeypatch):

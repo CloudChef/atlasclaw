@@ -279,10 +279,34 @@ def _get_provider_display_name(provider_type: str) -> str:
     return normalized_provider_type
 
 
+def _get_registered_runtime_capabilities(provider_type: str) -> set[str]:
+    """Return callable HTTP capabilities, failing closed without a runtime registry."""
+    try:
+        from app.atlasclaw.api.deps_context import get_api_context
+
+        registry = getattr(get_api_context(), "service_provider_registry", None)
+    except Exception:
+        return set()
+    getter = getattr(registry, "get_provider_http_capabilities", None)
+    if not callable(getter):
+        return set()
+    try:
+        return {str(item).strip().lower() for item in getter(provider_type)}
+    except Exception:
+        logger.exception(
+            "Failed to inspect registered provider HTTP capabilities: provider=%s",
+            provider_type,
+        )
+        return set()
+
+
 @router.get("/service-providers/available-instances")
 async def get_available_instances(
     request: Request,
     include_all: bool = Query(False, description="Return the full catalog for permission governance"),
+    provider_type: str | None = Query(None, description="Filter by provider type"),
+    capability: str | None = Query(None, description="Filter by runtime capability"),
+    tenant_id: str | None = Query(None, description="Tenant context for administrator discovery"),
 ) -> dict[str, Any]:
     """Return configured service provider instances.
 
@@ -301,19 +325,47 @@ async def get_available_instances(
                 detail="Missing permission to access full provider catalog",
             )
     elif authz is not None:
-        service_providers = filter_provider_instances_for_authz(authz, service_providers)
+        requested_tenant_id = str(tenant_id or "").strip()
+        if (
+            requested_tenant_id
+            and requested_tenant_id != str(authz.user.tenant_id or "").strip()
+            and not authz.is_admin
+        ):
+            raise HTTPException(status_code=403, detail="Tenant discovery access denied")
+        service_providers = filter_provider_instances_for_authz(
+            authz,
+            service_providers,
+            tenant_id=requested_tenant_id or None,
+        )
 
+    requested_provider_type = str(provider_type or "").strip().lower()
+    requested_capability = str(capability or "").strip().lower()
     providers: list[dict[str, Any]] = []
 
-    for provider_type, instances in service_providers.items():
+    for catalog_provider_type, instances in service_providers.items():
         if not isinstance(instances, dict):
+            continue
+        normalized_provider_type = str(catalog_provider_type or "").strip().lower()
+        if requested_provider_type and normalized_provider_type != requested_provider_type:
+            continue
+        definition = get_provider_schema_definition(normalized_provider_type)
+        runtime_capabilities = set(getattr(definition, "runtime_capabilities", ()) or ())
+        if requested_capability and requested_capability not in runtime_capabilities:
+            continue
+        registered_capabilities = _get_registered_runtime_capabilities(
+            normalized_provider_type
+        )
+        if (
+            requested_capability
+            and requested_capability not in registered_capabilities
+        ):
             continue
 
         for instance_name, instance_config in instances.items():
             if not isinstance(instance_config, dict):
                 continue
             auth_type = _normalize_instance_auth_type(
-                str(provider_type),
+                str(catalog_provider_type),
                 str(instance_name),
                 instance_config,
             )
@@ -322,18 +374,23 @@ async def get_available_instances(
 
             providers.append(
                 {
-                    "provider_type": provider_type,
-                    "display_name": _get_provider_display_name(str(provider_type)),
+                    "provider_type": catalog_provider_type,
+                    "display_name": _get_provider_display_name(str(catalog_provider_type)),
                     "instance_name": instance_name,
                     "base_url": str(instance_config.get("base_url", "") or "").strip()
-                    or _get_schema_default(provider_type, "base_url"),
+                    or _get_schema_default(catalog_provider_type, "base_url"),
                     "auth_type": auth_type,
                     "usage_hint": _get_usage_hint(instance_config),
                     "config_keys": _visible_config_keys(instance_config),
                 }
             )
 
-    providers.sort(key=lambda item: (item["provider_type"], item["instance_name"]))
+    providers.sort(
+        key=lambda item: (
+            str(item.get("provider_type") or ""),
+            str(item.get("instance_name") or ""),
+        )
+    )
     return {
         "count": len(providers),
         "providers": providers,

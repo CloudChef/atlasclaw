@@ -18,7 +18,12 @@ def test_access_token_recognizes_only_v1_prefix() -> None:
     assert access_token_module.is_user_access_token("ac_pat_v2_secret") is False
 
 
-def _build_host_cookie_local_admin_config(tmp_path: Path, db_path: Path) -> dict:
+def _build_host_cookie_local_admin_config(
+    tmp_path: Path,
+    db_path: Path,
+    *,
+    service_providers: dict | None = None,
+) -> dict:
     project_root = Path(__file__).resolve().parents[2]
     providers_root = str((project_root.parent / "atlasclaw-providers" / "providers").resolve())
     skills_root = str((project_root.parent / "atlasclaw-providers" / "skills").resolve())
@@ -76,16 +81,25 @@ def _build_host_cookie_local_admin_config(tmp_path: Path, db_path: Path) -> dict
                 }
             ],
         },
-        "service_providers": {},
+        "service_providers": service_providers or {},
     }
 
 
-def _create_host_cookie_app(tmp_path: Path, monkeypatch) -> tuple[object, object, object]:
+def _create_host_cookie_app(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    service_providers: dict | None = None,
+) -> tuple[object, object, object]:
     db_path = tmp_path / "host-cookie-admin-login.db"
     config_path = tmp_path / "atlasclaw.host-cookie-admin-login.json"
     config_path.write_text(
         json.dumps(
-            _build_host_cookie_local_admin_config(tmp_path, db_path),
+            _build_host_cookie_local_admin_config(
+                tmp_path,
+                db_path,
+                service_providers=service_providers,
+            ),
             ensure_ascii=False,
             indent=2,
         ),

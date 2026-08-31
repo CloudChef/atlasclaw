@@ -908,7 +908,10 @@ cd app/frontend && npm test
 **Directory structure**:
 ```text
 <providers_root>/<provider_name>/
-|- PROVIDER.md       # Required: documentation + LLM context
+|- PROVIDER.md          # Required: documentation + LLM context
+|- provider.schema.json # Required for managed provider definitions
+|- runtime-api.json     # Optional: provider-owned HTTP routes
+|- http_runtime.py      # Optional: handlers named by runtime-api.json
 \- skills/
    |- skill-one/
    |  |- SKILL.md    # Required: skill documentation
@@ -948,6 +951,38 @@ avoid_when:
   }
 }
 ```
+
+**Optional provider HTTP API**:
+
+```json
+{
+  "schema_version": 1,
+  "routes": [
+    {
+      "method": "GET",
+      "path": "records/{record_id}",
+      "module": "http_runtime.py",
+      "handler": "get_record",
+      "capability": "records_read",
+      "access": "provider_user"
+    }
+  ]
+}
+```
+
+Core discovers the fixed-name `runtime-api.json` beside `provider.schema.json` and
+serves it through `/api/providers/{provider_type}/{provider_instance}/...`. Route
+registration is independent from Skills and Tools. Registration rejects overlapping
+templates, and capability filtering exposes only successfully loaded handlers. Keep
+request parsing, domain validation, data conversion, and provider storage/API calls in
+the provider handler; Core owns only generic authentication, instance RBAC, dispatch,
+actual-body enforcement of the shared ceiling, safe error mapping, and shared
+infrastructure contracts such as visual-model access.
+
+Provider HTTP handlers must be declared with `async def` and accept Core's positional
+`(request, context)` contract without additional required arguments. Core validates
+that signature during registration, invokes the handler directly, and does not adapt
+synchronous functions through a worker thread.
 
 ### 9.2 Adding a Skill
 

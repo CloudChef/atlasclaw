@@ -389,8 +389,16 @@ def filter_channel_types_for_authz(
 def filter_provider_instances_for_authz(
     authz: AuthorizationContext,
     provider_instances: dict[str, dict[str, dict[str, Any]]],
+    *,
+    tenant_id: Optional[str] = None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
-    """Return provider instances visible to the current authorization context."""
+    """Return RBAC-visible instances owned by the selected tenant or all tenants.
+
+    Provider instances without ``tenant_id`` keep their existing workspace RBAC
+    behavior. A tenant-owned instance is visible only to its owner, while ``-1``
+    follows the host application's cross-tenant object convention.
+    """
+    effective_tenant_id = str(tenant_id or authz.user.tenant_id or "").strip()
     filtered: dict[str, dict[str, dict[str, Any]]] = {}
     for provider_type, instances in (provider_instances or {}).items():
         if not isinstance(instances, dict):
@@ -399,7 +407,16 @@ def filter_provider_instances_for_authz(
         for instance_name, instance_config in instances.items():
             if not isinstance(instance_config, dict):
                 continue
-            if has_provider_instance_access(authz, str(provider_type), str(instance_name)):
+            owner_tenant_id = instance_config.get("tenant_id")
+            tenant_visible = owner_tenant_id is None or str(owner_tenant_id).strip() in {
+                "-1",
+                effective_tenant_id,
+            }
+            if tenant_visible and has_provider_instance_access(
+                authz,
+                str(provider_type),
+                str(instance_name),
+            ):
                 visible_instances[str(instance_name)] = dict(instance_config)
         if visible_instances:
             filtered[str(provider_type)] = visible_instances

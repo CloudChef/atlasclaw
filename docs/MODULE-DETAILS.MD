@@ -354,6 +354,8 @@ Manages provider templates, instance configurations, and skill registration with
 | `get_instance_config` | `(provider_type, instance_name) -> Optional[dict]` | Get raw instance config |
 | `get_instance_config_redacted` | `(...) -> Optional[dict]` | Get config with secrets masked |
 | `get_provider_context` | `(provider_type: str) -> Optional[ProviderContext]` | Get LLM context for provider |
+| `get_provider_http_routes` | `(provider_type: str) -> tuple[ProviderHttpRouteDefinition, ...]` | Get validated provider HTTP descriptors |
+| `match_provider_http_route` | `(provider_type, method, runtime_path) -> tuple[route, path_params]` | Match a generic provider request |
 | `register_skills_to` | `(skill_registry) -> int` | Register provider skills with instance wrappers |
 
 **Instance Config Merge Behavior**:
@@ -364,6 +366,26 @@ Manages provider templates, instance configurations, and skill registration with
 Instance wrapper logic: when a skill is invoked, if the provider has a single instance it is auto-selected; if multiple instances exist, the LLM is prompted to choose.
 
 **Environment Variable Resolution**: Config values containing `${VAR_NAME}` or `${VAR_NAME:default}` are resolved at load time.
+
+### 1.5.1 Provider HTTP Runtime (`core/provider_http_runtime.py`, `api/provider_http_routes.py`)
+
+`runtime-api.json` is an optional, fixed-name provider package manifest. Each route
+declares `method`, relative `path`, provider-local Python `module`, `handler`,
+`capability`, `access`, and optional `success_status`. Registration rejects unsafe
+module paths, unsupported methods/access policies, undeclared capabilities,
+overlapping route templates, missing modules, synchronous handlers, and async handlers
+that cannot accept the required `(request, context)` positional contract.
+Capability-filtered instance discovery uses only routes whose modules and handlers
+registered successfully.
+
+Core registers no provider-specific FastAPI routes. One catch-all dispatcher resolves
+the provider type and configured instance from the URL, checks the authenticated role
+and provider-instance RBAC, and calls the matched handler with `ProviderHttpContext`.
+The context contains the selected instance config, path parameters, safe actor/tenant
+metadata, and a narrow visual-model bridge. The dispatcher measures actual ASGI body
+bytes against its 128 MiB ceiling even when `Content-Length` is absent or inaccurate.
+The complete bounded body is spooled before handler invocation. Provider handlers own
+request parsing and domain behavior.
 
 **Database Persistence** (`app/atlasclaw/db/orm/service_provider_config.py`):
 

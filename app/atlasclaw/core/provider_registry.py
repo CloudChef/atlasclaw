@@ -21,6 +21,7 @@ from app.atlasclaw.tools.providers.instance_tools import (
 if TYPE_CHECKING:
     from pydantic_ai import RunContext
     from app.atlasclaw.core.deps import SkillDeps
+    from app.atlasclaw.core.provider_http_runtime import ProviderHttpRouteDefinition
     from app.atlasclaw.skills.registry import SkillRegistry
 
 logger = logging.getLogger(__name__)
@@ -123,6 +124,7 @@ class ServiceProviderRegistry:
         self._instances: dict[str, dict[str, dict[str, Any]]] = {}
         self._contexts: dict[str, ProviderContext] = {}  # LLM context for each provider
         self._schema_definitions: dict[str, Any] = {}
+        self._http_routes: dict[str, tuple["ProviderHttpRouteDefinition", ...]] = {}
 
     def load_from_directory(self, providers_dir: Path) -> int:
         """Load provider templates from a providers directory."""
@@ -173,10 +175,31 @@ class ServiceProviderRegistry:
             else:
                 if schema_definition is not None:
                     self._schema_definitions[schema_definition.provider_type] = schema_definition
+                    self._http_routes.pop(schema_definition.provider_type, None)
                     logger.debug(
                         "Loaded provider schema: %s",
                         schema_definition.provider_type,
                     )
+                    try:
+                        from app.atlasclaw.core.provider_http_runtime import (
+                            load_provider_http_manifest,
+                        )
+
+                        http_manifest = load_provider_http_manifest(
+                            sub,
+                            provider_type=schema_definition.provider_type,
+                            runtime_capabilities=schema_definition.runtime_capabilities,
+                        )
+                    except Exception as exc:
+                        logger.warning("Skipping provider HTTP routes %s: %s", sub, exc)
+                    else:
+                        if http_manifest is not None:
+                            self._http_routes[http_manifest.provider_type] = http_manifest.routes
+                            logger.info(
+                                "Registered %d provider HTTP routes: %s",
+                                len(http_manifest.routes),
+                                http_manifest.provider_type,
+                            )
             
             count += 1
             logger.info("Discovered provider: %s (%s)", sub.name, md_path.name)
@@ -278,6 +301,33 @@ class ServiceProviderRegistry:
     def get_all_provider_schema_definitions(self) -> dict[str, Any]:
         """Get all loaded machine-readable provider manifest schemas."""
         return dict(self._schema_definitions)
+
+    def get_provider_http_routes(
+        self,
+        provider_type: str,
+    ) -> tuple["ProviderHttpRouteDefinition", ...]:
+        """Return validated HTTP routes declared by one provider package."""
+        normalized = str(provider_type or "").strip().lower()
+        return self._http_routes.get(normalized, ())
+
+    def get_provider_http_capabilities(self, provider_type: str) -> frozenset[str]:
+        """Return only capabilities backed by successfully registered HTTP routes."""
+        return frozenset(
+            route.capability for route in self.get_provider_http_routes(provider_type)
+        )
+
+    def match_provider_http_route(
+        self,
+        provider_type: str,
+        method: str,
+        runtime_path: str,
+    ) -> tuple[Optional["ProviderHttpRouteDefinition"], dict[str, str]]:
+        """Resolve one provider-declared route and its path parameters."""
+        for route in self.get_provider_http_routes(provider_type):
+            path_params = route.match(method, runtime_path)
+            if path_params is not None:
+                return route, path_params
+        return None, {}
 
     def load_instances_from_config(self, config: dict[str, dict[str, Any]]) -> None:
         """Load provider instance configuration from atlasclaw config."""

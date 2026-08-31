@@ -228,6 +228,7 @@ class ProviderSchemaDefinition:
     accent: str = ""
     default_auth_type: Any = ""
     auth_modes: dict[str, ProviderAuthModeDefinition] = field(default_factory=dict)
+    runtime_capabilities: tuple[str, ...] = ()
     redaction_sensitive_fields: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
@@ -263,6 +264,11 @@ class ProviderSchemaDefinition:
                 raise ValueError("auth_modes keys must be single auth_type values")
             normalized_auth_modes[auth_chain[0]] = auth_mode
         object.__setattr__(self, "auth_modes", normalized_auth_modes)
+        object.__setattr__(
+            self,
+            "runtime_capabilities",
+            tuple(capability.lower() for capability in _normalize_string_tuple(self.runtime_capabilities)),
+        )
         object.__setattr__(
             self,
             "redaction_sensitive_fields",
@@ -407,6 +413,8 @@ class ProviderSchemaDefinition:
                 ],
             },
         }
+        if self.runtime_capabilities:
+            payload["runtime_capabilities"] = list(self.runtime_capabilities)
         if self.icon_path:
             payload["icon_path"] = self.icon_path
         return payload
@@ -529,6 +537,9 @@ def load_provider_schema_definition(
         auth_modes=_auth_modes_from_dict(
             config_schema.get("auth_modes"),
             manifest_path=manifest_path,
+        ),
+        runtime_capabilities=tuple(
+            _normalize_string_tuple(raw_manifest.get("runtime_capabilities"))
         ),
         fields=fields,
         redaction_sensitive_fields=tuple(

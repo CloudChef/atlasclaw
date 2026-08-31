@@ -87,6 +87,7 @@ from .services.auth_service import load_profile_snapshot
 from .model_config_routes import router as model_config_router
 from .provider_info_routes import router as provider_info_router
 from .access_token_routes import router as access_token_router
+from .provider_http_routes import router as provider_http_router
 
 ALLOWED_AVATAR_CONTENT_TYPES = {
     "image/jpeg": ".jpg",
@@ -663,6 +664,7 @@ router = APIRouter(prefix="/api", tags=["Database API"])
 router.include_router(model_config_router)
 router.include_router(provider_info_router)
 router.include_router(access_token_router)
+router.include_router(provider_http_router)
 
 
 # ============== Agent Config Routes ==============

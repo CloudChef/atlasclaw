@@ -661,6 +661,11 @@ Tenant resolution order: explicit session key ->user header ->config default ->"
 
 Quota enforcement: `TenantManager.check_quota()` validates `max_sessions`, `max_agents`, `max_memory_entries`, `max_concurrent_runs`.
 
+Provider instances may declare `tenant_id`. Instance discovery and Agent runtime
+selection then expose the instance only to that tenant; `tenant_id: "-1"` represents
+a host-application cross-tenant instance. Providers that do not declare this field
+retain workspace RBAC behavior without an additional tenant filter.
+
 ---
 
 ## 9. Extension Points
@@ -675,6 +680,9 @@ provider package contains:
 ```text
 <providers_root>/<provider>/
 |- PROVIDER.md          # Documentation + LLM context (frontmatter)
+|- provider.schema.json # Config schema and runtime capability declarations
+|- runtime-api.json     # Optional provider-owned HTTP route declarations
+|- http_runtime.py      # Optional HTTP handlers named by runtime-api.json
 \- skills/
    |- skill-name/
    |  |- SKILL.md       # Skill documentation + frontmatter
@@ -684,7 +692,23 @@ provider package contains:
 
 **Discovery**: `ServiceProviderRegistry` loads provider templates and metadata
 from `providers_root`. Startup then loads provider-owned skills from each
-provider package's `skills/` directory.
+provider package's `skills/` directory. When a package contains a valid fixed-name
+`runtime-api.json`, the registry also validates and registers its HTTP route
+descriptors.
+
+**Provider HTTP APIs**: Core exposes one generic dispatcher at
+`/api/providers/{provider_type}/{provider_instance}/{runtime_path}`. The dispatcher
+authenticates the caller, enforces provider-instance access and the manifest's
+`admin` or `provider_user` policy, applies a 128 MiB ceiling to actual received body
+bytes through a disk-backed spool before invoking the provider handler. Ambiguous route templates are rejected, and
+capability-filtered discovery exposes only successfully registered handlers. Request
+parsing, domain validation, transformations, and business behavior remain in the
+provider. Runtime API registration is independent from Skill and Tool registration; a
+REST handler and a Tool may share a provider service, but REST never calls a Skill or
+Tool as an intermediary.
+
+Provider handlers return eager JSON values; streaming or delayed `Response` objects
+are outside this runtime contract so Core can close the request spool deterministically.
 
 **Instance Awareness**: A single provider type (e.g., "my-provider") can have
 multiple instances (e.g., "production", "staging"). `ServiceProviderRegistry`
@@ -693,6 +717,7 @@ wraps skill handlers with automatic instance selection logic.
 **Locations**:
 1. Provider packages: `<providers_root>/<provider>/`
 2. Provider-owned skills: `<providers_root>/<provider>/skills/`
+3. Provider-owned HTTP manifest: `<providers_root>/<provider>/runtime-api.json`
 
 ### 9.2 Skill Extension
 
