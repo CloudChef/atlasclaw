@@ -26,7 +26,7 @@ import {
   canAccessUserManagement
 } from './permissions.js'
 
-const SCRIPT_VERSION = '45'
+const SCRIPT_VERSION = '46'
 
 /**
  * Route table - lazy loaded page modules

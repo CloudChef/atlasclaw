@@ -610,6 +610,25 @@ Credential -> AuthProvider.authenticate() -> AuthResult
 
 **Chained Authentication**: The system supports chained authentication where multiple providers can be tried in sequence. For example, local auth can be attempted first, followed by OIDC JWT validation if local fails.
 
+#### Opaque Access Tokens
+
+Administrators authenticated without an API token can create long-lived, non-JWT
+integration credentials through `POST /api/access-tokens`. The response returns the `ac_pat_v1_...`
+plaintext exactly once. AtlasClaw persists only a SHA-256 digest and a non-secret
+display hint; list and revoke responses never expose either the plaintext or digest.
+
+Clients authenticate with `Authorization: Bearer <token>`. Each request resolves the
+token's active database owner and current roles, so disabling the owner, changing
+roles, or revoking the token takes effect without issuing a replacement credential.
+Successful authentication updates non-secret last-use metadata and does not propagate
+the plaintext into runtime `UserInfo.raw_token`.
+
+Token management requires administrator authentication other than an API token.
+API-token authentication is rejected with 403 for create, list, and revoke operations, which
+prevents a stolen integration token from minting or managing replacement credentials.
+For rotation, create a second token from a permitted administrator session, update the
+client, verify it, and then revoke the old token; both remain valid during the intended overlap.
+
 **Data Encryption**: All sensitive data (API keys, tokens, credentials) is encrypted at rest using AES-256-GCM:
 - Token API keys are encrypted in the database (`model_token_configs` table)
 - Service provider configurations are encrypted

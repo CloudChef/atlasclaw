@@ -20,6 +20,10 @@ from app.atlasclaw.auth.jwt_token import verify_atlas_token
 from app.atlasclaw.auth.models import ANONYMOUS_USER, AuthenticationError, UserInfo
 from app.atlasclaw.auth.strategy import AuthStrategy
 from app.atlasclaw.core.base_path import build_base_path_url, normalize_base_path
+from app.atlasclaw.db.orm.user_access_token import (
+    UserAccessTokenService,
+    is_user_access_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +103,14 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
         if self._anonymous_fallback:
             request.state.user_info = ANONYMOUS_USER
+            return await call_next(request)
+
+        atlas_credential = self._extract_atlas_token(request)
+        if is_user_access_token(atlas_credential):
+            user_info = await self._authenticate_user_access_token(atlas_credential)
+            if user_info is None:
+                return self._auth_failed_response(request)
+            request.state.user_info = user_info
             return await call_next(request)
 
         provider_name = self._current_provider_name()
@@ -273,6 +285,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
     def _current_provider_name(self) -> str:
         provider = self._strategy.primary_provider
         return provider.provider_name() if provider is not None else "none"
+
+    async def _authenticate_user_access_token(self, credential: str) -> Optional[UserInfo]:
+        """Authenticate an opaque API token without treating it as a login JWT."""
+        from app.atlasclaw.db.database import get_db_manager
+
+        manager = get_db_manager()
+        if not manager.is_initialized:
+            logger.warning("Access token authentication attempted before database initialization")
+            return None
+        try:
+            async with manager.get_session() as session:
+                return await UserAccessTokenService.authenticate(session, credential)
+        except Exception as exc:
+            logger.warning("Access token authentication failed: %s", type(exc).__name__)
+            return None
 
     def _auth_failed_response(self, request: Request):
         config = getattr(request.app.state, "config", None)

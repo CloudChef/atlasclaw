@@ -11,6 +11,7 @@ const checkAuthMock = jest.fn(() => Promise.resolve({
 }))
 
 let userProviderPayloads = []
+let accessTokenPayloads = []
 
 jest.mock('../../app/frontend/scripts/auth.js', () => ({
   checkAuth: checkAuthMock,
@@ -28,6 +29,15 @@ describe('account settings page', () => {
     document.head.innerHTML = ''
     document.body.innerHTML = '<div id="page-root"></div>'
     userProviderPayloads = []
+    accessTokenPayloads = []
+    checkAuthMock.mockReset()
+    checkAuthMock.mockResolvedValue({
+      username: 'atlas-admin',
+      is_admin: true,
+      permissions: {
+        provider_configs: { view: true }
+      }
+    })
 
     global.fetch = jest.fn((url, options = {}) => {
       const target = String(url)
@@ -210,6 +220,31 @@ describe('account settings page', () => {
                 }
               }
             }
+          })
+        })
+      }
+
+      if (target === '/api/access-tokens' && method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ tokens: [], total: 0 })
+        })
+      }
+
+      if (target === '/api/access-tokens' && method === 'POST') {
+        const payload = JSON.parse(options.body)
+        accessTokenPayloads.push(payload)
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            id: 'access-token-1',
+            name: payload.name,
+            token: 'ac_pat_v1_one_time_plaintext',
+            token_hint: 'ac_pat_v1_...text',
+            last_used_at: null,
+            revoked_at: null,
+            created_at: '2026-08-28T10:00:00Z',
+            updated_at: '2026-08-28T10:00:00Z'
           })
         })
       }
@@ -437,5 +472,24 @@ describe('account settings page', () => {
         }
       }
     ])
+  })
+
+  test('administrator creates an API access token and sees plaintext once', async () => {
+    const page = await import('../../app/frontend/scripts/pages/account-settings.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+
+    expect(document.getElementById('accountAccessTokenCard').classList.contains('hidden')).toBe(false)
+    document.getElementById('accountAccessTokenName').value = 'Automation client'
+    document.getElementById('accountAccessTokenCreateForm').dispatchEvent(
+      new Event('submit', { bubbles: true, cancelable: true })
+    )
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    expect(accessTokenPayloads).toEqual([{ name: 'Automation client' }])
+    expect(document.getElementById('accountAccessTokenPlaintext').textContent).toBe('ac_pat_v1_one_time_plaintext')
+    expect(container.querySelector('[data-access-token-rotate]')).toBeNull()
+    expect(container.textContent).toContain('It will not be shown again.')
   })
 })

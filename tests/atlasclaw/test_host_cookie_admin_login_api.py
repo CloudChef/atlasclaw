@@ -8,6 +8,15 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from app.atlasclaw.db.orm import user_access_token as access_token_module
+
+
+def test_access_token_recognizes_only_v1_prefix() -> None:
+    """Route only the declared v1 token format to opaque-token authentication."""
+    assert access_token_module.is_user_access_token("ac_pat_v1_secret") is True
+    assert access_token_module.is_user_access_token("ac_pat_secret") is False
+    assert access_token_module.is_user_access_token("ac_pat_v2_secret") is False
+
 
 def _build_host_cookie_local_admin_config(tmp_path: Path, db_path: Path) -> dict:
     project_root = Path(__file__).resolve().parents[2]
@@ -249,6 +258,136 @@ def test_host_cookie_mode_admin_api_accepts_local_admin_jwt(tmp_path: Path, monk
             assert any(user["username"] == "admin" for user in body["users"])
     finally:
         config_module._config_manager = old_manager
+
+
+def test_admin_can_manage_and_authenticate_with_opaque_access_token(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Verify opaque tokens are one-time secrets, not JWTs, and revoke immediately."""
+    app, config_module, old_manager = _create_host_cookie_app(tmp_path, monkeypatch)
+    try:
+        with TestClient(app) as client:
+            login_response = client.post(
+                "/api/auth/local/login",
+                json={"username": "admin", "password": "Admin@123"},
+            )
+            assert login_response.status_code == 200
+            jwt_token = login_response.json()["token"]
+            jwt_headers = {"AtlasClaw-Authenticate": jwt_token}
+
+            blank_name_response = client.post(
+                "/api/access-tokens",
+                headers=jwt_headers,
+                json={"name": "   "},
+            )
+            assert blank_name_response.status_code == 422
+
+            create_response = client.post(
+                "/api/access-tokens",
+                headers=jwt_headers,
+                json={"name": "SmartCMP local test"},
+            )
+            assert create_response.status_code == 201
+            created = create_response.json()
+            access_token = created["token"]
+            assert access_token.startswith("ac_pat_v1_")
+            assert access_token.count(".") == 0
+            assert created["token_hint"].startswith("ac_pat_v1_...")
+
+            list_response = client.get("/api/access-tokens", headers=jwt_headers)
+            assert list_response.status_code == 200
+            listed = list_response.json()["tokens"]
+            assert listed[0]["id"] == created["id"]
+            assert "token" not in listed[0]
+            assert "token_digest" not in listed[0]
+
+            rejected_version_tokens = []
+            for prefix in ("ac_pat_", "ac_pat_v2_"):
+                monkeypatch.setattr(access_token_module, "ACCESS_TOKEN_PREFIX", prefix)
+                response = client.post(
+                    "/api/access-tokens",
+                    headers=jwt_headers,
+                    json={"name": f"Rejected {prefix} token"},
+                )
+                assert response.status_code == 201
+                rejected_version_tokens.append(response.json()["token"])
+            monkeypatch.setattr(
+                access_token_module,
+                "ACCESS_TOKEN_PREFIX",
+                "ac_pat_v1_",
+            )
+
+            api_headers = {"Authorization": f"Bearer {access_token}"}
+            me_response = client.get("/api/auth/me", headers=api_headers)
+            assert me_response.status_code == 200
+            assert me_response.json()["auth_type"] == "api_token"
+            assert me_response.json()["is_admin"] is True
+
+            token_management_responses = [
+                client.get("/api/access-tokens", headers=api_headers),
+                client.post(
+                    "/api/access-tokens",
+                    headers=api_headers,
+                    json={"name": "Token-created replacement"},
+                ),
+                client.delete(
+                    f"/api/access-tokens/{created['id']}",
+                    headers=api_headers,
+                ),
+            ]
+            assert all(response.status_code == 403 for response in token_management_responses)
+            assert all(
+                response.json()["detail"]
+                == "API tokens cannot access token management"
+                for response in token_management_responses
+            )
+
+            for rejected_token in rejected_version_tokens:
+                rejected_response = client.get(
+                    "/api/users",
+                    headers={"Authorization": f"Bearer {rejected_token}"},
+                )
+                assert rejected_response.status_code == 401
+
+            invalid_response = client.get(
+                "/api/users",
+                headers={"Authorization": "Bearer ac_pat_v1_invalid"},
+            )
+            assert invalid_response.status_code == 401
+
+            replacement_response = client.post(
+                "/api/access-tokens",
+                headers=jwt_headers,
+                json={"name": "Replacement integration token"},
+            )
+            assert replacement_response.status_code == 201
+            replacement_token = replacement_response.json()["token"]
+            replacement_id = replacement_response.json()["id"]
+            assert replacement_token != access_token
+            assert replacement_id != created["id"]
+            assert client.get("/api/users", headers=api_headers).status_code == 200
+            replacement_headers = {"Authorization": f"Bearer {replacement_token}"}
+            assert client.get("/api/users", headers=replacement_headers).status_code == 200
+
+            revoke_response = client.delete(
+                f"/api/access-tokens/{created['id']}",
+                headers=jwt_headers,
+            )
+            assert revoke_response.status_code == 200
+            assert revoke_response.json()["revoked_at"] is not None
+            assert client.get("/api/users", headers=api_headers).status_code == 401
+            assert client.get("/api/users", headers=replacement_headers).status_code == 200
+
+            revoke_replacement_response = client.delete(
+                f"/api/access-tokens/{replacement_id}",
+                headers=jwt_headers,
+            )
+            assert revoke_replacement_response.status_code == 200
+            assert client.get("/api/users", headers=replacement_headers).status_code == 401
+    finally:
+        config_module._config_manager = old_manager
+
 
 
 def test_host_cookie_mode_rejects_inactive_cookie_user(tmp_path: Path, monkeypatch) -> None:

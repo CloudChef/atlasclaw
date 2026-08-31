@@ -549,6 +549,26 @@ External auth providers resolve into DB-backed `UserModel` records instead of a 
 
 New external users receive the standard user role by default. Existing DB users keep their assigned roles and active state.
 
+### 2.5.1 Opaque Access Tokens (`api/access_token_routes.py`, `db/orm/user_access_token.py`)
+
+AtlasClaw access tokens are versioned, high-entropy, non-JWT bearer credentials for
+administrator-owned integrations. Send the one-time plaintext as
+`Authorization: Bearer <ac_pat_v1_...>`. Authentication resolves the current active
+owner and roles on every request and records `last_used_at`; the plaintext is not
+copied into runtime `UserInfo.raw_token`.
+
+| Endpoint | Non-API-token administrator behavior | API-token authentication |
+|---|---|---|
+| `POST /api/access-tokens` | Create token; plaintext returned exactly once | `403 Forbidden` |
+| `GET /api/access-tokens` | List owned non-secret metadata | `403 Forbidden` |
+| `DELETE /api/access-tokens/{token_id}` | Revoke an owned token immediately | `403 Forbidden` |
+
+Persistence stores a SHA-256 digest, safe display hint, owner, name, creation/use
+timestamps, and optional revocation timestamp. List responses expose neither digest
+nor plaintext. Rotation intentionally supports overlap: create a replacement through
+a permitted administrator session, deploy and verify it, then revoke the prior token. Revocation,
+owner deactivation, and role changes affect subsequent requests immediately.
+
 ### 2.6 Auth Registry (`auth/registry.py`)
 
 **Class: `AuthRegistry`** (class-level registry)

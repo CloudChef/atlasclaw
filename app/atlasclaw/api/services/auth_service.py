@@ -510,6 +510,38 @@ async def get_current_user_payload(request: Request) -> dict[str, Any]:
             "provider": "none",
         }
 
+    runtime_user = getattr(request.state, "user_info", None)
+    if isinstance(runtime_user, UserInfo) and runtime_user.auth_type == "api_token":
+        profile = await load_profile_snapshot(
+            user_id=runtime_user.user_id,
+            auth_type="api_token",
+            workspace_path=resolve_workspace_path(request),
+        )
+        db_manager = get_db_manager()
+        async with db_manager.get_session() as db_session:
+            authz = await resolve_authorization_context(db_session, runtime_user)
+        return {
+            "user_id": runtime_user.user_id,
+            "username": profile.get("username", runtime_user.user_id),
+            "display_name": profile.get("display_name", runtime_user.display_name),
+            "email": profile.get("email"),
+            "avatar_url": profile.get("avatar_url"),
+            "provider": "api_token",
+            "auth_type": "api_token",
+            "tenant_id": runtime_user.tenant_id,
+            "roles": authz.role_identifiers,
+            "role_identifiers": authz.role_identifiers,
+            "is_active": profile.get("is_active", True),
+            "created_at": profile.get("created_at"),
+            "last_login_at": profile.get("last_login_at"),
+            "is_admin": authz.is_admin,
+            "permissions": authz.permissions,
+            "metadata": {
+                "api_token_id": str(runtime_user.extra.get("api_token_id", "")),
+                "api_token_name": str(runtime_user.extra.get("api_token_name", "")),
+            },
+        }
+
     jwt_cfg = auth_config.jwt.expanded()
     token = extract_atlas_token_from_request(
         request,

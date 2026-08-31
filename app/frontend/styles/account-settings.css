@@ -493,6 +493,107 @@
   overflow: hidden;
 }
 
+.account-access-token-create {
+  display: flex;
+  align-items: end;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.account-access-token-create .account-field {
+  flex: 1;
+}
+
+.account-access-token-create .btn-primary {
+  min-height: 42px;
+  white-space: nowrap;
+}
+
+.account-access-token-secret {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(220px, 2fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+  padding: 14px 44px 14px 16px;
+  border: 1px solid rgba(245, 158, 11, 0.38);
+  border-radius: 14px;
+  background: #fffbeb;
+}
+
+.account-access-token-secret div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.account-access-token-secret strong {
+  color: #92400e;
+  font-size: 13px;
+}
+
+.account-access-token-secret span {
+  color: #a16207;
+  font-size: 12px;
+}
+
+.account-access-token-secret code {
+  overflow-x: auto;
+  padding: 9px 10px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.82);
+  color: #78350f;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.account-access-token-dismiss {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  border: none;
+  background: transparent;
+  color: #a16207;
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.account-access-token-table code {
+  color: #475569;
+  white-space: nowrap;
+}
+
+.account-access-token-revoked {
+  display: inline-flex;
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.account-access-token-action {
+  margin-left: 6px;
+  padding: 7px 9px;
+  border: 1px solid rgba(79, 70, 229, 0.25);
+  border-radius: 9px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.account-access-token-action.is-danger {
+  border-color: rgba(239, 68, 68, 0.28);
+  background: #fff1f2;
+  color: #be123c;
+}
+
 .account-provider-token-panel {
   min-height: 82px;
 }

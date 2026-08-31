@@ -180,6 +180,36 @@ class UserModel(Base):
         return f"<UserModel(id={self.id}, username={self.username})>"
 
 
+class UserAccessTokenModel(Base):
+    """Long-lived opaque API token bound to one AtlasClaw user.
+
+    Only a SHA-256 digest and a non-secret display hint are persisted. The
+    plaintext token is returned once when it is created.
+    """
+
+    __tablename__ = "user_access_tokens"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    user_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    token_digest: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    token_hint: Mapped[str] = mapped_column(String(32), nullable=False)
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return f"<UserAccessTokenModel(id={self.id}, user_id={self.user_id})>"
+
+
 class RoleModel(Base):
     """Role definition for permission management."""
 

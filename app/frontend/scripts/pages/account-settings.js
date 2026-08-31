@@ -13,6 +13,7 @@ import { showToast } from '../components/toast.js'
 import { checkAuth } from '../auth.js'
 import { buildAssetUrl } from '../config.js'
 import { createProviderUserTokenController } from '../provider-user-token-panel.js'
+import { createAccessTokenController } from '../access-token-panel.js'
 
 const ACCOUNT_UI_PREFS_KEY = 'atlasclaw_account_ui_preferences'
 const DEFAULT_UI_PREFS = {
@@ -29,6 +30,7 @@ let currentUiPrefs = { ...DEFAULT_UI_PREFS }
 let eventCleanupFns = []
 let isProfileEditing = false
 let providerTokenController = null
+let accessTokenController = null
 
 const PAGE_HTML = `
 <div class="account-settings-page">
@@ -168,6 +170,23 @@ const PAGE_HTML = `
           </div>
         </div>
         <div class="account-provider-token-panel" id="accountProviderTokenPanel"></div>
+      </article>
+
+      <article class="settings-card account-provider-token-card hidden" id="accountAccessTokenCard">
+        <div class="settings-card-header">
+          <div class="settings-card-icon provider-token-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="8" cy="15" r="4"></circle>
+              <path d="m11 12 9-9"></path>
+              <path d="m15 8 3 3"></path>
+            </svg>
+          </div>
+          <div>
+            <h2 data-i18n="account.accessTokensTitle">API Access Tokens</h2>
+            <p data-i18n="account.accessTokensDescription">Create long-lived tokens for this administrator to call Agent APIs.</p>
+          </div>
+        </div>
+        <div class="account-provider-token-panel" id="accountAccessTokenPanel"></div>
       </article>
 
       <article class="account-danger-zone">
@@ -594,10 +613,24 @@ async function loadProfile() {
   try {
     const profile = await fetchProfile()
     populateProfile(profile)
+    await ensureAccessTokenPanel(profile)
   } catch (error) {
     console.error('[AccountSettingsPage] Failed to load profile:', error)
     showToast(error.message || translateOrFallback('account.loadFailed', 'Failed to load account profile'), 'error')
   }
+}
+
+async function ensureAccessTokenPanel(user) {
+  const isAdmin = user?.is_admin === true || getAssignedRoleIdentifiers(user).includes('admin')
+  if (!isAdmin || accessTokenController || !containerRef) return
+
+  containerRef.querySelector('#accountAccessTokenCard')?.classList.remove('hidden')
+  accessTokenController = createAccessTokenController({
+    container: containerRef,
+    panelSelector: '#accountAccessTokenPanel'
+  })
+  accessTokenController.bind()
+  await accessTokenController.load()
 }
 
 function syncProfileDraft() {
@@ -818,6 +851,7 @@ export async function mount(container, { params, route } = {}) {
 
   currentUiPrefs = loadUiPreferences()
   providerTokenController = null
+  accessTokenController = null
 
   if (!document.getElementById('account-settings-page-css')) {
     const cssLink = document.createElement('link')
@@ -848,7 +882,8 @@ export async function mount(container, { params, route } = {}) {
   setupEventListeners()
   await Promise.all([
     loadProfile(),
-    providerTokenController.load()
+    providerTokenController.load(),
+    ensureAccessTokenPanel(currentAuthInfo)
   ])
 
   console.log('[AccountSettingsPage] Mounted')
@@ -860,6 +895,7 @@ export async function unmount() {
   eventCleanupFns.forEach(fn => fn())
   eventCleanupFns = []
   providerTokenController?.destroy()
+  accessTokenController?.destroy()
 
   document.getElementById('account-settings-page-css')?.remove()
 
@@ -868,6 +904,7 @@ export async function unmount() {
   currentUiPrefs = { ...DEFAULT_UI_PREFS }
   isProfileEditing = false
   providerTokenController = null
+  accessTokenController = null
   containerRef = null
 
   console.log('[AccountSettingsPage] Unmounted')

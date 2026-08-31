@@ -12,9 +12,9 @@ These schemas are used for:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StringConstraints, field_validator
 
 
 # ============== Agent Schemas ==============
@@ -216,6 +216,42 @@ class UserListResponse(BaseModel):
     """Schema for User list API response."""
 
     users: List[UserResponse]
+    total: int
+
+
+# ============== User Access Token Schemas ==============
+
+
+class UserAccessTokenCreate(BaseModel):
+    """Request schema for an administrator-owned opaque API token."""
+
+    name: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=100)]
+
+
+class UserAccessTokenResponse(BaseModel):
+    """Safe token metadata that never includes a token digest or plaintext."""
+
+    id: str
+    name: str
+    token_hint: str
+    last_used_at: Optional[datetime] = None
+    revoked_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class UserAccessTokenCreatedResponse(UserAccessTokenResponse):
+    """One-time token creation response containing plaintext."""
+
+    token: str
+
+
+class UserAccessTokenListResponse(BaseModel):
+    """List response containing only safe token metadata."""
+
+    tokens: List[UserAccessTokenResponse]
     total: int
 
 
