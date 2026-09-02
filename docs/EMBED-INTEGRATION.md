@@ -36,12 +36,12 @@ associated existing Skill.
 
 These are the only configurable fields. Core fixes the Agent to `main`, derives the Chat Session
 scope from `provider_type`, loads `assistant_context/routes.json` from that Provider package, and
-uses fixed bounded Context retention defaults. A missing `embed_integration` disables
+uses a fixed per-user Context capacity bound. A missing `embed_integration` disables
 context-aware embedding and preserves legacy behavior. An invalid Provider package or manifest
 fails startup; an unavailable configured instance fails closed when the page is resolved. The
 removed multi-profile `embed_integrations` key is rejected instead of silently disabling Context.
 
-Context snapshots are a bounded, TTL-controlled in-process store. Before enabling the integration, the
+Context snapshots are kept in a capacity-bounded in-process store. Before enabling the integration, the
 deployment owner must prove that AtlasClaw is single-process or that requests for one user/Chat
 Session use sticky routing. A non-sticky multi-process or multi-replica target is a deployment
 blocker for v1. Do not silently accept intermittent 404 responses and do not add Redis or database
@@ -51,7 +51,7 @@ Each floating iframe uses its bootstrap-validated nonce as an AtlasClaw-only `su
 resolving Context. This value separates latest-generation coordination for concurrent tabs or
 iframes; it is not an authentication or authorization credential and does not change the Host
 `PAGE_CHANGED` message. Snapshot capacity remains shared by owner. Independent
-per-surface generation tombstones are TTL-controlled and LRU-bounded, so Snapshot eviction cannot
+per-surface generation tombstones are LRU-bounded, so Snapshot eviction cannot
 revive an older completion and unsupported or failed resolves cannot grow coordination state
 without bound.
 
@@ -125,7 +125,7 @@ A resolver returns the minimal `ResolvedObject` and the `object_actions` generat
 Domain Skill builder used by normal Chat Tools. It cannot declare Tool names or replace Tool
 schemas, permissions, or confirmation behavior. Core validates the generic action contract,
 resolves the route's existing default Skill through the ordinary RBAC catalog, and freezes the
-object, default Skill metadata, and actions in the user/surface/generation/TTL-bound Context
+object, default Skill metadata, and actions in the user/surface/generation-bound Context
 snapshot.
 
 When the floating UI invokes an Agent prompt action, it submits the exact Context ID and generation

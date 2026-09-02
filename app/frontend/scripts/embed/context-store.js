@@ -62,7 +62,6 @@ export class EmbedContextStore {
       ? Object.freeze({
           generation,
           contextId,
-          expiresAt: payload.expires_at || null,
           object: Object.freeze({ ...object }),
           skill: payload.skill && typeof payload.skill === 'object'
             ? Object.freeze({ ...payload.skill })

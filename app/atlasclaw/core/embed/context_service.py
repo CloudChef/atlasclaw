@@ -9,7 +9,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -241,7 +241,6 @@ class EmbedContextService:
                 object=object_value,
                 object_actions=object_actions,
                 created_at=created_at,
-                expires_at=created_at + timedelta(seconds=integration.context_ttl_seconds),
             )
         except ValueError as exc:
             logger.warning(

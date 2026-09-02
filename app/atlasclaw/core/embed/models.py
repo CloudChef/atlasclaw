@@ -134,7 +134,6 @@ class ContextSnapshot(StrictEmbedModel):
     object: ResolvedObject
     object_actions: list[dict[str, Any]] = Field(default_factory=list, max_length=32)
     created_at: datetime
-    expires_at: datetime
 
 
 class MatchedRoute(StrictEmbedModel):

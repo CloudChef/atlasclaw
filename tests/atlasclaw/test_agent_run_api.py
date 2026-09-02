@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -403,7 +403,6 @@ def test_embed_run_keeps_page_default_soft_for_explicit_other_skill(tmp_path):
         skill_name="item",
         object=ResolvedObject(type="item", id="ITEM-7", name="Item 7"),
         created_at=now,
-        expires_at=now + timedelta(minutes=5),
     )
     ctx.embed_integration_registry = SimpleNamespace(get=lambda: integration)
     ctx.embed_context_store = SimpleNamespace(

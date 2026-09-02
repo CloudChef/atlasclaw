@@ -42,11 +42,6 @@ class LoadedEmbedIntegration:
         return self.config.provider_type
 
     @property
-    def context_ttl_seconds(self) -> int:
-        """Return the fixed in-memory Context lifetime."""
-        return 1800
-
-    @property
     def max_contexts_per_user(self) -> int:
         """Return the fixed per-user Context capacity."""
         return 128

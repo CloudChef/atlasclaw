@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -24,7 +24,6 @@ from app.atlasclaw.core.embed.models import ContextSnapshot, ResolvedObject, Rou
 from app.atlasclaw.core.embed.route_matcher import match_route, normalize_host_path
 from app.atlasclaw.core.embed.snapshot_store import (
     EmbedContextSnapshotStore,
-    SnapshotExpiredError,
     SnapshotGenerationError,
     SnapshotNotFoundError,
 )
@@ -71,7 +70,6 @@ def _snapshot(
     *,
     surface_id: str = _SURFACE_A,
     generation: int = 1,
-    expires_at: datetime | None = None,
 ) -> ContextSnapshot:
     now = datetime.now(timezone.utc)
     return ContextSnapshot(
@@ -87,7 +85,6 @@ def _snapshot(
         skill_description="Manage items.",
         object=ResolvedObject(type="item", id=context_id),
         created_at=now,
-        expires_at=expires_at or now + timedelta(minutes=5),
     )
 
 
@@ -278,7 +275,6 @@ tool_inspect_aliases:
         config=SimpleNamespace(provider_type="example", provider_instance="default"),
         agent_id="main",
         session_scope="example",
-        context_ttl_seconds=300,
         max_contexts_per_user=8,
         provider_root=provider_root,
     )
@@ -348,7 +344,6 @@ async def test_context_service_uses_fixed_server_owned_resolver_contract() -> No
         ),
         agent_id="main",
         session_scope="example",
-        context_ttl_seconds=300,
         max_contexts_per_user=8,
         provider_root=Path("/provider"),
     )
@@ -432,7 +427,6 @@ async def test_unauthorized_default_skill_degrades_context_to_unavailable() -> N
         config=SimpleNamespace(provider_type="example", provider_instance="default"),
         agent_id="main",
         session_scope="example",
-        context_ttl_seconds=300,
         max_contexts_per_user=8,
         provider_root=Path("/provider"),
     )
@@ -622,7 +616,7 @@ async def test_in_process_resolver_receives_only_request_cookie_credentials(
     }
 
 
-def test_snapshot_store_enforces_identity_generation_expiry_and_capacity() -> None:
+def test_snapshot_store_enforces_identity_generation_and_capacity() -> None:
     store = EmbedContextSnapshotStore()
     first = _snapshot("ctx-one")
     second = _snapshot("ctx-two", surface_id=_SURFACE_B)
@@ -635,19 +629,6 @@ def test_snapshot_store_enforces_identity_generation_expiry_and_capacity() -> No
         store.get("ctx-two", owner_user_id="bob", generation=1)
     with pytest.raises(SnapshotGenerationError):
         store.get("ctx-two", owner_user_id="alice", generation=2)
-
-    expired = _snapshot(
-        "ctx-expired",
-        expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
-    )
-    _put(store, expired)
-    with pytest.raises(SnapshotExpiredError):
-        store.get(
-            "ctx-expired",
-            owner_user_id="alice",
-            generation=1,
-        )
-
 
 def test_snapshot_store_isolates_surfaces_and_retains_stale_generation_tombstone() -> None:
     store = EmbedContextSnapshotStore()

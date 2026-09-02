@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime
 from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -83,7 +82,6 @@ class EmbedContextResolveResponse(BaseModel):
     generation: int
     status: Literal["resolved", "unsupported", "unavailable"]
     context_id: Optional[str] = None
-    expires_at: Optional[datetime] = None
     object: Optional[EmbedObjectResponse] = None
     skill: Optional[EmbedSkillResponse] = None
     object_actions: list[dict[str, Any]] = Field(default_factory=list)
@@ -104,7 +102,6 @@ def _build_context_resolve_response(
         generation=generation,
         status="resolved",
         context_id=snapshot.context_id,
-        expires_at=snapshot.expires_at,
         object=EmbedObjectResponse(**snapshot.object.model_dump(exclude={"attributes"})),
         skill=EmbedSkillResponse(
             ref=snapshot.skill_ref,
@@ -240,7 +237,6 @@ def register_embed_routes(router: APIRouter) -> None:
             generation=request.generation,
             context_id=None,
             max_contexts_per_user=integration.max_contexts_per_user,
-            state_ttl_seconds=integration.context_ttl_seconds,
         )
         if not generation_registered:
             return _build_context_resolve_response(

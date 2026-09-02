@@ -15,7 +15,6 @@ from ..agent.runner_tool.runner_execution_payload import build_no_runtime_capabi
 from ..agent.selected_capability import SELECTED_CAPABILITY_KEY
 from ..session.context import SessionKey
 from ..core.embed.snapshot_store import (
-    SnapshotExpiredError,
     SnapshotGenerationError,
     SnapshotNotFoundError,
 )
@@ -243,8 +242,6 @@ def register_agent_routes(router: APIRouter) -> None:
                     owner_user_id=user_info.user_id,
                     generation=int(embed_generation),
                 )
-            except SnapshotExpiredError as exc:
-                raise HTTPException(status_code=status.HTTP_410_GONE, detail=str(exc)) from exc
             except SnapshotGenerationError as exc:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
             except (SnapshotNotFoundError, TypeError, ValueError) as exc:

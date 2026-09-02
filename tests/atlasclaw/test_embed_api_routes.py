@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -85,7 +85,6 @@ def test_context_response_distinguishes_all_resolution_states() -> None:
             }
         ],
         created_at=now,
-        expires_at=now + timedelta(minutes=5),
     )
 
     unsupported = _build_context_resolve_response(3, EmbedContextResolution(matched=False))
@@ -140,7 +139,7 @@ async def test_rejected_generation_skips_provider_resolution(monkeypatch) -> Non
     )
     resolver = AsyncMock()
     monkeypatch.setattr(EmbedContextService, "resolve", resolver)
-    integration = SimpleNamespace(max_contexts_per_user=8, context_ttl_seconds=300)
+    integration = SimpleNamespace(max_contexts_per_user=8)
     ctx = SimpleNamespace(
         embed_context_store=SimpleNamespace(mark_latest=Mock(return_value=False)),
         embed_integration_registry=SimpleNamespace(get=lambda: integration),
