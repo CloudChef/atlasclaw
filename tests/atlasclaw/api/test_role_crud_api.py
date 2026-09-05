@@ -372,7 +372,7 @@ class TestRoleCRUDAPI:
                     for entry in user_role['permissions']['providers']['provider_permissions']
                     if entry['allowed'] is True
                 }
-                assert provider_keys == set()
+                assert provider_keys == {('jira', 'dev'), ('smartcmp', 'default')}
             finally:
                 if manager is not None:
                     _cleanup_manager(manager)
@@ -868,13 +868,14 @@ class TestRoleCRUDAPI:
         refreshed_user_role = next(
             role for role in refreshed_roles_response.json()['roles'] if role['identifier'] == 'user'
         )
-        assert refreshed_user_role['permissions']['providers']['provider_permissions'] == [
-            {
-                'provider_type': 'smartcmp',
-                'instance_name': 'default',
-                'allowed': False,
-            },
-        ]
+        refreshed_provider_permissions = {
+            (entry['provider_type'], entry['instance_name']): entry['allowed']
+            for entry in refreshed_user_role['permissions']['providers']['provider_permissions']
+        }
+        assert refreshed_provider_permissions == {
+            ('smartcmp', 'default'): False,
+            ('jira', 'dev'): True,
+        }
         assert refreshed_user_role['permissions']['skills']['skill_permissions'] == [
             {
                 'skill_id': 'echo-skill',

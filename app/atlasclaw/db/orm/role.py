@@ -451,6 +451,17 @@ class RoleService:
                             module_id,
                             target_permissions[module_id],
                         )
+                    if identifier == "user":
+                        provider_permissions = target_permissions["providers"]["provider_permissions"]
+                        provider_keys = {
+                            (entry["provider_type"], entry["instance_name"])
+                            for entry in provider_permissions
+                        }
+                        provider_permissions.extend(
+                            entry
+                            for entry in normalized_definition_permissions["providers"]["provider_permissions"]
+                            if (entry["provider_type"], entry["instance_name"]) not in provider_keys
+                        )
                 else:
                     target_permissions = normalized_current_permissions
                 if current.is_builtin and (
