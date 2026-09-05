@@ -10,8 +10,9 @@ import json
 import logging
 import re
 from typing import Any, Optional
+from urllib.parse import urlparse
 
-from pydantic_ai import ToolOutput
+from pydantic_ai import NativeOutput, ToolOutput
 
 from app.atlasclaw.agent.prompt_sections import serialize_untrusted_prompt_data
 from app.atlasclaw.agent.runner_tool.runner_agent_override import resolve_override_tools
@@ -37,6 +38,12 @@ from app.atlasclaw.core.deps import SkillDeps
 
 
 logger = logging.getLogger(__name__)
+
+_QWEN_NATIVE_PLANNER_PROVIDERS = {"openai", "openrouter"}
+_QWEN_NATIVE_PLANNER_MODEL_PATTERN = re.compile(
+    r"(?:^|/)qwen3\.\d+-flash(?:-\d{8})?$"
+)
+
 
 class RunnerToolGateModelMixin:
     """Resolve model-assisted capability routing and tool-intent decisions."""
@@ -167,10 +174,39 @@ class RunnerToolGateModelMixin:
         )
         selected_provider = str(getattr(selected_token, "provider", "") or "").strip().lower()
         selected_model = str(getattr(selected_token, "model", "") or "").strip().lower()
-        if selected_provider == "openrouter" and selected_model.startswith("qwen"):
+        selected_base_url = str(
+            getattr(selected_token, "base_url", "") or ""
+        ).strip().lower()
+        uses_openrouter_api = selected_provider == "openrouter" or (
+            selected_provider == "openai"
+            and urlparse(selected_base_url).hostname == "openrouter.ai"
+        )
+        if uses_openrouter_api and selected_model.startswith("qwen"):
             model_settings["extra_body"] = {"reasoning": {"effort": "none"}}
         elif selected_provider == "qwen":
             model_settings["extra_body"] = {"enable_thinking": False}
+        output_description = (
+            "Return the validated route and execution mode for the current "
+            "conversation turn. This internal output does not execute a runtime tool."
+        )
+        # These endpoints support strict JSON Schema but reject the forced tool
+        # selection that ToolOutput uses for an internal structured response.
+        if selected_provider in _QWEN_NATIVE_PLANNER_PROVIDERS and (
+            _QWEN_NATIVE_PLANNER_MODEL_PATTERN.search(selected_model)
+        ):
+            planner_output_type = NativeOutput(
+                ConversationTurnPlan,
+                name="conversation_turn_plan",
+                description=output_description,
+                strict=True,
+            )
+        else:
+            planner_output_type = ToolOutput(
+                ConversationTurnPlan,
+                name="conversation_turn_plan",
+                description=output_description,
+                max_retries=0,
+            )
         try:
             structured_output = await self._run_single_with_optional_override(
                 agent=agent,
@@ -179,15 +215,7 @@ class RunnerToolGateModelMixin:
                 system_prompt=planner_prompt,
                 purpose="conversation_turn_planning",
                 allowed_tool_names=[],
-                output_type=ToolOutput(
-                    ConversationTurnPlan,
-                    name="conversation_turn_plan",
-                    description=(
-                        "Return the validated route and execution mode for the current "
-                        "conversation turn. This internal output does not execute a runtime tool."
-                    ),
-                    max_retries=0,
-                ),
+                output_type=planner_output_type,
                 model_settings=model_settings,
             )
         except Exception as exc:
@@ -903,7 +931,10 @@ class RunnerToolGateModelMixin:
             run_kwargs: dict[str, Any] = {"deps": deps}
             if output_type is not None:
                 run_kwargs["output_type"] = output_type
-                run_kwargs["retries"] = 0
+                # Qwen Flash can occasionally return an invalid first native JSON
+                # response; one schema-guided correction keeps the fallback scoped
+                # to native structured output without retrying existing tool output.
+                run_kwargs["retries"] = 1 if isinstance(output_type, NativeOutput) else 0
             if model_settings is not None:
                 run_kwargs["model_settings"] = dict(model_settings)
             if hasattr(override_cm, "__aenter__"):

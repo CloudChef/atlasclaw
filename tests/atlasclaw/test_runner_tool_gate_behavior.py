@@ -4,11 +4,13 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import nullcontext
 import json
 import time
 from types import SimpleNamespace
 
 import pytest
+from pydantic_ai import NativeOutput, ToolOutput
 
 from app.atlasclaw.agent.runner import AgentRunner
 from app.atlasclaw.agent.runner_tool import runner_execution_prepare as prepare_module
@@ -550,6 +552,124 @@ def test_continue_active_targets_continue_or_switch_within_authorized_scope() ->
     assert switched.target_capability_ids == ["provider_skill:primary.report"]
     assert rejected is None
     assert ambiguous is None
+
+
+@pytest.mark.parametrize(
+    ("provider", "model", "base_url", "expected_output_type"),
+    [
+        ("openrouter", "qwen/qwen3.8-flash", "", NativeOutput),
+        ("openrouter", "qwen/qwen3.8-flash-20260826", "", NativeOutput),
+        ("openrouter", "qwen/qwen3.9-flash", "", NativeOutput),
+        ("openrouter", "qwen/qwen3", "", ToolOutput),
+        ("openrouter", "qwen/qwen3.6-plus", "", ToolOutput),
+        (
+            "openai",
+            "qwen/qwen3.8-flash",
+            "https://openrouter.ai/api/v1",
+            NativeOutput,
+        ),
+        (
+            "openai",
+            "qwen/qwen3.8-flash",
+            "https://compatible.example/v1",
+            NativeOutput,
+        ),
+        ("qwen", "qwen/qwen3.8-flash", "", ToolOutput),
+    ],
+)
+def test_conversation_planner_uses_native_output_only_for_qwen3_flash_family(
+    provider: str,
+    model: str,
+    base_url: str,
+    expected_output_type: type,
+) -> None:
+    """Use strict JSON Schema only where forced tool choice is unsupported."""
+
+    runner = _GateRunner()
+    runner.token_policy = SimpleNamespace(
+        get_session_token=lambda session_key: SimpleNamespace(
+            provider=provider,
+            model=model,
+            base_url=base_url,
+        )
+    )
+    captured: dict = {}
+
+    async def _run_single_with_optional_override(**kwargs):
+        captured.update(kwargs)
+        return ConversationTurnPlan(
+            route=ConversationTurnRoute.ORDINARY,
+            action=ConversationTurnAction.RESPOND,
+            reason="test",
+        )
+
+    runner._run_single_with_optional_override = _run_single_with_optional_override
+    result = asyncio.run(
+        runner._plan_conversation_turn_with_model(
+            agent=object(),
+            deps=SkillDeps(session_key="planner-output-session", channel="api", extra={}),
+            user_message="hello",
+            recent_history=[],
+            capability_index=[],
+        )
+    )
+
+    assert result is not None
+    assert isinstance(captured["output_type"], expected_output_type)
+    assert captured["allowed_tool_names"] == []
+    expected_model_settings = {"thinking": False}
+    if (
+        provider == "openrouter"
+        or provider == "openai" and base_url.startswith("https://openrouter.ai/")
+    ) and model.startswith("qwen"):
+        expected_model_settings["extra_body"] = {"reasoning": {"effort": "none"}}
+    elif provider == "qwen":
+        expected_model_settings["extra_body"] = {"enable_thinking": False}
+    assert captured["model_settings"] == expected_model_settings
+    if isinstance(captured["output_type"], NativeOutput):
+        assert captured["output_type"].strict is True
+
+
+@pytest.mark.parametrize(
+    ("output_type", "expected_retries"),
+    [
+        (NativeOutput(ConversationTurnPlan, strict=True), 1),
+        (ToolOutput(ConversationTurnPlan), 0),
+    ],
+)
+def test_single_model_pass_retries_only_native_structured_output(
+    output_type,
+    expected_retries: int,
+) -> None:
+    """Allow one schema correction without changing existing tool-output behavior."""
+
+    captured: dict = {}
+
+    class _Agent:
+        _function_toolset = SimpleNamespace(tools={})
+
+        @staticmethod
+        def override(**kwargs):
+            return nullcontext()
+
+        @staticmethod
+        async def run(user_message, **kwargs):
+            captured.update(kwargs)
+            return SimpleNamespace(output="ok")
+
+    result = asyncio.run(
+        _GateRunner()._run_single_with_optional_override(
+            agent=_Agent(),
+            user_message="hello",
+            deps=SkillDeps(session_key="native-retry-session", channel="api", extra={}),
+            system_prompt="Return structured output.",
+            allowed_tool_names=[],
+            output_type=output_type,
+        )
+    )
+
+    assert result == "ok"
+    assert captured["retries"] == expected_retries
 
 
 def test_conversation_planner_defers_required_input_handling_to_active_skill() -> None:
