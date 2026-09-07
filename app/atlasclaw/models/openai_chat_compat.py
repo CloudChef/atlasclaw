@@ -11,6 +11,7 @@ from typing import Any, Optional
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import ModelRequestParameters
 from pydantic_ai.models.openai import OpenAIChatModel, OpenAIChatModelSettings
+from pydantic_ai.settings import ModelSettings
 
 
 def requires_single_leading_system_message(
@@ -88,8 +89,14 @@ class QwenVllmOpenAIChatModel(OpenAIChatModel):
         self,
         messages: Sequence[ModelMessage],
         model_request_parameters: ModelRequestParameters,
+        *,
+        model_settings: ModelSettings | None = None,
     ) -> list[Any]:
-        mapped_messages = await super()._map_messages(messages, model_request_parameters)
+        mapped_messages = await super()._map_messages(
+            messages,
+            model_request_parameters,
+            model_settings=model_settings,
+        )
         return normalize_openai_chat_system_messages(mapped_messages)
 
 
