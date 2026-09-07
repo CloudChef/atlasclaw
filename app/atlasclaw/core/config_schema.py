@@ -371,6 +371,13 @@ class AgentDefaultsConfig(BaseModel):
     timeout_seconds: int = Field(default=600, ge=1, description="Execution timeout in seconds")
     max_concurrent: int = Field(default=10, ge=1, description="Maximum concurrency")
     max_tool_calls: int = Field(default=50, ge=1, description="Maximum tool calls per run")
+    response_language: Optional[str] = Field(
+        default=None,
+        min_length=2,
+        max_length=35,
+        pattern=r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*$",
+        description="Optional global response locale with a two- or three-letter language code",
+    )
     prompt_mode: PromptMode = PromptMode.FULL
     bootstrap_max_chars: int = Field(default=20000, description="Maximum Bootstrap file size in characters")
     block_streaming_default: bool = False

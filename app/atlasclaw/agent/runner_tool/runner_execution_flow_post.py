@@ -9,7 +9,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Optional
 from urllib.parse import parse_qs, unquote, urlparse
 
 from app.atlasclaw.agent.plaintext_tool_calls import looks_like_plaintext_tool_call_attempt
@@ -460,6 +460,7 @@ class RunnerExecutionFlowPostMixin:
         workflow_system_prompt: str,
         deps: Any,
         agent: Any,
+        message_history: Optional[list[dict[str, Any]]] = None,
     ) -> str:
         payload = build_direct_answer_recovery_payload(
             user_message=user_message,
@@ -475,6 +476,7 @@ class RunnerExecutionFlowPostMixin:
             system_prompt=payload["system_prompt"],
             agent=agent,
             allowed_tool_names=[],
+            message_history=message_history,
         )
         normalized = str(raw_output or "").strip()
         if not normalized or normalized.startswith("[Error:"):
@@ -625,6 +627,7 @@ class RunnerExecutionFlowPostMixin:
         start_index: int,
         deps: Any,
         agent: Any,
+        message_history: Optional[list[dict[str, Any]]] = None,
     ) -> str:
         tool_results = self._collect_recent_tool_result_records(
             final_messages=final_messages,
@@ -651,6 +654,7 @@ class RunnerExecutionFlowPostMixin:
             system_prompt=payload["system_prompt"],
             agent=agent,
             allowed_tool_names=[],
+            message_history=message_history,
         )
         normalized = str(raw_output or "").strip()
         if not normalized or normalized.startswith("[Error:"):
@@ -1032,6 +1036,9 @@ class RunnerExecutionFlowPostMixin:
                     workflow_system_prompt=system_prompt if authorized_workflow_recovery else "",
                     deps=deps,
                     agent=state.get("runtime_agent") or getattr(self, "agent", None),
+                    message_history=(
+                        state.get("runtime_message_history", state.get("message_history")) or []
+                    ),
                 )
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning("direct_answer_recovery failed: %s", exc)
@@ -1087,6 +1094,9 @@ class RunnerExecutionFlowPostMixin:
                     start_index=persist_run_output_start_index,
                     deps=deps,
                     agent=state.get("runtime_agent") or getattr(self, "agent", None),
+                    message_history=(
+                        state.get("runtime_message_history", state.get("message_history")) or []
+                    ),
                 )
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.warning("lookup_dump_recovery failed: %s", exc)
@@ -1298,7 +1308,7 @@ class RunnerExecutionFlowPostMixin:
                             system_prompt=(
                                 "You are the assistant. The runtime could not execute the "
                                 "tool-backed operation requested in this turn. Write a concise "
-                                "final answer in the user's language. Use only the structured "
+                                "final answer. Use only the structured "
                                 "facts. State clearly that no action was executed. Follow "
                                 "the structured availability facts without exposing internal status "
                                 "names. If matching_tool_available is true, explain that the matching "
@@ -1311,6 +1321,9 @@ class RunnerExecutionFlowPostMixin:
                             ),
                             agent=state.get("runtime_agent") or getattr(self, "agent", None),
                             allowed_tool_names=[],
+                            message_history=(
+                                state.get("runtime_message_history", state.get("message_history")) or []
+                            ),
                         )
                         recovery_answer = str(raw_output or "").strip()
                         looks_like_tool_call = self._looks_like_plaintext_tool_call_attempt(

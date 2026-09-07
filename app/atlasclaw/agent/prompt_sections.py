@@ -8,10 +8,22 @@ from __future__ import annotations
 import json
 import platform
 from datetime import datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Optional
 
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import sanitize_workflow_only_text
+
+
+_RESPONSE_LANGUAGE_TEMPLATE_PATH = (
+    Path(__file__).resolve().parents[1] / "templates" / "prompts" / "response_language.json"
+)
+
+
+@lru_cache(maxsize=1)
+def _load_response_language_template(path: Path) -> dict[str, list[str]]:
+    """Load the shared language prompt resource once per process."""
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def build_standard_skill_runtime_policy(target_md_skill: dict[str, Any]) -> list[str]:
@@ -438,7 +450,7 @@ def build_tool_policy(
                 "that no provider, skill, or tool is available to perform or verify the request."
             )
             lines.append(
-                "For that unavailable-capability answer, use the user's language and keep it "
+                "For that unavailable-capability answer, keep it "
                 "to one concise sentence. It must explicitly include the runtime words "
                 "`provider`, `skill`, and `tool`, and say AtlasClaw cannot perform or verify "
                 "the requested operation."
@@ -548,15 +560,25 @@ Please follow these safety guidelines:
 - Respect user data privacy"""
 
 
-def build_response_language() -> str:
-    """Build the always-on response language section."""
-    return """## Response Language
-
-Use the language explicitly requested by the user. If no response language is requested, use the dominant language of the current user message.
-
-Apply this to direct replies, tool-backed workflows, markdown-skill workflows, previews, confirmations, and follow-up questions.
-
-Do not translate code, JSON keys, API field names, provider names, skill names, tool names, catalog names, or quoted labels unless the user asks."""
+def build_response_language(
+    response_language: Optional[str] = None,
+    ui_locale: str = "",
+) -> str:
+    """Render the shared policy with optional global and request locale values."""
+    configured_language = str(response_language or "").strip()
+    template = _load_response_language_template(_RESPONSE_LANGUAGE_TEMPLATE_PATH)
+    lines = list(template["policy"])
+    if configured_language:
+        lines.extend(
+            line.format(response_language=configured_language)
+            for line in template["global_default"]
+        )
+    if ui_locale:
+        lines.extend(
+            line.format(ui_locale=ui_locale) for line in template["request_locale"]
+        )
+    lines.extend(template["scope"])
+    return "\n".join(lines)
 
 
 def build_skills_listing(skills: list[dict]) -> str:

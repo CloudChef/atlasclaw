@@ -51,6 +51,7 @@ class SandboxConfig:
 class PromptBuilderConfig:
     """PromptBuilder configuration"""
     mode: PromptMode = PromptMode.FULL
+    response_language: Optional[str] = None
     bootstrap_max_chars: int = 20000
     bootstrap_total_max_chars: int = 40000
     workspace_path: str = ""
@@ -135,6 +136,7 @@ class PromptBuilder:
         current_follow_up_context: Optional[str] = None,
         current_host_page_context: Optional[dict] = None,
         memory_available: bool = False,
+        ui_locale: str = "",
     ) -> str:
         """
         Build the full system prompt for the current run.
@@ -177,7 +179,7 @@ class PromptBuilder:
         
         # 3. Safety section
         parts.append(self._build_safety())
-        parts.append(self._build_response_language())
+        parts.append(self._build_response_language(ui_locale=ui_locale))
         if memory_available:
             parts.append(self._build_memory_behavior())
         
@@ -291,8 +293,11 @@ class PromptBuilder:
     def _build_safety(self) -> str:
         return prompt_sections.build_safety()
 
-    def _build_response_language(self) -> str:
-        return prompt_sections.build_response_language()
+    def _build_response_language(self, *, ui_locale: str = "") -> str:
+        return prompt_sections.build_response_language(
+            response_language=self.config.response_language,
+            ui_locale=ui_locale,
+        )
 
     def _build_memory_behavior(self) -> str:
         return prompt_sections.build_memory_behavior()

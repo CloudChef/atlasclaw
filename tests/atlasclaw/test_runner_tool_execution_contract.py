@@ -407,13 +407,14 @@ class _PostRunner(
             or getattr(decision, "needs_grounded_verification", False)
         )
 
-    async def run_single(self, user_message, deps, *, system_prompt=None, agent=None, allowed_tool_names=None):
+    async def run_single(self, user_message, deps, *, system_prompt=None, agent=None, allowed_tool_names=None, message_history=None):
         self.unsupported_calls.append(
             {
                 "user_message": user_message,
                 "system_prompt": system_prompt,
                 "agent": agent,
                 "allowed_tool_names": allowed_tool_names,
+                "message_history": message_history,
             }
         )
         return self.unsupported_answer
@@ -721,6 +722,7 @@ async def test_tool_required_turn_without_answer_uses_safe_fallback() -> None:
     state = {
         "start_time": 0.0,
         "session_key": "s-1",
+        "runtime_message_history": [{"role": "user", "content": "Please reply in German for this conversation."}],
         "session_manager": _SessionManager(),
         "session": SimpleNamespace(title=""),
         "run_id": "run-1",
@@ -779,6 +781,9 @@ async def test_tool_required_turn_without_answer_uses_safe_fallback() -> None:
     assert len(answered_states) == 1
     assert "No action was executed" in assistant_text
     assert len(runner.unsupported_calls) == 1
+    assert runner.unsupported_calls[0]["message_history"] == [
+        {"role": "user", "content": "Please reply in German for this conversation."}
+    ]
     assert "matching_tool_available_but_not_executed" not in assistant_text
     assert "matching_tool_available_but_not_executed" not in (
         runner.unsupported_calls[0]["system_prompt"] or ""
@@ -3072,6 +3077,7 @@ async def test_direct_answer_turn_replaces_tool_call_markup_with_recovery_answer
     state = {
         "start_time": 0.0,
         "session_key": "s-direct-answer",
+        "runtime_message_history": [{"role": "user", "content": "Please reply in German for this conversation."}],
         "session_manager": session_manager,
         "session": SimpleNamespace(title=""),
         "run_id": "run-direct-answer",
@@ -3134,6 +3140,9 @@ async def test_direct_answer_turn_replaces_tool_call_markup_with_recovery_answer
 
     assert answered_states
     assert runner.direct_answer_recovery_calls
+    assert runner.direct_answer_recovery_calls[0]["message_history"] == [
+        {"role": "user", "content": "Please reply in German for this conversation."}
+    ]
     assert any("崇明岛" in chunk for chunk in assistant_chunks)
     assert all("<tool_call>" not in chunk for chunk in assistant_chunks)
     await runner._await_background_post_success_tasks()
@@ -4702,6 +4711,7 @@ async def test_lookup_dump_recovery_rewrites_buffered_lookup_output_before_emit(
     state = {
         "start_time": 0.0,
         "session_key": "s-lookup",
+        "runtime_message_history": [{"role": "user", "content": "Please reply in German for this conversation."}],
         "session_manager": _SessionManager(),
         "session": SimpleNamespace(title=""),
         "run_id": "run-lookup",
@@ -4766,6 +4776,9 @@ async def test_lookup_dump_recovery_rewrites_buffered_lookup_output_before_emit(
 
     assert assistant_events == [runner.lookup_dump_recovery_answer]
     assert runner.lookup_dump_recovery_calls
+    assert runner.lookup_dump_recovery_calls[0]["message_history"] == [
+        {"role": "user", "content": "Please reply in German for this conversation."}
+    ]
     assert state["session_manager"].persisted_messages[-1]["content"] == runner.lookup_dump_recovery_answer
 
 

@@ -179,6 +179,55 @@ class TestPromptBuilder:
         builder = PromptBuilder(config)
         
         assert builder is not None
+
+    def test_builder_keeps_configured_response_language(self):
+        """PromptBuilder retains the global response language for prompt rendering."""
+        builder = PromptBuilder(
+            PromptBuilderConfig(workspace_path=".", response_language="zh-CN")
+        )
+
+        assert builder.config.response_language == "zh-CN"
+
+    @pytest.mark.parametrize("mode", [PromptMode.FULL, PromptMode.MINIMAL])
+    def test_configured_response_language_is_default_but_user_override_wins(self, tmp_path, mode):
+        """Global language is the default without blocking an explicit user choice."""
+        builder = PromptBuilder(
+            PromptBuilderConfig(
+                workspace_path=str(tmp_path),
+                response_language="zh-CN",
+                mode=mode,
+            )
+        )
+
+        prompt = builder.build(ui_locale="en-US")
+
+        assert "Global default response language: `zh-CN`" in prompt
+        assert "Always use the locale or response language explicitly requested by the user" in prompt
+        assert "Request UI locale: `en-US`" in prompt
+        assert "The language used to write a message is not, by itself, an explicit request to change the response language." in prompt
+        assert "otherwise use the global default, then the request UI locale." in prompt
+        assert "within the requested scope" in prompt
+
+    @pytest.mark.parametrize("mode", [PromptMode.FULL, PromptMode.MINIMAL])
+    def test_response_language_uses_ui_locale_without_global_default(self, tmp_path, mode):
+        builder = PromptBuilder(PromptBuilderConfig(workspace_path=str(tmp_path), mode=mode))
+
+        prompt = builder.build(ui_locale="ja-JP")
+
+        assert "Request UI locale: `ja-JP`" in prompt
+        assert "Always use the locale or response language explicitly requested by the user" in prompt
+        assert "Global default response language:" not in prompt
+        assert "dominant language of the current user message" not in prompt
+
+    def test_response_language_does_not_invent_default_when_all_locales_missing(self, tmp_path):
+        builder = PromptBuilder(PromptBuilderConfig(workspace_path=str(tmp_path)))
+
+        prompt = builder.build()
+
+        assert "Always use the locale or response language explicitly requested by the user" in prompt
+        assert "Global default response language:" not in prompt
+        assert "Request UI locale:" not in prompt
+        assert "If language is still indeterminate, use English." not in prompt
         
     def test_build_basic_prompt(self):
         """测试构建基础提示词"""

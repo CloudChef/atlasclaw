@@ -57,6 +57,12 @@ Singleton configuration manager with a 6-level priority chain.
 | `get` | `(key: str, default: Any) -> Any` | Get nested config value by dotted key |
 | `load_user_config` | `(user_id: str) -> dict` | Load per-user configuration from `<workspace>/users/<user_id>/atlasclaw.json` |
 
+Invalid `agent_defaults.response_language` values propagate Pydantic `ValidationError`
+from `load()`/`reload()` instead of replacing the entire configuration with defaults.
+This applies after file, environment and runtime overrides are merged. Correct the
+locale, omit it or use `null` before retrying; unrelated workspace, authentication,
+model and concurrency settings are not silently reset by a language error.
+
 **Properties**:
 - `config: AtlasClawConfig` -Lazily loaded configuration object
 - `resolved_config_path: Optional[Path]` -Absolute path of the loaded config file
@@ -769,6 +775,7 @@ capabilities can satisfy required grounding, and whether the final answer must b
 | Field | Default | Description |
 |---|---|---|
 | `mode` | `PromptMode.FULL` | Prompt construction mode |
+| `response_language` | `None` | Optional concrete global response locale, supplied by `agent_defaults.response_language` |
 | `bootstrap_max_chars` | `20000` | Max bootstrap file size |
 | `workspace_path` | -| Workspace root path |
 | `user_timezone` | `None` | User timezone |
@@ -785,6 +792,36 @@ capabilities can satisfy required grounding, and whether the final answer must b
 | Method | Signature | Description |
 |---|---|---|
 | `build` | `(session, skills, tools) -> str` | Build complete system prompt from the filtered capability index and preserved context |
+
+**Response Language**:
+
+The same policy applies to full, minimal, explicit-tool execution and model-backed recovery prompts:
+
+1. A locale or response language explicitly requested by the user in the conversation always wins, for the scope the user specifies.
+2. Otherwise, use the concrete global `agent_defaults.response_language`, when configured.
+3. Otherwise, use the validated request `context.ui_locale`.
+
+The global locale is optional: omit it or set it to `null` to leave it unset. Concrete locale values use a two- or three-letter language code with optional subtags (for example `zh-CN`, `en-US`, `zh-Hans-CN`), up to 35 characters. Language-selection mode names are not accepted. A valid request locale is included in the prompt even when a global default exists, with its lower priority stated explicitly. If neither locale is supplied, the policy does not invent a default language.
+
+This policy overrides bootstrap, memory and skill language defaults. It does not translate code, structured keys or provider/tool/skill identifiers unless the user asks.
+
+The policy text is maintained in `app/atlasclaw/templates/prompts/response_language.json`,
+not in Python string literals. Its `policy` and `scope` sections always render;
+`global_default` and `request_locale` render only when their locale is supplied,
+using the `{response_language}` and `{ui_locale}` placeholders respectively.
+The resource is cached per process: restart the service after editing it, and include
+the resource when packaging or applying a hotfix. No language-selection mode is added.
+
+All model-backed direct-answer, lookup-dump and unsupported-tool recovery calls
+inject this shared policy through `run_single` and retain the existing bounded
+conversation history, so earlier explicit user language requests remain visible.
+If the supplied workflow prompt already contains the complete current language
+policy, recovery reuses it instead of appending a duplicate. A matching heading
+alone is not enough to skip injection. The template states precedence once,
+distinguishes message language from explicit language intent, includes available
+locale values, and retains the code/identifier translation rule.
+Explicit language intent is still interpreted by the model, not a keyword parser.
+Static fail-closed messages returned without a model call are not translated by this policy.
 
 **Prompt Surface**:
 - `Available Capabilities` is rendered from the filtered capability index, not the raw registry.

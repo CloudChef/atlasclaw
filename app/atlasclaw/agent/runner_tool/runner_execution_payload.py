@@ -9,6 +9,8 @@ import json
 import re
 from typing import Any, Optional
 
+from app.atlasclaw.agent.prompt_sections import build_response_language
+from app.atlasclaw.agent.runner_prompt_context import collect_ui_locale
 from app.atlasclaw.agent.runner_tool.runner_agent_override import resolve_override_tools
 from app.atlasclaw.core.deps import SkillDeps
 
@@ -419,7 +421,7 @@ def build_direct_answer_recovery_payload(
             "If the user asks for an action or fact that depends on an external provider, "
             "private system, or unavailable capability, say you cannot perform or verify it "
             "because no provider, skill, or tool is available.\n"
-            "For that unavailable-capability answer, use the user's language and keep it "
+            "For that unavailable-capability answer, keep it "
             "to one concise sentence. It must explicitly include the runtime words "
             "`provider`, `skill`, and `tool`, and say AtlasClaw cannot perform or verify "
             "the requested operation.\n"
@@ -719,11 +721,19 @@ class RunnerExecutionPayloadMixin:
         system_prompt: Optional[str] = None,
         agent: Optional[Any] = None,
         allowed_tool_names: Optional[list[str]] = None,
+        message_history: Optional[list[dict[str, Any]]] = None,
     ) -> str:
-        """Run a single non-streaming agent call."""
+        """Run a recovery call with the shared language policy and conversation context."""
         runtime_agent = agent or getattr(self, "agent", None)
         if runtime_agent is None:
             return "[Error: no runtime agent available]"
+        prompt_config = getattr(getattr(self, "prompt_builder", None), "config", None)
+        language_policy = build_response_language(
+            response_language=getattr(prompt_config, "response_language", None),
+            ui_locale=collect_ui_locale(deps),
+        )
+        if language_policy not in (system_prompt or ""):
+            system_prompt = "\n\n".join(part for part in (system_prompt, language_policy) if part)
         override_factory = getattr(runtime_agent, "override", None)
         override_cm = nullcontext()
         override_tools = resolve_override_tools(
@@ -750,12 +760,15 @@ class RunnerExecutionPayloadMixin:
             except TypeError:
                 override_cm = nullcontext()
         try:
+            run_kwargs: dict[str, Any] = {"deps": deps}
+            if message_history:
+                run_kwargs["message_history"] = self.history.to_model_message_history(message_history)
             if hasattr(override_cm, "__aenter__"):
                 async with override_cm:
-                    result = await runtime_agent.run(user_message, deps=deps)
+                    result = await runtime_agent.run(user_message, **run_kwargs)
             else:
                 with override_cm:
-                    result = await runtime_agent.run(user_message, deps=deps)
+                    result = await runtime_agent.run(user_message, **run_kwargs)
             return result.output if hasattr(result, "output") else str(result)
         except Exception as e:
             return f"[Error: {str(e)}]"

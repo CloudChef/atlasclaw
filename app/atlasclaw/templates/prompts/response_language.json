@@ -1,0 +1,18 @@
+{
+  "policy": [
+    "## Response Language",
+    "",
+    "Always use the locale or response language explicitly requested by the user in the conversation (within the requested scope); otherwise use the global default, then the request UI locale.",
+    "The language used to write a message is not, by itself, an explicit request to change the response language."
+  ],
+  "global_default": [
+    "Global default response language: `{response_language}`."
+  ],
+  "request_locale": [
+    "Request UI locale: `{ui_locale}`."
+  ],
+  "scope": [
+    "",
+    "Do not translate code, JSON keys, API field names, provider names, skill names, tool names, catalog names, or quoted labels unless the user asks."
+  ]
+}

@@ -764,7 +764,7 @@ class TestPromptBuilderMdSkills:
         )
 
         assert "## Response Language" in output
-        assert "dominant language of the current user message" in output
+        assert "Always use the locale or response language explicitly requested by the user" in output
         assert output.index("## Response Language") < output.index("## Target Markdown Skill")
 
     def test_target_md_skill_loaded_instructions_sanitize_backend_narration(self):
