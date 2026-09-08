@@ -690,9 +690,21 @@ def test_conversation_planner_defers_required_input_handling_to_active_skill() -
     assert "Do not choose use_tools merely to record that value" not in prompt
 
 
+@pytest.mark.parametrize(
+    ("planner_action", "expected_required", "expected_mode", "expected_policy"),
+    [
+        (ConversationTurnAction.USE_TOOLS, True, "use_tools", ToolPolicyMode.MUST_USE_TOOL),
+        (ConversationTurnAction.RESPOND, False, "llm_first", ToolPolicyMode.PREFER_TOOL),
+    ],
+)
 def test_serialized_active_preview_confirmation_projects_selected_workflow_tools(
     monkeypatch: pytest.MonkeyPatch,
+    planner_action: ConversationTurnAction,
+    expected_required: bool,
+    expected_mode: str,
+    expected_policy: ToolPolicyMode,
 ) -> None:
+    """Keep a bound request executable even when the planner selects a text response."""
     tools = [
         {
             "name": "example_list_items",
@@ -708,6 +720,13 @@ def test_serialized_active_preview_confirmation_projects_selected_workflow_tools
             "qualified_skill_name": "example:request",
             "skill_name": "request",
             "group_ids": ["group:mutation"],
+        },
+        {
+            "name": "example_approve_request",
+            "provider_type": "example",
+            "provider_skill_name": "primary.approval",
+            "qualified_skill_name": "example:approval",
+            "skill_name": "approval",
         },
     ]
     capability_entry = {
@@ -763,8 +782,8 @@ def test_serialized_active_preview_confirmation_projects_selected_workflow_tools
         assert kwargs["active_workflow_context"]["internal_request_trace_id"] == "trace-preview"
         return ConversationTurnPlan(
             route=ConversationTurnRoute.CONTINUE_ACTIVE,
-            action=ConversationTurnAction.USE_TOOLS,
-            reason="The next workflow step requires request submission.",
+            action=planner_action,
+            reason="Continue the active request after the user's confirmation.",
         )
 
     runner._plan_conversation_turn_with_model = _plan_execution
@@ -783,13 +802,14 @@ def test_serialized_active_preview_confirmation_projects_selected_workflow_tools
         "example_list_items",
         "example_submit_request",
     ]
-    assert state["tool_execution_required"] is True
+    assert state["tool_execution_required"] is expected_required
+    assert deps.extra["tool_policy"]["mode"] == expected_mode
     assert "Latest assistant follow-up prompt:" in state["model_user_message"]
     assert "Request preview: example item." in state["model_user_message"]
     assert "User reply to that prompt:\nYes" in state["model_user_message"]
     assert next(
         data["policy"] for step, data in logs if step == "tool_gate_decided"
-    ) == ToolPolicyMode.MUST_USE_TOOL.value
+    ) == expected_policy.value
 
 
 def test_authorized_context_prepare_loads_skill_without_exposing_tools(

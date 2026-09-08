@@ -746,10 +746,14 @@ capabilities can satisfy required grounding, and whether the final answer must b
   `provider_skill:` target and preserves that target only for instruction and
   workflow-context loading. The Tool Necessity Gate treats this intentional
   pause as direct-answer mode, not as a missing or unavailable capability
-- replying to a workflow's missing-input prompt uses `authorized_context` only
-  when the next action can be answered from the existing workflow context. If
-  the next step requires any runtime operation, including a lookup, submission,
-  update, or verification, it uses `authorized_capability`
+- a `continue_active` turn bound to the existing workflow trace and Provider
+  instance retains that Skill's authorized tools through `authorized_capability`,
+  even when the planner selects `respond`. That response action remains optional
+  tool execution: the main model may collect input or show a preview directly,
+  and may call the retained tools when the workflow requires execution. A
+  `use_tools` action still requires a real tool call. New context-only workflows
+  and current-page context without an active workflow trace retain their existing
+  behavior; task switches do not inherit the old workflow's tool scope
 - `unavailable_capability` is returned by the same selector; the smaller
   selector fails closed with no tools when its output is invalid
 - tool projection follows the selected capability scope without applying a

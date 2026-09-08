@@ -2688,9 +2688,12 @@ class RunnerExecutionPreparePhaseMixin:
                                     is ConversationTurnAction.USE_TOOLS
                                     else ToolIntentAction.DIRECT_ANSWER
                                 )
+                                # A trace-bound continuation keeps its Skill tools available;
+                                # RESPOND still permits a text-only turn without forcing a call.
                                 active_outcome = (
                                     CapabilitySelectorOutcome.AUTHORIZED_CAPABILITY
                                     if active_action is ToolIntentAction.USE_TOOLS
+                                    or trace_bound_active_workflow
                                     else CapabilitySelectorOutcome.AUTHORIZED_CONTEXT
                                 )
                             capability_selector_intent_plan = active_workflow_intent_plan.model_copy(

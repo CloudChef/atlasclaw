@@ -901,6 +901,14 @@ Phase 1 is classifier-first, not keyword-first:
 - hard-coded business keyword tables are intentionally not the platform contract
 
 The runtime emits tool-gate and enforcement events into Hook Runtime so downstream consumers can inspect why a turn was allowed to answer directly, required tools, or was blocked for missing grounding. A single capability-selector pass owns natural-language capability selection, including active-workflow continuation and unavailable-capability outcomes. The Tool Necessity Gate consumes that typed result and does not add another planner call.
+
+Once a continuation is bound to an existing workflow trace and Provider instance,
+the selected Skill's authorized tools remain available even if the planner chooses
+a text response. The execution model can then collect input, present a preview,
+or invoke a needed tool within the same scope. Availability does not force a tool
+call or waive the Skill's confirmation rules. New workflows and task switches
+still resolve their own capability scope.
+
 ## 11. Data Storage Model
 
 ### 11.1 Sessions
