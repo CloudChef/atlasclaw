@@ -44,6 +44,24 @@ class TestMainStartup:
         from app.atlasclaw import main
         assert main is not None
 
+    def test_prompt_builder_config_uses_global_response_language(self, tmp_path):
+        """Startup wiring carries the validated global language into the prompt builder."""
+        from app.atlasclaw import main
+        from app.atlasclaw.core.config_schema import AtlasClawConfig
+
+        config = AtlasClawConfig(
+            workspace={"path": str(tmp_path)},
+            agent_defaults={"response_language": "zh-CN"},
+        )
+
+        prompt_config = main._build_prompt_builder_config(
+            config=config,
+            workspace_path=str(tmp_path),
+            agent_name="Main Agent",
+        )
+
+        assert prompt_config.response_language == "zh-CN"
+
     def test_app_instance_exists(self):
         """验证 FastAPI app 实例存在"""
         from app.atlasclaw.main import app

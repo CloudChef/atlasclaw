@@ -6,7 +6,7 @@ agent_id: "main"
 
 ## Personalization
 
-- Language Preference: Automatically detect and adapt to user's language
+- Language Preference: Follow the runtime system language policy and explicit user requests
 - Response Depth: Adjust technical detail level based on user role (Developer/Product/Manager)
 - Interaction Frequency: Record user active hours to optimize response timing
 - Frequently Used Skills: Learn user's high-frequency skills for prioritized recommendations

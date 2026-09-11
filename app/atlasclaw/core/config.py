@@ -94,6 +94,9 @@ initializeConfiguration manager
         
         Returns:
             Configuration object
+
+        Raises:
+            ValidationError: The effective response language is not a concrete locale.
         """
         # 1. Start from defaults
         config_dict: dict[str, Any] = {}
@@ -130,6 +133,12 @@ initializeConfiguration manager
         try:
             self._config = AtlasClawConfig(**config_dict)
         except ValidationError as e:
+            # Never discard workspace/auth/model settings because a locale is invalid.
+            if any(
+                error["loc"][:2] == ("agent_defaults", "response_language")
+                for error in e.errors()
+            ):
+                raise
             embed_errors = [
                 error
                 for error in e.errors()

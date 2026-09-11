@@ -11,6 +11,7 @@ import re
 import time
 from typing import Any, AsyncIterator, Iterator, Optional
 
+from app.atlasclaw.agent import prompt_sections
 from app.atlasclaw.agent.prompt_builder import PromptMode
 from app.atlasclaw.agent.context_pruning import prune_context_messages, should_apply_context_pruning
 from app.atlasclaw.agent.context_window_guard import evaluate_context_window_guard
@@ -19,6 +20,7 @@ from app.atlasclaw.agent.runner_prompt_context import (
     collect_capability_index_snapshot,
     collect_tool_groups_snapshot,
     collect_tools_snapshot,
+    collect_ui_locale,
 )
 from app.atlasclaw.agent.runner_tool.runner_llm_routing import (
     resolve_artifact_goal_from_intent_plan,
@@ -333,6 +335,8 @@ def build_explicit_tool_execution_prompt(
     *,
     tool: dict[str, Any],
     now_local: Optional[datetime] = None,
+    response_language: Optional[str] = None,
+    ui_locale: str = "",
 ) -> str:
     """Build a tiny system prompt for single-tool explicit execution turns."""
     tool_name = str(tool.get("name", "") or "").strip() or "tool"
@@ -401,6 +405,10 @@ def build_explicit_tool_execution_prompt(
             "Do not call the same tool again with the same arguments after its result is available.\n"
             "Do not mention the tool call to the user and do not surface its raw output.\n"
         )
+    prompt += "\n" + prompt_sections.build_response_language(
+        response_language=response_language,
+        ui_locale=ui_locale,
+    )
     return prompt
 
 
@@ -3377,8 +3385,11 @@ class RunnerExecutionPreparePhaseMixin:
                 return
 
             if explicit_tool_execution_target is not None:
+                prompt_builder_config = getattr(self.prompt_builder, "config", None)
                 system_prompt = build_explicit_tool_execution_prompt(
                     tool=explicit_tool_execution_target,
+                    response_language=getattr(prompt_builder_config, "response_language", None),
+                    ui_locale=collect_ui_locale(deps),
                 )
             else:
                 system_prompt = build_system_prompt(

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import re
 from typing import Any, Optional
 
 from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import (
@@ -22,6 +23,9 @@ from app.atlasclaw.core.provider_skill_capability import (
 from app.atlasclaw.memory.access import memory_available_for_deps
 from app.atlasclaw.tools.catalog import STANDARD_SKILL_RUNTIME_TOOL_NAMES
 from app.atlasclaw.tools.providers.instance_tools import provider_instance_usage_hint
+
+
+_LANGUAGE_TAG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{1,8})*$")
 
 
 def build_system_prompt(
@@ -50,6 +54,7 @@ def build_system_prompt(
         "current_follow_up_context": collect_current_follow_up_context(deps),
         "current_host_page_context": collect_current_host_page_context(deps),
         "memory_available": collect_memory_available(deps),
+        "ui_locale": collect_ui_locale(deps),
     }
     build_fn = prompt_builder.build
     try:
@@ -70,6 +75,18 @@ def collect_memory_available(deps) -> bool:
         return memory_available_for_deps(deps)
     except Exception:
         return False
+
+
+def collect_ui_locale(deps) -> str:
+    """Return a concrete request UI locale below user instructions and global defaults."""
+    extra = deps.extra if isinstance(getattr(deps, "extra", None), dict) else {}
+    context = extra.get("context")
+    value = (
+        str(context.get("ui_locale", "") or "").strip()
+        if isinstance(context, dict)
+        else ""
+    )
+    return value if len(value) <= 35 and _LANGUAGE_TAG_RE.fullmatch(value) else ""
 
 
 def collect_skills_snapshot(deps) -> list[dict]:

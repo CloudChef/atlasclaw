@@ -156,6 +156,27 @@ _heartbeat_store: Optional[HeartbeatStateStore] = None
 _heartbeat_task: Optional[asyncio.Task] = None
 
 
+def _build_prompt_builder_config(
+    *,
+    config: Any,
+    workspace_path: str,
+    agent_name: str,
+) -> PromptBuilderConfig:
+    """Build the shared runtime prompt configuration from system settings."""
+    return PromptBuilderConfig(
+        workspace_path=workspace_path,
+        agent_name=agent_name,
+        response_language=config.agent_defaults.response_language,
+        md_skills_max_count=config.skills.md_skills_max_count,
+        md_skills_desc_max_chars=config.skills.md_skills_desc_max_chars,
+        md_skills_max_index_chars=config.skills.md_skills_index_max_chars,
+        md_skills_max_file_bytes=config.skills.md_skills_max_file_bytes,
+        capability_index_max_count=config.skills.capability_index_max_count,
+        capability_index_desc_max_chars=config.skills.capability_index_desc_max_chars,
+        capability_index_max_chars=config.skills.capability_index_max_chars,
+    )
+
+
 def _list_workspace_runtime_user_ids(workspace_path: str | Path) -> set[str]:
     users_dir = Path(workspace_path).resolve() / "users"
     if not users_dir.exists():
@@ -552,16 +573,10 @@ async def lifespan(app: FastAPI):
 
     # Create AgentRunner
     prompt_builder = PromptBuilder(
-        PromptBuilderConfig(
+        _build_prompt_builder_config(
+            config=config,
             workspace_path=workspace_path,
             agent_name=_agent_runtime_name(main_agent_config),
-            md_skills_max_count=config.skills.md_skills_max_count,
-            md_skills_desc_max_chars=config.skills.md_skills_desc_max_chars,
-            md_skills_max_index_chars=config.skills.md_skills_index_max_chars,
-            md_skills_max_file_bytes=config.skills.md_skills_max_file_bytes,
-            capability_index_max_count=config.skills.capability_index_max_count,
-            capability_index_desc_max_chars=config.skills.capability_index_desc_max_chars,
-            capability_index_max_chars=config.skills.capability_index_max_chars,
         )
     )
     runtime_pruning_config = config.context_pruning

@@ -220,6 +220,7 @@
     "_comment": "Default agent execution settings",
     "max_concurrent": 10,
     "timeout_seconds": 600,
-    "max_tool_calls": 50
+    "max_tool_calls": 50,
+    "response_language": null
   }
 }
