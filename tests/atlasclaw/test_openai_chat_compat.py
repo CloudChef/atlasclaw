@@ -50,16 +50,24 @@ async def test_qwen_vllm_model_maps_base_prompt_and_instructions_to_one_system_m
         instructions="runtime prompt",
     )
 
-    mapped = await model._map_messages([model_request], ModelRequestParameters())
+    mapped = await model._map_messages(
+        [model_request],
+        ModelRequestParameters(),
+        model_settings={"thinking": False},
+    )
 
     assert [message.get("role") for message in mapped] == ["system", "user"]
     assert mapped[0]["content"] == "base prompt\n\nruntime prompt"
     assert sum(1 for message in mapped if message.get("role") == "system") == 1
 
 
-def test_requires_single_leading_system_message_detects_vllm_qwen_tokens() -> None:
+def test_requires_single_leading_system_message_detects_compatible_models() -> None:
     assert requires_single_leading_system_message(provider="vllm-local", model="Qwen3.5-27B")
     assert requires_single_leading_system_message(provider="vllm", model="Qwen2.5-72B")
+    assert requires_single_leading_system_message(
+        provider="openai",
+        model="minimax/minimax-m3:free",
+    )
     assert not requires_single_leading_system_message(provider="openrouter", model="qwen/qwen3")
 
 
