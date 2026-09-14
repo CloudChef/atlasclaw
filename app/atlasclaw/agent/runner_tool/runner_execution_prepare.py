@@ -12,6 +12,7 @@ import time
 from typing import Any, AsyncIterator, Iterator, Optional
 
 from app.atlasclaw.agent import prompt_sections
+from app.atlasclaw.agent.compaction_model import ModelCompactionPipeline
 from app.atlasclaw.agent.prompt_builder import PromptMode
 from app.atlasclaw.agent.context_pruning import prune_context_messages, should_apply_context_pruning
 from app.atlasclaw.agent.context_window_guard import evaluate_context_window_guard
@@ -2059,6 +2060,18 @@ class RunnerExecutionPreparePhaseMixin:
                 state["should_stop"] = True
                 return
             session_manager = self._resolve_session_manager(session_key, deps)
+            runtime_compaction = self.compaction
+            if getattr(self, "_use_model_compaction", False):
+                runtime_compaction = ModelCompactionPipeline(
+                    self.compaction.config,
+                    runtime_agent=runtime_agent,
+                    deps=deps,
+                    context_window=runtime_context_window,
+                    deadline=float(start_time or time.monotonic()) + float(
+                        timeout_seconds if timeout_seconds is not None else 600
+                    ),
+                )
+            state["runtime_compaction"] = runtime_compaction
 
             # --:session + build prompt --
 
@@ -3480,7 +3493,7 @@ class RunnerExecutionPreparePhaseMixin:
                 }
                 _log_step("active_memory_skipped", status="tool_selection_skipped", elapsed_ms=0)
 
-            if message_history and self.compaction.should_compact(
+            if message_history and runtime_compaction.should_compact(
                 message_history,
                 session,
                 context_window_override=runtime_context_window,
@@ -3494,11 +3507,13 @@ class RunnerExecutionPreparePhaseMixin:
                         },
                     )
                 yield StreamEvent.compaction_start()
-                compressed_history = await self.compaction.compact(message_history, session)
-                message_history = self.history.normalize_messages(compressed_history)
-                context_history_for_hooks = list(message_history)
-                await session_manager.mark_compacted(session_key)
-                compaction_applied = True
+                compressed_history = await runtime_compaction.compact(message_history, session)
+                history_changed = compressed_history != message_history
+                if history_changed:
+                    message_history = self.history.normalize_messages(compressed_history)
+                    context_history_for_hooks = list(message_history)
+                    await session_manager.mark_compacted(session_key)
+                    compaction_applied = True
                 yield StreamEvent.compaction_end()
                 if self.hooks:
                     await self.hooks.trigger(
@@ -3506,6 +3521,7 @@ class RunnerExecutionPreparePhaseMixin:
                         {
                             "session_key": session_key,
                             "message_count": len(message_history),
+                            "applied": history_changed,
                         },
                     )
 

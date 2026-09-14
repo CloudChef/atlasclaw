@@ -283,6 +283,7 @@ class RunnerExecutionFlowStreamMixin:
         system_prompt = state.get("system_prompt")
         max_tool_calls = int(state.get("max_tool_calls") or 0)
         runtime_context_window = state.get("runtime_context_window")
+        runtime_compaction = state.get("runtime_compaction", self.compaction)
         session_message_history = list(state.get("session_message_history") or [])
         runtime_base_history_len = int(state.get("runtime_base_history_len") or 0)
         persist_run_output_start_index = int(state.get("persist_run_output_start_index") or 0)
@@ -382,7 +383,7 @@ class RunnerExecutionFlowStreamMixin:
             state["latest_agent_messages"] = list(merged_current_messages)
             state["context_history_for_hooks"] = list(merged_current_messages)
 
-            if self.compaction.should_compact(
+            if runtime_compaction.should_compact(
                 merged_current_messages,
                 session,
                 context_window_override=runtime_context_window,
@@ -396,20 +397,23 @@ class RunnerExecutionFlowStreamMixin:
                         },
                     )
                 yield StreamEvent.compaction_start()
-                compressed = await self.compaction.compact(merged_current_messages, session)
-                persist_override_messages = self.history.normalize_messages(compressed)
-                state["context_history_for_hooks"] = list(persist_override_messages)
-                state["persist_override_messages"] = persist_override_messages
-                state["persist_override_base_len"] = len(merged_current_messages)
-                await session_manager.mark_compacted(session_key)
-                state["compaction_applied"] = True
+                compressed = await runtime_compaction.compact(merged_current_messages, session)
+                history_changed = compressed != merged_current_messages
+                if history_changed:
+                    persist_override_messages = self.history.normalize_messages(compressed)
+                    state["context_history_for_hooks"] = list(persist_override_messages)
+                    state["persist_override_messages"] = persist_override_messages
+                    state["persist_override_base_len"] = len(merged_current_messages)
+                    await session_manager.mark_compacted(session_key)
+                    state["compaction_applied"] = True
                 yield StreamEvent.compaction_end()
                 if self.hooks:
                     await self.hooks.trigger(
                         "after_compaction",
                         {
                             "session_key": session_key,
-                            "message_count": len(persist_override_messages),
+                            "message_count": len(compressed),
+                            "applied": history_changed,
                         },
                     )
 

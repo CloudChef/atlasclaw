@@ -87,6 +87,9 @@ class CompactionConfig:
     staged_summary_min_messages: int = DEFAULT_STAGED_SUMMARY_MIN_MESSAGES
     staged_summary_overhead_tokens: int = 512
     staged_summary_min_chunk_tokens: int = 256
+    summary_max_tokens: int = 1024
+    summary_max_requests: int = 16
+    summary_timeout_seconds: float = 60.0
     workspace_path: Optional[str] = None
     safeguard_workspace_sections: tuple[str, ...] = ("Session Startup", "Red Lines")
     safeguard_workspace_max_chars: int = 2_000
@@ -191,10 +194,25 @@ class CompactionPipeline:
         )
 
         keep_count = self.config.keep_recent_turns * 2
-        recent_messages = messages[-keep_count:] if keep_count > 0 else []
-
         start_idx = 1 if system_prompt else 0
-        end_idx = len(messages) - keep_count if keep_count > 0 else len(messages)
+        end_idx = max(start_idx, len(messages) - keep_count) if keep_count > 0 else len(messages)
+        # A retained tool return needs its original call and arguments. Move
+        # the boundary backwards rather than synthesizing a call after compaction.
+        while end_idx > start_idx:
+            return_ids = {
+                self._extract_tool_result_call_id(message)
+                for message in messages[end_idx:]
+                if str(message.get("role", "")).lower() in TOOL_RESULT_ROLES
+            }
+            earlier_calls = [
+                index
+                for index in range(start_idx, end_idx)
+                if self._collect_tool_call_ids([messages[index]]) & (return_ids - {""})
+            ]
+            if not earlier_calls:
+                break
+            end_idx = min(earlier_calls)
+        recent_messages = messages[end_idx:]
         to_compress = messages[start_idx:end_idx]
         return system_prompt, recent_messages, to_compress
 

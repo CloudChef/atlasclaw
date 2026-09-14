@@ -896,6 +896,33 @@ Methods: `is_allowed(tool_name: str) -> bool`, `_match_pattern(pattern, name) ->
 
 Compresses context when it exceeds the configured token threshold. Triggered automatically by `AgentRunner` before each LLM call if context exceeds `CompactionConfig.context_window - reserve_tokens_floor`.
 
+The default runner binds a request-scoped `ModelCompactionPipeline` to the selected
+runtime agent's model and context window. Its existing staged pipeline summarizes
+history chunks, summarizes oversized subchunks when necessary, and reduces partial
+summaries into continuation context. Map calls are sequential. The summary prompt
+preserves goals, constraints, exact identifiers/parameters, corrections, pending
+work, confirmation status and tool failures. Recent messages remain verbatim; the
+split boundary moves back when necessary to retain the call for a recent tool return.
+
+Summary calls use a separate PydanticAI agent without tools or business dependencies.
+`CompactionConfig.summary_max_tokens` defaults to 1024 output tokens per call,
+`summary_max_requests` to 16 requests across one runner turn, and
+`summary_timeout_seconds` to 60 seconds per compaction attempt (also bounded by the
+run deadline). Cancellation stops outstanding summary requests. Empty, incomplete,
+failed, over-budget or non-shrinking results retain the original history; they do
+not increment the successful compaction counter. Caller-supplied compaction
+pipelines retain their original behavior, including custom summarizers.
+
+Pre-run compaction feeds the compressed history to the upcoming model run. The
+existing streaming compaction path prepares a persistence override for subsequent
+turns; it does not mutate an already active PydanticAI graph's message history.
+
+`deps.extra.compaction_diagnostics` retains up to 16 records with status, estimated
+before/after tokens, estimated reduction, elapsed time, request count and model-reported
+summary input/output tokens. The estimates use the existing character heuristic;
+they are not tokenizer measurements or evidence of information retention/task success.
+No compression percentage or quality target is guaranteed by this implementation.
+
 ### 3.7 Token Policy (`agent/token_policy.py`)
 
 Session-level token selection and pinning strategy.

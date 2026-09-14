@@ -87,6 +87,7 @@ class AgentRunner(RunnerExecutionMixin, RunnerToolGateMixin, RunnerToolEvidenceM
         self.agent = agent
         self.sessions = session_manager
         self.prompt_builder = prompt_builder or PromptBuilder(PromptBuilderConfig())
+        self._use_model_compaction = compaction is None
         if compaction is not None:
             self.compaction = compaction
         else:
