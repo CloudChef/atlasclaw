@@ -19,9 +19,11 @@ import { createStreamHandler } from './stream-handler.js?v=29'
 import { buildApiUrl } from './config.js?v=27'
 import { translateIfExists, getCurrentLocale } from './i18n.js'
 import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=28'
+import { extractChatSubmission, uploadChatImages, cancelImageUpload, discardImageDrafts, historyImageFiles, imageErrorMessage } from './chat-attachments.js'
 
 let chatElement = null
 let currentStreamHandler = null
+let pendingSubmissionCancel = null
 let assistantUpdatePending = false
 let thinkingBlockId = null
 let thinkingScrollPending = false
@@ -831,6 +833,11 @@ export async function initChat(element, callbacks = {}) {
  */
 export async function activateSession(sessionKey) {
   if (!chatElement) return false
+  if (sessionKey !== currentSessionKey) {
+    pendingSubmissionCancel?.()
+    cancelImageUpload()
+    chatElement.defaultInput = { text: '', files: [] }
+  }
   const requestedSessionKey = sessionKey || getSessionKey()
   const activationGeneration = ++sessionActivationGeneration
   currentSessionKey = requestedSessionKey || null
@@ -952,9 +959,12 @@ function clearRenderedMessages(element) {
 }
 
 function mapTranscriptMessageToHistory(message) {
-  if (!message?.content) return null
+  if (!message?.content && !message?.attachments?.length) return null
   if (message.role === 'user') {
-    return { role: 'user', text: message.content }
+    const missingImage = message.attachments?.some(file => file.available === false)
+    return { role: 'user', text: missingImage
+      ? `${message.content || ''}\n${imageErrorMessage({ code: 'attachment_not_found' })}` : message.content,
+      ...(message.attachments?.length ? { files: historyImageFiles(message.attachments) } : {}) }
   }
   if (message.role === 'assistant') {
     const workspaceDownloads = normalizeWorkspaceDownloadArtifacts(message.workspace_downloads)
@@ -981,17 +991,37 @@ function getComposerButtonSize() {
 }
 
 function configureHandler(element) {
+  const buttonSize = getComposerButtonSize()
+  element.images = {
+    files: { acceptedFormats: '.png,.jpg,.jpeg,.webp', maxNumberOfFiles: 4 },
+    button: {
+      position: 'inside-start',
+      tooltip: { text: translateIfExists('chat.images.upload') || 'Upload image' },
+      styles: {
+        container: {
+          default: { width: buttonSize, height: buttonSize, boxSizing: 'border-box', borderRadius: '50%', backgroundColor: 'transparent', border: 'none', boxShadow: 'none', color: '#64748b', display: 'flex', alignItems: 'center', justifyContent: 'center' },
+          hover: { backgroundColor: '#f1f5f9', color: '#334155' }
+        },
+        svg: {
+          content: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>',
+          styles: { default: { width: '20px', height: '20px', margin: '0', position: 'static' } }
+        }
+      }
+    }
+  }
+  element.dragAndDrop = true
   const handlerFn = async (body, signals) => {
-    const rawMessageText = extractMessageFromBody(body)
+    const submission = extractChatSubmission(body)
+    const rawMessageText = submission.text || extractMessageFromBody(body)
     const slashMessage = prepareSlashCapabilityMessage(rawMessageText)
     const messageText = slashMessage.messageText
     const selectedCapability = slashMessage.selectedCapability
-    if (!messageText && !selectedCapability) {
+    if (!messageText && !selectedCapability && !submission.files.length) {
       signals.onClose()
       return
     }
 
-    await runAgentMessage(messageText, selectedCapability, signals)
+    await runAgentMessage(messageText, selectedCapability, signals, { files: submission.files })
   }
 
   element.handler = handlerFn
@@ -1012,7 +1042,22 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
   }
 
   let runId
+  let attachments = []
+  let cancelled = false
+  const cancelSubmission = () => { cancelled = true; cancelImageUpload() }
+  pendingSubmissionCancel = cancelSubmission
   try {
+    if (signals.stopClicked) signals.stopClicked.listener = cancelSubmission
+    if (options.files?.length) signals.onOpen?.()
+    const activation = sessionActivationGeneration
+    attachments = await uploadChatImages(sessionKey, options.files)
+    if (cancelled) throw new DOMException('Submission cancelled', 'AbortError')
+    if (activation !== sessionActivationGeneration || getSessionKey() !== sessionKey) {
+      void discardImageDrafts(attachments)
+      signals.onClose()
+      settleRunActivity()
+      return false
+    }
     const requestContext = {
       ui_locale: getCurrentLocale(),
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || ''
@@ -1045,6 +1090,7 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
       body: JSON.stringify({
         session_key: sessionKey || '',
         message: messageText || '',
+        attachment_ids: attachments.map(file => file.id),
         timeout_seconds: 600,
         context: requestContext
       })
@@ -1055,32 +1101,36 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
       try {
         const errorData = await response.json()
         if (errorData?.detail) {
-          errorMessage = errorData.detail
+          errorMessage = imageErrorMessage(errorData.detail)
         }
       } catch (_) {
         // Keep the HTTP status fallback when the response body is not JSON.
       }
-      reportRunCreationError(signals, errorMessage, options.onRunCreationError)
-      settleRunActivity()
-      return false
+      throw new Error(errorMessage)
     }
 
     const data = await response.json()
     runId = data.run_id || data.runId || data.id
     if (!runId) {
-      reportRunCreationError(
-        signals,
-        data.detail || 'Error: No run_id',
-        options.onRunCreationError
-      )
-      settleRunActivity()
-      return false
+      throw new Error(data.detail || 'Error: No run_id')
+    }
+    if (cancelled) {
+      await abortAgentRun(runId)
+      throw new DOMException('Submission cancelled', 'AbortError')
     }
   } catch (err) {
     console.error('[ChatUI] API call failed:', err)
-    reportRunCreationError(signals, `Error: ${err.message}`, options.onRunCreationError)
+    if (err?.name !== 'AbortError') {
+      reportRunCreationError(signals, imageErrorMessage(err), options.onRunCreationError)
+    } else signals.onClose()
+    void discardImageDrafts(attachments)
+    if (options.files?.length && chatElement?.isConnected && getSessionKey() === sessionKey) {
+      chatElement.defaultInput = { text: messageText, files: options.files }
+    }
     settleRunActivity()
     return false
+  } finally {
+    if (pendingSubmissionCancel === cancelSubmission) pendingSubmissionCancel = null
   }
 
   const initialPayload = buildMessageContent(
@@ -1278,6 +1328,33 @@ function configureI18nAttributes(element) {
     :host(.atlas-chat-compact) .input-button.inside-start,
     :host(.atlas-chat-compact) .input-button.inside-end { width: 36px !important; height: 36px !important; }
     #text-input-container { margin-top: 4px !important; margin-bottom: 4px !important; }
+    /* Keep native attachment controls inside the composer's visual surface. */
+    #input:has(#file-attachment-container .file-attachment) #text-input-container {
+      padding-top: 88px !important;
+      border-radius: 24px !important;
+      max-height: 280px;
+    }
+    #file-attachment-container {
+      top: 14px !important;
+      inset-inline-start: calc(var(--atlas-chat-side-gutter) + 12px) !important;
+      width: calc(100% - 2 * var(--atlas-chat-side-gutter) - 24px) !important;
+      height: 76px !important;
+      padding: 4px !important;
+      margin: 0 !important;
+      box-sizing: border-box;
+      background: transparent !important;
+      white-space: nowrap;
+      z-index: 1;
+    }
+    .file-attachment { width: 64px !important; height: 64px !important; margin: 0 12px 0 0 !important; border-radius: 12px !important; }
+    .image-attachment { border-radius: 12px !important; object-fit: contain !important; background: #f8fafc; }
+    .remove-file-attachment-button { width: 20px !important; height: 20px !important; top: -3px !important; inset-inline-end: -3px !important; }
+    #input:has(#file-attachment-container .file-attachment) .input-button.inside-start,
+    #input:has(#file-attachment-container .file-attachment) .input-button.inside-end {
+      inset-block-start: auto !important;
+      inset-block-end: 10px !important;
+      transform: none !important;
+    }
     #stop-icon {
       inset: 0 !important;
       margin: auto !important;
@@ -3965,7 +4042,7 @@ async function handleStreamWithSignals(runId, signals, context) {
         streamSettled = true
         thinkingFinalized = true
         cleanupStreamTimers()
-        pushRuntimeEntry('failed', error?.message || 'Unknown error', { phase: 'error' })
+        pushRuntimeEntry('failed', imageErrorMessage(error), { phase: 'error' })
         updateUI()
         signals.onClose()
         clearActiveStreamHandler()
@@ -4014,6 +4091,8 @@ async function handleStreamWithSignals(runId, signals, context) {
  * Abort the active SSE stream and let the owning handler release timers before a session switch.
  */
 export function abortCurrentStream() {
+  pendingSubmissionCancel?.()
+  cancelImageUpload()
   if (currentStreamHandler) {
     const streamHandlerToAbort = currentStreamHandler
     currentStreamHandler = null

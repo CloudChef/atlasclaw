@@ -496,6 +496,27 @@ The `HookSystem` provides cross-cutting concern injection at 17+ lifecycle phase
 
 **Priority conventions**: Lower values run first. Use `50` for core hooks, `100` (default) for standard hooks, `999` for logging/observability hooks.
 
+### Chat image boundary
+
+- Reuse Deep Chat file selection/paste/drop and PydanticAI binary input; keep the
+  internal user-message contract textual and resolve attachments at model boundaries.
+- Validate decoded PNG/JPEG/WebP static content: 4 images per turn, 5 MiB and
+  20 million pixels per image. Browser multipart uploads require Content-Length
+  and at most 20 MiB plus 64 KiB framing overhead. Unsent storage is capped at
+  100 MiB per user.
+- Preserve at most 8 images / 32 MiB of recent image context. Reserve a conservative
+  image-token allowance within half of the configured context window; reject an
+  oversized current turn and remove older complete image groups with a warning.
+- Never accept client image URLs or local paths as attachment authority. Check
+  user/session ownership again before model use, and never log raw image bytes
+  or data URLs. Image text remains untrusted user content.
+- Distinguish disabled capability, explicit upstream modality rejection, invalid
+  images, authentication failures and timeouts. Do not send images to a text-only
+  fallback, and do not retry an image turn after a runtime tool has started.
+- Keep focused tests for attachment isolation/lifecycle, zero-call refusal and
+  capability refresh, native history round-trip/redaction, and filtered failover.
+  Validate actual browser flows and real endpoints separately from fault injection.
+
 ### 4.7 LLM Routing Contract
 
 Planner-free routing is the default hot path.

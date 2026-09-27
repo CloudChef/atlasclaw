@@ -1882,6 +1882,18 @@ Provider configurations are encrypted at rest. The `config` JSON field is automa
 - `get_masked_api_key(model) -> str` -Mask API key for display
 - `get_decrypted_api_key(model) -> str` -Decrypt API key
 
+The model configuration form exposes **Supports image input**, stored as the
+boolean `capabilities.vision`. New configurations and existing configurations
+without this key display the switch as off. Editing the switch preserves other
+capability keys; leaving the API key blank retains the stored credential. This
+is an administrator declaration for the configured model and endpoint, not an
+automatic capability probe. The existing model-config CRUD API persists the flag. Image runs refresh database-backed
+capabilities once per run; JSON token declarations are loaded on service startup.
+The same declaration is carried by `TokenEntry`; missing values fail closed.
+A selected model with vision disabled returns a static explanation without calling
+the model. Image failover excludes text-only candidates and does not replay tools
+that have already started.
+
 ### 11.4 Pydantic Schemas (`db/schemas.py`)
 
 Request/response schemas for API validation:

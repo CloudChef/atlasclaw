@@ -35,6 +35,8 @@ class RunnerExecutionRetryMixin:
         emit_lifecycle_bounds: bool,
     ) -> AsyncIterator[StreamEvent]:
         """Rotate away from a hard-failed token and retry the same run once."""
+        if deps.extra.get("_chat_tool_started"):
+            return  # Do not replay image-triggered external actions on another model.
         if (
             self.token_policy is None
             or not self._is_hard_token_failure(error)
@@ -65,6 +67,8 @@ class RunnerExecutionRetryMixin:
         model = extra.get("model") if isinstance(extra.get("model"), str) else None
         error_text = str(error)
         next_token = None
+        image_filter = ({"eligible_token_ids": extra["_chat_vision_tokens"]}
+                        if "_chat_vision_tokens" in extra else {})
         if selected_token_id:
             if self.token_interceptor is not None:
                 self.token_interceptor.on_hard_failure(selected_token_id, error_text)
@@ -73,6 +77,7 @@ class RunnerExecutionRetryMixin:
                 reason=error_text,
                 provider=provider,
                 model=model,
+                **image_filter,
             )
             if next_token is None and provider:
                 next_token = self.token_policy.mark_session_token_unhealthy(
@@ -80,6 +85,7 @@ class RunnerExecutionRetryMixin:
                     reason=error_text,
                     provider=provider,
                     model=None,
+                    **image_filter,
                 )
             if next_token is None:
                 next_token = self.token_policy.mark_session_token_unhealthy(
@@ -87,6 +93,7 @@ class RunnerExecutionRetryMixin:
                     reason=error_text,
                     provider=None,
                     model=None,
+                    **image_filter,
                 )
         else:
             next_token = self.token_policy.get_or_select_session_token(

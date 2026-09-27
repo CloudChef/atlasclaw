@@ -92,6 +92,7 @@ class DynamicTokenPolicy:
         reason: str = "",
         provider: Optional[str] = None,
         model: Optional[str] = None,
+        eligible_token_ids: Optional[set[str]] = None,
     ) -> Optional[TokenEntry]:
         """Mark the current session token unhealthy and rotate to the next candidate."""
         current = self.get_session_token(session_key)
@@ -107,6 +108,7 @@ class DynamicTokenPolicy:
             model=model,
             strategy=self.strategy,
             exclude_token_ids=excluded_ids,
+            eligible_token_ids=eligible_token_ids,
         )
         if candidate is None and provider:
             candidate = self.token_pool.select_token(
@@ -114,6 +116,7 @@ class DynamicTokenPolicy:
                 model=None,
                 strategy=self.strategy,
                 exclude_token_ids=excluded_ids,
+                eligible_token_ids=eligible_token_ids,
             )
         if candidate is None:
             candidate = self.token_pool.select_token(
@@ -121,6 +124,7 @@ class DynamicTokenPolicy:
                 model=None,
                 strategy=self.strategy,
                 exclude_token_ids=excluded_ids,
+                eligible_token_ids=eligible_token_ids,
             )
         if candidate is None:
             return None

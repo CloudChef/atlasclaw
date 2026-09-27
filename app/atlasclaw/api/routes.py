@@ -13,8 +13,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 
 from .deps_context import APIContext, get_api_context, set_api_context
 from .routes_agent import register_agent_routes
@@ -25,6 +25,7 @@ from .routes_session import register_session_routes
 from .routes_skills_memory import register_skills_memory_routes
 from .routes_webhook import register_webhook_routes
 from .routes_workspace_files import register_workspace_file_routes
+from .routes_chat_attachments import register_chat_attachment_routes
 
 logger = logging.getLogger(__name__)
 
@@ -45,19 +46,24 @@ def _safe_decode_request_body(body: bytes, max_chars: int = 1000) -> str:
 def install_request_validation_logging(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def validation_exception_handler(request: Request, exc: RequestValidationError):
-        body = await request.body()
+        body = (
+            "<multipart omitted>"
+            if request.headers.get("content-type", "").startswith("multipart/")
+            else _safe_decode_request_body(await request.body())
+        )
         logger.warning(
             "Request validation failed: method=%s path=%s errors=%s body=%s",
             request.method,
             request.url.path,
             exc.errors(),
-            _safe_decode_request_body(body),
+            body,
         )
-        return JSONResponse(status_code=422, content={"detail": exc.errors()})
+        return await request_validation_exception_handler(request, exc)
 
 
 def create_router() -> APIRouter:
     router = APIRouter(prefix="/api", tags=["AtlasClaw API"])
+    register_chat_attachment_routes(router)
     register_session_routes(router)
     register_hook_routes(router)
     register_agent_routes(router)

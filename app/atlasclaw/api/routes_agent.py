@@ -140,6 +140,10 @@ def register_agent_routes(router: APIRouter) -> None:
         provider_config = build_provider_config(ctx)
         provider_instances_for_request = provider_config or (ctx.provider_instances or {})
         safe_message = normalize_user_message(request.message)
+        if request.attachment_ids and len(set(request.attachment_ids)) != len(request.attachment_ids):
+            raise HTTPException(422, detail="Duplicate image attachments are not allowed.")
+        if not safe_message.strip() and not request.attachment_ids:
+            raise HTTPException(422, detail="Enter a message or attach an image.")
 
         # Resolve user skill permissions for agent context filtering.
         # This is fail-closed: if permission resolution fails, the run is
@@ -325,6 +329,19 @@ def register_agent_routes(router: APIRouter) -> None:
             }
 
         init_run(ctx, run_id, request.session_key, safe_message, request.timeout_seconds)
+
+        # Keep validated attachment data outside client-supplied context.
+        if request.attachment_ids:
+            from .routes_chat_attachments import attachment_store, image_http_error
+            from ..core.chat_attachments import ImageInputError
+            try:
+                ctx.active_runs[run_id]["attachments"] = await attachment_store(ctx, user_info).resolve(
+                    request.session_key, request.attachment_ids, bind=True,
+                )
+            except ImageInputError as exc:
+                ctx.active_runs.pop(run_id, None)
+                ctx.sse_manager.close_stream(run_id)
+                raise image_http_error(exc) from exc
 
         background_tasks.add_task(
             execute_agent_run,

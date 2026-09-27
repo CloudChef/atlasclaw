@@ -304,8 +304,17 @@ class RunnerExecutionFlowPhaseMixin(
             continuation_index = 0
             while True:
                 model_message_history = self.history.to_model_message_history(
-                    runtime_message_history
+                    runtime_message_history, image_inputs=deps.extra.get("_chat_image_inputs"),
                 )
+                if continuation_index == 0 and deps.extra.get("_chat_image_inputs"):
+                    visible_ids = {ref["id"] for m in runtime_message_history
+                                   for ref in (m.get("metadata") or {}).get("attachments", [])}
+                    visible_ids.update(ref["id"] for ref in deps.extra.get("_chat_attachments", []))
+                    omitted = set(deps.extra["_chat_image_inputs"]) - visible_ids
+                    if omitted:
+                        yield StreamEvent.runtime_update("warning",
+                            "Older images were removed during context compaction. Reattach them to analyze them again.",
+                            metadata={"code": "image_context_limit", "dropped_images": len(omitted)})
                 _log_step(
                     "model_message_history_build_done",
                     model_history_count=len(model_message_history),

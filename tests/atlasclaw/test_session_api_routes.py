@@ -285,6 +285,7 @@ class TestThreadSessionsAndOwnership:
                 "content": "hello atlas",
                 "timestamp": response.json()["messages"][0]["timestamp"],
                 "workspace_downloads": [],
+                "attachments": [],
                 "object_actions": [],
             },
             {
@@ -292,6 +293,7 @@ class TestThreadSessionsAndOwnership:
                 "content": "hi there",
                 "timestamp": response.json()["messages"][1]["timestamp"],
                 "workspace_downloads": [],
+                "attachments": [],
                 "object_actions": [],
             },
         ]
@@ -440,6 +442,7 @@ class TestThreadSessionsAndOwnership:
                 "content": "show request",
                 "timestamp": response.json()["messages"][0]["timestamp"],
                 "workspace_downloads": [],
+                "attachments": [],
                 "object_actions": [],
             },
             {
@@ -447,6 +450,7 @@ class TestThreadSessionsAndOwnership:
                 "content": "Request REQ-003 is ready to view.",
                 "timestamp": response.json()["messages"][1]["timestamp"],
                 "workspace_downloads": [],
+                "attachments": [],
                 "object_actions": [
                     {
                         "index": 7,

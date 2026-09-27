@@ -50,6 +50,13 @@ class StaticFileCacheMiddleware(BaseHTTPMiddleware):
     """Add no-cache headers for frontend static resource paths."""
 
     async def dispatch(self, request: Request, call_next):
+        if request.method == "POST" and request.url.path.endswith("/api/chat/attachments"):
+            # Reject oversized browser uploads before multipart spooling to disk.
+            length = request.headers.get("content-length", "")
+            if not length.isdigit() or int(length) > 20 * 1024 * 1024 + 65536:
+                return JSONResponse(status_code=413, content={"detail": {
+                    "code": "image_too_large", "message": "Upload at most 20 MiB with Content-Length set.",
+                }})
         response = await call_next(request)
         path = request.url.path
         if path.startswith(("/static/", "/scripts/", "/styles/", "/locales/", "/user-content/")) or path in {

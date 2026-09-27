@@ -149,6 +149,12 @@ class CompactionPipeline:
             tool_calls = msg.get("tool_calls", [])
             for tc in tool_calls:
                 total_chars += len(str(tc))
+            metadata = msg.get("metadata") or {}
+            if metadata.get("model_input_eligible") is not False:
+                for image in metadata.get("attachments", []):
+                    # Conservative tile allowance; actual usage remains model-owned.
+                    from app.atlasclaw.core.chat_attachments import image_token_allowance
+                    total_chars += image_token_allowance(image) * 4
         
         return total_chars // 4
     
@@ -248,6 +254,15 @@ class CompactionPipeline:
             "role": "system",
             "content": f"{COMPACTION_SUMMARY_PREFIX}\n{summary}",
         })
+
+        # Preserve the most recent image turn for follow-up questions without
+        # keeping the entire older conversation in the model context.
+        if not any((m.get("metadata") or {}).get("attachments") for m in recent_messages):
+            latest_image_turn = next((m for m in reversed(to_compress)
+                if (m.get("metadata") or {}).get("attachments")
+                and (m.get("metadata") or {}).get("model_input_eligible") is not False), None)
+            if latest_image_turn:
+                result.append(latest_image_turn)
 
         # Preserve the recent conversation verbatim.
         result.extend(recent_messages)

@@ -215,7 +215,19 @@ def _build_session_history_response(
         if role == "tool":
             continue
 
-        if role not in {"user", "assistant"} or not content:
+        attachments = (getattr(entry, "metadata", {}) or {}).get("attachments", []) if role == "user" else []
+        if attachments:
+            from ..core.chat_attachments import ChatAttachments, ImageInputError
+            store = ChatAttachments(workspace_path, user_id)
+            visible_attachments = []
+            for ref in attachments:
+                try:
+                    available = store.path(ref.get("id")).is_file()
+                except ImageInputError:
+                    available = False
+                visible_attachments.append({**ref, "available": available})
+            attachments = visible_attachments
+        if role not in {"user", "assistant"} or not (content or attachments):
             continue
 
         workspace_downloads = []
@@ -234,6 +246,7 @@ def _build_session_history_response(
                 timestamp=entry.timestamp,
                 workspace_downloads=workspace_downloads,
                 object_actions=object_actions,
+                attachments=attachments,
             )
         )
     return SessionHistoryResponse(messages=messages)
@@ -318,6 +331,11 @@ def register_session_routes(router: APIRouter) -> None:
         session_key = _canonical_session_key(session_key)
         manager = ctx.session_manager_router.for_session_key(session_key)
         await manager.reset_session(session_key, archive=request.archive)
+        if not request.archive:
+            from ..core.chat_attachments import ChatAttachments
+            from ..db.database import get_db_manager
+            if get_db_manager()._session_factory is not None:
+                await ChatAttachments(manager.workspace_path, auth_user.user_id).delete(session_key=session_key)
         return {"status": "reset", "session_key": session_key}
 
     @router.delete("/sessions/{session_key:path}")
@@ -336,6 +354,10 @@ def register_session_routes(router: APIRouter) -> None:
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Session not found: {session_key}",
             )
+        from ..core.chat_attachments import ChatAttachments
+        from ..db.database import get_db_manager
+        if get_db_manager()._session_factory is not None:
+            await ChatAttachments(manager.workspace_path, auth_user.user_id).delete(session_key=session_key)
         return {"status": "deleted", "session_key": session_key}
 
     @router.get("/sessions/{session_key:path}/status", response_model=StatusResponse)

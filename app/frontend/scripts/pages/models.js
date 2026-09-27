@@ -383,6 +383,16 @@ const PAGE_HTML = `
                 <span class="toggle-slider"></span>
               </label>
             </div>
+            <div class="model-option-row">
+              <div class="model-option-copy">
+                <label class="model-option-title" for="modelSupportsVision" data-i18n="model.supportsVision">Image analysis</label>
+                <p id="modelSupportsVisionHint" class="model-capability-hint" data-i18n="model.supportsVisionHint">Allow this model to analyze images and read text within them.</p>
+              </div>
+              <label class="toggle-switch">
+                <input type="checkbox" id="modelSupportsVision" aria-describedby="modelSupportsVisionHint">
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
           </div>
 
           <!-- Hidden fields for temperature and description (preserve default values) -->
@@ -1000,6 +1010,9 @@ function resetFormData() {
     isActiveCheckbox.checked = true
   }
 
+  const visionCheckbox = containerRef?.querySelector('#modelSupportsVision')
+  if (visionCheckbox) visionCheckbox.checked = false
+
   // Reset model ID dropdown
   const modelSelect = containerRef?.querySelector('#modelModelId')
   if (modelSelect) {
@@ -1045,6 +1058,9 @@ function fillFormData(config) {
   if (isActiveCheckbox) {
     isActiveCheckbox.checked = config.is_active !== false
   }
+
+  const visionCheckbox = containerRef?.querySelector('#modelSupportsVision')
+  if (visionCheckbox) visionCheckbox.checked = config.capabilities?.vision === true
 
   // Update API Key required indicator
   updateApiKeyRequired(config.provider || '')
@@ -1092,6 +1108,10 @@ async function saveModelConfig() {
     temperature: parseFloat(containerRef?.querySelector('#modelTemperature')?.value) || 0.7,
     weight: parseInt(containerRef?.querySelector('#modelWeight')?.value) || 100,
     description: containerRef?.querySelector('#modelDescription')?.value?.trim() || null,
+    capabilities: {
+      ...existingConfig?.capabilities,
+      vision: containerRef?.querySelector('#modelSupportsVision')?.checked ?? false
+    },
     is_active: containerRef?.querySelector('#modelIsActive')?.checked ?? true
   }
 
