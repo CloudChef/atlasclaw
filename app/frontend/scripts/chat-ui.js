@@ -65,9 +65,9 @@ const CHAT_DENSITY = Object.freeze({
     bubbleBorderRadius: '24px',
     messageMargin: '8px',
     sideGutter: '10%',
-    messageBottomSpace: '112px',
+    messageBottomSpace: '64px',
     inputBorderRadius: '32px',
-    inputPadding: '12px 20px',
+    inputPadding: '6px 16px',
     inputBorder: 'none',
     inputShadow: '0 22px 60px rgba(15, 23, 42, 0.08)',
     inputFontSize: '18px',
@@ -80,9 +80,9 @@ const CHAT_DENSITY = Object.freeze({
     bubbleBorderRadius: '18px',
     messageMargin: '4px',
     sideGutter: '12px',
-    messageBottomSpace: '80px',
+    messageBottomSpace: '48px',
     inputBorderRadius: '22px',
-    inputPadding: '8px 14px',
+    inputPadding: '4px 12px',
     inputBorder: '1px solid #e6ebf3',
     inputShadow: '0 12px 32px rgba(15, 23, 42, 0.07)',
     inputFontSize: '16px',
@@ -976,6 +976,10 @@ function mapTranscriptMessageToHistory(message) {
   return null
 }
 
+function getComposerButtonSize() {
+  return window.__atlasclawEmbedSurface?.surface === 'floating' ? '36px' : '40px'
+}
+
 function configureHandler(element) {
   const handlerFn = async (body, signals) => {
     const rawMessageText = extractMessageFromBody(body)
@@ -1145,7 +1149,7 @@ function extractMessageFromBody(body) {
 function configureI18nAttributes(element) {
   const compact = window.__atlasclawEmbedSurface?.surface === 'floating'
   const density = compact ? CHAT_DENSITY.compact : CHAT_DENSITY.comfortable
-  const submitButtonSize = compact ? '36px' : '40px'
+  const submitButtonSize = getComposerButtonSize()
   element.classList?.toggle('atlas-chat-compact', compact)
   element.chatStyle = { backgroundColor: 'transparent' }
   element.validateInput = validateChatInput
@@ -1262,11 +1266,18 @@ function configureI18nAttributes(element) {
     /* DeepChat positions inside buttons and their icons for its native 1.65em
        button. Keep the native states while centering the enlarged AtlasClaw
        button and its state indicators within the composer. */
-    .input-button.inside-end {
+    .input-button.inside-start, .input-button.inside-end {
+      width: ${submitButtonSize} !important;
+      height: ${submitButtonSize} !important;
+      box-sizing: border-box !important;
       inset-block-start: 50% !important;
       inset-block-end: auto !important;
       transform: translateY(-50%) !important;
     }
+    #input { margin-top: auto !important; margin-bottom: 0 !important; }
+    :host(.atlas-chat-compact) .input-button.inside-start,
+    :host(.atlas-chat-compact) .input-button.inside-end { width: 36px !important; height: 36px !important; }
+    #text-input-container { margin-top: 4px !important; margin-bottom: 4px !important; }
     #stop-icon {
       inset: 0 !important;
       margin: auto !important;

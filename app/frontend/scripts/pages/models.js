@@ -15,7 +15,7 @@
 
 import { t, updateContainerTranslations } from '../i18n.js'
 import { showToast } from '../components/toast.js'
-import { buildAssetUrl } from '../config.js'
+import { buildAssetUrl, buildApiUrl } from '../config.js'
 
 // ========== Module State ==========
 let mounted = false
@@ -353,10 +353,9 @@ const PAGE_HTML = `
 
           <div class="form-divider"></div>
 
-          <!-- Row 6: API Type + Context Window -->
-          <div class="form-row form-row-2col">
+          <div class="model-parameter-grid">
             <div class="form-field">
-              <label class="form-label" data-i18n="model.apiType">API TYPE</label>
+              <label class="form-label" for="modelApiType" data-i18n="model.apiType">API TYPE</label>
               <select id="modelApiType" class="form-input form-select">
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
@@ -364,21 +363,23 @@ const PAGE_HTML = `
               </select>
             </div>
             <div class="form-field">
-              <label class="form-label" data-i18n="model.contextWindow">CONTEXT WINDOW</label>
+              <label class="form-label" for="modelContextWindow" data-i18n="model.contextWindow">CONTEXT WINDOW</label>
               <input type="number" id="modelContextWindow" class="form-input" value="128000">
+            </div>
+            <div class="form-field">
+              <label class="form-label" for="modelMaxTokens" data-i18n="model.maxTokens">MAX TOKENS</label>
+              <input type="number" id="modelMaxTokens" class="form-input" value="4096">
             </div>
           </div>
 
-          <!-- Row 7: Max Tokens + Is Active -->
-          <div class="form-row form-row-2col">
-            <div class="form-field">
-              <label class="form-label" data-i18n="model.maxTokens">MAX TOKENS</label>
-              <input type="number" id="modelMaxTokens" class="form-input" value="4096">
-            </div>
-            <div class="form-field form-field-toggle-inline">
-              <label class="form-label" data-i18n="model.isActive">ACTIVE</label>
+          <div class="model-options">
+            <div class="model-option-row">
+              <div class="model-option-copy">
+                <label class="model-option-title" for="modelIsActive" data-i18n="model.isActive">Active</label>
+                <p id="modelIsActiveHint" class="model-capability-hint" data-i18n="model.isActiveHint">Make this model available to the assistant.</p>
+              </div>
               <label class="toggle-switch">
-                <input type="checkbox" id="modelIsActive" checked>
+                <input type="checkbox" id="modelIsActive" aria-describedby="modelIsActiveHint" checked>
                 <span class="toggle-slider"></span>
               </label>
             </div>
@@ -467,7 +468,7 @@ const PAGE_HTML = `
 
 async function fetchModelConfigs() {
   try {
-    const res = await fetch('/api/model-configs')
+    const res = await fetch(buildApiUrl('/api/model-configs'))
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
     return Array.isArray(data) ? data : (data.configs || data.model_configs || [])
@@ -478,7 +479,7 @@ async function fetchModelConfigs() {
 }
 
 async function createModelConfig(data) {
-  const res = await fetch('/api/model-configs', {
+  const res = await fetch(buildApiUrl('/api/model-configs'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
@@ -491,7 +492,7 @@ async function createModelConfig(data) {
 }
 
 async function updateModelConfig(id, data) {
-  const res = await fetch(`/api/model-configs/${id}`, {
+  const res = await fetch(buildApiUrl(`/api/model-configs/${id}`), {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data)
@@ -504,7 +505,7 @@ async function updateModelConfig(id, data) {
 }
 
 async function deleteModelConfigApi(id) {
-  const res = await fetch(`/api/model-configs/${id}`, {
+  const res = await fetch(buildApiUrl(`/api/model-configs/${id}`), {
     method: 'DELETE'
   })
   if (!res.ok) {
@@ -518,7 +519,7 @@ async function deleteModelConfigApi(id) {
 
 async function loadProviderData() {
   try {
-    const res = await fetch('/api/providers')
+    const res = await fetch(buildApiUrl('/api/providers'))
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
 
@@ -578,7 +579,7 @@ async function fetchModelsFromProvider(silent = false) {
   }
 
   try {
-    const res = await fetch('/api/providers/fetch-models', {
+    const res = await fetch(buildApiUrl('/api/providers/fetch-models'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ provider, base_url: baseUrl, api_key: apiKey })
@@ -1074,6 +1075,7 @@ async function openEditModal(id) {
 async function saveModelConfig() {
   const modelIdSelect = containerRef?.querySelector('#modelModelId')
   const modelIdCustom = containerRef?.querySelector('#modelModelIdCustom')
+  const existingConfig = modelConfigs.find(config => config.id === editingModelId)
 
   const data = {
     name: containerRef?.querySelector('#modelName')?.value?.trim(),
@@ -1107,7 +1109,7 @@ async function saveModelConfig() {
     return
   }
   // API Key validation - required for cloud providers
-  if (!NO_API_KEY_PROVIDERS.includes(data.provider) && !data.api_key) {
+  if (!NO_API_KEY_PROVIDERS.includes(data.provider) && !data.api_key && !existingConfig?.api_key_masked) {
     showToast(t('model.apiKeyRequired') || 'API Key is required for this provider', 'error')
     return
   }
