@@ -140,6 +140,7 @@ async def complete_run_with_static_answer(
     user_message: str,
     answer: str,
     reason: str,
+    attachments: Optional[list[dict]] = None,
 ) -> None:
     """Persist and complete a run whose answer is decided by API-side policy.
 
@@ -154,7 +155,7 @@ async def complete_run_with_static_answer(
         TranscriptEntry(
             role="user",
             content=user_message,
-            metadata={"static_answer_reason": reason},
+            metadata={"static_answer_reason": reason, "attachments": attachments or [], "model_input_eligible": False},
         ),
     )
     await session_manager.append_transcript(
@@ -223,6 +224,66 @@ async def execute_agent_run(
             "run_id": run_id,
             "context": request_context or {},
         }
+        from ...core.chat_attachments import ChatAttachments, ImageInputError, image_token_allowance, MAX_HISTORY_BYTES, MAX_HISTORY_IMAGES
+        from ...agent.model_capabilities import image_capabilities, session_model
+
+        session_manager = ctx.session_manager_router.for_session_key(session_key)
+        attachments = get_run_or_404(ctx, run_id).get("attachments", [])
+        transcript = await session_manager.load_transcript(session_key)
+        retained = list(attachments)
+        retained_groups = [attachments]
+        seen_ids = {ref["id"] for ref in retained}
+        dropped = 0
+        for entry in reversed(transcript):
+            if entry.role != "user" or entry.metadata.get("model_input_eligible") is False:
+                continue
+            group = [ref for ref in entry.metadata.get("attachments", []) if ref["id"] not in seen_ids]
+            if len(retained) + len(group) > MAX_HISTORY_IMAGES or sum(r.get("size", 0) for r in retained + group) > MAX_HISTORY_BYTES:
+                dropped += len(group)
+                continue
+            retained.extend(group)
+            if group:
+                retained_groups.append(group)
+            seen_ids.update(ref["id"] for ref in group)
+        if retained:
+            snapshot = await image_capabilities(runner)
+            token = session_model(runner, session_key)
+            if token is None or not snapshot.get(token.token_id, False):
+                locale = str((request_context or {}).get("ui_locale", ""))
+                answer = (
+                    "当前模型未启用图片分析，请联系管理员配置支持图片的模型。"
+                    if locale.startswith("zh") else
+                    "Image analysis is not enabled for the current model. Ask your administrator to configure an image-capable model."
+                )
+                await complete_run_with_static_answer(
+                    ctx, run_id=run_id, session_key=session_key, user_message=message,
+                    answer=answer, reason="model_image_disabled", attachments=attachments,
+                )
+                return
+            image_budget = (token.context_window or 128000) // 2
+            if sum(image_token_allowance(ref) for ref in attachments) > image_budget:
+                raise ImageInputError("image_context_limit", "Reduce the image count or resolution for this model.")
+            while sum(image_token_allowance(ref) for ref in retained) > image_budget:
+                group = retained_groups.pop()
+                remove_ids = {ref["id"] for ref in group}
+                retained = [ref for ref in retained if ref["id"] not in remove_ids]
+                dropped += len(group)
+            store = ChatAttachments(session_manager.workspace_path, _user_info.user_id)
+            inputs = await store.model_images(session_key, retained, optional_ids={
+                ref["id"] for ref in retained if ref["id"] not in {item["id"] for item in attachments}
+            })
+            dropped += len(retained) - len(inputs)
+            deps_extra.update({
+                "_chat_attachments": attachments,
+                "_chat_image_inputs": inputs,
+                "_chat_vision_tokens": {key for key, enabled in snapshot.items() if enabled},
+            })
+            get_run_or_404(ctx, run_id)["model"] = token.model
+            get_run_or_404(ctx, run_id)["image_count"] = len(retained)
+            if dropped:
+                ctx.sse_manager.push_runtime(run_id, "warning", (
+                    f"{dropped} older image(s) are unavailable or outside the image context limit. Reattach them to analyze them again."
+                ), metadata={"code": "image_context_limit", "dropped_images": dropped})
         deps = build_scoped_deps(
             ctx,
             _user_info,
@@ -282,6 +343,8 @@ async def execute_agent_run(
                 elif event.type == "assistant":
                     ctx.sse_manager.push_assistant(run_id, event.content)
                 elif event.type == "tool":
+                    if event.phase == "start" and deps.extra.get("_chat_image_inputs"):
+                        deps.extra["_chat_tool_started"] = True
                     result_str = str(event.content) if event.content else None
                     ctx.sse_manager.push_tool(
                         run_id,
@@ -292,7 +355,8 @@ async def execute_agent_run(
                 elif event.type == "error":
                     encountered_error = True
                     final_error_message = str(event.error or final_error_message or "")
-                    ctx.sse_manager.push_error(run_id, event.error)
+                    code = str(event.error).split(":", 1)[0]
+                    ctx.sse_manager.push_error(run_id, event.error, code=code if code.startswith(("image_", "model_image_", "attachment_")) else None)
                 elif event.type == "thinking":
                     ctx.sse_manager.push_thinking(
                         run_id,
@@ -352,7 +416,7 @@ async def execute_agent_run(
             return
         error_msg = str(e)
         if _transition_running_run(run_info, "error", error=error_msg):
-            ctx.sse_manager.push_error(run_id, error_msg)
+            ctx.sse_manager.push_error(run_id, error_msg, code=getattr(e, "code", None))
             ctx.sse_manager.push_lifecycle(run_id, "error")
 
     finally:

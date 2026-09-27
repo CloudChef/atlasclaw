@@ -331,6 +331,24 @@ class AuditLogModel(Base):
         return f"<AuditLogModel(id={self.id}, entity={self.entity_type}:{self.entity_id}, action={self.action})>"
 
 
+class ChatAttachmentModel(Base):
+    """Private image metadata; image bytes remain in the user workspace."""
+
+    __tablename__ = "chat_attachments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    session_key: Mapped[str] = mapped_column(Text)
+    session_hash: Mapped[str] = mapped_column(String(64), index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    media_type: Mapped[str] = mapped_column(String(32))
+    size: Mapped[int] = mapped_column(Integer)
+    width: Mapped[int] = mapped_column(Integer)
+    height: Mapped[int] = mapped_column(Integer)
+    sha256: Mapped[str] = mapped_column(String(64))
+    bound: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class ModelConfigModel(Base):
     """Model configuration for LLM models.
 

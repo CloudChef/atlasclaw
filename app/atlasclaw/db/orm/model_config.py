@@ -275,7 +275,7 @@ class ModelConfigService:
         Returns:
             Capabilities dict or None
         """
-        if model.capabilities_json is None:
+        if getattr(model, "capabilities_json", None) is None:
             return None
         try:
             return json.loads(model.capabilities_json)

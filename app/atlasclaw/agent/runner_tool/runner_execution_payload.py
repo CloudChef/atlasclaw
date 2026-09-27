@@ -762,7 +762,11 @@ class RunnerExecutionPayloadMixin:
         try:
             run_kwargs: dict[str, Any] = {"deps": deps}
             if message_history:
-                run_kwargs["message_history"] = self.history.to_model_message_history(message_history)
+                run_kwargs["message_history"] = self.history.to_model_message_history(
+                    message_history, image_inputs=deps.extra.get("_chat_image_inputs"),
+                )
+            from app.atlasclaw.core.chat_attachments import image_prompt
+            user_message = image_prompt(user_message, deps.extra, run_kwargs.get("message_history"))
             if hasattr(override_cm, "__aenter__"):
                 async with override_cm:
                     result = await runtime_agent.run(user_message, **run_kwargs)

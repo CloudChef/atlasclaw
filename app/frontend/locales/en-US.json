@@ -454,6 +454,17 @@
     "title": "Logout"
   },
   "chat": {
+    "images": {
+      "upload": "Upload image",
+      "too_many_images": "Attach up to 4 images per message.",
+      "image_too_large": "Each image must be at most 5 MiB and 20 million pixels.",
+      "invalid_image": "Choose a valid static PNG, JPEG or WebP image.",
+      "attachment_not_found": "This image is unavailable in this conversation. Please upload it again.",
+      "image_storage_full": "Remove unsent images before uploading more.",
+      "model_image_disabled": "Image analysis is not enabled for the current model. Ask your administrator to configure an image-capable model.",
+      "model_image_unsupported": "The current model endpoint does not support images. Check the model configuration.",
+      "image_context_limit": "Images exceed the model context capacity. Reduce their count or resolution."
+    },
     "placeholder": "Enter your question...",
     "copyMessage": "Copy message",
     "openObject": "Open",
@@ -968,6 +979,8 @@
     "apiType": "API Type",
     "contextWindow": "Context Window",
     "maxTokens": "Max Tokens",
+    "supportsVision": "Image analysis",
+    "supportsVisionHint": "Enable if this model can analyze images and read text within them.",
     "temperature": "Temperature",
     "priority": "Priority",
     "priorityHint": "Higher priority models are preferred",
@@ -975,7 +988,8 @@
     "weightHint": "Used for load balancing",
     "description": "Description",
     "descriptionPlaceholder": "Optional description",
-    "isActive": "Is Active",
+    "isActive": "Active",
+    "isActiveHint": "Make this model available to the assistant.",
     "active": "Active",
     "inactive": "Inactive",
     "edit": "Edit",

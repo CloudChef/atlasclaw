@@ -107,7 +107,16 @@ class HistoryMemoryCoordinator:
                 if part_kind == "user-prompt":
                     if not part_content:
                         continue
-                    expanded.append({"role": "user", "content": str(part_content)})
+                    if isinstance(part_content, list):
+                        refs = [item.vendor_metadata["chat_attachment"] for item in part_content
+                                if isinstance(getattr(item, "vendor_metadata", None), dict)
+                                and "chat_attachment" in item.vendor_metadata]
+                        expanded.append({
+                            "role": "user", "content": "\n".join(item for item in part_content if isinstance(item, str)),
+                            "metadata": {"attachments": refs} if refs else {},
+                        })
+                    else:
+                        expanded.append({"role": "user", "content": str(part_content)})
                     continue
                 if part_kind in {"tool-return", "tool_return", "tool-result", "tool_result"}:
                     tool_name = str(getattr(part, "tool_name", getattr(part, "name", "")) or "").strip()
@@ -211,7 +220,7 @@ class HistoryMemoryCoordinator:
             messages.append(msg)
         return self._strip_unmatched_tool_calls(messages)
 
-    def to_model_message_history(self, messages: list[dict]) -> list[Any]:
+    def to_model_message_history(self, messages: list[dict], *, image_inputs: Optional[dict] = None) -> list[Any]:
         """Convert normalized transcript messages into PydanticAI model messages."""
         model_messages: list[Any] = []
         context_messages: list[Any] = []
@@ -222,8 +231,13 @@ class HistoryMemoryCoordinator:
 
             if role == "user":
                 content_text = str(content).strip()
-                if content_text:
-                    model_messages.append(ModelRequest(parts=[UserPromptPart(content=content_text)]))
+                metadata = message.get("metadata") or {}
+                images = [(image_inputs or {})[ref["id"]] for ref in metadata.get("attachments", [])
+                          if ref.get("id") in (image_inputs or {}) and metadata.get("model_input_eligible") is not False]
+                if content_text or images:
+                    model_messages.append(ModelRequest(parts=[UserPromptPart(
+                        content=[content_text, *images] if images else content_text,
+                    )]))
                 continue
 
             if role == "system":

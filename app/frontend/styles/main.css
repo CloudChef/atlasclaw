@@ -442,7 +442,7 @@ body.atlas-config-embedded-mode .chat-header {
     position: relative;
     flex: 1;
     min-height: 0;
-    padding: 18px 24px 26px;
+    padding: 10px 24px 12px;
     background: white;
 }
 

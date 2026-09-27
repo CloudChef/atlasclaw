@@ -23,6 +23,9 @@ class RunnerExecutionFlowErrorMixin:
         state: dict[str, Any],
     ) -> AsyncIterator[StreamEvent]:
         """Handle runtime exceptions within loop phase and attempt token failover."""
+        if getattr(state.get("deps"), "extra", {}).get("_chat_image_inputs"):
+            from app.atlasclaw.core.chat_attachments import classify_image_error
+            error = classify_image_error(error)
         logger.exception("Agent runtime exception during streaming run")
         if bool(state.get("answer_committed")):
             error_text = str(error).strip() or error.__class__.__name__
@@ -240,4 +243,4 @@ class RunnerExecutionFlowErrorMixin:
             f"Agent runtime error: {error_text}",
             metadata={"phase": "exception", "elapsed": round(time.monotonic() - float(state.get('start_time') or 0.0), 1)},
         )
-        yield StreamEvent.error_event(f"agent_error: {error_text}")
+        yield StreamEvent.error_event(error_text if getattr(error, "code", None) else f"agent_error: {error_text}")

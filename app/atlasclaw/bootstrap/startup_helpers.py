@@ -233,6 +233,7 @@ def build_token_entries(config) -> tuple[list[TokenEntry], Optional[str]]:
             priority=token_cfg.priority,
             weight=token_cfg.weight,
             context_window=token_cfg.context_window,
+            capabilities=getattr(token_cfg, "capabilities", {}),
         )
         missing_fields = list(_missing_token_fields(candidate))
         # A configured environment reference is a required credential even for a
@@ -363,6 +364,8 @@ async def build_token_entries_from_model_configs(session: Any) -> list[TokenEntr
             priority=model_config.priority or 0,
             weight=model_config.weight or 100,
             context_window=model_config.context_window,
+            capabilities=ModelConfigService.get_capabilities(model_config) or {},
+            source_model_config_id=getattr(model_config, "id", None),
         )
         for model_config in model_configs
     ]

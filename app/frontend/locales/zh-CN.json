@@ -454,6 +454,17 @@
     "title": "退出登录"
   },
   "chat": {
+    "images": {
+      "upload": "上传图片",
+      "too_many_images": "每条消息最多上传 4 张图片。",
+      "image_too_large": "图片超出限制：单张最多 5 MiB、2000 万像素。",
+      "invalid_image": "请选择有效的 PNG、JPEG 或 WebP 静态图片。",
+      "attachment_not_found": "图片已失效或不属于当前会话，请重新上传。",
+      "image_storage_full": "未发送图片过多，请先删除部分图片。",
+      "model_image_disabled": "当前模型未启用图片分析，请联系管理员配置支持图片的模型。",
+      "model_image_unsupported": "当前模型接口不支持图片分析，请检查模型配置。",
+      "image_context_limit": "图片超出当前模型的上下文容量，请减少图片数量或分辨率。"
+    },
     "placeholder": "请输入您的问题...",
     "copyMessage": "复制消息",
     "openObject": "打开",
@@ -968,6 +979,8 @@
     "apiType": "API 类型",
     "contextWindow": "上下文窗口",
     "maxTokens": "最大 Tokens",
+    "supportsVision": "图片分析",
+    "supportsVisionHint": "模型支持识别图片内容及其中的文字时开启。",
     "temperature": "温度",
     "priority": "优先级",
     "priorityHint": "优先级越高越优先使用",
@@ -975,7 +988,8 @@
     "weightHint": "用于负载均衡",
     "description": "描述",
     "descriptionPlaceholder": "可选描述",
-    "isActive": "启用状态",
+    "isActive": "启用模型",
+    "isActiveHint": "允许助手使用此模型。",
     "active": "已启用",
     "inactive": "已禁用",
     "edit": "编辑",

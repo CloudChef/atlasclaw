@@ -8,7 +8,8 @@ from __future__ import annotations
 import os
 from enum import Enum
 from typing import Any, Optional
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+from app.atlasclaw.core.token_pool import validate_capabilities
 
 from app.atlasclaw.heartbeat.models import HeartbeatTargetType
 from app.atlasclaw.tools.web.provider_models import SearchProviderConfig
@@ -338,6 +339,8 @@ class TokenConfig(BaseModel):
     priority: int = 0
     weight: int = 100
     context_window: Optional[int] = None
+    capabilities: dict[str, Any] = Field(default_factory=dict)
+    _validate_capabilities = field_validator("capabilities")(validate_capabilities)
 
 
 class ModelConfig(BaseModel):

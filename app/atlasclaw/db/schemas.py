@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Annotated, Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator
+from app.atlasclaw.core.token_pool import validate_capabilities
 
 
 # ============== Agent Schemas ==============
@@ -434,6 +435,7 @@ class ModelConfigCreate(BaseModel):
     temperature: float = Field(default=0.7, ge=0.0, le=2.0, description="Temperature for generation")
     description: Optional[str] = Field(default=None, description="Model description")
     capabilities: Optional[Dict[str, Any]] = Field(default=None, description="Model capabilities as JSON")
+    _validate_capabilities = field_validator("capabilities")(validate_capabilities)
     priority: int = Field(default=0, ge=0, description="Model priority")
     weight: int = Field(default=100, ge=1, le=1000, description="Model weight for weighted selection")
     is_active: bool = Field(default=True, description="Whether model is active")
@@ -454,6 +456,7 @@ class ModelConfigUpdate(BaseModel):
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     description: Optional[str] = None
     capabilities: Optional[Dict[str, Any]] = None
+    _validate_capabilities = field_validator("capabilities")(validate_capabilities)
     priority: Optional[int] = Field(default=None, ge=0)
     weight: Optional[int] = Field(default=None, ge=1, le=1000)
     is_active: Optional[bool] = None

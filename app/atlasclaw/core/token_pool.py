@@ -11,6 +11,13 @@ from threading import RLock
 from typing import Optional
 
 
+def validate_capabilities(value):
+    """Reserve vision as a strict boolean while preserving extension keys."""
+    if value is not None and "vision" in value and not isinstance(value["vision"], bool):
+        raise ValueError("capabilities.vision must be a boolean")
+    return value
+
+
 @dataclass
 class TokenEntry:
     """Single token endpoint entry."""
@@ -24,6 +31,8 @@ class TokenEntry:
     priority: int = 0
     weight: int = 100
     context_window: Optional[int] = None
+    capabilities: dict = field(default_factory=dict)
+    source_model_config_id: Optional[str] = None
 
 
 @dataclass
@@ -111,12 +120,15 @@ class TokenPool:
         *,
         strategy: str = "health",
         exclude_token_ids: Optional[set[str]] = None,
+        eligible_token_ids: Optional[set[str]] = None,
     ) -> Optional[TokenEntry]:
         with self._lock:
             candidates: list[tuple[TokenEntry, TokenHealth]] = []
             excluded = exclude_token_ids or set()
             for token_id, token in self.tokens.items():
                 if token_id in excluded:
+                    continue
+                if eligible_token_ids is not None and token_id not in eligible_token_ids:
                     continue
                 if provider and token.provider != provider:
                     continue

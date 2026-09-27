@@ -70,6 +70,7 @@ class SessionHistoryMessage(BaseModel):
         default_factory=list,
     )
     object_actions: list[SessionHistoryObjectAction] = Field(default_factory=list)
+    attachments: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class SessionHistoryResponse(BaseModel):
@@ -84,7 +85,8 @@ class SessionResetRequest(BaseModel):
 
 class AgentRunRequest(BaseModel):
     session_key: str
-    message: str
+    message: str = ""
+    attachment_ids: list[str] = Field(default_factory=list, max_length=4)
     model: Optional[str] = None
     timeout_seconds: int = 600
     context: dict[str, Any] = Field(default_factory=dict)

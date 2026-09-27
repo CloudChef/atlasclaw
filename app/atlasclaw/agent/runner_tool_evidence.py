@@ -1058,7 +1058,7 @@ class RunnerToolEvidenceMixin:
                 continue
             sanitized[tool_index] = narrowed_tool_message
 
-        if raw_user_message is not None and raw_user_message.strip():
+        if raw_user_message is not None and (raw_user_message.strip() or (persist_user_metadata or {}).get("attachments")):
             for index in range(safe_start, len(sanitized)):
                 item = sanitized[index]
                 if str(item.get("role", "")).strip().lower() != "user":
@@ -1153,6 +1153,8 @@ class RunnerToolEvidenceMixin:
         """Return user-message metadata derived from API run context."""
         metadata: dict[str, Any] = {}
         extra = getattr(deps, "extra", {})
+        if isinstance(extra, dict) and extra.get("_chat_attachments"):
+            metadata["attachments"] = extra["_chat_attachments"]
         context = extra.get("context") if isinstance(extra, dict) else None
         if isinstance(context, dict) and context.get("visible_user_turn") is False:
             metadata["visible_user_turn"] = False

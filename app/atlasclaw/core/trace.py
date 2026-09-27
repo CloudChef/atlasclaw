@@ -8,6 +8,7 @@ from __future__ import annotations
 import contextvars
 import json
 import logging
+import re
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterator, Mapping, Optional
@@ -189,14 +190,18 @@ def sanitize_log_value(
         return sanitized_items
 
     if isinstance(value, bytes):
-        return _truncate_text(value.decode("utf-8", errors="replace"), max_string_chars=max_string_chars)
+        return "[binary data omitted]"
 
     if isinstance(value, str):
+        if "data:image/" in value:
+            value = re.sub(r"data:image/[^\s\"']+", "[image data omitted]", value)
         return _truncate_text(value, max_string_chars=max_string_chars)
 
     if isinstance(value, (int, float, bool)) or value is None:
         return value
 
+    if getattr(value, "kind", None) == "binary":
+        return "[binary content omitted]"
     return _truncate_text(repr(value), max_string_chars=max_string_chars)
 
 
