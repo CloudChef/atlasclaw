@@ -41,8 +41,8 @@ def upgrade() -> None:
         sa.Column("platform_state", sa.JSON(), nullable=True),
         sa.Column("refresh_after_seconds", sa.Integer(), nullable=False, server_default="60"),
         sa.Column("expires_at", sa.DateTime(), nullable=False),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
     )
     op.create_index(
         "ix_channel_provisioning_sessions_user_id",

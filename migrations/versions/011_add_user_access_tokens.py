@@ -38,8 +38,8 @@ def upgrade() -> None:
         sa.Column("token_hint", sa.String(length=32), nullable=False),
         sa.Column("last_used_at", sa.DateTime(), nullable=True),
         sa.Column("revoked_at", sa.DateTime(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
     )
     op.create_index("ix_user_access_tokens_user_id", "user_access_tokens", ["user_id"])
     op.create_index(

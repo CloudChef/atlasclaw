@@ -41,8 +41,8 @@ def upgrade() -> None:
         sa.Column("weight", sa.Integer(), nullable=False, server_default="100"),
         sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true()),
         sa.Column("config_json", sa.Text(), nullable=True),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
     )
     op.create_index("ix_model_configs_name", "model_configs", ["name"])
     op.create_index("ix_model_configs_provider", "model_configs", ["provider"])
