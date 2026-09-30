@@ -27,7 +27,7 @@ def upgrade() -> None:
         sa.Column("height", sa.Integer(), nullable=False),
         sa.Column("sha256", sa.String(64), nullable=False),
         sa.Column("bound", sa.Boolean(), nullable=False, server_default=sa.false()),
-        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.func.now()),
+        sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")),
     )
     op.create_index("ix_chat_attachments_user_id", "chat_attachments", ["user_id"])
     op.create_index("ix_chat_attachments_session_hash", "chat_attachments", ["session_hash"])
