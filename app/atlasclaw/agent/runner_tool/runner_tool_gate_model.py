@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from contextlib import nullcontext
 import inspect
 import json
@@ -13,6 +14,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 from pydantic_ai import NativeOutput, ToolOutput
+from pydantic_ai.messages import UserContent
 
 from app.atlasclaw.agent.prompt_sections import serialize_untrusted_prompt_data
 from app.atlasclaw.agent.runner_tool.runner_agent_override import resolve_override_tools
@@ -883,7 +885,7 @@ class RunnerToolGateModelMixin:
         self,
         *,
         agent: Any,
-        user_message: str,
+        user_message: str | Sequence[UserContent],
         deps: SkillDeps,
         system_prompt: Optional[str] = None,
         purpose: str = "tool_gate_model_pass",
@@ -891,6 +893,7 @@ class RunnerToolGateModelMixin:
         output_type: Any = None,
         model_settings: Optional[dict[str, Any]] = None,
     ) -> Any:
+        """Run a model pass with text or native multimodal content, including compiled builds."""
         if callable(agent) and not hasattr(agent, "run"):
             agent = agent()
             if inspect.isawaitable(agent):

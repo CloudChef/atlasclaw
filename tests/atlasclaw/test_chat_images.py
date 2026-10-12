@@ -2,6 +2,7 @@
 # Copyright 2026 Qianyun, Inc., www.cloudchef.io, All rights reserved.
 """Critical image contracts: ownership, zero-call rejection, history and failover."""
 import io
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -15,12 +16,15 @@ from starlette.datastructures import UploadFile
 from app.atlasclaw.agent.compaction import CompactionPipeline, CompactionConfig
 from app.atlasclaw.agent.history_memory import HistoryMemoryCoordinator
 from app.atlasclaw.agent.model_capabilities import image_capabilities
+from app.atlasclaw.agent.runner_tool.runner_execution_payload import RunnerExecutionPayloadMixin
+from app.atlasclaw.agent.runner_tool.runner_tool_gate_model import RunnerToolGateModelMixin
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.agent.token_policy import DynamicTokenPolicy
 from app.atlasclaw.api.routes import APIContext, install_request_validation_logging
 from app.atlasclaw.api.services.run_service import execute_agent_run, init_run
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.core.chat_attachments import ChatAttachments, ImageInputError, image_prompt
+from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.core.token_pool import TokenEntry, TokenPool
 from app.atlasclaw.core.trace import sanitize_log_value
 from app.atlasclaw.db.database import DatabaseConfig, init_database
@@ -146,6 +150,32 @@ def test_native_image_history_roundtrip_and_trace_redaction():
     assert "private-image-bytes" not in str(restored)
     assert "secret-base64" not in str(sanitize_log_value({"url": "data:image/png;base64,secret-base64"}))
     assert "private-image-bytes" not in str(sanitize_log_value(image))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_image", [False, True])
+async def test_planning_and_recovery_forward_native_user_content(with_image):
+    """Keep text and BinaryContent intact across both model-call boundaries."""
+    image = BinaryContent(data=b"image", media_type="image/png", identifier="image-1")
+    extra = {
+        "_chat_attachments": [{"id": image.identifier}],
+        "_chat_image_inputs": {image.identifier: image},
+    } if with_image else {}
+    deps = SkillDeps(session_key="image-boundary", channel="api", extra=extra)
+    calls = []
+
+    class Agent:
+        async def run(self, prompt, **kwargs):
+            calls.append(prompt)
+            return SimpleNamespace(output="ok")
+
+    agent = Agent()
+    assert await RunnerToolGateModelMixin()._run_single_with_optional_override(
+        agent=agent, user_message=image_prompt("describe", extra), deps=deps,
+    ) == "ok"
+    assert await RunnerExecutionPayloadMixin().run_single("describe", deps, agent=agent) == "ok"
+    assert len(calls) == 2
+    assert all(prompt == (["describe", image] if with_image else "describe") for prompt in calls)
 
 
 def test_failover_never_selects_text_only_candidate():
