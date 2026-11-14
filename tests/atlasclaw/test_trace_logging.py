@@ -9,7 +9,7 @@ import json
 import logging
 from pathlib import Path
 
-import httpx
+import httpx2
 import pytest
 
 from app.atlasclaw.agent.runtime_events import RuntimeEventDispatcher
@@ -188,7 +188,7 @@ def test_http_request_log_payload_redacts_headers_and_truncates_body() -> None:
         ],
         "stream": True,
     }
-    request = httpx.Request(
+    request = httpx2.Request(
         "POST",
         "https://api.openai.com/v1/chat/completions?foo=bar",
         headers={
@@ -271,16 +271,16 @@ def test_http_response_log_payload_marks_streaming_without_consuming_body() -> N
         "agent:main:user:u1:web:dm:peer-1",
         run_id="run-http",
     )
-    request = httpx.Request(
+    request = httpx2.Request(
         "POST",
         "https://api.anthropic.com/v1/messages",
         content=json.dumps({"stream": True}).encode("utf-8"),
     )
-    response = httpx.Response(
+    response = httpx2.Response(
         200,
         request=request,
         headers={"x-request-id": "req-1"},
-        stream=httpx.ByteStream(b"chunk-1\nchunk-2"),
+        stream=httpx2.ByteStream(b"chunk-1\nchunk-2"),
     )
 
     payload = build_http_response_log_payload(response, trace)
@@ -331,3 +331,21 @@ async def test_runner_run_step_log_includes_trace_fields(caplog: pytest.LogCaptu
     assert selector_audit["selector_failed"] is False
     assert selector_audit["selector_elapsed_ms"] == 125
     assert selector_audit["main_model_calls"] == 2
+
+
+@pytest.mark.asyncio
+async def test_model_trace_client_uses_current_sdk_transport(caplog) -> None:
+    from app.atlasclaw.core.trace import create_traced_http_client
+
+    async with create_traced_http_client("example") as client:
+        assert isinstance(client, httpx2.AsyncClient)
+        request = client.build_request(
+            "POST", "https://example.invalid/v1/chat/completions",
+            headers={"Authorization": "Bearer secret-test-key"},
+            json={"model": "example", "messages": []},
+        )
+        with caplog.at_level("INFO"):
+            for hook in client.event_hooks["request"]:
+                await hook(request)
+        assert "llm_http_request" in caplog.text
+        assert "secret-test-key" not in caplog.text

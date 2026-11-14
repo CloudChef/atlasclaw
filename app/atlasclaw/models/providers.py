@@ -365,7 +365,8 @@ create PydanticAI Model instance
         provider_name: str = "",
     ) -> Any:
         """Create an OpenAI chat model instance."""
-        from pydantic_ai.models.openai import OpenAIChatModel, OpenAIModelProfile
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.profiles.openai import OpenAIModelProfile
         from pydantic_ai.providers.openai import OpenAIProvider
 
         from app.atlasclaw.models.openai_chat_compat import (
@@ -441,7 +442,7 @@ create PydanticAI Model instance
         if has_reasoning:
             # Configure thinking for Anthropic Claude models
             from pydantic_ai.models.anthropic import AnthropicModelSettings
-            model_kwargs["model_settings"] = AnthropicModelSettings(
+            model_kwargs["settings"] = AnthropicModelSettings(
                 anthropic_thinking={"type": "enabled", "budget_tokens": 10000}
             )
 
