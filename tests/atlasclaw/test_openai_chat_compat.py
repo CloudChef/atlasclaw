@@ -102,3 +102,67 @@ def test_model_factory_uses_vllm_qwen_compat_model() -> None:
     model = factory.create_model("vllm-local/Qwen3.5-27B")
 
     assert isinstance(model, QwenVllmOpenAIChatModel)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("api_type, model_name", [("openai", "example"), ("anthropic", "claude-example")])
+@pytest.mark.parametrize("reasoning", [False, True])
+async def test_model_factory_creates_current_sdk_models(api_type, model_name, reasoning) -> None:
+    from app.atlasclaw.models.providers import ModelDefinition
+
+    registry = ProviderRegistry()
+    registry.register("example", ProviderConfig(
+        api_key="test-key", api_type=api_type,
+        models=[ModelDefinition(id=model_name, reasoning=reasoning)],
+    ))
+    model = ModelFactory(registry).create_model(f"example/{model_name}")
+    try:
+        assert model.model_name == model_name
+    finally:
+        await model.client.close()
+
+
+@pytest.mark.asyncio
+async def test_create_pydantic_model_initializes_anthropic() -> None:
+    model = create_pydantic_model(TokenEntry(
+        token_id="model-1", provider="anthropic", model="claude-example",
+        api_key="test-key", api_type="anthropic", base_url="https://example.invalid",
+    ))
+    try:
+        assert model.model_name == "claude-example"
+    finally:
+        await model.client.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("thinking", [False, True])
+async def test_deepseek_preserves_thinking_toggle_in_sdk_request(stream, thinking) -> None:
+    import json
+    import httpx2
+    from pydantic_ai.models.openai import OpenAIChatModelSettings
+    from app.atlasclaw.models.openai_chat_compat import DeepSeekOpenAIChatModel
+
+    captured = []
+
+    async def respond(request):
+        captured.append(json.loads(request.content))
+        if stream:
+            return httpx2.Response(200, headers={"content-type": "text/event-stream"}, content=b"data: [DONE]\n\n")
+        return httpx2.Response(200, json={
+            "id": "example", "object": "chat.completion", "created": 0, "model": "deepseek-chat",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "ok"}, "finish_reason": "stop"}],
+        })
+
+    async with httpx2.AsyncClient(transport=httpx2.MockTransport(respond)) as client:
+        model = DeepSeekOpenAIChatModel("deepseek-chat", provider=OpenAIProvider(api_key="test-key", http_client=client))
+        result = await model._completions_create(
+            [ModelRequest(parts=[UserPromptPart(content="hello")])], stream,
+            OpenAIChatModelSettings(extra_body={"custom": "preserved"}),
+            ModelRequestParameters(thinking=thinking),
+        )
+        if stream:
+            await result.close()
+    assert captured[0]["thinking"] == {"type": "enabled" if thinking else "disabled"}
+    assert captured[0]["custom"] == "preserved"
+    assert captured[0]["stream"] is stream

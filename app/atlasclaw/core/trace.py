@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Iterator, Mapping, Optional
 from urllib.parse import parse_qsl
 
-import httpx
+import httpx2
 
 from app.atlasclaw.core.provider_registry import _is_sensitive as _is_sensitive_provider_config_key
 from app.atlasclaw.session.context import SessionKey
@@ -206,7 +206,7 @@ def sanitize_log_value(
 
 
 def build_http_request_log_payload(
-    request: httpx.Request,
+    request: httpx2.Request,
     trace_context: Optional[TraceContext],
     *,
     provider_name: str = "",
@@ -230,7 +230,7 @@ def build_http_request_log_payload(
 
 
 def build_http_response_log_payload(
-    response: httpx.Response,
+    response: httpx2.Response,
     trace_context: Optional[TraceContext],
     *,
     provider_name: str = "",
@@ -260,10 +260,10 @@ def build_http_response_log_payload(
     return payload
 
 
-def create_traced_http_client(provider_name: str) -> httpx.AsyncClient:
+def create_traced_http_client(provider_name: str) -> httpx2.AsyncClient:
     """Create an async HTTP client with request/response trace logging hooks."""
 
-    async def _on_request(request: httpx.Request) -> None:
+    async def _on_request(request: httpx2.Request) -> None:
         logger.info(
             "llm_http_request %s",
             build_http_request_log_payload(
@@ -273,7 +273,7 @@ def create_traced_http_client(provider_name: str) -> httpx.AsyncClient:
             ),
         )
 
-    async def _on_response(response: httpx.Response) -> None:
+    async def _on_response(response: httpx2.Response) -> None:
         logger.info(
             "llm_http_response %s",
             build_http_response_log_payload(
@@ -283,13 +283,13 @@ def create_traced_http_client(provider_name: str) -> httpx.AsyncClient:
             ),
         )
 
-    return httpx.AsyncClient(
+    return httpx2.AsyncClient(
         trust_env=True,
         event_hooks={"request": [_on_request], "response": [_on_response]},
     )
 
 
-def _extract_request_body(request: httpx.Request) -> Any:
+def _extract_request_body(request: httpx2.Request) -> Any:
     try:
         content = request.content
     except Exception:
@@ -301,7 +301,7 @@ def _extract_request_body(request: httpx.Request) -> Any:
     return _decode_possible_json(content)
 
 
-def _extract_response_body(response: httpx.Response) -> Any:
+def _extract_response_body(response: httpx2.Response) -> Any:
     try:
         content = response.content
     except Exception:

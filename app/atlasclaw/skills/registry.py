@@ -37,6 +37,15 @@ if TYPE_CHECKING:
     from pydantic_ai import Agent
 
 logger = logging.getLogger(__name__)
+
+_MISSING_ARGUMENT = object()
+
+
+def _missing_argument() -> object:
+    """Preserve omission through tool validation without exposing a schema default."""
+    return _MISSING_ARGUMENT
+
+
 # ---------- Skill name validation ----------
 
 _NAME_PATTERN = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
@@ -568,6 +577,7 @@ from count JSON Schema
         docstring = self._build_runtime_docstring(metadata, parameters_schema)
 
         async def runtime_handler(ctx: RunContext[SkillDeps], **kwargs: Any) -> Any:
+            kwargs = {name: value for name, value in kwargs.items() if value is not _MISSING_ARGUMENT}
             if accepts_ctx:
                 result = handler(ctx, **kwargs)
             else:
@@ -650,9 +660,12 @@ from count JSON Schema
             if not normalized_name:
                 continue
             property_schema = schema if isinstance(schema, dict) else {}
-            default = property_schema.get("default", inspect.Parameter.empty)
-            if normalized_name not in required_names and default is inspect.Parameter.empty:
-                default = None
+            if normalized_name in required_names:
+                default = inspect.Parameter.empty
+            elif "default" in property_schema:
+                default = property_schema["default"]
+            else:
+                default = Field(default_factory=_missing_argument)
             parameters.append(
                 inspect.Parameter(
                     normalized_name,
@@ -666,7 +679,20 @@ from count JSON Schema
     @staticmethod
     def _schema_to_annotation(property_schema: dict[str, Any]) -> Any:
         """Map a JSON-schema property to a reasonable Python annotation."""
+        raw_type = property_schema.get("type", "")
+        if isinstance(raw_type, list) and "null" in raw_type:
+            non_null_types = [item for item in raw_type if item != "null"]
+            if len(non_null_types) == 1:
+                annotation = SkillRegistry._schema_to_annotation({"type": non_null_types[0]})
+                return Optional[annotation]
+        alternatives = property_schema.get("anyOf")
+        if isinstance(alternatives, list) and len(alternatives) == 2:
+            non_null = [item for item in alternatives if isinstance(item, dict) and item.get("type") != "null"]
+            if len(non_null) == 1 and {"type": "null"} in alternatives:
+                return Optional[SkillRegistry._schema_to_annotation(non_null[0])]
         schema_type = str(property_schema.get("type", "") or "").strip().lower()
+        if schema_type == "null":
+            return type(None)
         if schema_type == "string":
             return str
         if schema_type == "integer":

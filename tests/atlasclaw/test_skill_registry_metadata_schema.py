@@ -6,7 +6,9 @@ from __future__ import annotations
 import inspect
 from typing import Any
 
-from pydantic_ai import Agent
+import pytest
+from pydantic import ValidationError
+from pydantic_ai import Agent, Tool
 from pydantic_ai.models.test import TestModel
 
 from app.atlasclaw.skills.registry import SkillMetadata, SkillRegistry
@@ -109,3 +111,66 @@ def test_runtime_handler_wraps_explicit_zero_argument_object_schema() -> None:
         metadata,
         _zero_argument_generated_handler,
     )
+
+
+def _runtime_tool(properties, *, handler=_generic_script_handler, required=()):
+    metadata = SkillMetadata(
+        name="example_query",
+        description="Query with tool arguments.",
+        parameters_schema={"type": "object", "properties": properties, "required": list(required)},
+    )
+    wrapped = SkillRegistry()._build_runtime_handler(metadata, handler)
+    return Tool(wrapped, takes_ctx=True)
+
+
+@pytest.mark.asyncio
+async def test_omitted_argument_uses_callable_default() -> None:
+    async def handler(ctx, query: str = "fallback"):
+        return query
+
+    tool = _runtime_tool({"query": {"type": "string"}}, handler=handler)
+    validate = tool.function_schema.validator.validate_python
+
+    assert await tool.function(None, **validate({})) == "fallback"
+    schema = tool.function_schema.json_schema
+    assert "default" not in schema["properties"]["query"]
+    assert "query" not in schema.get("required", [])
+    with pytest.raises(ValidationError):
+        validate({"query": None})
+
+
+@pytest.mark.asyncio
+async def test_schema_defaults_preserve_explicit_falsey_values() -> None:
+    tool = _runtime_tool({
+        "query": {"type": "string", "default": "fallback"},
+        "enabled": {"type": "boolean", "default": True},
+        "count": {"type": "integer", "default": 5},
+    })
+    validate = tool.function_schema.validator.validate_python
+
+    assert await tool.function(None, **validate({})) == {
+        "query": "fallback", "enabled": True, "count": 5,
+    }
+    explicit = {"query": "", "enabled": False, "count": 0}
+    assert await tool.function(None, **validate(explicit)) == explicit
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schema", [
+    {"type": ["string", "null"]},
+    {"anyOf": [{"type": "string"}, {"type": "null"}]},
+])
+async def test_nullable_argument_distinguishes_null_from_omission(schema: dict) -> None:
+    tool = _runtime_tool({"query": schema})
+    validate = tool.function_schema.validator.validate_python
+
+    assert await tool.function(None, **validate({})) == {}
+    assert await tool.function(None, **validate({"query": None})) == {"query": None}
+    with pytest.raises(ValidationError):
+        validate({"query": {"unexpected": "object"}})
+
+
+def test_required_field_with_schema_default_still_requires_input() -> None:
+    tool = _runtime_tool({"identifier": {"type": "string", "default": "fallback"}}, required=("identifier",))
+    with pytest.raises(ValidationError):
+        tool.function_schema.validator.validate_python({})

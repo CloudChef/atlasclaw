@@ -122,7 +122,8 @@ def create_pydantic_model(token: TokenEntry):
         )
         return AnthropicModel(token.model, provider=provider)
 
-    from pydantic_ai.models.openai import OpenAIChatModel, OpenAIModelProfile
+    from pydantic_ai.models.openai import OpenAIChatModel
+    from pydantic_ai.profiles.openai import OpenAIModelProfile
     from pydantic_ai.providers.openai import OpenAIProvider
 
     from app.atlasclaw.models.openai_chat_compat import (
