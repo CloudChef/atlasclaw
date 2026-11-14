@@ -34,7 +34,7 @@ AtlasClaw container uses the following internal directory structure:
 | Best for | Development / Small teams | Production / Large organizations |
 | Resources | Minimal | Configurable limits |
 | High Availability | No | Yes (with external MySQL) |
-| Base Image | python:3.11-slim | python:3.11-slim |
+| Base Image | python:3.14.10-slim-bookworm | python:3.14.10-slim-bookworm |
 
 ## Files
 
@@ -42,7 +42,7 @@ AtlasClaw container uses the following internal directory structure:
 
 | File | Description |
 |------|-------------|
-| `Dockerfile.opensource` | Lightweight build with SQLite |
+| `Dockerfile` | Lightweight build with SQLite |
 | `Dockerfile.enterprise` | Multi-stage build with MySQL support |
 
 ### Compose Files

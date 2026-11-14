@@ -1,7 +1,7 @@
 # AtlasClaw Enterprise Edition
 # Multi-stage build for production deployment with MySQL support
 
-FROM python:3.11-slim-bookworm as builder
+FROM python:3.14.10-slim-bookworm as builder
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -19,7 +19,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir --user -r requirements.txt
 
 # Production stage
-FROM python:3.11-slim-bookworm
+FROM python:3.14.10-slim-bookworm
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive

@@ -1,7 +1,7 @@
 # AtlasClaw OpenSource Edition
 # Lightweight build with SQLite for single-node deployment
 
-FROM python:3.11-slim-bookworm
+FROM python:3.14.10-slim-bookworm
 
 # Prevent interactive prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
