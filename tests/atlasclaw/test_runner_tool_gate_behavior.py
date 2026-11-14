@@ -486,6 +486,68 @@ def test_invalid_turn_plan_does_not_expose_runtime_tools(
     assert state["selector_failed"] is True
 
 
+@pytest.mark.parametrize("kind", ["tool", "skill", "provider_skill"])
+@pytest.mark.parametrize("use_full_id", [False, True])
+def test_start_new_resolves_unique_name_before_selector(kind: str, use_full_id: bool) -> None:
+    capability_id = f"{kind}:primary.query"
+    entry = {"capability_id": capability_id, "name": "primary.query"}
+    if kind == "provider_skill":
+        entry.update(
+            target_provider_instances=["primary"],
+            target_provider_types=["example"],
+            target_provider_skill_names=["query"],
+        )
+    runner = _GateRunner()
+    plan = runner._normalize_conversation_turn_plan_scope(
+        plan=ConversationTurnPlan(
+            route=ConversationTurnRoute.START_NEW,
+            action=ConversationTurnAction.USE_TOOLS,
+            target_capability_ids=[capability_id if use_full_id else "primary.query"],
+        ),
+        capability_index=[entry],
+        active_capability_context="",
+    )
+    assert plan is not None
+    assert plan.target_capability_ids == [capability_id]
+    selected = runner._coerce_capability_selector_payload(
+        payload={"outcome": "authorized_capability", "targets": plan.target_capability_ids},
+        capability_index=[entry],
+    )
+    assert selected is not None
+    assert selected.action is ToolIntentAction.USE_TOOLS
+    field = f"target_{kind}_names"
+    assert getattr(selected, field) == (["query"] if kind == "provider_skill" else ["primary.query"])
+
+
+@pytest.mark.parametrize("target", ["duplicate", "unknown", "wrong:valid"])
+@pytest.mark.parametrize("include_valid", [False, True])
+def test_start_new_invalid_names_still_reject_entire_selection(
+    target: str, include_valid: bool,
+) -> None:
+    index = [
+        {"capability_id": "tool:valid", "name": "valid"},
+        {"capability_id": "tool:duplicate", "name": "duplicate"},
+        {"capability_id": "skill:duplicate", "name": "duplicate"},
+    ]
+    targets = (["valid"] if include_valid else []) + [target]
+    runner = _GateRunner()
+    plan = runner._normalize_conversation_turn_plan_scope(
+        plan=ConversationTurnPlan(
+            route=ConversationTurnRoute.START_NEW,
+            action=ConversationTurnAction.USE_TOOLS,
+            target_capability_ids=targets,
+        ),
+        capability_index=index,
+        active_capability_context="",
+    )
+    assert plan is not None
+    assert plan.target_capability_ids == (["tool:valid"] if include_valid else []) + [target]
+    assert runner._coerce_capability_selector_payload(
+        payload={"outcome": "authorized_capability", "targets": plan.target_capability_ids},
+        capability_index=index,
+    ) is None
+
+
 def test_continue_active_targets_continue_or_switch_within_authorized_scope() -> None:
     capability_index = [
         {

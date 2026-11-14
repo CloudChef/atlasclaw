@@ -341,6 +341,25 @@ class RunnerToolGateModelMixin:
                     # The strict active trace defines continuation scope; an
                     # active capability or its declared tool is redundant.
                     plan = plan.model_copy(update={"target_capability_ids": []})
+        elif plan.route is ConversationTurnRoute.START_NEW:
+            # Resolve bare names only within this turn's authorized index.
+            # Leave invalid or ambiguous targets for the strict selector to reject.
+            targets_by_name: dict[str, set[str]] = {}
+            for entry in capability_index:
+                if not isinstance(entry, dict):
+                    continue
+                capability_id = str(entry.get("capability_id", "") or "").strip()
+                name = str(entry.get("name", "") or "").strip()
+                if capability_id and name:
+                    targets_by_name.setdefault(name, set()).add(capability_id)
+            targets: list[str] = []
+            for target in plan.target_capability_ids:
+                matches = targets_by_name.get(target.strip(), set())
+                if ":" not in target and len(matches) == 1:
+                    targets.append(next(iter(matches)))
+                else:
+                    targets.append(target)
+            plan = plan.model_copy(update={"target_capability_ids": targets})
         elif plan.route is ConversationTurnRoute.ORDINARY:
             if plan.target_capability_ids:
                 logger.warning(
