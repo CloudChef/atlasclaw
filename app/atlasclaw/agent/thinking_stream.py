@@ -5,9 +5,7 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
 from typing import Any, AsyncIterator
 
 from pydantic_ai.messages import ThinkingPart
@@ -19,7 +17,7 @@ from app.atlasclaw.core.trace import get_current_trace_context, resolve_trace_co
 logger = logging.getLogger(__name__)
 
 
-def split_thinking_chunks(text: str, target_size: int = 5) -> list[str]:
+def split_thinking_chunks(text: str, target_size: int = 512) -> list[str]:
     """Split thinking content into chunks for streaming display."""
     if len(text) <= target_size:
         return [text]
@@ -50,12 +48,12 @@ def split_thinking_chunks(text: str, target_size: int = 5) -> list[str]:
 class ThinkingStreamEmitter:
     """Stateful emitter that converts model parts into thinking/assistant stream events."""
 
-    def __init__(self, *, chunk_delay_seconds: float = 0.015, chunk_size: int = 5) -> None:
-        self.chunk_delay_seconds = chunk_delay_seconds
+    def __init__(self, *, chunk_delay_seconds: float = 0, chunk_size: int = 512) -> None:
+        # Retain the keyword for callers; completed content is never delayed.
+        if chunk_size <= 0:
+            raise ValueError("chunk_size must be positive")
         self.chunk_size = chunk_size
         self.thinking_started = False
-        self.thinking_start_time: float | None = None
-        self.thinking_chunk_count = 0
         self.assistant_emitted = False
         self.current_cycle_had_thinking = False
 
@@ -110,8 +108,6 @@ class ThinkingStreamEmitter:
         if not self.thinking_started:
             yield StreamEvent.thinking_start()
             self.thinking_started = True
-            self.thinking_start_time = time.time()
-            self.thinking_chunk_count = 0
         self.current_cycle_had_thinking = True
 
         thinking_content = getattr(part, "content", "")
@@ -122,8 +118,6 @@ class ThinkingStreamEmitter:
         chunks = split_thinking_chunks(content_str, target_size=self.chunk_size)
         for chunk in chunks:
             yield StreamEvent.thinking_delta(chunk)
-            self.thinking_chunk_count += 1
-            await asyncio.sleep(self.chunk_delay_seconds)
 
     async def _emit_assistant_text(
         self,
@@ -162,9 +156,9 @@ class ThinkingStreamEmitter:
         yield StreamEvent.assistant_delta(content)
 
     def _calc_thinking_elapsed(self) -> float:
-        wall_elapsed = time.time() - self.thinking_start_time if self.thinking_start_time else 0
-        simulated_elapsed = self.thinking_chunk_count * self.chunk_delay_seconds
-        return round(max(wall_elapsed, simulated_elapsed), 1)
+        # This emitter receives completed responses, not real-time model chunks.
+        # Model thinking duration is unknown; playback is not execution time.
+        return 0.0
 
     def reset_cycle_flags(self) -> None:
         """Reset per-model-cycle flags used by the runner."""
