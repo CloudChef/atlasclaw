@@ -384,6 +384,12 @@ class AgentDefaultsConfig(BaseModel):
     prompt_mode: PromptMode = PromptMode.FULL
     bootstrap_max_chars: int = Field(default=20000, description="Maximum Bootstrap file size in characters")
     block_streaming_default: bool = False
+    direct_answer_streaming: bool = Field(
+        default=False, description="Stream eligible tool-free Web answers through native model nodes",
+    )
+    read_only_answer_streaming: bool = Field(
+        default=False, description="Preview model text after successful read-only tools in supporting Web clients",
+    )
     block_streaming_break: str = "text_end"
     human_delay: HumanDelayConfig = Field(default_factory=HumanDelayConfig)
 

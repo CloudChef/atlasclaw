@@ -282,6 +282,8 @@ class RunnerExecutionFlowPhaseMixin(
             raw_runtime_message_history = state.get("message_history") or []
         runtime_message_history = list(raw_runtime_message_history)
         agent_run = None
+        can_stream = getattr(self, "_can_stream_direct_answer", None)
+        state["direct_text_streaming"] = bool(callable(can_stream) and can_stream(state))
 
         deps.user_message = user_message
         if model_user_message != user_message:
@@ -331,20 +333,24 @@ class RunnerExecutionFlowPhaseMixin(
                         ),
                     },
                 )
+                stream_kwargs = {"direct_text_streaming": True} if state["direct_text_streaming"] else {}
                 async with self._run_iter_with_optional_override(
                     agent=state.get("runtime_agent"),
                     user_message=model_user_message,
                     deps=deps,
                     message_history=model_message_history,
                     system_prompt=state.get("system_prompt"),
+                    **stream_kwargs,
                 ) as agent_run:
                     _log_step("agent_iter_open_done")
-                    async for event in self._run_agent_node_stream(
-                        agent_run=agent_run,
-                        state=state,
-                        _log_step=_log_step,
-                    ):
-                        yield event
+                    if state["direct_text_streaming"]:
+                        async for event in self._stream_direct_answer(agent_run, state=state):
+                            yield event
+                    else:
+                        async for event in self._run_agent_node_stream(
+                            agent_run=agent_run, state=state, _log_step=_log_step,
+                        ):
+                            yield event
 
                     thinking_emitter = state.get("thinking_emitter")
                     if thinking_emitter is not None:

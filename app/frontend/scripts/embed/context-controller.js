@@ -6,7 +6,7 @@ import { resolveEmbedContext } from '../api-client.js?v=32'
 import { EmbedContextBridge } from './context-bridge.js?v=36'
 import { EmbedContextStore } from './context-store.js?v=35'
 import { renderObjectContextBar } from './components/object-context-bar.js?v=2'
-import { renderContextObjectActions } from '../chat-ui.js?v=49'
+import { renderContextObjectActions } from '../chat-ui.js?v=51'
 
 export const EMBED_CONTEXT_RESOLVE_DEBOUNCE_MS = 500
 

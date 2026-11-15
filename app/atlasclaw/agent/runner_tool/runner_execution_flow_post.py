@@ -984,6 +984,13 @@ class RunnerExecutionFlowPostMixin:
                     start_index=persist_run_output_start_index,
                 )
 
+        if state.get("direct_text_streaming") and (
+            self._looks_like_plaintext_tool_call_attempt(final_assistant)
+            or self._looks_like_raw_lookup_dump(final_assistant)
+            or self._looks_like_raw_tool_payload_dump(final_assistant)
+        ):
+            raise RuntimeError("Tool-free streaming returned an invalid final answer")
+
         if state.get("selector_failed") and state.get("all_available_tools"):
             final_assistant = build_conversation_planning_failure_answer()
             _log_step("conversation_planning_failure_answer_applied")
@@ -1547,6 +1554,8 @@ class RunnerExecutionFlowPostMixin:
                 buffered_assistant_events.clear()
                 final_assistant = ""
             else:
+                if state.get("direct_text_streaming"):
+                    yield StreamEvent.assistant_replace(final_assistant)
                 answered_elapsed = round(time.monotonic() - start_time, 1)
                 yield StreamEvent.runtime_update(
                     "answered",
