@@ -329,10 +329,6 @@ create SSE
                 sent_terminal_lifecycle = (
                     sent_terminal_lifecycle or _is_terminal_lifecycle(event)
                 )
-                # Maintain streaming effect for thinking delta events during replay
-                if (event.event_type == SSEEventType.THINKING
-                        and event.data.get("phase") == "delta"):
-                    await asyncio.sleep(0.015)
 
             if was_closed_on_subscribe:
                 if not sent_terminal_lifecycle:

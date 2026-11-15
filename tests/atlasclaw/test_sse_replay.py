@@ -117,3 +117,22 @@ def test_push_assistant_strips_tool_meta_block_contents():
 
     assert stream is not None
     assert stream.events[-1].data["text"] == "Visible before  visible after"
+
+@pytest.mark.asyncio
+async def test_thinking_replay_does_not_sleep(monkeypatch):
+    from unittest.mock import AsyncMock
+    manager = SSEManager()
+    run_id = 'thinking-no-delay'
+    manager.create_stream(run_id)
+    manager.push_thinking(run_id, 'start')
+    manager.push_thinking(run_id, 'delta', '已完成的思考')
+    manager.push_thinking(run_id, 'end')
+    manager.push_assistant(run_id, 'answer')
+    manager.push_lifecycle(run_id, 'end')
+    manager.close_stream(run_id)
+    sleep = AsyncMock(side_effect=AssertionError('replay delay'))
+    monkeypatch.setattr(asyncio, 'sleep', sleep)
+    events = [e async for e in manager._event_generator(run_id)]
+    assert [e['event'] for e in events] == ['thinking', 'thinking', 'thinking', 'assistant', 'lifecycle']
+    assert json.loads(events[1]['data'])['content'] == '已完成的思考'
+    sleep.assert_not_awaited()

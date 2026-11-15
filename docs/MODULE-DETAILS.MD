@@ -665,6 +665,8 @@ __init__(
 
 Enforces `max_tool_calls` and `timeout_seconds` checkpoints.
 
+`ThinkingStreamEmitter` emits completed thinking text in approximately 512-character batches. An elapsed value of 0 indicates that model thinking duration is unknown.
+
 ### 3.2 Stream Events (`agent/stream.py`)
 
 **Enum: `StreamEventType`** -`LIFECYCLE`, `ASSISTANT`, `TOOL`, `ERROR`, `COMPACTION`
