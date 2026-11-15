@@ -442,6 +442,13 @@ body.atlas-surface-floating .chat-canvas-shell {
   padding: 2px 6px 4px;
 }
 
+body.atlas-surface-floating .chat-page-shell:has(
+  #embed-object-context-slot:not([hidden]) .embed-object-context-summary,
+  #embed-object-action-slot:not([hidden])
+) .chat-empty-state {
+  display: none;
+}
+
 body.atlas-surface-floating .chat-empty-title {
   font-size: clamp(34px, 9vw, 52px);
   margin-bottom: 18px;
