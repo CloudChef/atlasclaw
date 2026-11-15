@@ -6,7 +6,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ToolPolicyMode(str, Enum):
@@ -101,6 +101,18 @@ class ConversationTurnPlan(BaseModel):
     reason: str = ""
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def validate_ordinary_scope(self) -> ConversationTurnPlan:
+        """Reject contradictory ordinary routes at the structured-output boundary."""
+        if self.route is ConversationTurnRoute.ORDINARY and (
+            self.target_capability_ids or self.action is not ConversationTurnAction.RESPOND
+        ):
+            raise ValueError(
+                "The ordinary route requires action='respond' and empty target_capability_ids. "
+                "Use start_new for a matching authorized capability."
+            )
+        return self
 
 
 class CapabilityMatchResult(BaseModel):

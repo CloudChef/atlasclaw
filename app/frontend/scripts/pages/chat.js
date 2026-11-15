@@ -7,12 +7,12 @@
  */
 
 import { initSession, getSessionKey, setSessionKey, validateChatSessionCandidate } from '../session-manager.js?v=36'
-import { initChat, activateSession, abortCurrentStream, getCurrentAgentInfo, focusChatInput, cancelChatInputFocusRetry } from '../chat-ui.js?v=45'
+import { initChat, activateSession, abortCurrentStream, getCurrentAgentInfo, focusChatInput, cancelChatInputFocusRetry } from '../chat-ui.js?v=49'
 import { listSessions, deleteSession } from '../api-client.js?v=32'
 import { translateIfExists } from '../i18n.js'
 import { updateHeaderTitleText } from '../components/header.js?v=27'
 import { restoreInputFocus } from '../dom-utils.js?v=27'
-import { EmbedContextController } from '../embed/context-controller.js?v=46'
+import { EmbedContextController } from '../embed/context-controller.js?v=49'
 
 let chatElement = null
 let mounted = false

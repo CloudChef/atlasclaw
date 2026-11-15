@@ -8,10 +8,13 @@ from contextlib import asynccontextmanager, nullcontext
 from typing import Any, AsyncIterator, Optional
 
 from app.atlasclaw.agent.context_window_guard import ContextWindowInfo, resolve_context_window_info
+from app.atlasclaw.agent.prompt_sections import build_response_language
+from app.atlasclaw.agent.runner_prompt_context import collect_ui_locale
 from app.atlasclaw.agent.runner_tool.runner_agent_override import (
     normalize_allowed_tool_names,
     resolve_override_tools,
 )
+from app.atlasclaw.agent.runner_tool.runner_progress_hooks import PROGRESS_SINK, STAGE_INSTRUCTIONS, build_progress_hooks
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.core.chat_attachments import image_prompt, ImageInputError
 from app.atlasclaw.core.trace import bind_trace_context, resolve_trace_context
@@ -196,6 +199,19 @@ class RunnerExecutionRuntimeMixin:
             deps=deps,
         )
 
+        if callable(extra.get(PROGRESS_SINK)):
+            prompt_config = getattr(getattr(self, "prompt_builder", None), "config", None)
+            language_policy = build_response_language(
+                response_language=getattr(prompt_config, "response_language", None),
+                ui_locale=collect_ui_locale(deps),
+            )
+            # Keep one authoritative language policy after workflow and stage instructions.
+            system_prompt = "\n\n".join((
+                (system_prompt or "").replace(language_policy, "").rstrip(),
+                STAGE_INSTRUCTIONS,
+                language_policy,
+            ))
+
         override_tool_names = normalize_allowed_tool_names(
             extra.get("runtime_allowed_tool_names") if isinstance(extra, dict) else None
         )
@@ -226,6 +242,9 @@ class RunnerExecutionRuntimeMixin:
         else:
             override_cm = nullcontext()
 
+        progress_hooks = build_progress_hooks(deps)
+        progress_kwargs = {"capabilities": [progress_hooks]} if progress_hooks else {}
+
         if hasattr(override_cm, "__aenter__"):
             with bind_trace_context(trace_context):
                 async with override_cm:
@@ -233,6 +252,7 @@ class RunnerExecutionRuntimeMixin:
                         image_prompt(user_message, deps.extra, message_history),
                         deps=deps,
                         message_history=message_history,
+                        **progress_kwargs,
                     ) as agent_run:
                         yield agent_run
             return
@@ -243,6 +263,7 @@ class RunnerExecutionRuntimeMixin:
                     image_prompt(user_message, deps.extra, message_history),
                     deps=deps,
                     message_history=message_history,
+                    **progress_kwargs,
                 ) as agent_run:
                     yield agent_run
     async def _iter_agent_nodes(

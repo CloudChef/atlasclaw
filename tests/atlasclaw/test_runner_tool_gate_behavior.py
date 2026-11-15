@@ -697,13 +697,14 @@ def test_conversation_planner_uses_native_output_only_for_qwen3_flash_family(
     [
         (NativeOutput(ConversationTurnPlan, strict=True), 1),
         (ToolOutput(ConversationTurnPlan), 0),
+        (ToolOutput(ConversationTurnPlan, max_retries=1), 1),
     ],
 )
-def test_single_model_pass_retries_only_native_structured_output(
+def test_single_model_pass_honors_structured_output_retry_budget(
     output_type,
     expected_retries: int,
 ) -> None:
-    """Allow one schema correction without changing existing tool-output behavior."""
+    """Honor explicit output retries while preserving defaults for other callers."""
 
     captured: dict = {}
 
@@ -750,6 +751,71 @@ def test_conversation_planner_defers_required_input_handling_to_active_skill() -
     assert "required input for the requested operation is still missing" not in prompt
     assert "Do not choose use_tools until" not in prompt
     assert "Do not choose use_tools merely to record that value" not in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("native_output", "correct_on_retry", "ordinary_action"),
+    [(False, True, "respond"), (True, False, "use_tools")],
+)
+async def test_conversation_planner_corrects_contradictory_route_without_runtime_tools(
+    native_output: bool, correct_on_retry: bool, ordinary_action: str,
+) -> None:
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel
+
+    calls = []
+    runtime_calls = []
+
+    async def respond(messages, info):
+        assert info.function_tools == []
+        calls.append(list(messages))
+        payload = {
+            "route": "ordinary",
+            "action": ordinary_action,
+            "target_capability_ids": ["tool:example_query"] if ordinary_action == "respond" else [],
+            "reason": "Needs private evidence.",
+        }
+        if correct_on_retry and len(calls) > 1:
+            payload.update(route="start_new", action="use_tools", target_capability_ids=["tool:example_query"])
+        if native_output:
+            return ModelResponse(parts=[TextPart(json.dumps(payload))])
+        return ModelResponse(parts=[ToolCallPart(info.output_tools[0].name, payload)])
+
+    agent = Agent(FunctionModel(respond))
+
+    @agent.tool_plain
+    def example_query() -> str:
+        runtime_calls.append(True)
+        return "Private evidence"
+
+    runner = _GateRunner()
+    runner.token_policy = SimpleNamespace(get_session_token=lambda _: SimpleNamespace(
+        provider="openrouter" if native_output else "deepseek",
+        model="qwen/qwen3.8-flash" if native_output else "example-model",
+        base_url="",
+    ))
+    plan = await runner._plan_conversation_turn_with_model(
+        agent=agent,
+        deps=SkillDeps(session_key="planner-correction", extra={}),
+        user_message="Check private product support.",
+        recent_history=[],
+        capability_index=[{"capability_id": "tool:example_query", "name": "example_query"}],
+    )
+
+    assert len(calls) == 2
+    assert any(
+        "ordinary route requires" in str(getattr(part, "content", ""))
+        for part in calls[-1][-1].parts
+    )
+    assert runtime_calls == []
+    if correct_on_retry:
+        assert plan is not None
+        assert plan.route is ConversationTurnRoute.START_NEW
+        assert plan.target_capability_ids == ["tool:example_query"]
+    else:
+        assert plan is None
 
 
 @pytest.mark.parametrize(

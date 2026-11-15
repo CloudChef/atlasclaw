@@ -627,3 +627,47 @@ async def test_abort_run_cancels_active_runner_and_preserves_aborted_status(tmp_
         if event.data.get("phase") == "aborted"
     ]
     assert len(aborted_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_live_progress_publishes_while_runner_is_blocked_and_detaches(tmp_path):
+    from app.atlasclaw.agent.runner_tool.runner_progress_hooks import PROGRESS_SINK
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    captured = {}
+
+    class ProgressRunner:
+        async def run(self, *, deps, **kwargs):
+            captured['deps'] = deps
+            captured['sink'] = deps.extra[PROGRESS_SINK]
+            yield StreamEvent.lifecycle_start()
+            captured['sink']('tool_running', 'Running operation', {
+                'source': 'execution_hook', 'phase': 'tool_start', 'tool_call_id': 'a',
+            })
+            entered.set()
+            await release.wait()
+            yield StreamEvent.assistant_delta('done')
+            yield StreamEvent.runtime_update('answered', 'Final answer ready.')
+            # Even before lifecycle end, the committed answer blocks late progress.
+            captured['sink']('reasoning', 'late', {'source': 'execution_hook'})
+            yield StreamEvent.lifecycle_end()
+
+    _, ctx = _build_client_and_context(tmp_path, ProgressRunner())
+    session = 'agent:main:user:anonymous'
+    init_run(ctx, 'progress-run', session, 'lookup', 30)
+    task = asyncio.create_task(execute_agent_run(ctx, 'progress-run', session, 'lookup', 30,
+                                               request_context={PROGRESS_SINK: 'untrusted'}))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        stream = ctx.sse_manager.get_stream('progress-run')
+        assert any(e.data.get('phase') == 'tool_start' for e in stream.events)
+        assert not task.done()
+    finally:
+        release.set()
+        await asyncio.wait_for(task, 2)
+    assert not any(e.data.get('message') == 'late' for e in stream.events)
+    count = len(stream.events)
+    captured['sink']('reasoning', 'after cleanup', {})
+    assert len(stream.events) == count
+    assert PROGRESS_SINK not in captured['deps'].extra
+    assert ctx.active_runs['progress-run']['status'] == 'completed'

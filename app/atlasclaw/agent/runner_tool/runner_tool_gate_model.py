@@ -214,7 +214,7 @@ class RunnerToolGateModelMixin:
                 ConversationTurnPlan,
                 name="conversation_turn_plan",
                 description=output_description,
-                max_retries=0,
+                max_retries=1,
             )
         try:
             structured_output = await self._run_single_with_optional_override(
@@ -360,18 +360,6 @@ class RunnerToolGateModelMixin:
                 else:
                     targets.append(target)
             plan = plan.model_copy(update={"target_capability_ids": targets})
-        elif plan.route is ConversationTurnRoute.ORDINARY:
-            if plan.target_capability_ids:
-                logger.warning(
-                    "conversation_turn_plan_rejected reason=ordinary_with_target target_count=%d",
-                    len(plan.target_capability_ids),
-                )
-                return None
-            if plan.action is ConversationTurnAction.USE_TOOLS:
-                logger.warning(
-                    "conversation_turn_plan_rejected reason=ordinary_with_tools"
-                )
-                return None
         return plan
 
     def _build_conversation_turn_planner_prompt(
@@ -960,10 +948,12 @@ class RunnerToolGateModelMixin:
             run_kwargs: dict[str, Any] = {"deps": deps}
             if output_type is not None:
                 run_kwargs["output_type"] = output_type
-                # Qwen Flash can occasionally return an invalid first native JSON
-                # response; one schema-guided correction keeps the fallback scoped
-                # to native structured output without retrying existing tool output.
-                run_kwargs["retries"] = 1 if isinstance(output_type, NativeOutput) else 0
+                # Let the framework apply the structured output's bounded correction budget.
+                output_retries = getattr(output_type, "max_retries", None)
+                run_kwargs["retries"] = (
+                    output_retries if isinstance(output_retries, int)
+                    else 1 if isinstance(output_type, NativeOutput) else 0
+                )
             if model_settings is not None:
                 run_kwargs["model_settings"] = dict(model_settings)
             if hasattr(override_cm, "__aenter__"):

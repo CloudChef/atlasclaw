@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import aclosing, suppress
 from datetime import datetime, timezone
@@ -12,6 +13,7 @@ from typing import Any, Optional
 
 from fastapi import HTTPException, status
 
+from ...agent.runner_tool.runner_progress_hooks import PROGRESS_SINK
 from ...auth.models import ANONYMOUS_USER, UserInfo
 from ...core.security_guard import encode_if_untrusted
 from ...session.context import SessionKey, TranscriptEntry
@@ -205,6 +207,9 @@ async def execute_agent_run(
     encountered_error = False
     final_error_message = ""
     final_answer_committed = False
+    progress_started = time.monotonic()
+    progress_closed = False
+    deps = None
 
     try:
         target_agent_id = SessionKey.from_string(session_key).agent_id or "main"
@@ -293,6 +298,19 @@ async def execute_agent_run(
             provider_config=provider_config,
             extra=deps_extra,
         )
+
+        def publish_progress(state: str, message: str, metadata: dict[str, Any]) -> None:
+            run_info = ctx.active_runs.get(run_id, {})
+            if (progress_closed or final_answer_committed or deps.is_aborted()
+                    or run_info.get("status") != "running"
+                    or run_info.get("session_key") != session_key):
+                return
+            ctx.sse_manager.push_runtime(run_id, state, message, metadata={
+                **metadata, "elapsed": time.monotonic() - progress_started,
+            })
+
+        # Install after request context resolution; clients cannot supply this callback.
+        deps.extra[PROGRESS_SINK] = publish_progress
 
         runner_events = runner.run(
             session_key=session_key,
@@ -420,4 +438,7 @@ async def execute_agent_run(
             ctx.sse_manager.push_lifecycle(run_id, "error")
 
     finally:
+        progress_closed = True
+        if deps is not None:
+            deps.extra.pop(PROGRESS_SINK, None)
         ctx.sse_manager.close_stream(run_id)
