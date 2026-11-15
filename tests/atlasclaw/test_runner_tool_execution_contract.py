@@ -48,6 +48,7 @@ from app.atlasclaw.agent.tool_gate_models import (
     ToolIntentPlan,
     ToolPolicyMode,
 )
+from app.atlasclaw.core.deps import SkillDeps
 
 
 class _History:
@@ -526,7 +527,7 @@ class _AgentRun:
 
 
 class _FlowHistory:
-    def to_model_message_history(self, messages):
+    def to_model_message_history(self, messages, *, image_inputs=None):
         return list(messages)
 
     def normalize_messages(self, messages):
@@ -560,7 +561,7 @@ class _LoopRunner(RunnerToolGateRoutingMixin, RunnerExecutionFlowPhaseMixin):
     async def _handle_loop_phase_exception(self, **kwargs):
         if False:
             yield None
-        return
+        raise kwargs["error"]
 
     async def _iter_agent_nodes(self, agent_run):
         if False:
@@ -1366,7 +1367,7 @@ async def test_explicit_final_user_output_keeps_complete_generated_content() -> 
 async def test_run_loop_phase_preserves_explicit_empty_runtime_history() -> None:
     runner = _LoopRunner()
     state = {
-        "deps": SimpleNamespace(user_message="", is_aborted=lambda: False),
+        "deps": SkillDeps(),
         "user_message": "上海周边有哪些自行车骑行公园",
         "runtime_message_history": [],
         "message_history": [

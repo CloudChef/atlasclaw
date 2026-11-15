@@ -766,6 +766,9 @@ capabilities can satisfy required grounding, and whether the final answer must b
   behavior; task switches do not inherit the old workflow's tool scope
 - `unavailable_capability` is returned by the same selector; the smaller
   selector fails closed with no tools when its output is invalid
+- structured turn plans validate that `ordinary` means `respond` with no targets;
+  PydanticAI allows one validation-guided correction before planning fails closed,
+  while runtime tools remain disabled throughout planning
 - tool projection follows the selected capability scope without applying a
   separate read-versus-write routing branch; provider workflows and upstream
   permissions remain responsible for operation-specific requirements
