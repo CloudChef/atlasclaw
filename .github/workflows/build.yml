@@ -27,6 +27,8 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.sha }}
 
       - name: Determine version tag
         id: version
@@ -96,6 +98,7 @@ jobs:
           context: .
           file: build/Dockerfile
           push: true
+          provenance: false
           tags: ${{ steps.version.outputs.image_tags }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
