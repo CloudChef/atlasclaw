@@ -6169,4 +6169,59 @@ describe('chat-ui.js handler mode', () => {
         expect(finalHtml).toContain('final answer');
     });
 
+    test('handler previews lookup text, allows another lookup, and replaces with normal final content', async () => {
+        const { signals, stream, handlerPromise } = await startStreamingAssistant('read-preview');
+        const preview = (text, reset = false) => stream.simulateEvent('runtime', {
+            state: 'reasoning', phase: 'tool_answer_stream', text, reset,
+        });
+        preview('Initial finding. ', true);
+        expect(signals.onResponse.mock.calls.at(-1)[0].html).toContain('Initial finding.');
+        preview('More evidence.');
+        expect(signals.onResponse.mock.calls.at(-1)[0].html).toContain('Initial finding. More evidence.');
+        stream.simulateEvent('tool', {tool: 'lookup', phase: 'start'});
+        stream.simulateEvent('tool', {tool: 'lookup', phase: 'end'});
+        preview('Updated finding.', true);
+        expect(signals.onResponse.mock.calls.at(-1)[0].html).toContain('Updated finding.');
+        expect(signals.onResponse.mock.calls.at(-1)[0].html).not.toContain('Initial finding.');
+        stream.simulateEvent('assistant', {text: 'Complete answer.'});
+        stream.simulateEvent('runtime', {state: 'answered', message: 'Final answer ready.'});
+        stream.simulateEvent('lifecycle', {phase: 'end'});
+        await handlerPromise;
+        const html = signals.onResponse.mock.calls.at(-1)[0].html;
+        expect(html).toContain('Complete answer.');
+        expect(html).not.toContain('Updated finding.');
+        const count = signals.onResponse.mock.calls.length;
+        preview('late', true);
+        expect(signals.onResponse.mock.calls.length).toBe(count);
+    });
+
+    test('handler renders the first delta immediately and replaces the final answer once', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+        global.fetch.mockResolvedValueOnce({ok: true, json: async () => ({session_key: 'session-123'})})
+            .mockResolvedValueOnce({ok: true, json: async () => ({})});
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({ok: true, json: async () => ({run_id: 'direct-stream'})});
+        const pending = element.handler({messages: [{text: 'Explain', role: 'user'}]}, signals);
+        await new Promise(resolve => setTimeout(resolve, 30));
+        const stream = MockEventSource.instances[0];
+        stream.simulateEvent('runtime', {state: 'reasoning', phase: 'direct_text_stream'});
+        stream.simulateEvent('assistant', {text: 'First ', is_delta: true});
+        expect(signals.onResponse.mock.calls.at(-1)[0].html).toContain('First');
+        stream.simulateEvent('assistant', {text: 'draft.', is_delta: true});
+        stream.simulateEvent('assistant', {text: 'First **complete** answer.', is_delta: false});
+        const html = signals.onResponse.mock.calls.at(-1)[0].html;
+        expect(html).toContain('First <strong>complete</strong> answer.');
+        expect(html).not.toContain('draft.');
+        const count = signals.onResponse.mock.calls.length;
+        stream.simulateEvent('assistant', {text: 'late duplicate', is_delta: true});
+        expect(signals.onResponse.mock.calls.length).toBe(count);
+        stream.simulateEvent('runtime', {state: 'answered', message: 'Final answer ready.'});
+        stream.simulateEvent('lifecycle', {phase: 'end'});
+        await pending;
+        expect(signals.onResponse.mock.calls.at(-1)[0].html).not.toContain('late duplicate');
+    });
+
 });

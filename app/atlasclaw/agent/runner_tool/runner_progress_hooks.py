@@ -56,34 +56,41 @@ def _completed_content(content: Any) -> bool:
     return False
 
 
+def successful_read_only_batch(messages: list[Any], run_id: str, tools: list[dict]) -> bool:
+    """Verify a complete successful batch and exclusively read-only calls in this run."""
+    def read_only(name: str) -> bool:
+        return any(tool.get("name") == name and tool.get("read_only") is True
+                   for tool in tools if isinstance(tool, dict))
+
+    if len(messages) < 2:
+        return False
+    previous, returned = messages[-2:]
+    if not isinstance(previous, ModelResponse) or not isinstance(returned, ModelRequest) or returned.run_id != run_id:
+        return False
+    results = returned.parts
+    expected = {part.tool_call_id for part in previous.parts if isinstance(part, ToolCallPart)}
+    if not results or not all(isinstance(part, ToolReturnPart) and part.outcome == "success"
+                              and read_only(part.tool_name) and _completed_content(part.content) for part in results):
+        return False
+    if expected != {part.tool_call_id for part in results}:
+        return False
+    return all(read_only(part.tool_name) for message in messages
+               if isinstance(message, ModelResponse) and message.run_id == run_id
+               for part in message.parts if isinstance(part, ToolCallPart))
+
+
 def build_progress_hooks(deps: SkillDeps) -> Optional[Hooks]:
     """Adapt eligible model commentary to the existing per-run output sink."""
     if not callable(deps.extra.get(PROGRESS_SINK)):
         return None
 
     async def after_model(ctx: Any, *, request_context: Any, response: ModelResponse) -> ModelResponse:
-        def read_only(name: str) -> bool:
-            return any(tool.get("name") == name and tool.get("read_only") is True
-                       for tool in deps.extra.get("tools_snapshot", []) if isinstance(tool, dict))
-
         calls = [part for part in response.parts if isinstance(part, ToolCallPart)]
-        messages = request_context.messages
-        if ctx.run_step < 2 or not calls or len(messages) < 2:
-            return response
-        previous, returned = messages[-2:]
-        if not isinstance(previous, ModelResponse) or not isinstance(returned, ModelRequest) or returned.run_id != ctx.run_id:
-            return response
-        results = returned.parts
-        expected = {part.tool_call_id for part in previous.parts if isinstance(part, ToolCallPart)}
-        if not results or not all(isinstance(part, ToolReturnPart) and part.outcome == "success"
-                                  and read_only(part.tool_name) and _completed_content(part.content) for part in results):
-            return response
-        if expected != {part.tool_call_id for part in results}:
-            return response
-        # Use the native run identity/history instead of tracking tool execution ourselves.
-        current_calls = [part for message in messages if isinstance(message, ModelResponse) and message.run_id == ctx.run_id
-                         for part in message.parts if isinstance(part, ToolCallPart)]
-        if not all(read_only(call.tool_name) for call in [*current_calls, *calls]):
+        tools = deps.extra.get("tools_snapshot", [])
+        if (ctx.run_step < 2 or not calls
+                or not successful_read_only_batch(request_context.messages, ctx.run_id, tools)
+                or not all(any(tool.get("name") == call.tool_name and tool.get("read_only") is True
+                               for tool in tools if isinstance(tool, dict)) for call in calls)):
             return response
         text = "\n".join(part.content for part in response.parts if isinstance(part, TextPart)).strip()
         if (not text or len(text) > 1000 or looks_like_plaintext_tool_call_attempt(text)

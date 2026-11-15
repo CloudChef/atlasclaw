@@ -669,6 +669,14 @@ Enforces `max_tool_calls` and `timeout_seconds` checkpoints.
 
 A native `after_model_request` hook publishes normal model text from eligible continuing read-only steps (`source=agent_model`, `phase=user_result`). Updates use the existing Markdown renderer; final answers retain their validation path and technical details remain collapsed.
 
+`agent_defaults.direct_answer_streaming` (default `false`) enables native model-node text streaming for eligible ordinary Web turns advertising `context.assistant_replace=true`. The same `agent.iter()` and final result processing are retained. Function tools, toolsets and native tools are disabled for that request. Workflow, provider/skill, artifact, image and tool-history turns retain the existing path, as do agents with output transforms or complete-output hooks. A run freezes the server flag at creation.
+
+Provisional assistant events append text; one validated final assistant event uses `is_delta=false` to replace it. The existing completion and background persistence flow is unchanged. Cancellation closes the native contexts, and a response that has published text cannot restart through token failover. This option does not enable tool-response streaming or refresh recovery. For local validation it can be enabled with `ATLASCLAW_AGENT_DEFAULTS__DIRECT_ANSWER_STREAMING=true` when starting the service; existing configuration files need not be edited.
+
+
+`agent_defaults.read_only_answer_streaming` (default `false`) separately enables provisional text after successful read-only batches for Web clients advertising `context.read_only_answer_stream=true`. The current native model node streams with its existing tools and graph semantics; later tool calls still execute. Current-run tool results must form a complete successful batch, all projected tools must explicitly declare `read_only=true`, and agents with output transforms or complete-output hooks stay buffered. Runtime events with `phase=tool_answer_stream` carry `text` deltas and `reset=true` on the first fragment of each model response. These events do not commit an answer. The client replaces the preview when the existing complete assistant output arrives; history, tool-backed error fallback, retry and terminal behavior retain the existing path. Old clients and mixed-write flows stay buffered. Local validation can use `ATLASCLAW_AGENT_DEFAULTS__READ_ONLY_ANSWER_STREAMING=true`.
+
+
 ### 3.2 Stream Events (`agent/stream.py`)
 
 **Enum: `StreamEventType`** -`LIFECYCLE`, `ASSISTANT`, `TOOL`, `ERROR`, `COMPACTION`

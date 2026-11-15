@@ -671,3 +671,215 @@ async def test_live_progress_publishes_while_runner_is_blocked_and_detaches(tmp_
     assert len(stream.events) == count
     assert PROGRESS_SINK not in captured['deps'].extra
     assert ctx.active_runs['progress-run']['status'] == 'completed'
+
+
+@pytest.fixture
+def native_direct_context(tmp_path, monkeypatch):
+    from app.atlasclaw.agent.runner import AgentRunner
+    from app.atlasclaw.agent.tool_gate_models import ConversationTurnPlan
+    from app.atlasclaw.api.services import run_service
+
+    monkeypatch.setattr(run_service, "get_config", lambda: SimpleNamespace(
+        agent_defaults=SimpleNamespace(direct_answer_streaming=True)))
+
+    def build(agent):
+        manager = SessionManager(agents_dir=str(tmp_path / "agents"))
+        runner = AgentRunner(agent, manager)
+        runner.active_memory = runner.auto_memory = None
+        async def plan(**kwargs):
+            return ConversationTurnPlan(route="ordinary", action="respond")
+        async def no_title(**kwargs):
+            pass
+        runner._plan_conversation_turn_with_model = plan
+        runner._maybe_finalize_title = no_title
+        ctx = APIContext(session_manager=manager, session_queue=SessionQueue(),
+                         skill_registry=SkillRegistry(), agent_runner=runner)
+        published = asyncio.Event()
+        push = ctx.sse_manager.push_assistant
+        def capture(*args, **kwargs):
+            result = push(*args, **kwargs)
+            published.set()
+            return result
+        monkeypatch.setattr(ctx.sse_manager, "push_assistant", capture)
+        return ctx, runner, published
+    return build
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["finish", "abort_before", "abort_after", "error", "timeout"])
+async def test_native_direct_answer_stream_and_cleanup(native_direct_context, outcome):
+    from pydantic_ai import Agent
+    from pydantic_ai.models.function import FunctionModel
+
+    entered, release, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    requests, failover_attempts = [], []
+    async def model(messages, info):
+        requests.append(info)
+        entered.set()
+        try:
+            if outcome == "abort_before":
+                await release.wait()
+            yield "First "
+            await release.wait()
+            if outcome == "error":
+                raise RuntimeError("Invalid response from openai chat completions endpoint")
+            yield "second."
+        finally:
+            closed.set()
+
+    agent = Agent(FunctionModel(stream_function=model))
+    @agent.tool_plain
+    def forbidden_tool() -> str:
+        raise AssertionError("A direct answer must not execute tools")
+    ctx, runner, published = native_direct_context(agent)
+    key, run_id = "agent:main:user:anonymous", "native-stream"
+    timeout = 0.5 if outcome == "timeout" else 30
+    init_run(ctx, run_id, key, "Explain", timeout)
+    task = asyncio.create_task(execute_agent_run(ctx, run_id, key, "Explain", timeout,
+                                               request_context={"assistant_replace": True}))
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        if outcome != "abort_before":
+            await asyncio.wait_for(published.wait(), 3)
+            assert not task.done()
+            assert ctx.active_runs[run_id]["status"] == "running"
+        if outcome.startswith("abort"):
+            abort_run(ctx, run_id)
+        elif outcome in {"finish", "error"}:
+            runner.token_policy = SimpleNamespace(
+                token_pool=SimpleNamespace(tokens={"first": object(), "fallback": object()}),
+                get_or_select_session_token=lambda *a, **kw: failover_attempts.append(kw),
+            ) if outcome == "error" else None
+            release.set()
+        await asyncio.wait_for(task, 3)
+    finally:
+        release.set()
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        await runner._await_background_post_success_tasks()
+    events = ctx.sse_manager.get_stream(run_id).events
+    answers = [e.data for e in events if e.event_type.value == "assistant"]
+    assert closed.is_set() and len(requests) == 1 and not requests[0].function_tools
+    assert failover_attempts == []
+    if outcome == "finish":
+        assert [a["text"] for a in answers if a["is_delta"]] == ["First ", "second."]
+        assert [a["text"] for a in answers if not a["is_delta"]] == ["First second."]
+        assert ctx.active_runs[run_id]["status"] == "completed"
+        history = await ctx.session_manager.load_transcript(key)
+        assert [e.content for e in history if e.role == "assistant"] == ["First second."]
+    else:
+        assert ctx.active_runs[run_id]["status"] == ("aborted" if outcome.startswith("abort") else "error")
+        assert not any(a["is_delta"] is False for a in answers)
+        assert not any(e.data.get("phase") == "end" or e.data.get("state") == "answered" for e in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["finish", "followup", "abort", "error"])
+async def test_read_only_stream_preserves_native_tool_chain(native_direct_context, monkeypatch, outcome):
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
+    from pydantic_ai.models.function import FunctionModel, DeltaToolCall
+    from app.atlasclaw.agent.tool_gate_models import ConversationTurnPlan
+
+    results = []
+    for enabled in [False, True]:
+        calls, requests = [], []
+        entered, published, release, closed = (asyncio.Event() for _ in range(4))
+
+        def record_request(info):
+            requests.append([(tool.name, tool.parameters_json_schema) for tool in info.function_tools])
+
+        async def finish_request():
+            if len(requests) == 2:
+                entered.set()
+                await release.wait()
+                if outcome == "error":
+                    raise RuntimeError("Connection interrupted")
+                if outcome == "followup":
+                    return ModelResponse(parts=[TextPart("Initial finding. "),
+                        ToolCallPart("lookup", {"query": "second"}, "two")])
+                return ModelResponse(parts=[TextPart("Initial finding. Complete answer.")])
+            return ModelResponse(parts=[TextPart("Complete answer.")])
+
+        async def respond(messages, info):
+            record_request(info)
+            if len(requests) == 1:
+                return ModelResponse(parts=[ToolCallPart("lookup", {"query": "first"}, "one")])
+            try:
+                return await finish_request()
+            finally:
+                closed.set()
+
+        async def stream(messages, info):
+            record_request(info)
+            try:
+                if len(requests) == 2:
+                    yield "Initial finding. "
+                response = await finish_request()
+                for part in response.parts:
+                    if isinstance(part, ToolCallPart):
+                        yield {0: DeltaToolCall(name=part.tool_name, json_args=part.args_as_json_str(), tool_call_id=part.tool_call_id)}
+                    else:
+                        yield part.content.removeprefix("Initial finding. ")
+            finally:
+                closed.set()
+
+        async def lookup(query: str):
+            calls.append({"query": query})
+            return {"success": True, "item": query}
+
+        ctx, runner, _ = native_direct_context(Agent(FunctionModel(respond, stream_function=stream)))
+        ctx.skill_registry.register(SkillMetadata(
+            name="lookup", description="Read an item.", read_only=True,
+            parameters_schema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+        ), lookup)
+        ctx.skill_registry.register_to_agent(runner.agent)
+        async def plan(**kwargs):
+            return ConversationTurnPlan(route="start_new", action="use_tools", target_capability_ids=["tool:lookup"])
+        runner._plan_conversation_turn_with_model = plan
+        push = ctx.sse_manager.push_runtime
+        def capture(*args, **kwargs):
+            result = push(*args, **kwargs)
+            if (kwargs.get("metadata") or {}).get("phase") == "tool_answer_stream":
+                published.set()
+            return result
+        monkeypatch.setattr(ctx.sse_manager, "push_runtime", capture)
+        key, run_id = f"agent:main:user:anonymous:web:dm:anonymous:topic:{enabled}", f"read-{enabled}"
+        init_run(ctx, run_id, key, "Read item", 30)
+        ctx.active_runs[run_id]["read_only_answer_streaming"] = enabled
+        task = asyncio.create_task(execute_agent_run(ctx, run_id, key, "Read item", 30,
+            request_context={"read_only_answer_stream": True}))
+        try:
+            await asyncio.wait_for((published if enabled else entered).wait(), 3)
+            assert not task.done() and ctx.active_runs[run_id]["status"] == "running"
+            if outcome == "abort":
+                abort_run(ctx, run_id)
+            else:
+                release.set()
+            await asyncio.wait_for(task, 3)
+        finally:
+            release.set()
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+            await runner._await_background_post_success_tasks()
+        events = ctx.sse_manager.get_stream(run_id).events
+        status = ctx.active_runs[run_id]["status"]
+        assert status == ("aborted" if outcome == "abort" else "completed")
+        assert closed.is_set()
+        assert calls == ([{"query": "first"}, {"query": "second"}] if outcome == "followup" else [{"query": "first"}])
+        assert len(requests) == (3 if outcome == "followup" else 2)
+        assert published.is_set() is enabled
+        if outcome == "error":
+            assert any(e.data.get("phase") == "tool_only_fallback" for e in events)
+        if outcome == "abort":
+            assert not any(e.data.get("state") == "answered" for e in events)
+        history = await ctx.session_manager.load_transcript(key)
+        answers = [e.content for e in history if e.role == "assistant"]
+        if outcome in {"finish", "followup"}:
+            assert [answer for answer in answers if answer] == [
+                "Complete answer." if outcome == "followup" else "Initial finding. Complete answer."]
+        results.append((calls, requests, status, answers,
+            [e.data for e in events if e.event_type.value in {"assistant", "tool", "lifecycle"}]))
+    assert results[0] == results[1]

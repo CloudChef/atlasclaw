@@ -181,22 +181,24 @@ class RunnerExecutionFlowErrorMixin:
                 return
 
         hard_failure_retried = False
-        async for retry_event in self._retry_after_hard_token_failure(
-            error=retry_error,
-            session_key=state.get("session_key"),
-            user_message=state.get("user_message"),
-            deps=state.get("deps"),
-            selected_token_id=state.get("selected_token_id"),
-            release_slot=state.get("release_slot"),
-            thinking_emitter=state.get("thinking_emitter"),
-            start_time=state.get("start_time"),
-            max_tool_calls=state.get("max_tool_calls"),
-            timeout_seconds=state.get("timeout_seconds"),
-            token_failover_attempt=state.get("_token_failover_attempt"),
-            emit_lifecycle_bounds=state.get("_emit_lifecycle_bounds"),
-        ):
-            hard_failure_retried = True
-            yield retry_event
+        # Only the new direct-text path forbids replay after publishing text.
+        if not (state.get("direct_text_streaming") and state.get("assistant_output_streamed")):
+            async for retry_event in self._retry_after_hard_token_failure(
+                error=retry_error,
+                session_key=state.get("session_key"),
+                user_message=state.get("user_message"),
+                deps=state.get("deps"),
+                selected_token_id=state.get("selected_token_id"),
+                release_slot=state.get("release_slot"),
+                thinking_emitter=state.get("thinking_emitter"),
+                start_time=state.get("start_time"),
+                max_tool_calls=state.get("max_tool_calls"),
+                timeout_seconds=state.get("timeout_seconds"),
+                token_failover_attempt=state.get("_token_failover_attempt"),
+                emit_lifecycle_bounds=state.get("_emit_lifecycle_bounds"),
+            ):
+                hard_failure_retried = True
+                yield retry_event
 
         if hard_failure_retried:
             state["release_slot"] = None

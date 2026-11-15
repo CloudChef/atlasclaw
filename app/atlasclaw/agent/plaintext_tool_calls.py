@@ -36,6 +36,25 @@ def looks_like_plaintext_tool_call_attempt(text: str) -> bool:
     return bool(_PLAINTEXT_TOOL_CALL_PATTERN.search(normalized))
 
 
+def split_plaintext_stream_chunk(text: str, *, final: bool = False) -> tuple[str, str]:
+    """Hold an incomplete tag suffix so split internal markup cannot escape checks."""
+    tail = ""
+    if not final:
+        start = text.rfind("<")
+        if start >= 0:
+            suffix = text[start:]
+            closing_think = re.fullmatch(r"</think\s*", suffix, re.I)
+            if closing_think and len(suffix) > 32:
+                raise ValueError("Internal tool markup appeared in a model preview")
+            if len(suffix) <= 32 and (closing_think or not any(
+                char.isspace() or char == ">" for char in suffix
+            )):
+                text, tail = text[:start], suffix
+    if looks_like_plaintext_tool_call_attempt(text) or re.search(r"</?tool_meta\b", text, re.I):
+        raise ValueError("Internal tool markup appeared in a model preview")
+    return text, tail
+
+
 def parse_plaintext_tool_calls(text: str) -> list[dict[str, Any]]:
     """Parse text-form tool calls such as DeepSeek DSML markup into normalized tool-call dicts."""
     normalized = str(text or "").strip()

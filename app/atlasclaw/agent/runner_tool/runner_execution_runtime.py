@@ -3,10 +3,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
+import re
+import time
 from contextlib import asynccontextmanager, nullcontext
+from dataclasses import replace
 from typing import Any, AsyncIterator, Optional
 
+from pydantic_ai import Agent
+from pydantic_ai.messages import ToolCallPart
+
+from app.atlasclaw.agent.plaintext_tool_calls import split_plaintext_stream_chunk
+from app.atlasclaw.agent.stream import StreamEvent
+from app.atlasclaw.agent.tool_gate_models import ConversationTurnRoute, ConversationTurnAction, ToolIntentAction
+from app.atlasclaw.hooks.system import HookPhase
 from app.atlasclaw.agent.context_window_guard import ContextWindowInfo, resolve_context_window_info
 from app.atlasclaw.agent.prompt_sections import build_response_language
 from app.atlasclaw.agent.runner_prompt_context import collect_ui_locale
@@ -14,10 +26,14 @@ from app.atlasclaw.agent.runner_tool.runner_agent_override import (
     normalize_allowed_tool_names,
     resolve_override_tools,
 )
-from app.atlasclaw.agent.runner_tool.runner_progress_hooks import PROGRESS_SINK, STAGE_INSTRUCTIONS, build_progress_hooks
+from app.atlasclaw.agent.runner_tool.runner_progress_hooks import (
+    PROGRESS_SINK, STAGE_INSTRUCTIONS, build_progress_hooks, successful_read_only_batch,
+)
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.core.chat_attachments import image_prompt, ImageInputError
 from app.atlasclaw.core.trace import bind_trace_context, resolve_trace_context
+
+logger = logging.getLogger(__name__)
 
 class RunnerExecutionRuntimeMixin:
     async def _resolve_runtime_agent(
@@ -181,6 +197,7 @@ class RunnerExecutionRuntimeMixin:
         deps: SkillDeps,
         message_history: list[dict],
         system_prompt: str,
+        direct_text_streaming: bool = False,
     ):
 
         """Run `agent.iter()` with optional prompt and tool overrides."""
@@ -219,7 +236,12 @@ class RunnerExecutionRuntimeMixin:
             agent=agent,
             allowed_tool_names=override_tool_names,
         )
-        if callable(override_factory) and system_prompt:
+        if direct_text_streaming:
+            # All tool sources are disabled. Do not silently discard restrictions.
+            override_cm = agent.override(
+                instructions=system_prompt, tools=[], toolsets=[], native_tools=[], retries=0,
+            )
+        elif callable(override_factory) and system_prompt:
             override_cm = nullcontext()
             override_candidates = []
             if override_tools is not None:
@@ -266,9 +288,160 @@ class RunnerExecutionRuntimeMixin:
                     **progress_kwargs,
                 ) as agent_run:
                     yield agent_run
+    def _can_stream_direct_answer(self, state: dict[str, Any]) -> bool:
+        """Select only ordinary HTTP text turns with no workflow or output transforms."""
+        deps = state.get("deps")
+        extra = getattr(deps, "extra", {})
+        context = extra.get("context") or {}
+        plan = state.get("conversation_turn_plan")
+        intent = state.get("tool_intent_plan")
+        agent = state.get("runtime_agent")
+        if not (
+            extra.get("_direct_answer_streaming_enabled") is True
+            and callable(extra.get(PROGRESS_SINK))
+            and context.get("assistant_replace") is True
+            and plan is not None and plan.route is ConversationTurnRoute.ORDINARY
+            and plan.action is ConversationTurnAction.RESPOND
+            and intent is not None and intent.action is ToolIntentAction.DIRECT_ANSWER
+            and not intent.unavailable_runtime_capability
+            and not state.get("selector_failed")
+            and not state.get("tool_execution_required")
+            and not state.get("available_tools")
+            and extra.get("runtime_allowed_tool_names") == []
+            and not state.get("artifact_goal")
+            and not any(message.get("role") == "tool" or message.get("tool_calls")
+                        for message in state.get("runtime_message_history") or [])
+            and not any(extra.get(key) for key in (
+                "_chat_image_inputs", "_chat_attachments", "target_md_skill", "current_follow_up_context",
+            ))
+            and not context.get("selected_capability")
+            and not context.get("embed_context_id")
+            and isinstance(agent, Agent) and agent.output_type is str
+        ):
+            return False
+        # The SDK exposes registered validators and capability flags here; an
+        # unknown agent layout is kept on the buffered compatibility path.
+        validators = getattr(agent, "_output_validators", None)
+        capability = getattr(agent, "_root_capability", None)
+        if validators is None or validators or capability is None:
+            return False
+        if any(getattr(capability, name) for name in dir(capability)
+               if name.startswith("has_") and name != "has_wrap_node_run"):
+            return False
+        hooks = getattr(self, "hooks", None)
+        return not hooks or (hasattr(hooks, "list_hooks") and not hooks.list_hooks(HookPhase.LLM_OUTPUT))
+
+    async def _stream_direct_answer(
+        self, agent_run: Any, *, state: dict[str, Any],
+    ) -> AsyncIterator[StreamEvent]:
+        """Stream one native model node, retaining the existing graph and final result."""
+        deadline = state["start_time"] + float(state["timeout_seconds"])
+        state["current_model_attempt"] = 1
+        await self.runtime_events.trigger_llm_input(
+            session_key=state["session_key"], run_id=state["run_id"],
+            user_message=state["user_message"], system_prompt=state["system_prompt"],
+            message_history=state.get("runtime_message_history") or [],
+            loop_index=1, loop_reason="initial_request", selected_capability_ids=[],
+        )
+        yield StreamEvent.runtime_update("reasoning", "Generating answer.", metadata={"phase": "direct_text_stream"})
+        pending = ""
+        requested = False
+        async with asyncio.timeout(max(0, deadline - time.monotonic())):
+            node = agent_run.next_node
+            while not Agent.is_end_node(node):
+                if Agent.is_model_request_node(node):
+                    if requested:
+                        raise RuntimeError("Tool-free streaming cannot restart model execution")
+                    requested = True
+                    async with node.stream(agent_run.ctx) as stream:
+                        async for chunk in stream.stream_text(delta=True, debounce_by=0.05):
+                            text, pending = split_plaintext_stream_chunk(pending + chunk)
+                            if text:
+                                state.update(assistant_output_streamed=True, current_attempt_has_text=True)
+                                yield StreamEvent.assistant_delta(text)
+                    text, pending = split_plaintext_stream_chunk(pending, final=True)
+                    if text:
+                        state.update(assistant_output_streamed=True, current_attempt_has_text=True)
+                        yield StreamEvent.assistant_delta(text)
+                if Agent.is_call_tools_node(node) and any(
+                    isinstance(part, ToolCallPart) for part in node.model_response.parts
+                ):
+                    raise RuntimeError("Unexpected tool call in a tool-free answer")
+                node = await agent_run.next(node)
+        # Keep complete-output hooks/tracing once, without emitting the full text again.
+        async for _ in state["thinking_emitter"].emit_plain_content(
+            content=agent_run.result.output, hooks=self.hooks, session_key=state["session_key"],
+        ):
+            pass
+
+    def _can_preview_read_only_answer(self, agent_run: Any, state: dict[str, Any], node: Any) -> bool:
+        """Preview text, not finality: the native graph may still execute more tools."""
+        extra = getattr(state.get("deps"), "extra", {})
+        agent = state.get("runtime_agent")
+        tools = list(state.get("available_tools") or [])
+        if not (
+            extra.get("_read_only_answer_streaming_enabled") is True
+            and (extra.get("context") or {}).get("read_only_answer_stream") is True
+            and callable(extra.get(PROGRESS_SINK))
+            and not state.get("artifact_goal") and not state.get("selector_failed")
+            and tools and all(tool.get("read_only") is True for tool in tools)
+            and isinstance(agent, Agent) and agent.output_type is str
+            and getattr(agent, "_output_validators", None) == []
+        ):
+            return False
+        capability = getattr(agent, "_root_capability", None)
+        if capability is None or any(getattr(capability, name) for name in dir(capability)
+                                    if name.startswith("has_") and name != "has_wrap_node_run"):
+            return False
+        hooks = getattr(self, "hooks", None)
+        if hooks and (not hasattr(hooks, "list_hooks") or hooks.list_hooks(HookPhase.LLM_OUTPUT)):
+            return False
+        return successful_read_only_batch(
+            [*agent_run.all_messages(), replace(node.request, run_id=agent_run.ctx.state.run_id)],
+            agent_run.ctx.state.run_id, tools,
+        )
+
+    async def _preview_read_only_answer(self, node: Any, agent_run: Any, *, sink: Any) -> None:
+        """Publish provisional text while retaining ownership of the native stream context."""
+        pending = ""
+        first = True
+        blocked = False
+
+        def publish_chunk(chunk: str, *, final: bool = False) -> None:
+            nonlocal pending, first, blocked
+            if blocked:
+                return
+            try:
+                text, pending = split_plaintext_stream_chunk(pending + chunk, final=final)
+            except ValueError:
+                # Suppress malformed previews while consuming the original model response.
+                blocked = True
+                return
+            if re.search(r"</?think\b", text, re.I) or (
+                first and text.lstrip().startswith(("{", "[", "```"))
+            ):
+                blocked = True
+                return
+            if first and (not text.strip() or (not final and text.lstrip() in {"`", "``"})):
+                pending = text + pending
+                return
+            if text:
+                try:
+                    sink("reasoning", "", {"phase": "tool_answer_stream", "text": text, "reset": first})
+                except Exception:
+                    blocked = True
+                    logger.warning("Model text preview could not be published")
+                first = False
+
+        async with node.stream(agent_run.ctx) as stream:
+            async for chunk in stream.stream_text(delta=True, debounce_by=0.05):
+                publish_chunk(chunk)
+        publish_chunk("", final=True)
+
     async def _iter_agent_nodes(
         self,
         agent_run: Any,
+        *, state: Optional[dict[str, Any]] = None,
     ) -> AsyncIterator[Any]:
         next_fn = getattr(agent_run, "next", None)
         next_node = getattr(agent_run, "next_node", None)
@@ -281,6 +454,11 @@ class RunnerExecutionRuntimeMixin:
                 if "calltools" in node_type:
                     self._deduplicate_identical_function_tool_calls(
                         node,
+                    )
+                if (state is not None and Agent.is_model_request_node(node)
+                        and self._can_preview_read_only_answer(agent_run, state, node)):
+                    await self._preview_read_only_answer(
+                        node, agent_run, sink=state["deps"].extra[PROGRESS_SINK],
                     )
                 following_node = await next_fn(node)
                 try:

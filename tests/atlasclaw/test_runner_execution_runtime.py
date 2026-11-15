@@ -134,3 +134,56 @@ async def test_iter_shares_one_language_policy_after_workflow_instructions(globa
     assert instructions.index("Workflow instructions.") < instructions.index(policy)
     assert "Request UI locale: `en-US`" in instructions
     assert bool("Global default response language:" in instructions) == bool(global_locale)
+
+
+def test_direct_stream_holds_split_internal_markup_without_delaying_normal_code():
+    from app.atlasclaw.agent.plaintext_tool_calls import split_plaintext_stream_chunk
+
+    visible, tail = split_plaintext_stream_chunk("Confirmed. <tool_")
+    assert visible == "Confirmed." + " "
+    with pytest.raises(ValueError):
+        split_plaintext_stream_chunk(tail + "call>private payload")
+    visible, tail = split_plaintext_stream_chunk("Use a < b and `value < limit`. <strong")
+    assert visible == "Use a < b and `value < limit`. "
+    assert split_plaintext_stream_chunk(tail + ">Title</strong>", final=True) == ("<strong>Title</strong>", "")
+    visible, tail = split_plaintext_stream_chunk("</think ")
+    assert visible == ""
+    with pytest.raises(ValueError):
+        split_plaintext_stream_chunk(tail + ">")
+    visible, tail = split_plaintext_stream_chunk("<tool_call")
+    assert visible == ""
+    assert split_plaintext_stream_chunk(tail + "back>", final=True) == ("<tool_callback>", "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("chunks, expected", [
+    (["\n", "<thi", "nk>private reasoning", "</think>", "Answer"], ""),
+    (["Finding. ", "<think>private reasoning", "</think>"], "Finding. "),
+    (["\n", '{"tool_name": "private"}'], ""),
+    (["\n", "`", "`", "`json\n", '{"tool_name": "private"}'], ""),
+    (["Evidence. ", "<tool_", "call>private arguments"], "Evidence. "),
+    (["Evidence. ", "<strong"], "Evidence. <strong"),
+    (["Evidence. ", "More evidence.", "<strong"], None),
+])
+async def test_read_only_preview_filters_internal_content_without_interrupting_node(chunks, expected):
+    closed, consumed, previews = [], [], []
+    class Stream:
+        async def stream_text(self, **kwargs):
+            for chunk in chunks:
+                consumed.append(chunk)
+                yield chunk
+    @asynccontextmanager
+    async def stream(ctx):
+        try:
+            yield Stream()
+        finally:
+            closed.append(True)
+    def sink(state, message, metadata):
+        if expected is None:
+            raise RuntimeError("Preview transport unavailable")
+        previews.append(metadata["text"])
+    await _RuntimeRunner()._preview_read_only_answer(
+        SimpleNamespace(stream=stream), SimpleNamespace(ctx=None), sink=sink,
+    )
+    assert consumed == chunks and closed == [True]
+    assert "".join(previews) == (expected or "")

@@ -299,7 +299,8 @@ class RunnerExecutionFlowStreamMixin:
                 "elapsed": round(time.monotonic() - start_time, 1),
             },
         )
-        node_iterator = self._iter_agent_nodes(agent_run).__aiter__()
+        preview_kwargs = {"state": state} if getattr(deps, "extra", {}).get("_read_only_answer_streaming_enabled") else {}
+        node_iterator = self._iter_agent_nodes(agent_run, **preview_kwargs).__aiter__()
         first_node: Any | None = None
         first_node_task = asyncio.create_task(node_iterator.__anext__())
         try:

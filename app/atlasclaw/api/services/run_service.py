@@ -16,6 +16,7 @@ from fastapi import HTTPException, status
 from ...agent.runner_tool.runner_progress_hooks import PROGRESS_SINK
 from ...auth.models import ANONYMOUS_USER, UserInfo
 from ...core.security_guard import encode_if_untrusted
+from ...core.config import get_config
 from ...session.context import SessionKey, TranscriptEntry
 from ..deps_context import APIContext, build_scoped_deps
 
@@ -63,6 +64,8 @@ def init_run(
         "timeout_seconds": timeout_seconds,
         "abort_signal": asyncio.Event(),
         "abort_lifecycle_sent": False,
+        "direct_answer_streaming": get_config().agent_defaults.direct_answer_streaming,
+        "read_only_answer_streaming": getattr(get_config().agent_defaults, "read_only_answer_streaming", False),
     }
     ctx.sse_manager.create_stream(run_id)
 
@@ -311,6 +314,13 @@ async def execute_agent_run(
 
         # Install after request context resolution; clients cannot supply this callback.
         deps.extra[PROGRESS_SINK] = publish_progress
+        deps.extra["_direct_answer_streaming_enabled"] = bool(
+            get_run_or_404(ctx, run_id).get("direct_answer_streaming")
+        )
+
+        deps.extra["_read_only_answer_streaming_enabled"] = bool(
+            get_run_or_404(ctx, run_id).get("read_only_answer_streaming")
+        )
 
         runner_events = runner.run(
             session_key=session_key,
@@ -359,7 +369,7 @@ async def execute_agent_run(
                     if ctx.active_runs.get(run_id, {}).get("status") == "running":
                         ctx.sse_manager.push_lifecycle(run_id, event.phase)
                 elif event.type == "assistant":
-                    ctx.sse_manager.push_assistant(run_id, event.content)
+                    ctx.sse_manager.push_assistant(run_id, event.content, is_delta=event.is_delta)
                 elif event.type == "tool":
                     if event.phase == "start" and deps.extra.get("_chat_image_inputs"):
                         deps.extra["_chat_tool_started"] = True
@@ -441,4 +451,6 @@ async def execute_agent_run(
         progress_closed = True
         if deps is not None:
             deps.extra.pop(PROGRESS_SINK, None)
+            deps.extra.pop("_direct_answer_streaming_enabled", None)
+            deps.extra.pop("_read_only_answer_streaming_enabled", None)
         ctx.sse_manager.close_stream(run_id)

@@ -1060,6 +1060,8 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     }
     const requestContext = {
       ui_locale: getCurrentLocale(),
+      assistant_replace: true,
+      read_only_answer_stream: true,
       timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || ''
     }
     if (selectedCapability) {
@@ -3276,6 +3278,8 @@ async function handleStreamWithSignals(runId, signals, context) {
   let runtimePanelSuppressClickUntil = 0
   let runtimeEntries = [{ state: 'reasoning', message: getCurrentLocale() === 'zh-CN' ? '正在发送' : 'Sending request' }]
   let userStageResults = []
+  let directTextStreaming = false
+  let finalTextReplaced = false
   let finalAnswerReady = false
   let runAborted = false
   let assistantUpdateTimer = null
@@ -3864,6 +3868,7 @@ async function handleStreamWithSignals(runId, signals, context) {
       }
     }
 
+    let readOnlyAnswerPreview = false
     streamHandler = createStreamHandler(runId, {
       onOpen: () => {
         if (streamSettled) return
@@ -3874,15 +3879,26 @@ async function handleStreamWithSignals(runId, signals, context) {
         updateUI()
       },
       onDelta: (data) => {
-        if (streamSettled) return
-        if (!data.content) return
+        if (streamSettled || finalTextReplaced || !data.content) return
         if (!thinkingFinalized) {
           thinkingFinalized = true
           stopThinkingTimer()
         }
-        aiMessageContent += data.content
+        if (readOnlyAnswerPreview) {
+          aiMessageContent = ''
+          readOnlyAnswerPreview = false
+          hasRenderedDelta = false
+        }
+        const renderImmediately = (directTextStreaming && !hasRenderedDelta) || data.is_delta === false
+        aiMessageContent = data.is_delta === false ? data.content : aiMessageContent + data.content
+        finalTextReplaced = data.is_delta === false
         hasRenderedDelta = true
-        if (!assistantUpdatePending) {
+        if (renderImmediately) {
+          if (assistantUpdateTimer) clearTimeout(assistantUpdateTimer)
+          assistantUpdateTimer = null
+          assistantUpdatePending = false
+          updateUI()
+        } else if (!assistantUpdatePending) {
           assistantUpdatePending = true
           assistantUpdateTimer = setTimeout(() => {
             assistantUpdateTimer = null
@@ -3945,8 +3961,18 @@ async function handleStreamWithSignals(runId, signals, context) {
       },
       onRuntime: (data) => {
         if (streamSettled) return
+        if (data?.metadata?.phase === 'tool_answer_stream') {
+          if (finalAnswerReady || finalTextReplaced || runAborted) return
+          const text = data.metadata.text
+          if (typeof text !== 'string' || !text) return
+          aiMessageContent = data.metadata.reset || !readOnlyAnswerPreview ? text : aiMessageContent + text
+          readOnlyAnswerPreview = true
+          updateUI()
+          return
+        }
+        if (data?.metadata?.phase === 'direct_text_stream') directTextStreaming = true
         if (data?.metadata?.source === 'agent_model' && data.metadata.phase === 'user_result') {
-          if (finalAnswerReady || runAborted) return
+          if (finalAnswerReady || finalTextReplaced || runAborted) return
           const text = typeof data.message === 'string' ? data.message.trim() : ''
           if (text && !userStageResults.includes(text)) {
             userStageResults = [...userStageResults, text]

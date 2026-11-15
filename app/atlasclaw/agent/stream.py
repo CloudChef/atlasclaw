@@ -60,6 +60,7 @@ Streaming event
     tool: str = ""
     error: str = ""
     metadata: dict = field(default_factory=dict)
+    is_delta: bool = True
     
     @classmethod
     def lifecycle_start(cls) -> "StreamEvent":
@@ -80,6 +81,11 @@ Streaming event
     def assistant_delta(cls, content: str) -> "StreamEvent":
         """create"""
         return cls(type="assistant", content=content)
+
+    @classmethod
+    def assistant_replace(cls, content: str) -> "StreamEvent":
+        """Replace provisional text with the validated complete answer."""
+        return cls(type="assistant", content=content, is_delta=False)
     
     @classmethod
     def tool_start(cls, tool_name: str) -> "StreamEvent":
@@ -148,6 +154,8 @@ Streaming event
             result["error"] = self.error
         if self.metadata:
             result["metadata"] = self.metadata
+        if self.type == "assistant" and not self.is_delta:
+            result["is_delta"] = False
         return result
 
 
