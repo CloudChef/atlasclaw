@@ -1489,26 +1489,6 @@ function getRuntimeStateLabel(state) {
   return translateIfExists(key) || fallback
 }
 
-const EARLY_RUNTIME_PHASES = [
-  {
-    delayMs: 120,
-    state: 'reasoning',
-    message: 'Preparing model request context.',
-    metadata: { phase: 'model_message_history_build' }
-  },
-  {
-    delayMs: 260,
-    state: 'reasoning',
-    message: 'Starting model session.',
-    metadata: { phase: 'agent_iter_open' }
-  },
-  {
-    delayMs: 420,
-    state: 'reasoning',
-    message: 'Waiting for model tool decision.',
-    metadata: { phase: 'agent_first_node_wait' }
-  }
-]
 
 function buildThinkingHtml(thinkingContent, elapsedSeconds = null, isThinking = false) {
   if (!thinkingContent) return ''
@@ -1614,7 +1594,8 @@ function buildMessageContent(
   workspaceDownloadReferences = [],
   objectActionReferences = [],
   isAborted = false,
-  runId = ''
+  runId = '',
+  stageResults = []
 ) {
   const runtimeHtml = buildRuntimePanel(
     runtimeEntries,
@@ -1631,7 +1612,8 @@ function buildMessageContent(
   const objectActionContext = createObjectActionRenderContext(visibleObjectActionReferences)
   const markdownHtml = responseContent ? renderAssistantMarkdown(responseContent, objectActionContext) : ''
   const objectActionActionsHtml = buildGeneratedObjectActionActionsHtml(objectActionContext)
-  const responseBodyHtml = `${markdownHtml}${downloadHtml}${objectActionActionsHtml}`
+  const stageHtml = stageResults.map((text) => `<div class="stage-result">${renderAssistantMarkdown(text)}</div>`).join('')
+  const responseBodyHtml = `${stageHtml}${markdownHtml}${downloadHtml}${objectActionActionsHtml}`
   const responseHtml = responseBodyHtml
     ? `<div class="response-content">${responseBodyHtml}</div>`
     : ''
@@ -3292,11 +3274,10 @@ async function handleStreamWithSignals(runId, signals, context) {
   let runtimePanelOpen = null
   let runtimePanelSyncTimer = null
   let runtimePanelSuppressClickUntil = 0
-  let runtimeEntries = [{ state: 'reasoning', message: 'Starting response analysis.' }]
+  let runtimeEntries = [{ state: 'reasoning', message: getCurrentLocale() === 'zh-CN' ? '正在发送' : 'Sending request' }]
+  let userStageResults = []
   let finalAnswerReady = false
   let runAborted = false
-  let serverRuntimeSeen = false
-  let localRuntimeSeedTimers = []
   let assistantUpdateTimer = null
   let thinkingScrollTimer = null
   let streamSettled = false
@@ -3358,13 +3339,6 @@ async function handleStreamWithSignals(runId, signals, context) {
     runtimeEntries = [...runtimeEntries, nextEntry]
   }
 
-  function clearLocalRuntimeSeedTimers() {
-    for (const timerId of localRuntimeSeedTimers) {
-      clearTimeout(timerId)
-    }
-    localRuntimeSeedTimers = []
-  }
-
   function clearPendingRenderTimers() {
     if (assistantUpdateTimer) {
       clearTimeout(assistantUpdateTimer)
@@ -3391,28 +3365,10 @@ async function handleStreamWithSignals(runId, signals, context) {
   }
 
   function cleanupStreamTimers() {
-    clearLocalRuntimeSeedTimers()
     cancelRuntimePanelStateSync()
     clearPendingRenderTimers()
     stopThinkingTimer({ render: false })
     stopRunTimer()
-  }
-
-  function scheduleLocalEarlyRuntimePhases() {
-    clearLocalRuntimeSeedTimers()
-    localRuntimeSeedTimers = EARLY_RUNTIME_PHASES.map((phase) => setTimeout(() => {
-      if (streamSettled || serverRuntimeSeen || finalAnswerReady) return
-      pushRuntimeEntry(
-        phase.state,
-        phase.message,
-        {
-          ...(phase.metadata || {}),
-          elapsed: currentElapsedMs() / 1000,
-          synthetic: true
-        }
-      )
-      updateUI()
-    }, phase.delayMs))
   }
 
   function recordWorkspaceDownloadArtifacts(rawPayload) {
@@ -3496,6 +3452,7 @@ async function handleStreamWithSignals(runId, signals, context) {
       })),
       thinkingContent,
       aiMessageContent,
+      userStageResults,
       thinkingFinalized,
       finalAnswerReady,
       runAborted,
@@ -3664,7 +3621,8 @@ async function handleStreamWithSignals(runId, signals, context) {
         workspaceDownloadReferences,
         objectActionReferences,
         runAborted,
-        runId
+        runId,
+        userStageResults
       )
       if (content.html) {
         lastRenderedMessageSnapshot = nextMessageSnapshot
@@ -3818,7 +3776,6 @@ async function handleStreamWithSignals(runId, signals, context) {
   }
 
   return new Promise((resolve) => {
-    scheduleLocalEarlyRuntimePhases()
     startRunTimer()
     bindRuntimePanelToggle()
     const settleAbortedStream = () => {
@@ -3988,8 +3945,15 @@ async function handleStreamWithSignals(runId, signals, context) {
       },
       onRuntime: (data) => {
         if (streamSettled) return
-        serverRuntimeSeen = true
-        clearLocalRuntimeSeedTimers()
+        if (data?.metadata?.source === 'agent_model' && data.metadata.phase === 'user_result') {
+          if (finalAnswerReady || runAborted) return
+          const text = typeof data.message === 'string' ? data.message.trim() : ''
+          if (text && !userStageResults.includes(text)) {
+            userStageResults = [...userStageResults, text]
+            updateUI()
+          }
+          return
+        }
         const hasWorkspaceDownloads = recordWorkspaceDownloadArtifacts(data?.metadata || data)
         const objectActionPayload = data?.metadata || data
         const hasObjectActions = recordObjectActionReferences(

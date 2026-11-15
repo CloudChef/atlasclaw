@@ -1174,7 +1174,7 @@ describe('chat-ui.js handler mode', () => {
         expect(signals.onResponse).toHaveBeenCalled();
         expect(signals.onResponse).toHaveBeenLastCalledWith(
             expect.objectContaining({
-                html: expect.stringContaining('Starting response analysis.')
+                html: expect.stringContaining('Sending request')
             })
         );
 
@@ -6089,7 +6089,7 @@ describe('chat-ui.js handler mode', () => {
         }
     });
 
-    test('handler seeds early runtime phases before backend runtime arrives', async () => {
+    test('handler shows sending without inventing execution phases before backend runtime arrives', async () => {
         jest.useFakeTimers();
         try {
             const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
@@ -6120,9 +6120,10 @@ describe('chat-ui.js handler mode', () => {
             await jest.advanceTimersByTimeAsync(700);
 
             const htmlPayload = signals.onResponse.mock.calls.at(-1)?.[0]?.html || '';
-            expect(htmlPayload).toContain('Preparing model request context.');
-            expect(htmlPayload).toContain('Starting model session.');
-            expect(htmlPayload).toContain('Waiting for model tool decision.');
+            expect(htmlPayload).toContain('Sending request');
+            expect(htmlPayload).not.toContain('Preparing model request context.');
+            expect(htmlPayload).not.toContain('Starting model session.');
+            expect(htmlPayload).not.toContain('Waiting for model tool decision.');
 
             const stream = MockEventSource.instances[0];
             stream.simulateEvent('lifecycle', { phase: 'end' });
@@ -6132,4 +6133,40 @@ describe('chat-ui.js handler mode', () => {
             jest.useRealTimers();
         }
     });
+    test('handler displays model updates before final text without exposing technical logs', async () => {
+        const { initChat } = await import('../../app/frontend/scripts/chat-ui.js');
+        const element = createChatElement();
+        const signals = createMockSignals();
+        global.fetch.mockResolvedValueOnce({ok: true, json: async () => ({session_key: 'session-123'})})
+            .mockResolvedValueOnce({ok: true, json: async () => ({})});
+        await initChat(element);
+        global.fetch.mockClear();
+        global.fetch.mockResolvedValueOnce({ok: true, json: async () => ({run_id: 'model-update-run'})});
+        const pending = element.handler({messages: [{text: 'query', role: 'user'}]}, signals);
+        await new Promise(resolve => setTimeout(resolve, 30));
+        const stream = MockEventSource.instances[0];
+        const update = (message) => stream.simulateEvent('runtime', {
+            state: 'reasoning', source: 'agent_model', phase: 'user_result', message
+        });
+        update('Found item: <sample>');
+        update('Found item: <sample>');
+        update('Available choices: **One**, Two');
+        const partial = signals.onResponse.mock.calls.at(-1)[0].html;
+        expect((partial.match(/class="stage-result"/g) || []).length).toBe(2);
+        expect(partial).toContain('Found item: &lt;sample&gt;');
+        expect(partial).toContain('<strong>One</strong>');
+        expect(partial).not.toContain('final answer');
+        expect(partial).not.toContain('runtime-panel" open');
+        stream.simulateEvent('runtime', {state: 'answered', message: 'Final answer ready.'});
+        const beforeLate = signals.onResponse.mock.calls.length;
+        update('late update');
+        expect(signals.onResponse.mock.calls.length).toBe(beforeLate);
+        stream.simulateEvent('assistant', {text: 'final answer'});
+        stream.simulateEvent('lifecycle', {phase: 'end'});
+        await pending;
+        const finalHtml = signals.onResponse.mock.calls.at(-1)[0].html;
+        expect((finalHtml.match(/class="stage-result"/g) || []).length).toBe(2);
+        expect(finalHtml).toContain('final answer');
+    });
+
 });

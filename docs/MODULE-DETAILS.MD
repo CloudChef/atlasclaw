@@ -667,6 +667,8 @@ Enforces `max_tool_calls` and `timeout_seconds` checkpoints.
 
 `ThinkingStreamEmitter` emits completed thinking text in approximately 512-character batches. An elapsed value of 0 indicates that model thinking duration is unknown.
 
+A native `after_model_request` hook publishes normal model text from eligible continuing read-only steps (`source=agent_model`, `phase=user_result`). Updates use the existing Markdown renderer; final answers retain their validation path and technical details remain collapsed.
+
 ### 3.2 Stream Events (`agent/stream.py`)
 
 **Enum: `StreamEventType`** -`LIFECYCLE`, `ASSISTANT`, `TOOL`, `ERROR`, `COMPACTION`
@@ -809,7 +811,9 @@ The same policy applies to full, minimal, explicit-tool execution and model-back
 
 The global locale is optional: omit it or set it to `null` to leave it unset. Concrete locale values use a two- or three-letter language code with optional subtags (for example `zh-CN`, `en-US`, `zh-Hans-CN`), up to 35 characters. Language-selection mode names are not accepted. A valid request locale is included in the prompt even when a global default exists, with its lower priority stated explicitly. If neither locale is supplied, the policy does not invent a default language.
 
-This policy overrides bootstrap, memory and skill language defaults. It does not translate code, structured keys or provider/tool/skill identifiers unless the user asks.
+This policy applies consistently to intermediate updates alongside tool calls and final answers. Prompt, tool-description and tool-result languages do not change the selected response language. It overrides bootstrap, memory and skill language defaults. It does not translate code, structured keys or provider/tool/skill identifiers unless the user asks.
+
+For runs with intermediate updates, the native execution prompt keeps one copy of the shared policy after workflow and stage instructions.
 
 The policy text is maintained in `app/atlasclaw/templates/prompts/response_language.json`,
 not in Python string literals. Its `policy` and `scope` sections always render;

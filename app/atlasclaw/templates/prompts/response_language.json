@@ -3,13 +3,15 @@
     "## Response Language",
     "",
     "Always use the locale or response language explicitly requested by the user in the conversation (within the requested scope); otherwise use the global default, then the request UI locale.",
-    "The language used to write a message is not, by itself, an explicit request to change the response language."
+    "The language used to write a message is not, by itself, an explicit request to change the response language.",
+    "Apply the selected response language consistently to all user-facing assistant text, including intermediate updates alongside tool calls and final answers, within the user's requested scope. The language of prompts, tool descriptions or tool results does not change this selection.",
+    "This policy takes precedence over response-language defaults in bootstrap, memory, provider and skill content."
   ],
   "global_default": [
-    "Global default response language: `{response_language}`."
+    "Global default response language: `{response_language}`. Unless the user explicitly requests another response language, write every user-facing intermediate update and final answer in `{response_language}`, even when the user's message is written in another language."
   ],
   "request_locale": [
-    "Request UI locale: `{ui_locale}`."
+    "Request UI locale: `{ui_locale}`. When there is no global default and no explicit user language request, write every user-facing intermediate update and final answer in `{ui_locale}`, even when the user's message is written in another language."
   ],
   "scope": [
     "",

@@ -98,3 +98,39 @@ async def test_run_iter_override_limits_tools_to_projected_subset() -> None:
     override_kwargs = agent.override_calls[-1]
     assert override_kwargs["instructions"] == "Use the projected tool subset."
     assert override_kwargs["tools"] == [agent.cmp_lookup_tool]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("global_locale", [None, "zh-CN"])
+async def test_iter_shares_one_language_policy_after_workflow_instructions(global_locale):
+    from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelResponse, TextPart
+    from pydantic_ai.models.function import FunctionModel
+
+    from app.atlasclaw.agent.prompt_sections import build_response_language
+    from app.atlasclaw.agent.runner_tool.runner_progress_hooks import PROGRESS_SINK
+
+    captured = []
+
+    async def respond(messages, info):
+        captured.append(info.instructions)
+        return ModelResponse(parts=[TextPart("Done")])
+
+    runner = _RuntimeRunner()
+    runner.prompt_builder = SimpleNamespace(config=SimpleNamespace(response_language=global_locale))
+    policy = build_response_language(global_locale, "en-US")
+    deps = SkillDeps(extra={PROGRESS_SINK: lambda *args: None, "context": {"ui_locale": "en-US"}})
+    agent = Agent(FunctionModel(respond))
+    async with runner._run_iter_with_optional_override(
+        agent=agent, user_message="查找资源", deps=deps, message_history=[],
+        system_prompt=policy + "\n\nWorkflow instructions.",
+    ) as agent_run:
+        async for _ in agent_run:
+            pass
+
+    instructions = captured[0]
+    assert instructions.count(policy) == 1
+    assert instructions.endswith(policy)
+    assert instructions.index("Workflow instructions.") < instructions.index(policy)
+    assert "Request UI locale: `en-US`" in instructions
+    assert bool("Global default response language:" in instructions) == bool(global_locale)
