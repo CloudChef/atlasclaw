@@ -141,9 +141,9 @@ def register_agent_routes(router: APIRouter) -> None:
         provider_instances_for_request = provider_config or (ctx.provider_instances or {})
         safe_message = normalize_user_message(request.message)
         if request.attachment_ids and len(set(request.attachment_ids)) != len(request.attachment_ids):
-            raise HTTPException(422, detail="Duplicate image attachments are not allowed.")
+            raise HTTPException(422, detail="Duplicate attachments are not allowed.")
         if not safe_message.strip() and not request.attachment_ids:
-            raise HTTPException(422, detail="Enter a message or attach an image.")
+            raise HTTPException(422, detail="Enter a message or attach a file.")
 
         # Resolve user skill permissions for agent context filtering.
         # This is fail-closed: if permission resolution fails, the run is

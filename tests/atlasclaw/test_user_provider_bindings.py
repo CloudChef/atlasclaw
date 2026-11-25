@@ -311,3 +311,25 @@ def test_build_user_provider_instances_does_not_map_legacy_default_when_multiple
     )
 
     assert resolved == {}
+
+def test_resolve_extension_only_provider_without_auth_modes() -> None:
+    """Extension-only providers keep their implicit instance without auth modes."""
+    from app.atlasclaw.api.service_provider_schemas import (
+        ProviderSchemaDefinition,
+        register_provider_schema_definition,
+    )
+
+    register_provider_schema_definition(ProviderSchemaDefinition(
+        provider_type="extension-only-test",
+        display_name="Extension Only",
+        fields=(),
+        extension_only=True,
+    ))
+
+    resolved = resolve_provider_instance_config(
+        "extension-only-test",
+        "default",
+        template_config={},
+    )
+
+    assert resolved == {"provider_type": "extension-only-test", "instance_name": "default"}

@@ -19,7 +19,7 @@ import { createStreamHandler } from './stream-handler.js?v=29'
 import { buildApiUrl } from './config.js?v=27'
 import { translateIfExists, getCurrentLocale } from './i18n.js'
 import { setupSlashCapabilityPicker, prepareSlashCapabilityMessage } from './slash-picker.js?v=28'
-import { extractChatSubmission, uploadChatImages, cancelImageUpload, discardImageDrafts, historyImageFiles, imageErrorMessage } from './chat-attachments.js'
+import { extractChatSubmission, uploadChatAttachments, cancelImageUpload, discardAttachmentDrafts, historyAttachmentFiles, attachmentErrorMessage, ACCEPTED_FORMATS } from './chat-attachments.js'
 
 let chatElement = null
 let currentStreamHandler = null
@@ -814,6 +814,7 @@ export async function initChat(element, callbacks = {}) {
   // Set up IME composition handling for macOS/Asian input
   setupCompositionListeners()
   bindObjectActionHandlers()
+  bindWorkspacePreviewHandler()
   setupSlashCapabilityPicker(element)
   setupUserMessageCopyActions(element)
   
@@ -961,10 +962,10 @@ function clearRenderedMessages(element) {
 function mapTranscriptMessageToHistory(message) {
   if (!message?.content && !message?.attachments?.length) return null
   if (message.role === 'user') {
-    const missingImage = message.attachments?.some(file => file.available === false)
-    return { role: 'user', text: missingImage
-      ? `${message.content || ''}\n${imageErrorMessage({ code: 'attachment_not_found' })}` : message.content,
-      ...(message.attachments?.length ? { files: historyImageFiles(message.attachments) } : {}) }
+    const missingAttachment = message.attachments?.some(file => file.available === false)
+    return { role: 'user', text: missingAttachment
+      ? `${message.content || ''}\n${attachmentErrorMessage({ code: 'attachment_not_found' })}` : message.content,
+      ...(message.attachments?.length ? { files: historyAttachmentFiles(message.attachments) } : {}) }
   }
   if (message.role === 'assistant') {
     const workspaceDownloads = normalizeWorkspaceDownloadArtifacts(message.workspace_downloads)
@@ -993,10 +994,10 @@ function getComposerButtonSize() {
 function configureHandler(element) {
   const buttonSize = getComposerButtonSize()
   element.images = {
-    files: { acceptedFormats: '.png,.jpg,.jpeg,.webp', maxNumberOfFiles: 4 },
+    files: { acceptedFormats: ACCEPTED_FORMATS, maxNumberOfFiles: 4 },
     button: {
       position: 'inside-start',
-      tooltip: { text: translateIfExists('chat.images.upload') || 'Upload image' },
+      tooltip: { text: translateIfExists('chat.images.upload') || 'Upload file' },
       styles: {
         container: {
           default: { width: buttonSize, height: buttonSize, boxSizing: 'border-box', borderRadius: '50%', backgroundColor: 'transparent', border: 'none', boxShadow: 'none', color: '#64748b', display: 'flex', alignItems: 'center', justifyContent: 'center' },
@@ -1050,10 +1051,10 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
     if (signals.stopClicked) signals.stopClicked.listener = cancelSubmission
     if (options.files?.length) signals.onOpen?.()
     const activation = sessionActivationGeneration
-    attachments = await uploadChatImages(sessionKey, options.files)
+    attachments = await uploadChatAttachments(sessionKey, options.files)
     if (cancelled) throw new DOMException('Submission cancelled', 'AbortError')
     if (activation !== sessionActivationGeneration || getSessionKey() !== sessionKey) {
-      void discardImageDrafts(attachments)
+      void discardAttachmentDrafts(attachments)
       signals.onClose()
       settleRunActivity()
       return false
@@ -1101,7 +1102,7 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
       try {
         const errorData = await response.json()
         if (errorData?.detail) {
-          errorMessage = imageErrorMessage(errorData.detail)
+          errorMessage = attachmentErrorMessage(errorData.detail)
         }
       } catch (_) {
         // Keep the HTTP status fallback when the response body is not JSON.
@@ -1121,9 +1122,9 @@ async function runAgentMessage(messageText, selectedCapability, signals, options
   } catch (err) {
     console.error('[ChatUI] API call failed:', err)
     if (err?.name !== 'AbortError') {
-      reportRunCreationError(signals, imageErrorMessage(err), options.onRunCreationError)
+      reportRunCreationError(signals, attachmentErrorMessage(err), options.onRunCreationError)
     } else signals.onClose()
-    void discardImageDrafts(attachments)
+    void discardAttachmentDrafts(attachments)
     if (options.files?.length && chatElement?.isConnected && getSessionKey() === sessionKey) {
       chatElement.defaultInput = { text: messageText, files: options.files }
     }
@@ -1696,11 +1697,17 @@ function getWorkspaceDownloadDisplayName(path) {
   return path.split('/').filter(Boolean).pop() || 'download'
 }
 
+const INLINE_PREVIEW_EXTENSIONS = new Set(['pdf', 'html', 'htm', 'txt', 'md', 'png', 'jpg', 'jpeg', 'webp', 'gif'])
+
 function buildWorkspaceDownloadAnchor(labelHtml, path) {
   const href = escapeHtml(buildWorkspaceFileDownloadUrl(path))
   const name = getWorkspaceDownloadDisplayName(path)
   const ariaLabel = escapeHtml(`Download ${name}`)
-  return `<a href="${href}" class="workspace-download-link" download aria-label="${ariaLabel}">${WORKSPACE_DOWNLOAD_ICON}<span class="workspace-download-text">${labelHtml}</span></a>`
+  const extension = name.includes('.') ? name.split('.').pop().toLowerCase() : ''
+  const preview = INLINE_PREVIEW_EXTENSIONS.has(extension)
+    ? `<a href="${href}&inline=1" class="workspace-open-link" data-workspace-preview="1" rel="noopener noreferrer">${escapeHtml(translateIfExists('chat.openFile') || 'Open')}</a>`
+    : ''
+  return `<a href="${href}" class="workspace-download-link" download aria-label="${ariaLabel}">${WORKSPACE_DOWNLOAD_ICON}<span class="workspace-download-text">${labelHtml}</span></a>${preview}`
 }
 
 function renderWorkspaceDownloadLink(labelHtml, rawReference, options = {}) {
@@ -2569,6 +2576,17 @@ function handleObjectActionButton(target, submissionContext = {}) {
   } catch (error) {
     console.warn('[ChatUI] Invalid object action payload:', error)
   }
+}
+
+function bindWorkspacePreviewHandler() {
+  if (document._atlasclawWorkspacePreviewBound) return
+  document._atlasclawWorkspacePreviewBound = true
+  document.addEventListener('click', (event) => {
+    const link = event.target?.closest?.('[data-workspace-preview]')
+    if (!link) return
+    event.preventDefault()
+    window.open(link.getAttribute('href'), '_blank', 'noopener,noreferrer')
+  }, true)
 }
 
 function bindObjectActionHandlers(element = chatElement) {
@@ -4006,7 +4024,7 @@ async function handleStreamWithSignals(runId, signals, context) {
         streamSettled = true
         thinkingFinalized = true
         cleanupStreamTimers()
-        pushRuntimeEntry('failed', imageErrorMessage(error), { phase: 'error' })
+        pushRuntimeEntry('failed', attachmentErrorMessage(error), { phase: 'error' })
         updateUI()
         signals.onClose()
         clearActiveStreamHandler()

@@ -6,7 +6,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import json
 import os
+import shutil
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -15,6 +17,15 @@ from PIL import Image, UnidentifiedImageError
 from pydantic_ai import BinaryContent
 from sqlalchemy import select
 
+from app.atlasclaw.core.chat_documents import (
+    MAX_DOC_BYTES,
+    AttachmentInputError,
+    detect_document_type,
+    probe_document_async,
+    sanitize_filename,
+    validate_document,
+)
+from app.atlasclaw.core.security_guard import ensure_user_work_dir
 from app.atlasclaw.core.user_paths import user_runtime_dir
 from app.atlasclaw.db.database import get_db_manager
 from app.atlasclaw.db.models import ChatAttachmentModel
@@ -24,20 +35,12 @@ MAX_FILES = 4
 MAX_HISTORY_IMAGES = 8
 MAX_HISTORY_BYTES = 32 * 1024 * 1024
 DEFAULT_IMAGE_REQUEST = "Please analyze the text and content in these images."
+DEFAULT_DOCUMENT_REQUEST = "Please analyze the attached documents."
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 _upload_locks: dict[str, asyncio.Lock] = {}
 
-
-class ImageInputError(ValueError):
-    """
-    Image failure carrying a stable UI error code, readable message and HTTP status.
-    """
-
-    def __init__(self, code: str, message: str, status: int = 422):
-        """
-        Default validation failures to 422; callers may specify size or access errors.
-        """
-        super().__init__(f"{code}: {message}")
-        self.code, self.message, self.status = code, message, status
+# Backward-compatible name: callers previously only handled image failures.
+ImageInputError = AttachmentInputError
 
 
 def validate_image(data: bytes) -> tuple[str, int, int]:
@@ -62,11 +65,18 @@ def validate_image(data: bytes) -> tuple[str, int, int]:
 
 def attachment_reference(row: ChatAttachmentModel) -> dict:
     """
-    Return transcript-safe metadata without exposing a filesystem path or image bytes.
+    Return transcript-safe metadata without exposing a filesystem path or payload bytes.
     """
-    return {key: getattr(row, key) for key in (
-        "id", "name", "media_type", "size", "width", "height", "sha256"
+    reference = {key: getattr(row, key) for key in (
+        "id", "name", "media_type", "size", "width", "height", "sha256",
     )}
+    reference["kind"] = getattr(row, "kind", "image") or "image"
+    reference["extension"] = getattr(row, "extension", "") or ""
+    try:
+        reference["metadata"] = json.loads(getattr(row, "metadata_json", "") or "{}")
+    except (TypeError, ValueError):
+        reference["metadata"] = {}
+    return reference
 
 
 def image_token_allowance(ref: dict) -> int:
@@ -86,6 +96,7 @@ class ChatAttachments:
         Select the user's attachment directory without creating files or querying the DB.
         """
         self.user_id = user_id
+        self.workspace = Path(workspace)
         self.root = user_runtime_dir(workspace, user_id) / "attachments"
 
     def path(self, attachment_id: str) -> Path:
@@ -105,18 +116,34 @@ class ChatAttachments:
 
     async def upload(self, session_key: str, files: list) -> list[dict]:
         """
-        Validate and save a batch of draft images, returning their ordered references.
+        Validate and save a batch of draft attachments, returning ordered references.
 
-        The caller must authorize the session. Expired drafts are removed before
-        checking the user's storage quota; a failed batch removes its new files.
+        Images keep their visual contract; documents are validated by content
+        signature and receive a bounded metadata probe. The caller must authorize
+        the session. Expired drafts are removed before checking the storage quota;
+        a failed batch removes its new files.
         """
         if not files or len(files) > MAX_FILES:
-            raise ImageInputError("too_many_images", "Attach between 1 and 4 images.")
+            raise AttachmentInputError("too_many_files", "Attach between 1 and 4 files.")
         batches = []
         for file in files:
-            data = await file.read(MAX_FILE_BYTES + 1)
+            filename = sanitize_filename(file.filename, "upload")
+            data = await file.read(MAX_DOC_BYTES + 1)
+            if len(data) > MAX_DOC_BYTES:
+                raise AttachmentInputError("file_too_large", "Each file must be at most 20 MiB.", 413)
+            detected = detect_document_type(filename, data)
+            if detected is not None:
+                extension, media = validate_document(filename, data)
+                metadata = await probe_document_async(data, extension)
+                batches.append((filename, data, "document", extension, media, None, None, metadata))
+                continue
+            if Path(filename).suffix.lower() not in IMAGE_EXTENSIONS:
+                raise AttachmentInputError(
+                    "unsupported_file",
+                    "Supported files: PNG/JPEG/WebP images, PDF, Word (.docx), TXT, Markdown, CSV and JSON.",
+                )
             media, width, height = await asyncio.to_thread(validate_image, data)
-            batches.append((file, data, media, width, height))
+            batches.append((filename, data, "image", Path(filename).suffix.lower(), media, width, height, {}))
         lock = _upload_locks.setdefault(str(self.root), asyncio.Lock())
         async with lock, get_db_manager().get_session() as session:
             drafts = list(await session.scalars(select(ChatAttachmentModel).where(
@@ -129,11 +156,11 @@ class ChatAttachments:
                     await session.delete(row)
                     drafts.remove(row)
             if sum(r.size for r in drafts) + sum(len(b[1]) for b in batches) > 100 * 1024 * 1024:
-                raise ImageInputError("image_storage_full", "Remove unsent images before uploading more.", 413)
+                raise AttachmentInputError("attachment_storage_full", "Remove unsent files before uploading more.", 413)
             paths = []
             refs = []
             try:
-                for file, data, media, width, height in batches:
+                for filename, data, kind, extension, media, width, height, metadata in batches:
                     identifier = str(uuid.uuid4())
                     path = self.path(identifier)
                     await asyncio.to_thread(path.parent.mkdir, parents=True, exist_ok=True)
@@ -142,9 +169,10 @@ class ChatAttachments:
                     row = ChatAttachmentModel(
                         id=identifier, user_id=self.user_id, session_key=session_key,
                         session_hash=hashlib.sha256(session_key.encode()).hexdigest(),
-                        name=Path(file.filename or "image").name[:255], media_type=media,
-                        size=len(data), width=width, height=height,
+                        name=filename[:255], media_type=media, kind=kind,
+                        extension=extension, size=len(data), width=width, height=height,
                         sha256=hashlib.sha256(data).hexdigest(), bound=False,
+                        metadata_json=json.dumps(metadata, ensure_ascii=False),
                     )
                     session.add(row)
                     refs.append(attachment_reference(row))
@@ -175,9 +203,9 @@ class ChatAttachments:
                 if row is None or row.session_key != session_key:
                     if identifier in (optional_ids or set()):
                         continue
-                    raise ImageInputError("attachment_not_found", "Image not found in this conversation.", 404)
+                    raise AttachmentInputError("attachment_not_found", "Attachment not found in this conversation.", 404)
                 if not row.bound and row.created_at < datetime.utcnow() - timedelta(hours=24):
-                    raise ImageInputError("attachment_not_found", "This image upload has expired.", 404)
+                    raise AttachmentInputError("attachment_not_found", "This upload has expired.", 404)
                 if bind:
                     row.bound = True
                 refs.append(attachment_reference(row))
@@ -185,28 +213,78 @@ class ChatAttachments:
 
     async def content(self, identifier: str) -> tuple[bytes, str]:
         """
-        Return owned image bytes and MIME type through a symlink-refusing descriptor.
+        Return owned attachment bytes and MIME type through a symlink-refusing descriptor.
 
-        Reject expired drafts, unavailable files and files exceeding the byte limit.
+        Reject expired drafts, unavailable files and files exceeding the kind limit.
+        """
+        data, media, _kind, _name = await self.content_with_meta(identifier)
+        return data, media
+
+    async def content_with_meta(self, identifier: str) -> tuple[bytes, str, str, str]:
+        """
+        Return owned bytes plus media type, kind and display name.
+
+        The byte limit follows the attachment kind so documents may be larger
+        than chat images without relaxing the image contract.
         """
         async with get_db_manager().get_session() as session:
             row = await session.get(ChatAttachmentModel, identifier)
             if row is None or row.user_id != self.user_id:
-                raise ImageInputError("attachment_not_found", "Image not found.", 404)
+                raise AttachmentInputError("attachment_not_found", "Attachment not found.", 404)
             if not row.bound and row.created_at < datetime.utcnow() - timedelta(hours=24):
-                raise ImageInputError("attachment_not_found", "This image upload has expired.", 404)
-            media = row.media_type
+                raise AttachmentInputError("attachment_not_found", "This upload has expired.", 404)
+            kind, media, name = getattr(row, "kind", "image") or "image", row.media_type, row.name
+        limit = MAX_DOC_BYTES if kind == "document" else MAX_FILE_BYTES
+
         def read():
             try:
-                fd = os.open(self.path(identifier), os.O_RDONLY | os.O_NOFOLLOW)
+                flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                fd = os.open(self.path(identifier), flags)
                 with os.fdopen(fd, "rb") as file:
-                    return file.read(MAX_FILE_BYTES + 1)
+                    return file.read(limit + 1)
             except OSError as exc:
-                raise ImageInputError("attachment_not_found", "Image is no longer available.", 404) from exc
+                raise AttachmentInputError(
+                    "attachment_not_found", "The attachment is no longer available.", 404,
+                ) from exc
+
         data = await asyncio.to_thread(read)
-        if len(data) > MAX_FILE_BYTES:
-            raise ImageInputError("image_too_large", "Stored image exceeds the size limit.", 413)
-        return data, media
+        if len(data) > limit:
+            raise AttachmentInputError("file_too_large", "Stored file exceeds the size limit.", 413)
+        return data, media, kind, name
+
+    async def materialize(self, session_key: str, refs: list[dict]) -> list[dict]:
+        """
+        Copy owned documents into the user work directory and return sandbox paths.
+
+        Paths are work_dir-relative so ``read`` and ``skill_exec`` can use them
+        directly. Missing or expired optional files are skipped.
+        """
+        documents = [ref for ref in refs if ref.get("kind") == "document"]
+        if not documents:
+            return []
+        resolved = await self.resolve(
+            session_key, [ref["id"] for ref in documents],
+            optional_ids={ref["id"] for ref in documents},
+        )
+        uploads_root = ensure_user_work_dir(self.workspace, self.user_id) / "uploads"
+        materialized: list[dict] = []
+        for ref in resolved:
+            try:
+                data, _media, _kind, _name = await self.content_with_meta(ref["id"])
+            except AttachmentInputError:
+                continue
+            extension = str(ref.get("extension") or "")
+            target_dir = uploads_root / ref["id"]
+            target = target_dir / sanitize_filename(
+                ref.get("name"), f"{ref['id']}{extension}",
+            )
+            await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(target.write_bytes, data)
+            materialized.append({
+                **ref,
+                "path": str(target.relative_to(uploads_root.parent)).replace("\\", "/"),
+            })
+        return materialized
 
     async def delete(self, *, identifier: str | None = None, session_key: str | None = None) -> None:
         """
@@ -214,6 +292,7 @@ class ChatAttachments:
 
         An identifier takes precedence and never deletes a bound attachment. A session
         key also removes bound history; callers must authorize that session operation.
+        Materialized document copies are removed with their attachment.
         """
         async with get_db_manager().get_session() as session:
             query = select(ChatAttachmentModel).where(ChatAttachmentModel.user_id == self.user_id)
@@ -225,6 +304,11 @@ class ChatAttachments:
                 return
             for row in await session.scalars(query.with_for_update()):
                 await asyncio.to_thread(self.path(row.id).unlink, missing_ok=True)
+                await asyncio.to_thread(
+                    shutil.rmtree,
+                    ensure_user_work_dir(self.workspace, self.user_id) / "uploads" / row.id,
+                    True,
+                )
                 await session.delete(row)
 
     async def model_images(self, session_key: str, refs: list[dict], *, optional_ids: set[str] | None = None) -> dict[str, BinaryContent]:
@@ -237,9 +321,11 @@ class ChatAttachments:
         refs = await self.resolve(session_key, [ref["id"] for ref in refs], optional_ids=optional_ids)
         result = {}
         for ref in refs:
+            if ref.get("kind", "image") != "image":
+                continue
             try:
                 data, media = await self.content(ref["id"])
-            except ImageInputError as exc:
+            except AttachmentInputError as exc:
                 if exc.code == "attachment_not_found" and ref["id"] in (optional_ids or set()):
                     continue
                 raise

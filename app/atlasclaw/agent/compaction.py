@@ -151,10 +151,14 @@ class CompactionPipeline:
                 total_chars += len(str(tc))
             metadata = msg.get("metadata") or {}
             if metadata.get("model_input_eligible") is not False:
-                for image in metadata.get("attachments", []):
-                    # Conservative tile allowance; actual usage remains model-owned.
+                for attachment in metadata.get("attachments", []):
+                    # Conservative tile/preview allowance; actual usage remains model-owned.
                     from app.atlasclaw.core.chat_attachments import image_token_allowance
-                    total_chars += image_token_allowance(image) * 4
+                    from app.atlasclaw.core.chat_documents import document_token_allowance
+                    if attachment.get("kind") == "document":
+                        total_chars += document_token_allowance(attachment) * 4
+                    else:
+                        total_chars += image_token_allowance(attachment) * 4
         
         return total_chars // 4
     

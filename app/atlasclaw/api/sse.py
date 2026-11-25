@@ -178,6 +178,36 @@ create
     def get_stream(self, run_id: str) -> Optional[StreamState]:
         """getStream state"""
         return self._streams.get(run_id)
+
+    def subscribe(self, run_id: str, *, maxsize: int = 1000) -> asyncio.Queue[Optional[SSEEvent]]:
+        """Register a replaying subscriber queue for internal event consumers."""
+        stream = self._streams.get(run_id)
+        if stream is None:
+            raise KeyError(f"Stream not found: {run_id}")
+        queue: asyncio.Queue[Optional[SSEEvent]] = asyncio.Queue(maxsize=maxsize)
+        for event in list(stream.events):
+            try:
+                queue.put_nowait(event)
+            except asyncio.QueueFull:
+                break
+        if stream.closed:
+            try:
+                queue.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+            return queue
+        self._subscribers.setdefault(run_id, []).append(queue)
+        return queue
+
+    def unsubscribe(self, run_id: str, queue: asyncio.Queue[Optional[SSEEvent]]) -> None:
+        """Remove a previously registered internal subscriber queue."""
+        queues = self._subscribers.get(run_id)
+        if not queues:
+            return
+        try:
+            queues.remove(queue)
+        except ValueError:
+            return
         
     def push_event(self, run_id: str, event: SSEEvent) -> int:
         """

@@ -453,19 +453,31 @@
   "logout": {
     "title": "退出登录"
   },
+  "ext": {
+    "title": "扩展页面",
+    "loading": "正在加载…",
+    "loadFailed": "页面加载失败，请稍后重试或检查访问权限。",
+    "retry": "重试"
+  },
   "chat": {
     "images": {
-      "upload": "上传图片",
+      "upload": "上传文件",
       "too_many_images": "每条消息最多上传 4 张图片。",
+      "too_many_files": "每条消息最多上传 4 个文件。",
       "image_too_large": "图片超出限制：单张最多 5 MiB、2000 万像素。",
+      "file_too_large": "文件超出限制：单个文件最多 20 MiB。",
       "invalid_image": "请选择有效的 PNG、JPEG 或 WebP 静态图片。",
-      "attachment_not_found": "图片已失效或不属于当前会话，请重新上传。",
+      "invalid_document": "文件损坏或格式不正确，请检查后重新上传。",
+      "unsupported_file": "支持 PDF、Word(.docx)、TXT、Markdown、CSV 和 JSON。",
+      "attachment_not_found": "文件已失效或不属于当前会话，请重新上传。",
       "image_storage_full": "未发送图片过多，请先删除部分图片。",
+      "attachment_storage_full": "未发送文件过多，请先删除部分文件。",
       "model_image_disabled": "当前模型未启用图片分析，请联系管理员配置支持图片的模型。",
       "model_image_unsupported": "当前模型接口不支持图片分析，请检查模型配置。",
       "image_context_limit": "图片超出当前模型的上下文容量，请减少图片数量或分辨率。"
     },
     "placeholder": "请输入您的问题...",
+    "openFile": "打开预览",
     "copyMessage": "复制消息",
     "openObject": "打开",
     "openObjectAria": "打开 {{label}}",
@@ -500,6 +512,8 @@
       "older": "更早前",
       "defaultTitle": "对话",
       "searchPlaceholder": "\u641c\u7d22\u5bf9\u8bdd...",
+      "workspace": "\u5de5\u4f5c\u533a",
+      "searchAction": "\u641c\u7d22",
       "deleteLabel": "\u5220\u9664\u5bf9\u8bdd"
     }
   },

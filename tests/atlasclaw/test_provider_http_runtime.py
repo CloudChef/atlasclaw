@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 from fastapi import HTTPException
 from starlette.requests import Request
-from starlette.responses import StreamingResponse
+from starlette.responses import Response, StreamingResponse
 
 from app.atlasclaw.api import deps_context
 from app.atlasclaw.api.provider_http_routes import (
@@ -350,14 +350,21 @@ def test_provider_http_result_rejects_delayed_responses() -> None:
     """Verify handlers cannot retain a request-backed stream beyond spool lifetime."""
     response = StreamingResponse(iter([b"delayed"]))
 
-    with pytest.raises(ProviderHttpRuntimeError, match="JSON-serializable"):
-        _build_provider_http_response(response, status_code=200)
+    with pytest.raises(ProviderHttpRuntimeError, match="streaming responses"):
+        _build_provider_http_response(response, status_code=200, response_mode="binary")
 
-    with pytest.raises(ProviderHttpRuntimeError, match="JSON-serializable"):
-        _build_provider_http_response((item for item in ["lazy"]), status_code=200)
+    with pytest.raises(ProviderHttpRuntimeError, match="streaming responses"):
+        _build_provider_http_response((item for item in ["lazy"]), status_code=200, response_mode="binary")
 
     with pytest.raises(ProviderHttpRuntimeError, match="non-JSON"):
         _build_provider_http_response(object(), status_code=200)
+
+    eager = _build_provider_http_response(
+        Response(content=b"%PDF", media_type="application/pdf"),
+        status_code=200,
+        response_mode="binary",
+    )
+    assert eager.body == b"%PDF"
 
 
 def test_capability_discovery_fails_closed_without_callable_registry(

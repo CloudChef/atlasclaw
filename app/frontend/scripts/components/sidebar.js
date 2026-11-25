@@ -89,6 +89,7 @@ export function renderSidebar(container, { authInfo } = {}) {
         <span data-i18n="app.newChat">New Chat</span>
       </a>
     </div>
+    <nav class="sidebar-provider-nav" id="sidebar-provider-nav" aria-label="Provider extensions" hidden></nav>
     <div class="sidebar-content" id="sidebar-dynamic-content">
       <!-- Dynamic content area - can be filled by page modules -->
     </div>

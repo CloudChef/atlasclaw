@@ -11,6 +11,7 @@ httpx2>=2.16.0
 aiofiles>=25.1.0
 python-multipart>=0.0.33
 pypdf>=7.1.0
+pymupdf>=1.24.0
 requests>=2.34.2
 starlette>=1.8.0,<1.9
 python-pptx>=1.0.2

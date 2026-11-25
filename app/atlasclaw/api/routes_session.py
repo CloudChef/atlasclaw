@@ -104,6 +104,16 @@ def _build_session_response(session_key: str, session: Any) -> SessionResponse:
     )
 
 
+def _is_provider_internal_session(session_key: str) -> bool:
+    """Return whether a session belongs to a provider-initiated agent run.
+
+    Provider runs use the `provider-<type>-...` scope created by
+    `ProviderAgentHost`; they are execution plumbing and must never be listed as
+    user conversations.
+    """
+    return ":provider-" in str(session_key or "")
+
+
 def _ensure_session_owner(auth_user: UserInfo, session_key: str) -> SessionKey:
     parsed = SessionKey.from_string(session_key)
     if parsed.user_id != auth_user.user_id:
@@ -262,7 +272,11 @@ def register_session_routes(router: APIRouter) -> None:
         auth_user = _current_user(request_obj)
         manager = ctx.session_manager_router.for_user(auth_user.user_id)
         all_sessions = await manager.list_sessions()
-        user_sessions = [_build_session_response(session.session_key, session) for session in all_sessions]
+        visible_sessions = [
+            session for session in all_sessions
+            if not _is_provider_internal_session(session.session_key)
+        ]
+        user_sessions = [_build_session_response(session.session_key, session) for session in visible_sessions]
 
         user_sessions.sort(key=lambda s: s.last_activity or s.created_at, reverse=True)
         return user_sessions

@@ -196,12 +196,14 @@ async def execute_agent_run(
     request_cookies: Optional[dict[str, str]] = None,
     provider_config: Optional[dict[str, Any]] = None,
     request_context: Optional[dict[str, Any]] = None,
+    run_limits: Optional[dict[str, int]] = None,
 ) -> None:
     """Execute one agent run and bridge runner events into SSE/status state.
 
     The caller is responsible for creating the run with ``init_run`` and for
     passing already validated request context, including selected capabilities
-    and authorization-scoped provider config.
+    and authorization-scoped provider config. ``run_limits`` (internal callers
+    only) may raise the per-run tool/model-request ceilings.
     """
     _user_info = user_info or ANONYMOUS_USER
     encountered_error = False
@@ -229,20 +231,39 @@ async def execute_agent_run(
             "run_id": run_id,
             "context": request_context or {},
         }
-        from ...core.chat_attachments import ChatAttachments, ImageInputError, image_token_allowance, MAX_HISTORY_BYTES, MAX_HISTORY_IMAGES
+        limits = run_limits or {}
+        if limits:
+            model_limit = int(limits.get("max_model_requests", 0))
+            deps_extra["_model_request_limit"] = model_limit if model_limit > 0 else -1
+            max_tool_calls = int(limits.get("max_tool_calls", 0))
+        else:
+            max_tool_calls = 50
+        from ...core.chat_attachments import ChatAttachments, AttachmentInputError, image_token_allowance, MAX_FILES, MAX_HISTORY_BYTES, MAX_HISTORY_IMAGES
         from ...agent.model_capabilities import image_capabilities, session_model
 
         session_manager = ctx.session_manager_router.for_session_key(session_key)
         attachments = get_run_or_404(ctx, run_id).get("attachments", [])
+        image_attachments = [ref for ref in attachments if ref.get("kind", "image") == "image"]
         transcript = await session_manager.load_transcript(session_key)
-        retained = list(attachments)
-        retained_groups = [attachments]
+        retained = list(image_attachments)
+        retained_groups = [image_attachments] if image_attachments else []
         seen_ids = {ref["id"] for ref in retained}
+        document_refs = [ref for ref in attachments if ref.get("kind") == "document"]
+        document_ids = {ref["id"] for ref in document_refs}
         dropped = 0
         for entry in reversed(transcript):
             if entry.role != "user" or entry.metadata.get("model_input_eligible") is False:
                 continue
-            group = [ref for ref in entry.metadata.get("attachments", []) if ref["id"] not in seen_ids]
+            entry_refs = entry.metadata.get("attachments", []) or []
+            for ref in entry_refs:
+                if (
+                    ref.get("kind") == "document"
+                    and ref.get("id") not in document_ids
+                    and len(document_refs) < MAX_FILES
+                ):
+                    document_refs.append(ref)
+                    document_ids.add(ref["id"])
+            group = [ref for ref in entry_refs if ref.get("kind", "image") == "image" and ref["id"] not in seen_ids]
             if len(retained) + len(group) > MAX_HISTORY_IMAGES or sum(r.get("size", 0) for r in retained + group) > MAX_HISTORY_BYTES:
                 dropped += len(group)
                 continue
@@ -250,6 +271,17 @@ async def execute_agent_run(
             if group:
                 retained_groups.append(group)
             seen_ids.update(ref["id"] for ref in group)
+
+        deps_extra["_chat_attachments"] = attachments
+        store = ChatAttachments(session_manager.workspace_path, _user_info.user_id)
+        if document_refs:
+            try:
+                materialized = await store.materialize(session_key, document_refs)
+            except AttachmentInputError:
+                materialized = []
+            if materialized:
+                deps_extra["_chat_documents"] = materialized
+
         if retained:
             snapshot = await image_capabilities(runner)
             token = session_model(runner, session_key)
@@ -266,20 +298,18 @@ async def execute_agent_run(
                 )
                 return
             image_budget = (token.context_window or 128000) // 2
-            if sum(image_token_allowance(ref) for ref in attachments) > image_budget:
-                raise ImageInputError("image_context_limit", "Reduce the image count or resolution for this model.")
+            if sum(image_token_allowance(ref) for ref in image_attachments) > image_budget:
+                raise AttachmentInputError("image_context_limit", "Reduce the image count or resolution for this model.")
             while sum(image_token_allowance(ref) for ref in retained) > image_budget:
                 group = retained_groups.pop()
                 remove_ids = {ref["id"] for ref in group}
                 retained = [ref for ref in retained if ref["id"] not in remove_ids]
                 dropped += len(group)
-            store = ChatAttachments(session_manager.workspace_path, _user_info.user_id)
             inputs = await store.model_images(session_key, retained, optional_ids={
-                ref["id"] for ref in retained if ref["id"] not in {item["id"] for item in attachments}
+                ref["id"] for ref in retained if ref["id"] not in {item["id"] for item in image_attachments}
             })
             dropped += len(retained) - len(inputs)
             deps_extra.update({
-                "_chat_attachments": attachments,
                 "_chat_image_inputs": inputs,
                 "_chat_vision_tokens": {key for key, enabled in snapshot.items() if enabled},
             })
@@ -316,6 +346,7 @@ async def execute_agent_run(
             session_key=session_key,
             user_message=message,
             deps=deps,
+            max_tool_calls=max_tool_calls,
             timeout_seconds=timeout_seconds,
         )
         async with aclosing(

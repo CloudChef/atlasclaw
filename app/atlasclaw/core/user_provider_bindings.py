@@ -216,7 +216,25 @@ def resolve_provider_instance_config(
     """Resolve a provider instance to the first usable auth mode in template order."""
     binding_value = f"{provider_type}/{instance_name}"
     normalized_runtime_context = normalize_provider_runtime_context(runtime_context)
-    auth_chain = _get_template_auth_chain(provider_type, template_config, user_config)
+    definition = get_provider_schema_definition(provider_type)
+    try:
+        auth_chain = _get_template_auth_chain(provider_type, template_config, user_config)
+    except ValueError:
+        if definition is not None and bool(getattr(definition, "extension_only", False)):
+            return {
+                "provider_type": provider_type,
+                "instance_name": instance_name,
+                **dict(template_config),
+            }
+        raise
+    if not auth_chain and definition is not None and bool(getattr(definition, "extension_only", False)):
+        # Extension-only providers do not call an external system and therefore
+        # declare no auth modes; keep the implicit instance available to the run.
+        return {
+            "provider_type": provider_type,
+            "instance_name": instance_name,
+            **dict(template_config),
+        }
     authoritative_auth_type = serialize_provider_auth_type(auth_chain)
 
     merged_config = dict(template_config)

@@ -14,6 +14,7 @@ import { installAuthFetchInterceptor, checkAuth } from './auth.js'
 import { loadConfig, stripBasePath, buildAppUrl } from './config.js'
 import { initI18n, updatePageTranslations, updateContainerTranslations } from './i18n.js'
 import { renderSidebar, updateSidebarActive } from './components/sidebar.js'
+import { setupProviderNav } from './components/provider-nav.js'
 import { renderHeader, updateHeaderTitle, updateHeaderTitleText } from './components/header.js'
 import { showToast } from './components/toast.js'
 import { getAgentInfo } from './api-client.js?v=32'
@@ -26,7 +27,7 @@ import {
   canAccessUserManagement
 } from './permissions.js'
 
-const SCRIPT_VERSION = '49'
+const SCRIPT_VERSION = '51'
 
 /**
  * Route table - lazy loaded page modules
@@ -65,6 +66,12 @@ const routes = [
     accessCheck: canAccessModelManagement,
     accessDeniedMessage: 'Access denied. You do not have permission to manage models.',
     title: 'model.pageTitle'
+  },
+  {
+    path: '/ext/:providerType/:navId',
+    loader: () => import(`./pages/provider-extension.js?v=${SCRIPT_VERSION}`),
+    auth: true,
+    title: 'ext.title'
   },
   {
     path: '/admin/users',
@@ -180,6 +187,10 @@ export async function initApp() {
 
     if (sidebarContainer) {
       renderSidebar(sidebarContainer, { authInfo })
+      const providerNavContainer = document.getElementById('sidebar-provider-nav')
+      if (providerNavContainer) {
+        setupProviderNav(providerNavContainer, window.location.pathname)
+      }
     }
 
     if (headerContainer) {
@@ -218,6 +229,10 @@ export async function initApp() {
         const pageContent = document.getElementById('page-content')
         if (pageContent) {
           updateContainerTranslations(pageContent)
+        }
+        const providerNav = document.getElementById('sidebar-provider-nav')
+        if (providerNav) {
+          setupProviderNav(providerNav, window.location.pathname)
         }
       }
     })

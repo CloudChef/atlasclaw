@@ -22,7 +22,7 @@ from pydantic_ai import Agent, BinaryContent
 
 RUNTIME_API_FILENAME = "runtime-api.json"
 _ALLOWED_METHODS = frozenset({"DELETE", "GET", "PATCH", "POST", "PUT"})
-_ALLOWED_ACCESS_POLICIES = frozenset({"admin", "provider_user"})
+_ALLOWED_ACCESS_POLICIES = frozenset({"admin", "provider_user", "user"})
 _PATH_PARAMETER = re.compile(r"^\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 _STATIC_PATH_SEGMENT = re.compile(r"^[A-Za-z0-9._~-]+$")
 _PYTHON_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -67,6 +67,10 @@ class ProviderHttpRouteDefinition:
     capability: str
     access: str
     success_status: int = 200
+    route_id: str = ""
+    response: str = "json"
+    timeout_seconds: float = 0.0
+    max_body_bytes: int = 0
     _segments: tuple[str, ...] = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
@@ -77,6 +81,10 @@ class ProviderHttpRouteDefinition:
         object.__setattr__(self, "handler", self.handler.strip())
         object.__setattr__(self, "capability", self.capability.strip().lower())
         object.__setattr__(self, "access", self.access.strip().lower())
+        object.__setattr__(self, "route_id", str(self.route_id or "").strip())
+        object.__setattr__(self, "response", str(self.response or "json").strip().lower())
+        object.__setattr__(self, "timeout_seconds", float(self.timeout_seconds or 0.0))
+        object.__setattr__(self, "max_body_bytes", int(self.max_body_bytes or 0))
         object.__setattr__(self, "_segments", tuple(self.path.split("/")))
 
     @property
@@ -126,6 +134,8 @@ class ProviderHttpManifest:
 
     provider_type: str
     routes: tuple[ProviderHttpRouteDefinition, ...]
+    timeout_seconds: float = 30.0
+    max_body_bytes: int = 32 * 1024 * 1024
 
 
 class ProviderVisualRuntime:
@@ -236,6 +246,7 @@ class ProviderHttpContext:
     is_admin: bool
     token_id: str = ""
     visual_runtime: Optional[ProviderVisualRuntime] = None
+    host: Any = None
 
     @property
     def visual_model_name(self) -> str:
@@ -387,10 +398,23 @@ def load_provider_http_manifest(
         raise ValueError(f"{manifest_path}: invalid JSON: {exc}") from exc
     if not isinstance(raw_manifest, Mapping):
         raise ValueError(f"{manifest_path}: runtime API manifest must be an object")
-    if raw_manifest.get("schema_version") != 1:
+    manifest_version = raw_manifest.get("version", raw_manifest.get("schema_version"))
+    if manifest_version != 1:
         raise ValueError(
-            f"{manifest_path}: unsupported schema_version {raw_manifest.get('schema_version')!r}"
+            f"{manifest_path}: unsupported version {manifest_version!r}"
         )
+    try:
+        manifest_timeout = float(raw_manifest.get("timeout_seconds", 30.0))
+        if manifest_timeout <= 0:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{manifest_path}: timeout_seconds must be positive") from exc
+    try:
+        manifest_max_body = int(raw_manifest.get("max_body_bytes", 32 * 1024 * 1024))
+        if manifest_max_body <= 0 or manifest_max_body > 256 * 1024 * 1024:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{manifest_path}: max_body_bytes is invalid") from exc
     raw_routes = raw_manifest.get("routes")
     if not isinstance(raw_routes, list) or not raw_routes:
         raise ValueError(f"{manifest_path}: routes must be a non-empty list")
@@ -435,6 +459,21 @@ def load_provider_http_manifest(
             raise ValueError(f"{manifest_path}: success_status must be an integer") from exc
         if success_status < 200 or success_status > 299:
             raise ValueError(f"{manifest_path}: success_status must be a 2xx status")
+        response_mode = str(raw_route.get("response") or "json").strip().lower()
+        if response_mode not in {"json", "binary"}:
+            raise ValueError(f"{manifest_path}: unsupported route response {response_mode!r}")
+        try:
+            route_timeout = float(raw_route.get("timeout_seconds", manifest_timeout))
+            if route_timeout <= 0:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{manifest_path}: route timeout_seconds must be positive") from exc
+        try:
+            route_max_body = int(raw_route.get("max_body_bytes", manifest_max_body))
+            if route_max_body <= 0 or route_max_body > 256 * 1024 * 1024:
+                raise ValueError
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{manifest_path}: route max_body_bytes is invalid") from exc
         routes.append(
             ProviderHttpRouteDefinition(
                 provider_type=normalized_provider_type,
@@ -449,6 +488,10 @@ def load_provider_http_manifest(
                 capability=capability,
                 access=access,
                 success_status=success_status,
+                route_id=str(raw_route.get("id") or f"{method} {path}"),
+                response=response_mode,
+                timeout_seconds=route_timeout,
+                max_body_bytes=route_max_body,
             )
         )
     for route in routes:
@@ -470,7 +513,12 @@ def load_provider_http_manifest(
                 f"{manifest_path}: route handler must accept (request, context): {route.handler}"
             ) from exc
     routes.sort(key=lambda route: (-route.static_segment_count, route.path, route.method))
-    return ProviderHttpManifest(provider_type=normalized_provider_type, routes=tuple(routes))
+    return ProviderHttpManifest(
+        provider_type=normalized_provider_type,
+        routes=tuple(routes),
+        timeout_seconds=manifest_timeout,
+        max_body_bytes=manifest_max_body,
+    )
 
 
 def _load_provider_http_module(module_path: Path) -> ModuleType:

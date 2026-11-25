@@ -218,6 +218,7 @@ describe('chat page', () => {
     await chatPage.mount(container)
 
     const sidebar = document.getElementById('sidebar-dynamic-content')
+    sidebar.querySelector('#session-search-toggle').click()
     const searchInput = sidebar.querySelector('#session-search-input')
     const deleteButton = sidebar.querySelector('[data-delete-session="session-a"]')
     const chatElement = container.querySelector('#chat')
@@ -316,11 +317,13 @@ describe('chat page', () => {
     expect(sidebar.textContent).toContain('Create virtual machine')
     expect(sidebar.textContent).not.toContain('Today')
 
-    const searchInput = sidebar.querySelector('#session-search-input')
-    searchInput.focus()
-    searchInput.value = 'approvals'
-    searchInput.setSelectionRange(searchInput.value.length, searchInput.value.length)
-    searchInput.dispatchEvent(new Event('input'))
+    const searchInput = sidebar.querySelector('#session-search-toggle')
+    searchInput.click()
+    const searchField = sidebar.querySelector('#session-search-input')
+    searchField.focus()
+    searchField.value = 'approvals'
+    searchField.setSelectionRange(searchField.value.length, searchField.value.length)
+    searchField.dispatchEvent(new Event('input'))
 
     expect(sidebar.textContent).toContain('Query approvals')
     expect(sidebar.textContent).not.toContain('Create virtual machine')

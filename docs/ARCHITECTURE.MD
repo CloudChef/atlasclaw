@@ -430,20 +430,26 @@ HTTP Request (POST /api/agent/run)
    - event: lifecycle, data: {phase: "end", metadata: {loop_index: 1, loop_reason: "tool_result_continuation"}}
 ```
 
-### Chat image input
+### Chat attachment input
 
-Web chat uses Deep Chat's native image attachments and PydanticAI `BinaryContent`.
+Web chat uses Deep Chat's native attachments and PydanticAI `BinaryContent`.
 `POST /api/chat/attachments` accepts authenticated multipart uploads for an owned
-session. `POST /api/agent/run` carries `attachment_ids` alongside the existing text
-message; images never become filesystem-path instructions or base64 transcript text.
-The existing planning and execution model calls receive the native visual input.
+session and supports images plus PDF, Word (.docx), TXT, Markdown, CSV and JSON.
+`POST /api/agent/run` carries `attachment_ids` alongside the existing text message;
+images never become filesystem-path instructions or base64 transcript text.
+
+Images are passed as native visual input. Documents stay real files: at send time
+they are materialized to `users/<user>/work_dir/uploads/<attachment-id>/<safe name>`
+and the prompt receives a bounded manifest (path, size, pages/paragraphs and at most
+8k characters of preview). The agent reads deeper content with `read` / `skill_exec`
+and on-demand skills such as `audit-report`; auditing workflows are never selected
+automatically, only when the user asks for one.
 
 Private files live in `users/<internal-user-id>/attachments/<uuid>`, with metadata
-in `chat_attachments` (migration 012, SQLite/MySQL). Content requests recheck user
-ownership. Drafts expire after 24 hours and are reclaimed on that user's next upload;
-bound images survive archived resets and are removed on permanent session deletion.
-Previews reuse the original image and the component's scaling, without a second
-thumbnail store. Missing history files render an explicit re-upload notice.
+in `chat_attachments` (migrations 012/013, SQLite/MySQL). Content requests recheck
+user ownership. Drafts expire after 24 hours and are reclaimed on that user's next
+upload; bound attachments survive archived resets and are removed on permanent
+session deletion. Missing history files render an explicit re-upload notice.
 
 `capabilities.vision` must be a boolean in both model configurations and JSON
 `model.tokens[]`. Database capabilities refresh for each image run, while JSON

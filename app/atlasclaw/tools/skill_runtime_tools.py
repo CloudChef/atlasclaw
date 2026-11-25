@@ -9,6 +9,7 @@ import asyncio
 import os
 import re
 import shlex
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -31,7 +32,11 @@ if TYPE_CHECKING:
     from app.atlasclaw.core.deps import SkillDeps
 
 
-_ABSOLUTE_PATH_RE = re.compile(r"(?<![:\w])/(?:[^\s'\"`<>|\\]+)")
+_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![:\w])/(?:[^\s'\"`<>|\\]+)"            # POSIX absolute path
+    r"|(?<![\w])(?:[A-Za-z]:[\\/][^\s'\"`<>|]*)"  # Windows drive path
+    r"|(?:\\\\[^\s'\"`<>|]+)"                     # Windows UNC path
+)
 
 
 def _safe_skill_id(value: str) -> str:
@@ -106,6 +111,7 @@ def _runtime_env(ctx: "RunContext[SkillDeps]") -> dict[str, str]:
     env.update({
         "ATLASCLAW_WORK_DIR": str(get_user_work_dir(ctx)),
         "ATLASCLAW_SKILL_DIR": str(_skill_dir(ctx)),
+        "ATLASCLAW_PYTHON": sys.executable,
         "HOME": str(dirs["home"]),
         "TMPDIR": str(dirs["tmp"]),
         "XDG_CONFIG_HOME": str(dirs["config"]),
@@ -166,14 +172,15 @@ def _validate_runtime_command_paths(
 
     allowed_roots = [get_user_work_dir(ctx).resolve(), _skill_dir(ctx).resolve()]
     for index, arg in enumerate(args):
+        if index == 0:
+            # The executable itself may be an absolute path or resolved from PATH.
+            continue
         for match in _ABSOLUTE_PATH_RE.finditer(str(arg or "")):
-            path_text = match.group(0).rstrip(").,;:]}")
-            if not path_text or path_text == "/":
+            path_text = match.group(0).rstrip(").,;:]}").rstrip("\\/")
+            if not path_text or path_text in {"/", "\\"}:
                 continue
             resolved = Path(path_text).expanduser().resolve()
             if any(_is_relative_to(resolved, root) for root in allowed_roots):
-                continue
-            if index == 0 and str(arg).strip() == path_text:
                 continue
             raise ValueError("command paths must stay inside work_dir or the selected skill")
 

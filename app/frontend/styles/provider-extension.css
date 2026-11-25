@@ -1,0 +1,160 @@
+/*
+ *  Copyright 2026 Qianyun, Inc., www.cloudchef.io, All rights reserved.
+ *  Provider navigation and iframe host (Provider Extension Standard v1).
+ */
+
+.sidebar-provider-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 10px 10px;
+  flex: 0 0 auto;
+}
+
+.sidebar-provider-nav[hidden] {
+  display: none;
+}
+
+.provider-nav-link {
+  display: flex;
+  align-items: center;
+  padding: 10px 12px;
+  border-radius: 10px;
+  color: #e5e7eb;
+  font-size: 14px;
+  line-height: 1.3;
+  text-decoration: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.provider-nav-link:hover {
+  background: rgba(255, 255, 255, 0.06);
+  color: #ffffff;
+}
+
+.provider-nav-link.active {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.provider-nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-workspace-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 12px 6px;
+  color: #f1f5f9;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.sidebar-workspace-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+
+.sidebar-workspace-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.provider-extension-host {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+  background: #f8fafc;
+}
+
+.provider-extension-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  border: 0;
+  display: block;
+  background: #ffffff;
+}
+
+.provider-extension-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #64748b;
+  font-size: 14px;
+  background: #ffffff;
+}
+
+.provider-extension-spinner {
+  width: 18px;
+  height: 18px;
+  border: 2px solid #cbd5e1;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: provider-extension-spin 0.8s linear infinite;
+}
+
+@keyframes provider-extension-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.provider-extension-failed {
+  margin: auto;
+  max-width: 520px;
+  padding: 32px;
+  text-align: center;
+  color: #334155;
+}
+
+.provider-extension-failed h2 {
+  margin: 0 0 8px;
+  font-size: 18px;
+}
+
+.provider-extension-failed p {
+  margin: 0 0 18px;
+  color: #64748b;
+}
+
+.provider-extension-retry {
+  border: 1px solid #cbd5e1;
+  background: #ffffff;
+  color: #1d4ed8;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.provider-extension-retry:hover {
+  background: #eff6ff;
+  border-color: #93c5fd;
+}
+
+@media (max-width: 768px) {
+  .provider-extension-host {
+    min-height: 0;
+  }
+}

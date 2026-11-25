@@ -624,6 +624,13 @@ def test_continue_active_targets_continue_or_switch_within_authorized_scope() ->
         ("openrouter", "qwen/qwen3.9-flash", "", NativeOutput),
         ("openrouter", "qwen/qwen3", "", ToolOutput),
         ("openrouter", "qwen/qwen3.6-plus", "", ToolOutput),
+        ("openrouter", "qwen/qwen3.8-max-0902", "", ToolOutput),
+        (
+            "openai",
+            "qwen/qwen3.8-max-0902",
+            "https://openrouter.ai/api/v1",
+            ToolOutput,
+        ),
         (
             "openai",
             "qwen/qwen3.8-flash",
@@ -684,7 +691,10 @@ def test_conversation_planner_uses_native_output_only_for_qwen3_flash_family(
         provider == "openrouter"
         or provider == "openai" and base_url.startswith("https://openrouter.ai/")
     ) and model.startswith("qwen"):
-        expected_model_settings["extra_body"] = {"reasoning": {"effort": "none"}}
+        if model == "qwen/qwen3.8-max-0902":
+            expected_model_settings = {}
+        else:
+            expected_model_settings["extra_body"] = {"reasoning": {"effort": "none"}}
     elif provider == "qwen":
         expected_model_settings["extra_body"] = {"enable_thinking": False}
     assert captured["model_settings"] == expected_model_settings

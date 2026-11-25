@@ -197,6 +197,28 @@ def _open_directory_no_symlink(name: str | Path, *, dir_fd: int | None = None) -
         ) from exc
 
 
+def _open_regular_file_no_symlink(path: Path, display_path: Path) -> OpenWorkspaceDownloadFile:
+    """Fallback used on platforms whose ``os.open`` does not support ``dir_fd``."""
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError as exc:
+        raise WorkspaceDownloadError("not_found", "Download file not found") from exc
+    except (OSError, TypeError) as exc:
+        raise WorkspaceDownloadError(
+            "forbidden",
+            "Requested file is outside the allowed workspace area",
+        ) from exc
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise WorkspaceDownloadError("not_found", "Download file not found")
+        return OpenWorkspaceDownloadFile(path=display_path, fd=fd, stat_result=file_stat)
+    except Exception:
+        os.close(fd)
+        raise
+
+
 def _open_file_no_symlink(name: str, *, dir_fd: int) -> tuple[int, os.stat_result]:
     flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -217,6 +239,43 @@ def _open_file_no_symlink(name: str, *, dir_fd: int) -> tuple[int, os.stat_resul
     except Exception:
         os.close(fd)
         raise
+
+
+def _open_workspace_download_file_fallback(
+    workspace_root: Path,
+    safe_user_id: str,
+    raw_path: str,
+) -> OpenWorkspaceDownloadFile:
+    """Open a work_dir file without ``dir_fd`` support (for example on Windows)."""
+    current = workspace_root
+    for part in ("users", safe_user_id, "work_dir"):
+        current = current / part
+        if current.is_symlink():
+            raise WorkspaceDownloadError(
+                "forbidden",
+                "Requested file is outside the allowed workspace area",
+            )
+    root = workspace_root / "users" / safe_user_id / "work_dir"
+    root_resolved = root.resolve()
+    target = root
+    for part in raw_path.replace("\\", "/").split("/"):
+        target = target / part
+        if target.is_symlink():
+            raise WorkspaceDownloadError(
+                "forbidden",
+                "Requested file is outside the allowed workspace area",
+            )
+    try:
+        resolved = target.resolve()
+        resolved.relative_to(root_resolved)
+    except (OSError, ValueError) as exc:
+        raise WorkspaceDownloadError(
+            "forbidden",
+            "Requested file is outside the allowed workspace area",
+        ) from exc
+    if not resolved.is_file():
+        raise WorkspaceDownloadError("not_found", "Download file not found")
+    return _open_regular_file_no_symlink(resolved, root / raw_path)
 
 
 def open_workspace_download_file(
@@ -244,6 +303,8 @@ def open_workspace_download_file(
         )
 
     workspace_root = Path(workspace_path).expanduser().resolve()
+    if os.open not in os.supports_dir_fd or not hasattr(os, "O_NOFOLLOW"):
+        return _open_workspace_download_file_fallback(workspace_root, safe_user_id, raw_path)
     root_fd = _open_directory_no_symlink(workspace_root)
     current_fd = root_fd
     try:

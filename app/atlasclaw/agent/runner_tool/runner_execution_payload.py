@@ -765,8 +765,15 @@ class RunnerExecutionPayloadMixin:
                 run_kwargs["message_history"] = self.history.to_model_message_history(
                     message_history, image_inputs=deps.extra.get("_chat_image_inputs"),
                 )
-            from app.atlasclaw.core.chat_attachments import image_prompt
-            model_prompt = image_prompt(user_message, deps.extra, run_kwargs.get("message_history"))
+            from app.atlasclaw.core.chat_documents import compose_model_prompt
+            from app.atlasclaw.agent.runner_tool.runner_execution_runtime import _usage_limits_for_deps
+
+            model_prompt = compose_model_prompt(
+                user_message, deps.extra, run_kwargs.get("message_history"),
+            )
+            usage_limits = _usage_limits_for_deps(deps)
+            if usage_limits is not None:
+                run_kwargs["usage_limits"] = usage_limits
             if hasattr(override_cm, "__aenter__"):
                 async with override_cm:
                     result = await runtime_agent.run(model_prompt, **run_kwargs)

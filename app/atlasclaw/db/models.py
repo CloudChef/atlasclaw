@@ -332,7 +332,7 @@ class AuditLogModel(Base):
 
 
 class ChatAttachmentModel(Base):
-    """Private image metadata; image bytes remain in the user workspace."""
+    """Private attachment metadata; payload bytes remain in the user workspace."""
 
     __tablename__ = "chat_attachments"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
@@ -341,10 +341,13 @@ class ChatAttachmentModel(Base):
     session_hash: Mapped[str] = mapped_column(String(64), index=True)
     name: Mapped[str] = mapped_column(String(255))
     media_type: Mapped[str] = mapped_column(String(32))
+    kind: Mapped[str] = mapped_column(String(16), default="image")
+    extension: Mapped[str] = mapped_column(String(16), default="")
     size: Mapped[int] = mapped_column(Integer)
-    width: Mapped[int] = mapped_column(Integer)
-    height: Mapped[int] = mapped_column(Integer)
+    width: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    height: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     sha256: Mapped[str] = mapped_column(String(64))
+    metadata_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     bound: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

@@ -19,6 +19,7 @@ let mounted = false
 let currentSessionKey = null
 let sessionsCache = []
 let searchQuery = ''
+let searchOpen = false
 let pageContainer = null
 let currentAgentName = 'AtlasClaw'
 let pendingDeleteSessionKey = null
@@ -50,6 +51,14 @@ function getNewChatLabel() {
 
 function getSessionSearchPlaceholder() {
   return getTranslatedText('chat.session.searchPlaceholder', 'Search chats...')
+}
+
+function getWorkspaceLabel() {
+  return getTranslatedText('chat.session.workspace', 'Workspace')
+}
+
+function getSearchActionLabel() {
+  return getTranslatedText('chat.session.searchAction', 'Search')
 }
 
 function getDeleteSessionLabel() {
@@ -247,12 +256,34 @@ function renderSidebarContent(container) {
 
   container.innerHTML = `
     <div class="session-sidebar-shell">
+      <div class="sidebar-workspace-head">
+        <span>${escapeHtml(getWorkspaceLabel())}</span>
+        <button type="button" id="session-search-toggle" class="sidebar-workspace-toggle"
+                aria-label="${escapeHtml(getSearchActionLabel())}" aria-expanded="${searchOpen ? 'true' : 'false'}">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="m20 20-3.5-3.5"></path>
+          </svg>
+        </button>
+      </div>
+      ${searchOpen ? `
       <div class="session-search-shell">
         <input id="session-search-input" class="session-search-input" type="search" placeholder="${escapeHtml(getSessionSearchPlaceholder())}" value="${escapeHtml(searchQuery)}" />
-      </div>
+      </div>` : ''}
       <div class="session-list">${itemsHtml}</div>
     </div>
   `
+
+  const toggle = container.querySelector('#session-search-toggle')
+  if (toggle) {
+    toggle.addEventListener('click', () => {
+      searchOpen = !searchOpen
+      renderSidebarContent(container)
+      if (searchOpen) {
+        container.querySelector('#session-search-input')?.focus()
+      }
+    })
+  }
 
   const input = container.querySelector('#session-search-input')
   if (input) {

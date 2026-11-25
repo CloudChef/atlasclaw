@@ -453,19 +453,31 @@
   "logout": {
     "title": "Logout"
   },
+  "ext": {
+    "title": "Extension",
+    "loading": "Loading…",
+    "loadFailed": "The provider page failed to load. Retry, or check your access.",
+    "retry": "Retry"
+  },
   "chat": {
     "images": {
-      "upload": "Upload image",
+      "upload": "Upload file",
       "too_many_images": "Attach up to 4 images per message.",
+      "too_many_files": "Attach up to 4 files per message.",
       "image_too_large": "Each image must be at most 5 MiB and 20 million pixels.",
+      "file_too_large": "Each file must be at most 20 MiB.",
       "invalid_image": "Choose a valid static PNG, JPEG or WebP image.",
-      "attachment_not_found": "This image is unavailable in this conversation. Please upload it again.",
+      "invalid_document": "The file is corrupted or malformed. Check it and upload again.",
+      "unsupported_file": "Supported files: PDF, Word (.docx), TXT, Markdown, CSV and JSON.",
+      "attachment_not_found": "This file is unavailable in this conversation. Please upload it again.",
       "image_storage_full": "Remove unsent images before uploading more.",
+      "attachment_storage_full": "Remove unsent files before uploading more.",
       "model_image_disabled": "Image analysis is not enabled for the current model. Ask your administrator to configure an image-capable model.",
       "model_image_unsupported": "The current model endpoint does not support images. Check the model configuration.",
       "image_context_limit": "Images exceed the model context capacity. Reduce their count or resolution."
     },
     "placeholder": "Enter your question...",
+    "openFile": "Open",
     "copyMessage": "Copy message",
     "openObject": "Open",
     "openObjectAria": "Open {{label}}",
@@ -500,6 +512,8 @@
       "older": "Older",
       "defaultTitle": "Chat",
       "searchPlaceholder": "Search chats...",
+      "workspace": "Workspace",
+      "searchAction": "Search",
       "deleteLabel": "Delete chat"
     }
   },

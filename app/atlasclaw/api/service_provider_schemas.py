@@ -6,12 +6,24 @@
 from __future__ import annotations
 
 import json
+import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
 
 PROVIDER_SCHEMA_FILENAME = "provider.schema.json"
+logger = logging.getLogger(__name__)
+
+_EXTENSION_MANIFEST_VERSION = 1
+_NAV_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_NAV_ACCESS_VALUES = frozenset({"user", "admin"})
+_NAV_LAYOUT_VALUES = frozenset({"full", "padded"})
+_DEFAULT_UI_ASSETS_ROOT = "ui"
+_DEFAULT_API_MANIFEST = "runtime-api.json"
+_DEFAULT_API_TIMEOUT_SECONDS = 30.0
+_DEFAULT_API_MAX_BODY_BYTES = 32 * 1024 * 1024
 
 
 def _is_blank(value: Any) -> bool:
@@ -213,6 +225,35 @@ class ProviderAuthModeDefinition:
 
 
 @dataclass(frozen=True)
+class ProviderUiNav:
+    """One navigation entry contributed by a provider UI extension."""
+
+    id: str
+    title: dict[str, str] = field(default_factory=dict)
+    i18n_key: str = ""
+    icon_path: str = ""
+    entry: str = "index.html"
+    access: str = "user"
+    layout: str = "full"
+    order: int = 100
+    permissions: tuple[str, ...] = ()
+
+    def resolve_title(self, locale: str = "") -> str:
+        """Return the best title for a locale, falling back to en-US then any entry."""
+        normalized = str(locale or "").strip()
+        if normalized and normalized in self.title:
+            return self.title[normalized]
+        language = normalized.split("-", 1)[0].lower()
+        for key, value in self.title.items():
+            if key.split("-", 1)[0].lower() == language and language:
+                return value
+        for key in ("en-US", "en"):
+            if key in self.title:
+                return self.title[key]
+        return next(iter(self.title.values()), self.id)
+
+
+@dataclass(frozen=True)
 class ProviderSchemaDefinition:
     """Machine-readable manifest for a manageable service provider type."""
 
@@ -230,6 +271,14 @@ class ProviderSchemaDefinition:
     auth_modes: dict[str, ProviderAuthModeDefinition] = field(default_factory=dict)
     runtime_capabilities: tuple[str, ...] = ()
     redaction_sensitive_fields: tuple[str, ...] = ()
+    extension_only: bool = False
+    extensions_version: int = 0
+    requires_host: str = ""
+    ui_assets_root: str = _DEFAULT_UI_ASSETS_ROOT
+    ui_nav: tuple[ProviderUiNav, ...] = ()
+    api_manifest: str = _DEFAULT_API_MANIFEST
+    api_timeout_seconds: float = _DEFAULT_API_TIMEOUT_SECONDS
+    api_max_body_bytes: int = _DEFAULT_API_MAX_BODY_BYTES
 
     def __post_init__(self) -> None:
         normalized_provider_type = str(self.provider_type or "").strip().lower()
@@ -277,6 +326,33 @@ class ProviderSchemaDefinition:
                 for field in _normalize_string_tuple(self.redaction_sensitive_fields)
             ),
         )
+        object.__setattr__(self, "extension_only", bool(self.extension_only))
+        object.__setattr__(self, "extensions_version", int(self.extensions_version or 0))
+        object.__setattr__(self, "requires_host", str(self.requires_host or "").strip())
+        object.__setattr__(
+            self, "ui_assets_root", str(self.ui_assets_root or _DEFAULT_UI_ASSETS_ROOT).strip("/\\") or _DEFAULT_UI_ASSETS_ROOT,
+        )
+        object.__setattr__(
+            self,
+            "ui_nav",
+            tuple(
+                ProviderUiNav(
+                    id=nav.id,
+                    title={str(key): str(value) for key, value in (nav.title or {}).items()},
+                    i18n_key=str(nav.i18n_key or ""),
+                    icon_path=str(nav.icon_path or ""),
+                    entry=str(nav.entry or "index.html"),
+                    access=nav.access if nav.access in _NAV_ACCESS_VALUES else "user",
+                    layout=nav.layout if nav.layout in _NAV_LAYOUT_VALUES else "full",
+                    order=int(nav.order or 100),
+                    permissions=tuple(nav.permissions or ()),
+                )
+                for nav in self.ui_nav
+            ),
+        )
+        object.__setattr__(self, "api_manifest", str(self.api_manifest or _DEFAULT_API_MANIFEST).strip("/\\"))
+        object.__setattr__(self, "api_timeout_seconds", float(self.api_timeout_seconds or _DEFAULT_API_TIMEOUT_SECONDS))
+        object.__setattr__(self, "api_max_body_bytes", int(self.api_max_body_bytes or _DEFAULT_API_MAX_BODY_BYTES))
 
     def resolve_fields(
         self,
@@ -434,6 +510,174 @@ def register_provider_schema_definition(definition: ProviderSchemaDefinition) ->
     _PROVIDER_SCHEMA_DEFINITIONS[definition.provider_type] = definition
 
 
+def _safe_provider_relative_path(
+    value: Any,
+    *,
+    manifest_path: Path,
+    field_name: str,
+    default: str = "",
+) -> str:
+    """Normalize a provider-root-relative path used by UI/API extensions."""
+    raw_path = str(value or "").strip().replace("\\", "/")
+    if not raw_path:
+        return default
+    if "\x00" in raw_path:
+        raise ValueError(f"{manifest_path}: {field_name} must not contain NUL bytes")
+    candidate = Path(raw_path)
+    if candidate.is_absolute() or ".." in candidate.parts:
+        raise ValueError(
+            f"{manifest_path}: {field_name} must be relative to the provider root "
+            "and must not contain '..'"
+        )
+    return raw_path.lstrip("/")
+
+
+def _nav_from_dict(raw_nav: Any, *, manifest_path: Path) -> Optional[ProviderUiNav]:
+    """Parse one ``extensions.ui.nav`` entry, skipping invalid entries with a warning."""
+    if not isinstance(raw_nav, Mapping):
+        logger.warning("%s: extensions.ui.nav entries must be objects", manifest_path)
+        return None
+    nav_id = str(raw_nav.get("id") or "").strip().lower()
+    if not _NAV_ID_PATTERN.fullmatch(nav_id):
+        logger.warning("%s: invalid ui.nav id %r", manifest_path, raw_nav.get("id"))
+        return None
+    raw_title = raw_nav.get("title")
+    title: dict[str, str] = {}
+    if isinstance(raw_title, Mapping):
+        title = {str(key): str(value) for key, value in raw_title.items() if str(value).strip()}
+    i18n_key = str(raw_nav.get("i18n_key") or "").strip()
+    if not title and not i18n_key:
+        logger.warning("%s: ui.nav %s has no title or i18n_key", manifest_path, nav_id)
+        return None
+    try:
+        entry = _safe_provider_relative_path(
+            raw_nav.get("entry"), manifest_path=manifest_path,
+            field_name=f"ui.nav.{nav_id}.entry", default="index.html",
+        )
+        icon_path = _safe_provider_relative_path(
+            raw_nav.get("icon_path"), manifest_path=manifest_path,
+            field_name=f"ui.nav.{nav_id}.icon_path",
+        )
+    except ValueError as exc:
+        logger.warning("%s", exc)
+        return None
+    if not entry.lower().endswith((".html", ".htm")):
+        logger.warning("%s: ui.nav %s entry must be an HTML file", manifest_path, nav_id)
+        return None
+    access = str(raw_nav.get("access") or "user").strip().lower()
+    if access not in _NAV_ACCESS_VALUES:
+        logger.warning("%s: ui.nav %s has invalid access %r", manifest_path, nav_id, access)
+        access = "user"
+    layout = str(raw_nav.get("layout") or "full").strip().lower()
+    if layout not in _NAV_LAYOUT_VALUES:
+        layout = "full"
+    try:
+        order = int(raw_nav.get("order", 100))
+    except (TypeError, ValueError):
+        order = 100
+    permissions = _normalize_string_tuple(raw_nav.get("permissions"))
+    return ProviderUiNav(
+        id=nav_id,
+        title=title,
+        i18n_key=i18n_key,
+        icon_path=icon_path,
+        entry=entry,
+        access=access,
+        layout=layout,
+        order=order,
+        permissions=tuple(permissions),
+    )
+
+
+def _extensions_from_manifest(
+    raw_manifest: Mapping[str, Any],
+    *,
+    manifest_path: Path,
+) -> dict[str, Any]:
+    """Parse the optional extension block without invalidating the provider schema."""
+    raw = raw_manifest.get("extensions")
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        logger.warning("%s: extensions must be an object; ignored", manifest_path)
+        return {}
+
+    try:
+        version = int(raw.get("version", 1))
+    except (TypeError, ValueError):
+        logger.warning("%s: extensions.version must be an integer; ignored", manifest_path)
+        return {}
+    if version < 1:
+        logger.warning("%s: extensions.version must be positive; ignored", manifest_path)
+        return {}
+    if version > _EXTENSION_MANIFEST_VERSION:
+        logger.warning(
+            "%s: unsupported extensions.version %s (host supports %s); extension disabled",
+            manifest_path, version, _EXTENSION_MANIFEST_VERSION,
+        )
+        return {"extensions_version": version}
+
+    requires = raw.get("requires") if isinstance(raw.get("requires"), Mapping) else {}
+    ui = raw.get("ui") if isinstance(raw.get("ui"), Mapping) else {}
+    api = raw.get("api") if isinstance(raw.get("api"), Mapping) else {}
+
+    try:
+        assets_root = _safe_provider_relative_path(
+            ui.get("assets_root"), manifest_path=manifest_path,
+            field_name="extensions.ui.assets_root", default=_DEFAULT_UI_ASSETS_ROOT,
+        ).strip("/") or _DEFAULT_UI_ASSETS_ROOT
+    except ValueError as exc:
+        logger.warning("%s", exc)
+        assets_root = _DEFAULT_UI_ASSETS_ROOT
+
+    navs: list[ProviderUiNav] = []
+    seen_ids: set[str] = set()
+    raw_nav = ui.get("nav")
+    if raw_nav is not None and not isinstance(raw_nav, list):
+        logger.warning("%s: extensions.ui.nav must be a list; ignored", manifest_path)
+        raw_nav = []
+    for item in raw_nav or []:
+        nav = _nav_from_dict(item, manifest_path=manifest_path)
+        if nav is None:
+            continue
+        if nav.id in seen_ids:
+            logger.warning("%s: duplicate ui.nav id %s; ignored", manifest_path, nav.id)
+            continue
+        seen_ids.add(nav.id)
+        navs.append(nav)
+
+    try:
+        api_manifest = _safe_provider_relative_path(
+            api.get("manifest"), manifest_path=manifest_path,
+            field_name="extensions.api.manifest", default=_DEFAULT_API_MANIFEST,
+        )
+    except ValueError as exc:
+        logger.warning("%s", exc)
+        api_manifest = _DEFAULT_API_MANIFEST
+    try:
+        timeout_seconds = float(api.get("timeout_seconds", _DEFAULT_API_TIMEOUT_SECONDS))
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive")
+    except (TypeError, ValueError):
+        timeout_seconds = _DEFAULT_API_TIMEOUT_SECONDS
+    try:
+        max_body_bytes = int(api.get("max_body_bytes", _DEFAULT_API_MAX_BODY_BYTES))
+        if max_body_bytes <= 0:
+            raise ValueError("max_body_bytes must be positive")
+    except (TypeError, ValueError):
+        max_body_bytes = _DEFAULT_API_MAX_BODY_BYTES
+
+    return {
+        "extensions_version": version,
+        "requires_host": str(requires.get("host") or "").strip(),
+        "ui_assets_root": assets_root,
+        "ui_nav": tuple(sorted(navs, key=lambda nav: (nav.order, nav.id))),
+        "api_manifest": api_manifest,
+        "api_timeout_seconds": timeout_seconds,
+        "api_max_body_bytes": max_body_bytes,
+    }
+
+
 def _safe_relative_path(value: Any, *, manifest_path: Path) -> str:
     raw_path = str(value or "").strip()
     if not raw_path:
@@ -523,6 +767,8 @@ def load_provider_schema_definition(
     if not isinstance(redaction, Mapping):
         raise ValueError(f"{manifest_path}: redaction must be an object")
 
+    extensions = _extensions_from_manifest(raw_manifest, manifest_path=manifest_path)
+
     definition = ProviderSchemaDefinition(
         provider_type=provider_type,
         display_name=str(catalog.get("display_name") or fallback_display_name or provider_type),
@@ -545,6 +791,14 @@ def load_provider_schema_definition(
         redaction_sensitive_fields=tuple(
             _normalize_string_tuple(redaction.get("sensitive_fields"))
         ),
+        extension_only=bool(catalog.get("extension_only", False)),
+        extensions_version=int(extensions.get("extensions_version", 0) or 0),
+        requires_host=str(extensions.get("requires_host", "") or ""),
+        ui_assets_root=str(extensions.get("ui_assets_root", _DEFAULT_UI_ASSETS_ROOT)),
+        ui_nav=tuple(extensions.get("ui_nav", ())),
+        api_manifest=str(extensions.get("api_manifest", _DEFAULT_API_MANIFEST)),
+        api_timeout_seconds=float(extensions.get("api_timeout_seconds", _DEFAULT_API_TIMEOUT_SECONDS)),
+        api_max_body_bytes=int(extensions.get("api_max_body_bytes", _DEFAULT_API_MAX_BODY_BYTES)),
     )
 
     if fallback_provider_type:

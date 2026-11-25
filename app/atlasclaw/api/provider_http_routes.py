@@ -9,12 +9,14 @@ from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager
 import logging
 import tempfile
+from pathlib import Path
 from typing import Any
 
 import anyio
+import asyncio
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.encoders import jsonable_encoder
-from starlette.responses import JSONResponse, Response
+from starlette.responses import JSONResponse, Response, StreamingResponse
 
 from app.atlasclaw.api.deps_context import get_api_context
 from app.atlasclaw.auth.guards import (
@@ -29,11 +31,18 @@ from app.atlasclaw.core.provider_http_runtime import (
     ProviderVisualRuntime,
     invoke_provider_http_handler,
 )
+from app.atlasclaw.core.provider_agent_host import ProviderAgentHost
+from app.atlasclaw.core.provider_host_services import (
+    ProviderHostServices,
+    ProviderUser,
+    provider_data_dir,
+)
+from app.atlasclaw.core.security_guard import ensure_user_work_dir
 
 
 router = APIRouter(tags=["Provider Runtime API"])
 logger = logging.getLogger(__name__)
-_MAX_PROVIDER_HTTP_BODY_BYTES = 128 * 1024 * 1024
+_MAX_PROVIDER_HTTP_BODY_BYTES = 256 * 1024 * 1024
 _BODY_MEMORY_SPOOL_BYTES = 1024 * 1024
 _BODY_REPLAY_CHUNK_BYTES = 1024 * 1024
 
@@ -123,11 +132,36 @@ def _runtime_error_response(exc: Exception, *, provider_ref: str, route_path: st
     )
 
 
-def _build_provider_http_response(result: Any, *, status_code: int) -> JSONResponse:
-    """Materialize an eager JSON response while the request spool is still open."""
-    if isinstance(result, (Response, Iterator, AsyncIterator)):
+def _build_provider_http_response(
+    result: Any,
+    *,
+    status_code: int,
+    response_mode: str = "json",
+) -> Response:
+    """Materialize a provider handler result as JSON or a binary response."""
+    if isinstance(result, (StreamingResponse, Iterator, AsyncIterator)):
         raise ProviderHttpRuntimeError(
-            "Provider HTTP handlers must return a JSON-serializable value",
+            "Provider streaming responses are not supported",
+            code="provider_http_response_type_invalid",
+        )
+    if isinstance(result, Response):
+        if response_mode != "binary":
+            raise ProviderHttpRuntimeError(
+                "Provider JSON routes must return a JSON-serializable value",
+                code="provider_http_response_type_invalid",
+            )
+        result.headers.setdefault("X-Content-Type-Options", "nosniff")
+        media_type = str(getattr(result, "media_type", "") or "").lower()
+        if media_type.startswith("text/html"):
+            result.headers.setdefault(
+                "Content-Security-Policy",
+                "sandbox; default-src 'none'; img-src data: blob:; "
+                "style-src 'unsafe-inline'; font-src data:",
+            )
+        return result
+    if response_mode == "binary":
+        raise ProviderHttpRuntimeError(
+            "Provider binary routes must return a Response",
             code="provider_http_response_type_invalid",
         )
     try:
@@ -167,17 +201,55 @@ async def dispatch_provider_http_request(
     if route is None:
         raise HTTPException(status_code=404, detail="Provider API route not found")
 
-    ensure_provider_instance_access(authz, normalized_type, normalized_instance)
+    schema = registry.get_provider_schema_definition(normalized_type)
+    extension_only_default = (
+        bool(getattr(schema, "extension_only", False))
+        and normalized_instance == "default"
+    )
+    if not extension_only_default:
+        ensure_provider_instance_access(authz, normalized_type, normalized_instance)
     if route.access == "admin" and not authz.is_admin:
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
     catalog = await get_provider_catalog_instances()
     provider_config = catalog.get(normalized_type, {}).get(normalized_instance)
+    if provider_config is None and extension_only_default:
+        provider_config = {}
     if not isinstance(provider_config, dict):
         raise HTTPException(status_code=404, detail="Provider instance not found")
     runtime_config = dict(provider_config)
     runtime_config["instance_name"] = normalized_instance
     user_extra = authz.user.extra if isinstance(authz.user.extra, dict) else {}
+    workspace_path = api_context.session_manager_router.for_user(
+        str(authz.user.user_id or ""),
+    ).workspace_path
+    provider_user = ProviderUser(
+        user_id=str(authz.user.user_id or "anonymous"),
+        display_name=str(getattr(authz.user, "display_name", "") or ""),
+        tenant_id=str(getattr(authz.user, "tenant_id", "") or "default"),
+        is_admin=bool(authz.is_admin),
+        roles=tuple(str(role) for role in (getattr(authz.user, "roles", None) or [])),
+        locale=str(user_extra.get("ui_locale") or user_extra.get("locale") or ""),
+    )
+    data_dir = provider_data_dir(workspace_path, normalized_type, provider_user)
+    agent_host = ProviderAgentHost(
+        api_context,
+        authz=authz,
+        provider_type=normalized_type,
+        user=provider_user,
+        data_dir=data_dir,
+        provider_config=runtime_config,
+        request_cookies=dict(request.cookies),
+    )
+    host_services = ProviderHostServices(
+        workspace_path=Path(workspace_path).resolve(),
+        data_dir=data_dir,
+        user=provider_user,
+        agent=agent_host,
+        config=runtime_config,
+        provider_type=normalized_type,
+        work_dir=Path(ensure_user_work_dir(workspace_path, provider_user.user_id)).resolve(),
+    )
     provider_context = ProviderHttpContext(
         provider_type=normalized_type,
         provider_instance=normalized_instance,
@@ -188,18 +260,25 @@ async def dispatch_provider_http_request(
         is_admin=authz.is_admin,
         token_id=str(user_extra.get("api_token_id") or ""),
         visual_runtime=ProviderVisualRuntime(api_context.agent_runner),
+        host=host_services,
     )
     provider_ref = f"{normalized_type}.{normalized_instance}"
     try:
-        async with _body_limited_request(request) as provider_request:
-            result: Any = await invoke_provider_http_handler(
-                route,
-                provider_request,
-                provider_context,
-            )
+        async with _body_limited_request(request, max_body_bytes=route.max_body_bytes) as provider_request:
+            try:
+                result: Any = await asyncio.wait_for(
+                    invoke_provider_http_handler(route, provider_request, provider_context),
+                    timeout=float(route.timeout_seconds or 30.0),
+                )
+            except asyncio.TimeoutError as exc:
+                raise HTTPException(
+                    status_code=504,
+                    detail={"code": "provider_route_timeout", "message": "Provider route timed out"},
+                ) from exc
             response = _build_provider_http_response(
                 result,
                 status_code=route.success_status,
+                response_mode=route.response,
             )
     except HTTPException:
         raise

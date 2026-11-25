@@ -640,7 +640,7 @@ class RuntimeEventDispatcher:
                 events.append(StreamEvent.lifecycle_aborted())
                 return ToolDispatchResult(events=events, tool_calls_count=tool_calls_count, should_break=True)
 
-            if tool_calls_count > max_tool_calls:
+            if max_tool_calls and tool_calls_count > max_tool_calls:
                 events.append(StreamEvent.error_event("max_tool_calls_exceeded"))
                 return ToolDispatchResult(events=events, tool_calls_count=tool_calls_count, should_break=True)
 

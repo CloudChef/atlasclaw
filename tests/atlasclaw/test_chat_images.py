@@ -83,7 +83,7 @@ async def test_attachment_validation_ownership_and_lifecycle(db, tmp_path):
         await store.resolve("session-b", [identifier])
     with pytest.raises(ImageInputError, match="invalid_image"):
         await store.upload("session-a", [UploadFile(io.BytesIO(b"not a png"), filename="fake.png")])
-    with pytest.raises(ImageInputError, match="too_many_images"):
+    with pytest.raises(ImageInputError, match="too_many_files"):
         await store.upload("session-a", [png() for _ in range(5)])
     await store.resolve("session-a", [identifier], bind=True)
     await store.delete(identifier=identifier)  # Bound history cannot be deleted as a draft.

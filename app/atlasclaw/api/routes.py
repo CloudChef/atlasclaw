@@ -26,6 +26,7 @@ from .routes_skills_memory import register_skills_memory_routes
 from .routes_webhook import register_webhook_routes
 from .routes_workspace_files import register_workspace_file_routes
 from .routes_chat_attachments import register_chat_attachment_routes
+from .routes_ui_extensions import register_ui_extension_routes
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,7 @@ def install_request_validation_logging(app: FastAPI) -> None:
 def create_router() -> APIRouter:
     router = APIRouter(prefix="/api", tags=["AtlasClaw API"])
     register_chat_attachment_routes(router)
+    register_ui_extension_routes(router)
     register_session_routes(router)
     register_hook_routes(router)
     register_agent_routes(router)

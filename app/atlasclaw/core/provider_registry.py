@@ -134,6 +134,10 @@ class ServiceProviderRegistry:
             return 0
 
         from app.atlasclaw.api.service_provider_schemas import load_provider_directory_schema
+        from app.atlasclaw.core.provider_extension_registry import get_provider_extension_registry
+
+        extension_registry = get_provider_extension_registry()
+        extension_registry.clear()
 
         count = 0
         for sub in sorted(providers_dir.iterdir()):
@@ -176,6 +180,22 @@ class ServiceProviderRegistry:
                 if schema_definition is not None:
                     self._schema_definitions[schema_definition.provider_type] = schema_definition
                     self._http_routes.pop(schema_definition.provider_type, None)
+                    try:
+                        registered_nav = extension_registry.register(
+                            provider_root=sub,
+                            definition=schema_definition,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Skipping provider UI extensions %s: %s", sub, exc,
+                        )
+                    else:
+                        if registered_nav:
+                            logger.info(
+                                "Registered %d provider UI entr(ies): %s",
+                                registered_nav,
+                                schema_definition.provider_type,
+                            )
                     logger.debug(
                         "Loaded provider schema: %s",
                         schema_definition.provider_type,
@@ -374,7 +394,11 @@ class ServiceProviderRegistry:
         return sorted(all_types)
 
     def list_instances(self, provider_type: str) -> list[str]:
-        return sorted(self._instances.get(provider_type, {}).keys())
+        instances = dict(self._instances.get(provider_type, {}))
+        schema = self.get_provider_schema_definition(provider_type)
+        if getattr(schema, "extension_only", False):
+            instances.setdefault("default", {})
+        return sorted(instances.keys())
 
     def get_instance_config(
         self,
@@ -399,13 +423,17 @@ class ServiceProviderRegistry:
 
     def get_all_instance_configs(self) -> dict[str, dict[str, dict[str, Any]]]:
         """Return all resolved provider instance configs."""
-        return {
+        result = {
             provider_type: {
                 instance_name: dict(instance_cfg)
                 for instance_name, instance_cfg in instances.items()
             }
             for provider_type, instances in self._instances.items()
         }
+        for provider_type, schema in self._schema_definitions.items():
+            if getattr(schema, "extension_only", False):
+                result.setdefault(provider_type, {}).setdefault("default", {})
+        return result
 
     def get_available_providers_summary(self) -> dict[str, list[str]]:
         return {
