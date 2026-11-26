@@ -388,8 +388,9 @@ Core registers no provider-specific FastAPI routes. One catch-all dispatcher res
 the provider type and configured instance from the URL, checks the authenticated role
 and provider-instance RBAC, and calls the matched handler with `ProviderHttpContext`.
 The context contains the selected instance config, path parameters, safe actor/tenant
-metadata, and a narrow visual-model bridge. The dispatcher measures actual ASGI body
-bytes against its 128 MiB ceiling even when `Content-Length` is absent or inaccurate.
+metadata, a narrow visual-model bridge, and Host Services for agent, private storage
+and provider-wide shared storage. The dispatcher measures actual ASGI body bytes
+against the configured route limit (256 MiB maximum), even when `Content-Length` is absent or inaccurate.
 The complete bounded body is spooled before handler invocation. Provider handlers own
 request parsing and domain behavior.
 

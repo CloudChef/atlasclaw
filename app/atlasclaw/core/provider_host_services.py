@@ -71,6 +71,11 @@ class ProviderHostServices:
         """Return the Host Services contract version."""
         return HOST_API_VERSION
 
+    @property
+    def shared_data_dir(self) -> Path:
+        """Return this provider's storage shared by all users and tenants."""
+        return _provider_storage_root(self.workspace_path, self.provider_type) / "_shared"
+
     def get_config(self, key: str, default: Any = None) -> Any:
         """Read one provider instance config value."""
         return (self.config or {}).get(key, default)
@@ -86,12 +91,14 @@ class ProviderHostServices:
         )
 
 
+def _provider_storage_root(workspace_path: str | Path, provider_type: str) -> Path:
+    return Path(workspace_path).resolve() / ".provider-data" / str(provider_type or "").strip().lower()
+
+
 def provider_data_dir(workspace_path: str | Path, provider_type: str, user: ProviderUser) -> Path:
     """Return the isolated data directory for one provider and user."""
     root = (
-        Path(workspace_path).resolve()
-        / ".provider-data"
-        / str(provider_type or "").strip().lower()
+        _provider_storage_root(workspace_path, provider_type)
         / (user.tenant_id or "default")
         / (user.user_id or "anonymous")
     )

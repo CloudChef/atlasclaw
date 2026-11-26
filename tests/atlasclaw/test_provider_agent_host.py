@@ -12,8 +12,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.atlasclaw.api.sse import SSEManager
+from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.core.provider_agent_host import ProviderAgentHost
-from app.atlasclaw.core.provider_host_services import ProviderFileRef, ProviderUser
+from app.atlasclaw.core.provider_host_services import ProviderFileRef, ProviderHostServices, ProviderUser
 from app.atlasclaw.core.provider_http_runtime import ProviderHttpRuntimeError
 
 
@@ -28,6 +29,14 @@ class _Sessions:
     async def delete_session(self, session_key: str) -> bool:
         self.deleted.append(session_key)
         return True
+
+
+def test_provider_shared_storage_is_global_within_provider(tmp_path: Path) -> None:
+    first = ProviderHostServices(tmp_path, tmp_path / "alice", ProviderUser("alice", tenant_id="t1"), provider_type="audit-report")
+    second = ProviderHostServices(tmp_path, tmp_path / "bob", ProviderUser("bob", tenant_id="t2"), provider_type="audit-report")
+    other = ProviderHostServices(tmp_path, tmp_path / "bob", second.user, provider_type="another-provider")
+    assert first.shared_data_dir == second.shared_data_dir == tmp_path / ".provider-data" / "audit-report" / "_shared"
+    assert first.shared_data_dir != other.shared_data_dir
 
 
 class _Router:
@@ -147,6 +156,66 @@ async def test_run_skill_pins_skill_and_collects_artifact(tmp_path: Path, monkey
     assert snapshot["metadata"] == {"document_id": "doc-1"}
     assert snapshot["progress"] == 100
     assert ctx.session_manager_router.sessions.deleted == [captured["session_key"]]
+
+
+@pytest.mark.asyncio
+async def test_unpinned_run_uses_actor_and_current_skill_and_provider_grants(tmp_path: Path, monkeypatch) -> None:
+    context = _context(tmp_path)
+    host = _host(context, tmp_path)
+    actor = UserInfo("u1", extra={"provider_type": "test"}, auth_type="cookie")
+    host.authz.user = actor
+    grants = [
+        {"skill_id": "audit-report", "authorized": True, "enabled": True},
+        {"skill_id": "other", "authorized": True, "enabled": False},
+    ]
+    host.authz.permissions = {"skills": {"skill_permissions": grants}, "providers": {"provider_permissions": []}}
+    captured = {}
+
+    async def fake_execute(ctx, run_id, session_key, prompt, timeout, user_info, cookies, config, request_context, run_limits):
+        captured.update(user=user_info, context=request_context)
+        ctx.active_runs[run_id]["status"] = "completed"
+        ctx.sse_manager.close_stream(run_id)
+
+    monkeypatch.setattr("app.atlasclaw.core.provider_agent_host.execute_agent_run", fake_execute)
+    handle = await host.start_run(prompt="Audit this report")
+    await handle.wait(timeout=5)
+    assert captured["user"] is actor
+    assert captured["context"]["_user_skill_permissions"] == grants
+    assert captured["context"]["_provider_permissions"] == []
+    assert "_selected_capability" not in captured["context"]
+
+
+@pytest.mark.asyncio
+async def test_provider_host_preserves_optional_timeout_and_has_no_run_count_cap(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    context = _context(tmp_path)
+    host = _host(context, tmp_path)
+    seen_timeouts = []
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_execute(ctx, run_id, _session_key, _message, timeout_seconds, *_args):
+        seen_timeouts.append(timeout_seconds)
+        started.set()
+        await release.wait()
+        ctx.active_runs[run_id]["status"] = "completed"
+        ctx.sse_manager.close_stream(run_id)
+
+    monkeypatch.setattr("app.atlasclaw.core.provider_agent_host.execute_agent_run", fake_execute)
+    handles = [
+        await host.start_run(prompt=f"run {index}", timeout_seconds=value)
+        for index, value in enumerate((None, 7200, 120))
+    ]
+    await started.wait()
+    assert len(handles) == 3
+    release.set()
+    for handle in handles:
+        await handle.wait(timeout=5)
+
+    assert sorted(str(value) for value in seen_timeouts) == ["120", "7200", "None"]
+    assert all(context.active_runs[handle.run_id]["timeout_seconds"] == value
+               for handle, value in zip(handles, (None, 7200, 120)))
 
 
 @pytest.mark.asyncio

@@ -254,7 +254,7 @@ them through:
 
 Core uses one generic dispatcher rather than adding FastAPI routes for each provider.
 It owns authentication, configured-instance lookup, provider-instance RBAC, the
-`admin`/`provider_user` access policy, a 128 MiB ceiling measured from actual ASGI
+`admin`/authenticated-user access policy, a 256 MiB ceiling measured from actual ASGI
 body bytes, handler loading, and safe error mapping. Core reads the complete bounded
 body into a disk-backed spool before the handler runs, so handlers that ignore or only
 partially consume a body cannot bypass the ceiling. The provider handler owns request
@@ -269,10 +269,9 @@ application tenant; the provider remains responsible for validating that same re
 context before domain writes.
 
 Handlers must use `async def`, accept positional `(request, context)` arguments without
-additional required parameters, and return an eager JSON-serializable value. Core
-validates the call signature during registration and does not accept an arbitrary or
-streaming `Response`, which keeps request spool ownership and cleanup bounded to the
-handler call.
+additional required parameters. Return an eager JSON-serializable value or a
+materialized `Response` on a route declared as `response: "binary"`. Core validates
+the call signature during registration. Streaming responses are unsupported.
 
 Registration rejects absolute or escaping module paths, symlink modules, unsupported
 methods/access policies, undeclared capabilities, any pair of route templates that can
@@ -281,10 +280,11 @@ backed by successfully registered handlers are returned by capability-filtered i
 discovery. Executable module names come only from the static provider package manifest,
 never from provider instance configuration.
 
-REST registration is independent from Skills and Tools. A REST handler and an Agent
-Tool may call the same provider service module, but REST must not invoke a Skill or
-Tool as an intermediate API layer. Disabling a Skill therefore does not silently
-disable a provider's administrative REST contract.
+REST registration is independent from Skills and Tools. Agent-backed workflows
+use `context.host.agent` and inherit the authenticated user's permissions. Core
+supplies `context.host.data_dir` for per-user storage and `context.host.shared_data_dir`
+for data shared across users and tenants of the same provider. See the
+[Provider Extension Standard](./PROVIDER-EXTENSION-STANDARD.md) for the full contract.
 
 ### Environment Variables
 

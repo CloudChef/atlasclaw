@@ -57,7 +57,7 @@ Rules:
 
 - `PROVIDER.md`, `provider.schema.json`, `runtime-api.json`, `ui/`, `api/` names are fixed.
 - All declared paths are **relative to the provider root**, POSIX separators, no `..`, no absolute paths, no symlinks.
-- Provider code may only import the Python standard library, its own package, and the **Host Services** object passed to handlers. Importing `app.atlasclaw.*` internals is not part of the contract.
+- Installed providers run in the AtlasClaw Python process and share its installed dependencies. Providers use Host Services for Core functionality. Core internals are outside the provider contract.
 - Assets must not leave the provider root; core rejects traversal and symlinks.
 
 ---
@@ -125,7 +125,7 @@ Field rules:
 | Field | Type | Rules |
 |---|---|---|
 | `version` | int | Manifest contract version. Core accepts `1..N`; higher versions are skipped with a warning |
-| `requires.host` | string | Simple range (`>=1.0 <2.0`). Unsupported range → extension disabled, provider still loads skills/config |
+| `requires.host` | string | Declared compatibility range, reserved for future enforcement |
 | `ui.assets_root` | string | Directory name under provider root. Default `ui` |
 | `ui.nav[].id` | string | `^[a-z0-9][a-z0-9-]{0,63}$`; unique per provider |
 | `ui.nav[].title` | object | Locale → text. At least one locale required unless `i18n_key` is set |
@@ -134,9 +134,9 @@ Field rules:
 | `ui.nav[].permissions` | string[] | Reserved; RBAC module permissions, e.g. `documents.view` |
 | `ui.nav[].layout` | enum | `full` (default, no padding) or `padded` |
 | `ui.nav[].order` | int | Ascending; ties sorted by `provider_type`, then `id` |
-| `api.manifest` | string | Default `runtime-api.json` |
-| `api.timeout_seconds` | int | Default per-request ceiling for provider API handlers |
-| `api.max_body_bytes` | int | Default request body ceiling; 32 MiB unless route overrides |
+| `api.manifest` | string | Discovery currently uses the fixed name `runtime-api.json` |
+| `api.timeout_seconds` | int | Descriptive. Set the HTTP default in `runtime-api.json` |
+| `api.max_body_bytes` | int | Descriptive. Set the HTTP default in `runtime-api.json` |
 
 Reserved (accepted, ignored in v1, reserved for future versions):
 
@@ -199,7 +199,7 @@ GET /api/ui/extensions
 }
 ```
 
-- Items are filtered by authentication, `access`, `permissions`, and provider instance availability.
+- Listing and page access require authentication. `access=admin` also requires an administrator. Provider API routes perform their own authorization.
 - `entry_url` is absolute from the site root (includes reverse-proxy prefix).
 - The endpoint is safe to call from the SPA on every startup; results are cheap and cacheable for 60 s.
 
@@ -334,10 +334,10 @@ Rules:
 | `access` | no | `user` (default) or `admin` |
 | `success_status` | no | Default 200 |
 | `response` | no | `json` (default) or `binary` |
-| `timeout_seconds` | no | Overrides `extensions.api.timeout_seconds` |
-| `max_body_bytes` | no | Overrides `extensions.api.max_body_bytes` |
+| `timeout_seconds` | no | Overrides the top-level `runtime-api.json` default (30 s) |
+| `max_body_bytes` | no | Overrides the top-level `runtime-api.json` default (32 MiB), up to 256 MiB |
 
-Backward compatibility: existing manifests without `version`, `id`, `response`, `timeout_seconds`, `max_body_bytes` remain valid.
+Declare `version: 1` (legacy alias `schema_version` is accepted). The remaining optional fields default as listed above.
 
 ### 6.2 Handler contract
 
@@ -354,11 +354,12 @@ async def handler(request, context) -> dict | Response:
   - `host`: Host Services v1 (see 6.4)
 - Return:
   - `dict` / list → JSON (default)
-  - `Response` / `StreamingResponse` → binary or HTML; provider sets `Content-Type` and `Content-Disposition`. Core adds `nosniff`, and for `text/html` forces `CSP: sandbox`.
-- Raising:
+  - A materialized `Response` on a route with `response: "binary"` serves files and HTML. The provider sets `Content-Type` and `Content-Disposition`. Core supplies `nosniff` and a sandbox CSP for HTML if those headers are absent. Streaming responses are unsupported.
+- To report an expected failure, raise a provider-local exception with
+  `status_code`, `code`, and `detail` attributes.
 
 ```python
-raise ProviderHttpRuntimeError(
+raise ProviderError(
     "Document not found", status_code=404,
     code="document_not_found",
 )
@@ -370,14 +371,72 @@ Error envelope returned to clients:
 { "detail": { "code": "document_not_found", "message": "Document not found" } }
 ```
 
+#### Optional visual bridge
+
+Provider HTTP handlers may use the Core-managed visual bridge on
+`ProviderHttpContext` when `context.visual_available` is true. The bridge accepts
+the legacy single-image arguments or an ordered `images` list:
+
+```python
+# Legacy single image
+text = await context.run_visual(
+    prompt="Describe visible fields on this page.",
+    system_prompt="Describe only observable image content.",
+    timeout_seconds=60,
+    data=image_bytes,
+    media_type="image/png",
+    identifier="page-12",
+)
+
+# Multiple images in one model turn
+text = await context.run_visual(
+    prompt="Describe the visible content in order.",
+    system_prompt="Describe only observable image content.",
+    timeout_seconds=60,
+    images=[
+        {"data": image_bytes, "media_type": "image/png", "identifier": "page-12"},
+        {"data": next_image_bytes, "media_type": "image/png", "identifier": "page-13"},
+    ],
+)
+```
+
+Each image identifier is also sent as a text label immediately before its image,
+preserving the supplied order. Providers validate supported formats and input
+limits. The visual Agent inherits the active main Agent's explicit model settings;
+configured `temperature` and `max_tokens` are passed through. A truncated, filtered,
+or errored model response raises a technical failure; partial text is not returned
+as a successful result.
+
+#### Optional text model bridge
+
+Provider HTTP handlers that implement a provider-defined text stage may
+call the Core-managed bridge on `ProviderHttpContext`:
+
+```python
+result = await context.run_text(
+    prompt="Perform this one text-processing stage.",
+    system_prompt="Follow the provider-supplied stage contract.",
+)
+```
+
+Core uses the model and explicit model settings captured from the authorized
+request's configured Agent. By default, this bridge adds no request deadline or
+output-token setting; callers may pass an explicit `timeout_seconds` when needed.
+This bridge runs one direct text model operation; it
+does not enter `ProviderAgentHost.start_run`, chat capability selection, or tool
+routing. It does not expose credentials. Empty input, unavailable models,
+execution errors, empty output, and incomplete model responses fail as
+technical errors; partial output is never returned as success. Ordinary
+`ProviderAgentHost.start_run` behavior and its skill/tool permissions are
+unchanged.
+
 ### 6.3 Limits and lifecycle
 
 | Item | Default | Notes |
 |---|---|---|
-| Request body | 32 MiB | Route override up to 128 MiB |
+| Request body | 32 MiB | Manifest and route overrides up to 256 MiB |
 | Handler timeout | 30 s | Long work must be a job |
-| Response size | 64 MiB | Binary streaming is chunked |
-| Concurrency | per-provider semaphore | Configurable; excess → 429 |
+| Response size | Materialized in memory | Apply a provider-specific file size limit |
 | Route discovery | startup only | Restart to reload; invalid package fails closed |
 
 ### 6.4 Host Services (v1)
@@ -390,6 +449,7 @@ class ProviderHost(Protocol):
     base_path: str
     workspace_path: Path                  # user workspace root
     data_dir: Path                        # provider-private data dir (per user)
+    shared_data_dir: Path                 # shared by all users/tenants of this provider
     user: ProviderUser                    # id, tenant_id, is_admin, locale, roles
     agent: ProviderAgentHost              # first-class agent invocation, see 6.5
 
@@ -401,6 +461,7 @@ Rules:
 
 - Host Services is additive across minor versions; fields are never removed within a major version.
 - `data_dir` is created by core on first use and isolated per `provider_type`/tenant/user.
+- Use `shared_data_dir` for data deliberately shared across users and tenants. The provider creates its subdirectories and controls API permissions for shared reads and writes.
 - Providers never construct `UserInfo`, `APIContext`, or a `SkillDeps`; they pass intent to `host.agent`.
 
 ### 6.5 Agent invocation contract
@@ -420,7 +481,7 @@ class ProviderAgentHost(Protocol):
         prompt: str,
         files: Sequence[ProviderFileRef] = (),
         session: ProviderSessionSpec | None = None,
-        timeout_seconds: int = 900,
+        timeout_seconds: int | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> ProviderRunHandle: ...
 
@@ -433,7 +494,7 @@ class ProviderAgentHost(Protocol):
         files: Sequence[ProviderFileRef] = (),
         session: ProviderSessionSpec | None = None,
         model_token_id: str | None = None,
-        timeout_seconds: int = 900,
+        timeout_seconds: int | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> ProviderRunHandle: ...
 
@@ -449,10 +510,12 @@ class ProviderAgentHost(Protocol):
 - `run_skill(skill_id=...)` is sugar for `start_run(skills=[skill_id])`.
 - When `skills` is non-empty, routing **must select one of those skills**. It must not silently fall back to another skill, a generic tool, or a direct answer.
 - If the skill is unknown, disabled by RBAC, or not loaded, the run fails immediately with `skill_unavailable` (HTTP equivalent 409 for synchronous start).
-- `tools` follows the same allowlist semantics for non-skill capabilities.
-- When both are empty, normal capability routing applies.
+- The `tools` argument can narrow tool targets for a pinned skill. Standalone
+  tool pinning and `model_token_id` selection are not implemented in v1.
+- When both are empty, normal capability routing selects from the skills and tools available to the authenticated user. This includes the provider's own skill when the user has enabled it. Routing selects relevant capabilities for the turn.
 
-This guarantees that an audit-like workflow always executes the intended skill and its scripts.
+Use pinning when a workflow requires a specific skill. A provider that performs
+its own orchestration can use normal user-scoped routing.
 
 #### 6.5.3 Execution context
 
@@ -564,8 +627,6 @@ def events(self) -> AsyncIterator[ProviderRunEvent]: ...   # replay + live
 
 | Item | Default |
 |---|---|
-| Run timeout | 900 s (configurable up to 3600) |
-| Concurrent runs | 2 per provider per user; 1 per document/job |
 | Event buffer | last 500 events per run, replay retained while the job exists |
 | Restart behavior | on core restart, unfinished provider runs are marked `failed` / `host_restarted` |
 | Cancellation | cooperative abort signal; status `cancelled`; partial artifacts retained |
@@ -613,7 +674,7 @@ Providers may ship their own job tables in `data_dir` in v1; they must expose th
 | Surface | Rule |
 |---|---|
 | Manifest | Admin-installed packages are trusted; invalid manifests are skipped, not fatal |
-| Nav visibility | `access` + RBAC `permissions`; server-side filtering is authoritative |
+| Nav visibility | Authenticated users see `access=user`; `access=admin` requires admin |
 | Provider API | Authenticated; `access=admin` requires admin; document/file handlers must re-check ownership |
 | Assets | Path jail under `assets_root`; no symlinks; MIME allowlist |
 | HTML | `CSP: sandbox` when served inline; `frame-ancestors 'self'` for pages |
@@ -627,7 +688,7 @@ Providers may ship their own job tables in `data_dir` in v1; they must expose th
 ## 8. Compatibility and evolution
 
 - **Manifest version**: integer; core supports versions `1..N`. Unsupported major → extension skipped with warning; provider skills/config still load.
-- **Host API**: semver; provider declares `requires.host`; core refuses to run handlers when the range does not match.
+- **Host API**: `requires.host` documents the intended compatibility range. Runtime range validation is deferred.
 - **Additive changes** (new optional fields, new extension points) do not bump `version`.
 - **Breaking changes** bump `version`; core supports at least the current and previous version for one release cycle.
 - **Deprecation**: log once per startup with the replacement field; remove after two releases.
@@ -671,10 +732,10 @@ A provider may declare itself v1-conformant when:
 - [ ] Every `runtime-api.json` route references an existing async handler
 - [ ] Routes declare `capability` present in `runtime_capabilities`
 - [ ] Handler reads only `request` and `context.host`
-- [ ] Agent-backed workflows call `context.host.agent.run_skill()` / `start_run()` with explicit `skills`
+- [ ] Agent-backed workflows use `context.host.agent`. Use `start_run()` for user-scoped routing and `run_skill()` for an explicitly selected skill.
 - [ ] Provider job status uses `queued/running/succeeded/failed/cancelled`
 - [ ] Artifacts are copied through `host.agent` and stay inside `host.data_dir`
-- [ ] Errors use `ProviderHttpRuntimeError` with stable codes
+- [ ] Expected errors expose `status_code`, `code`, and `detail`
 - [ ] Binary responses set explicit `Content-Type`
 - [ ] UI sends `atlasclaw:ready` and handles `atlasclaw:init`
 - [ ] No secrets in UI assets
@@ -691,8 +752,8 @@ A provider may declare itself v1-conformant when:
 | `extensions.ui.nav` | `文件审核` entry, `access=user`, `layout=full` |
 | UI bridge | locale/theme, toast, navigate, title |
 | `runtime-api.json` | documents CRUD, upload, audit, file/report download |
-| Host Services | `data_dir` for documents/reports, `agent.run_skill(skill_id="audit-report")` for the audit run, `events()` for progress |
-| Agent invocation | explicit skill pinning, ephemeral hidden session, HTML report collected as an artifact |
+| Host Services | `data_dir` for documents/reports, `shared_data_dir` for the standards library |
+| Agent invocation | `agent.start_run()` routes each rule batch using the user's enabled skills. The provider tracks job progress and renders HTML. |
 | Binary response | original PDF and HTML report |
 | Permissions | per-user ownership; admin sees own documents only in v1 |
 | Jobs | provider-local status (`pending/running/completed/failed`) until v2 job API |

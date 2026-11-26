@@ -135,6 +135,17 @@ from app.atlasclaw.bootstrap.startup_helpers import (
 )
 
 
+def _agent_model_settings(model_config: Any) -> dict[str, Any] | None:
+    """Build model settings from explicit global config while preserving defaults."""
+    settings: dict[str, Any] = {}
+    if "temperature" in getattr(model_config, "model_fields_set", set()):
+        settings["temperature"] = model_config.temperature
+    max_tokens = getattr(model_config, "max_tokens", None)
+    if max_tokens is not None:
+        settings["max_tokens"] = max_tokens
+    return settings or None
+
+
 
 _global_provider_registry: Optional[ServiceProviderRegistry] = None
 
@@ -560,10 +571,15 @@ async def lifespan(app: FastAPI):
             agent_cfg = agent_loader.load_agent(agent_id)
             agent_configs[agent_id] = agent_cfg
         model_instance = create_pydantic_model(token)
+        agent_options: dict[str, Any] = {}
+        model_settings = _agent_model_settings(config.model)
+        if model_settings is not None:
+            agent_options["model_settings"] = model_settings
         built_agent = Agent(
             model_instance,
             deps_type=SkillDeps,
             system_prompt=agent_cfg.system_prompt or "You are an assistant.",
+            **agent_options,
         )
         _skill_registry.register_to_agent(built_agent)
         return built_agent

@@ -20,7 +20,10 @@ from pydantic_ai.messages import (
 
 from app.atlasclaw.agent.runner_tool.runner_execution_flow_error import RunnerExecutionFlowErrorMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_flow import RunnerExecutionFlowPhaseMixin
-from app.atlasclaw.agent.runner_tool.runner_execution_flow_post import RunnerExecutionFlowPostMixin
+from app.atlasclaw.agent.runner_tool.runner_execution_flow_post import (
+    RunnerExecutionFlowPostMixin,
+    _ensure_complete_final_model_response,
+)
 from app.atlasclaw.agent.runner_tool.runner_execution_flow_stream import RunnerExecutionFlowStreamMixin
 from app.atlasclaw.agent.runner_tool.runner_execution_payload import (
     RunnerExecutionPayloadMixin,
@@ -49,6 +52,44 @@ from app.atlasclaw.agent.tool_gate_models import (
     ToolPolicyMode,
 )
 from app.atlasclaw.core.deps import SkillDeps
+
+
+@pytest.mark.parametrize("finish_reason", ["length", "content_filter", "error"])
+def test_non_stop_last_model_response_is_rejected_even_with_complete_text(finish_reason: str) -> None:
+    response = ModelResponse([TextPart(content="complete-looking response")], finish_reason=finish_reason)
+
+    with pytest.raises(RuntimeError, match=f"finish_reason={finish_reason}"):
+        _ensure_complete_final_model_response([ModelRequest([]), response])
+
+
+def test_stop_last_model_response_is_accepted_and_earlier_tool_response_is_ignored() -> None:
+    messages = [
+        ModelResponse([TextPart(content="intermediate")], finish_reason="length"),
+        ModelRequest([]),
+        ModelResponse([TextPart(content="final")], finish_reason="stop"),
+    ]
+
+    _ensure_complete_final_model_response(messages)
+
+
+def test_tool_call_finish_reason_is_not_marked_as_incomplete() -> None:
+    _ensure_complete_final_model_response([
+        ModelResponse([ToolCallPart(tool_name="lookup", args={})], finish_reason="tool_call"),
+    ])
+
+
+def test_finish_reason_check_supports_dicts_objects_none_and_old_fakes() -> None:
+    with pytest.raises(RuntimeError, match="finish_reason=length"):
+        _ensure_complete_final_model_response([
+            None, {"kind": "response", "finish_reason": "length"},
+        ])
+
+    with pytest.raises(RuntimeError, match="finish_reason=error"):
+        _ensure_complete_final_model_response([
+            SimpleNamespace(kind="response", finish_reason="error"),
+        ])
+
+    _ensure_complete_final_model_response([None, object(), {"role": "assistant", "content": "legacy"}])
 
 
 class _History:

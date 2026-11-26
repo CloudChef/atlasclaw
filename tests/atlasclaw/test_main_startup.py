@@ -345,6 +345,20 @@ class TestConfigResolution:
         assert config.model.primary == "test-token-1"
         assert len(config.model.tokens) == 3
 
+    def test_model_settings_only_preserve_explicit_max_tokens(self) -> None:
+        from app.atlasclaw.core.config_schema import ModelConfig
+        from app.atlasclaw.main import _agent_model_settings
+
+        default_model = ModelConfig()
+        assert _agent_model_settings(default_model) is None
+
+        explicit_temperature = ModelConfig(temperature=0.1)
+        assert _agent_model_settings(explicit_temperature) == {"temperature": 0.1}
+
+        configured = ModelConfig(max_tokens=49152)
+        assert _agent_model_settings(configured) == {"max_tokens": 49152}
+        assert not hasattr(default_model, "reasoning_effort")
+
     def test_unresolved_model_tokens_are_not_registered_as_fallbacks(
         self,
         monkeypatch: pytest.MonkeyPatch,

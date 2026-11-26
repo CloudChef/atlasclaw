@@ -52,7 +52,7 @@ def init_run(
     run_id: str,
     session_key: str,
     message: str,
-    timeout_seconds: int,
+    timeout_seconds: int | None,
 ) -> None:
     """Create active-run state and its SSE stream before execution starts."""
     ctx.active_runs[run_id] = {
@@ -191,7 +191,7 @@ async def execute_agent_run(
     run_id: str,
     session_key: str,
     message: str,
-    timeout_seconds: int,
+    timeout_seconds: int | None,
     user_info: Optional[UserInfo] = None,
     request_cookies: Optional[dict[str, str]] = None,
     provider_config: Optional[dict[str, Any]] = None,
