@@ -709,7 +709,8 @@ provider package contains:
 |- PROVIDER.md          # Documentation + LLM context (frontmatter)
 |- provider.schema.json # Config schema and runtime capability declarations
 |- runtime-api.json     # Optional provider-owned HTTP route declarations
-|- http_runtime.py      # Optional HTTP handlers named by runtime-api.json
+|- api/                  # Optional HTTP handlers named by runtime-api.json
+|- ui/                   # Optional provider pages declared in extensions.ui
 \- skills/
    |- skill-name/
    |  |- SKILL.md       # Skill documentation + frontmatter
@@ -726,16 +727,19 @@ descriptors.
 **Provider HTTP APIs**: Core exposes one generic dispatcher at
 `/api/providers/{provider_type}/{provider_instance}/{runtime_path}`. The dispatcher
 authenticates the caller, enforces provider-instance access and the manifest's
-`admin` or `provider_user` policy, applies a 128 MiB ceiling to actual received body
+`admin` or authenticated-user policy, applies a 256 MiB ceiling to actual received body
 bytes through a disk-backed spool before invoking the provider handler. Ambiguous route templates are rejected, and
 capability-filtered discovery exposes only successfully registered handlers. Request
 parsing, domain validation, transformations, and business behavior remain in the
-provider. Runtime API registration is independent from Skill and Tool registration; a
-REST handler and a Tool may share a provider service, but REST never calls a Skill or
-Tool as an intermediary.
+provider. Runtime API registration is independent from Skill and Tool registration.
+Agent-backed workflows use `context.host.agent` for user-scoped routing or to invoke
+an explicitly selected skill. Host Services also supplies per-user `data_dir` and
+provider-wide `shared_data_dir`.
 
-Provider handlers return eager JSON values; streaming or delayed `Response` objects
-are outside this runtime contract so Core can close the request spool deterministically.
+Provider handlers return eager JSON values or a materialized `Response` on
+`response: "binary"` routes. This lets Core close the request spool deterministically.
+See the [Provider Extension Standard](./PROVIDER-EXTENSION-STANDARD.md) for the
+package layout, UI bridge, and Host Services contract.
 
 **Instance Awareness**: A single provider type (e.g., "my-provider") can have
 multiple instances (e.g., "production", "staging"). `ServiceProviderRegistry`

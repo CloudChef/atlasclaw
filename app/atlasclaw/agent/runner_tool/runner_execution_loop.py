@@ -77,7 +77,7 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
         deps: SkillDeps,
         *,
         max_tool_calls: int = 50,
-        timeout_seconds: int = 600,
+        timeout_seconds: int | None = 600,
         _token_failover_attempt: int = 0,
         _emit_lifecycle_bounds: bool = True,
     ) -> AsyncIterator[StreamEvent]:

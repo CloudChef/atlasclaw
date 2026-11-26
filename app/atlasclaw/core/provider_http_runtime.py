@@ -18,6 +18,7 @@ from types import ModuleType
 from typing import Any, Mapping, Optional
 
 from pydantic_ai import Agent, BinaryContent
+import pydantic_ai.exceptions as pydantic_ai_exceptions
 
 
 RUNTIME_API_FILENAME = "runtime-api.json"
@@ -139,7 +140,7 @@ class ProviderHttpManifest:
 
 
 class ProviderVisualRuntime:
-    """Expose the active Agent model through a narrow visual-input contract.
+    """Expose the active Agent model through narrow text and visual contracts.
 
     Providers supply prompts and binary semantics. Core retains model ownership,
     enforces the timeout, and maps model/transport failures without exposing the
@@ -150,6 +151,7 @@ class ProviderVisualRuntime:
         """Capture the active model without exposing AgentRunner internals to providers."""
         agent = getattr(agent_runner, "agent", None)
         self._model = getattr(agent, "model", None)
+        self._model_settings = getattr(agent, "model_settings", None)
         self.model_name = str(getattr(self._model, "model_name", "") or "").strip()
         self._agents: dict[str, Agent[Any, str]] = {}
 
@@ -165,12 +167,13 @@ class ProviderVisualRuntime:
     async def run_visual(
         self,
         *,
-        data: bytes,
-        media_type: str,
         prompt: str,
         system_prompt: str,
-        identifier: str,
         timeout_seconds: float,
+        data: bytes | None = None,
+        media_type: str | None = None,
+        identifier: str = "",
+        images: list[dict[str, Any]] | None = None,
     ) -> str:
         """Run one provider-supplied visual prompt with the active Agent model.
 
@@ -178,12 +181,13 @@ class ProviderVisualRuntime:
         timeout enforcement, and the binary-input transport used by Pydantic AI.
 
         Args:
-            data: Bounded binary image or rendered page supplied by the provider.
-            media_type: MIME type passed to the model transport.
+            data: Legacy single binary image supplied by the provider.
+            media_type: MIME type for the legacy single image.
             prompt: Provider-owned task prompt for this asset.
             system_prompt: Provider-owned system contract used to cache a narrow agent.
-            identifier: Safe asset label included in diagnostic errors.
             timeout_seconds: Remaining provider request budget for this model call.
+            identifier: Safe legacy image label included in diagnostic errors.
+            images: Ordered image dictionaries with data, media_type, and identifier.
 
         Returns:
             Text output produced by the active model.
@@ -204,28 +208,166 @@ class ProviderVisualRuntime:
                 self._model,
                 output_type=str,
                 system_prompt=system_prompt,
+                model_settings=self._model_settings,
                 retries=1,
             )
             self._agents[system_prompt] = visual_agent
-        binary = BinaryContent(data=data, media_type=media_type, identifier=identifier)
+        parts: list[Any] = [prompt]
+        image_labels: list[str] = []
+        if images is not None:
+            if not images:
+                raise ProviderHttpRuntimeError(
+                    "At least one visual image is required",
+                    status_code=422,
+                    code="visual_input_missing",
+                )
+            for image in images:
+                if not isinstance(image, dict):
+                    raise ProviderHttpRuntimeError(
+                        "Visual image input is invalid",
+                        status_code=422,
+                        code="visual_input_invalid",
+                    )
+                image_data = image.get("data")
+                image_type = image.get("media_type")
+                image_id = str(image.get("identifier") or "image")
+                if not isinstance(image_data, bytes) or not isinstance(image_type, str) or not image_type:
+                    raise ProviderHttpRuntimeError(
+                        "Visual image input is invalid",
+                        status_code=422,
+                        code="visual_input_invalid",
+                    )
+                parts.extend([
+                    f"图像标识：{image_id}",
+                    BinaryContent(data=image_data, media_type=image_type, identifier=image_id),
+                ])
+                image_labels.append(image_id)
+        elif isinstance(data, bytes) and isinstance(media_type, str) and media_type:
+            label = identifier or "image"
+            parts.append(BinaryContent(data=data, media_type=media_type, identifier=label))
+            image_labels.append(label)
+        else:
+            raise ProviderHttpRuntimeError(
+                "At least one visual image is required",
+                status_code=422,
+                code="visual_input_missing",
+            )
+        error_identifier = ", ".join(image_labels) or identifier or "images"
         try:
             result = await asyncio.wait_for(
-                visual_agent.run([prompt, binary]),
+                visual_agent.run(parts),
                 timeout=max(float(timeout_seconds), 0.1),
             )
+            finish_reason = _last_visual_finish_reason(result.new_messages())
+            if finish_reason in {"length", "content_filter", "error"}:
+                raise ProviderHttpRuntimeError(
+                    f"Provider visual model response is incomplete (finish_reason={finish_reason})",
+                    status_code=502,
+                    code="visual_model_incomplete",
+                )
         except TimeoutError as exc:
             raise ProviderHttpRuntimeError(
-                f"Provider visual processing timed out for {identifier}",
+                f"Provider visual processing timed out for {error_identifier}",
                 status_code=504,
                 code="visual_model_timeout",
             ) from exc
+        except ProviderHttpRuntimeError:
+            raise
         except Exception as exc:
             raise ProviderHttpRuntimeError(
-                f"Provider visual processing failed for {identifier}: {type(exc).__name__}",
+                f"Provider visual processing failed for {error_identifier}: {type(exc).__name__}",
                 status_code=502,
                 code="visual_model_failed",
             ) from exc
         return str(result.output or "")
+
+    async def run_text(
+        self,
+        *,
+        prompt: str,
+        system_prompt: str,
+        timeout_seconds: float | None = None,
+    ) -> str:
+        """Run one provider-supplied text task directly on the active Core model.
+
+        This deliberately uses a narrow Pydantic AI Agent instead of the host chat
+        runner, so no capability selection or tool routing is performed.
+        """
+        if not isinstance(prompt, str) or not prompt.strip() or not isinstance(system_prompt, str) or not system_prompt.strip():
+            raise ProviderHttpRuntimeError(
+                "Provider text input is invalid", status_code=422, code="text_input_invalid"
+            )
+        if self._model is None:
+            raise ProviderHttpRuntimeError(
+                "A configured Agent model is required for this provider operation",
+                status_code=503,
+                code="text_model_unavailable",
+            )
+        try:
+            text_model_settings = dict(self._model_settings or {})
+            # The SDK's shared HTTP client has a finite platform default. Disable
+            # the request-level timeout for this provider-owned long-running text call.
+            text_model_settings["timeout"] = None
+            text_agent = Agent(
+                self._model,
+                output_type=str,
+                system_prompt=system_prompt,
+                model_settings=text_model_settings,
+            )
+            request = text_agent.run(prompt)
+            if timeout_seconds is None:
+                result = await request
+            else:
+                result = await asyncio.wait_for(request, timeout=float(timeout_seconds))
+            finish_reason = _last_visual_finish_reason(result.new_messages())
+            if finish_reason in {"length", "content_filter", "error"}:
+                raise ProviderHttpRuntimeError(
+                    f"Provider text model response is incomplete (finish_reason={finish_reason})",
+                    status_code=502,
+                    code="text_model_incomplete",
+                )
+        except TimeoutError as exc:
+            raise ProviderHttpRuntimeError(
+                "Provider text model operation timed out", status_code=504, code="text_model_timeout"
+            ) from exc
+        except ProviderHttpRuntimeError:
+            raise
+        except Exception as exc:
+            output_token_limit_error = getattr(
+                pydantic_ai_exceptions, "OutputTokenLimitExceeded", None
+            )
+            if isinstance(output_token_limit_error, type) and isinstance(exc, output_token_limit_error):
+                raise ProviderHttpRuntimeError(
+                    "Provider text model response is incomplete (output token limit exceeded)",
+                    status_code=502,
+                    code="text_model_incomplete",
+                ) from exc
+            raise ProviderHttpRuntimeError(
+                f"Provider text model operation failed: {type(exc).__name__}",
+                status_code=502,
+                code="text_model_failed",
+            ) from exc
+        output = str(result.output or "")
+        if not output.strip():
+            raise ProviderHttpRuntimeError(
+                "Provider text model returned empty output", status_code=502, code="text_model_empty"
+            )
+        return output
+
+
+def _last_visual_finish_reason(messages: Any) -> str | None:
+    """Return the finish reason from the last model response, if present."""
+    if not isinstance(messages, (list, tuple)):
+        return None
+    for message in reversed(messages):
+        if message is None:
+            continue
+        kind = message.get("kind") if isinstance(message, dict) else getattr(message, "kind", None)
+        is_response_dict = isinstance(message, dict) and message.get("role") in {"assistant", "model"}
+        if kind == "response" or is_response_dict or type(message).__name__ == "ModelResponse":
+            reason = message.get("finish_reason") if isinstance(message, dict) else getattr(message, "finish_reason", None)
+            return str(getattr(reason, "value", reason)) if reason is not None else None
+    return None
 
 
 @dataclass
@@ -267,22 +409,24 @@ class ProviderHttpContext:
     async def run_visual(
         self,
         *,
-        data: bytes,
-        media_type: str,
         prompt: str,
         system_prompt: str,
-        identifier: str,
         timeout_seconds: float,
+        data: bytes | None = None,
+        media_type: str | None = None,
+        identifier: str = "",
+        images: list[dict[str, Any]] | None = None,
     ) -> str:
         """Delegate bounded provider visual input through Core's model bridge.
 
         Args:
-            data: Provider-validated binary image or rendered page.
-            media_type: MIME type supplied to the model transport.
             prompt: Provider-owned prompt for the asset.
             system_prompt: Provider-owned conversion contract.
-            identifier: Safe asset label used in errors.
             timeout_seconds: Remaining request budget for the model call.
+            data: Legacy provider-validated binary image or rendered page.
+            media_type: MIME type for the legacy single image.
+            identifier: Safe legacy asset label used in errors.
+            images: Ordered image dictionaries with data, media_type, and identifier.
 
         Returns:
             Text output from the active model.
@@ -298,12 +442,27 @@ class ProviderHttpContext:
                 code="visual_model_unavailable",
             )
         return await self.visual_runtime.run_visual(
-            data=data,
-            media_type=media_type,
             prompt=prompt,
             system_prompt=system_prompt,
-            identifier=identifier,
             timeout_seconds=timeout_seconds,
+            data=data,
+            media_type=media_type,
+            identifier=identifier,
+            images=images,
+        )
+
+    async def run_text(
+        self, *, prompt: str, system_prompt: str, timeout_seconds: float | None = None
+    ) -> str:
+        """Delegate one provider text task through Core's model bridge."""
+        if self.visual_runtime is None:
+            raise ProviderHttpRuntimeError(
+                "A configured Agent model is required for this provider operation",
+                status_code=503,
+                code="text_model_unavailable",
+            )
+        return await self.visual_runtime.run_text(
+            prompt=prompt, system_prompt=system_prompt, timeout_seconds=timeout_seconds
         )
 
 

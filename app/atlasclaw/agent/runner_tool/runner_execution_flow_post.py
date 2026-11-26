@@ -36,6 +36,23 @@ logger = logging.getLogger(__name__)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)\s]+)\)")
 
 
+def _ensure_complete_final_model_response(messages: Any) -> None:
+    """Reject a final model response marked as truncated or filtered."""
+    if not isinstance(messages, (list, tuple)):
+        return
+    for message in reversed(messages):
+        if message is None:
+            continue
+        kind = message.get("kind") if isinstance(message, dict) else getattr(message, "kind", None)
+        is_assistant_dict = isinstance(message, dict) and message.get("role") in {"assistant", "model"}
+        if kind == "response" or is_assistant_dict or type(message).__name__ == "ModelResponse":
+            reason = message.get("finish_reason") if isinstance(message, dict) else getattr(message, "finish_reason", None)
+            value = getattr(reason, "value", reason)
+            if str(value or "").lower() in {"length", "content_filter", "error"}:
+                raise RuntimeError(f"Model response is incomplete (finish_reason={value})")
+            return
+
+
 class RunnerExecutionFlowPostMixin:
     """Finalize runner output, evidence checks, and recovery responses."""
 
@@ -686,6 +703,7 @@ class RunnerExecutionFlowPostMixin:
             raw_final_messages = list(state.get("message_history") or []) + [
                 {"role": "user", "content": user_message}
             ]
+        _ensure_complete_final_model_response(raw_final_messages)
         runtime_final_messages = self.history.normalize_messages(raw_final_messages)
         final_messages = self._merge_runtime_messages_with_session_prefix(
             session_message_history=state.get("session_message_history") or [],

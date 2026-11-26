@@ -30,7 +30,7 @@ class RunnerExecutionRetryMixin:
         thinking_emitter: ThinkingStreamEmitter,
         start_time: float,
         max_tool_calls: int,
-        timeout_seconds: int,
+        timeout_seconds: int | None,
         token_failover_attempt: int,
         emit_lifecycle_bounds: bool,
     ) -> AsyncIterator[StreamEvent]:

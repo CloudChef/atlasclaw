@@ -15,7 +15,6 @@ from typing import Any, AsyncIterator, Optional, Sequence
 
 from app.atlasclaw.api.services.run_service import execute_agent_run, init_run
 from app.atlasclaw.auth.guards import has_skill_access
-from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.core.chat_documents import document_prompt, sanitize_filename
 from app.atlasclaw.core.provider_host_services import (
     ProviderArtifact,
@@ -31,10 +30,6 @@ from app.atlasclaw.core.workspace_downloads import (
 from app.atlasclaw.core.provider_http_runtime import ProviderHttpRuntimeError
 
 logger = logging.getLogger(__name__)
-
-MAX_CONCURRENT_RUNS_PER_PROVIDER_USER = 2
-DEFAULT_RUN_TIMEOUT_SECONDS = 900
-MAX_RUN_TIMEOUT_SECONDS = 3600
 
 _RUNS: dict[str, "ProviderRunState"] = {}
 _TERMINAL_STATUSES = frozenset({"succeeded", "failed", "cancelled"})
@@ -143,7 +138,7 @@ class ProviderAgentHost:
         prompt: str,
         files: Sequence[ProviderFileRef] = (),
         session: Optional[ProviderSessionSpec] = None,
-        timeout_seconds: int = DEFAULT_RUN_TIMEOUT_SECONDS,
+        timeout_seconds: int | None = None,
         max_tool_calls: int = 0,
         max_model_requests: int = 0,
         metadata: Optional[dict[str, Any]] = None,
@@ -169,7 +164,7 @@ class ProviderAgentHost:
         files: Sequence[ProviderFileRef] = (),
         session: Optional[ProviderSessionSpec] = None,
         model_token_id: Optional[str] = None,
-        timeout_seconds: int = DEFAULT_RUN_TIMEOUT_SECONDS,
+        timeout_seconds: int | None = None,
         max_tool_calls: int = 0,
         max_model_requests: int = 0,
         metadata: Optional[dict[str, Any]] = None,
@@ -181,15 +176,13 @@ class ProviderAgentHost:
         )
         if pinned_skills:
             pinned_skills = self._resolve_skills(pinned_skills)
-        self._ensure_capacity()
-
         run_id = uuid.uuid4().hex
         session_spec = session or ProviderSessionSpec()
         session_key = self._build_session_key(run_id, session_spec)
         session_manager = self.api_context.session_manager_router.for_session_key(session_key)
         await session_manager.get_or_create(session_key)
 
-        timeout = max(30, min(int(timeout_seconds or DEFAULT_RUN_TIMEOUT_SECONDS), MAX_RUN_TIMEOUT_SECONDS))
+        timeout = None if timeout_seconds is None else int(timeout_seconds)
         work_dir = ensure_user_work_dir(self.workspace_path, self.user.user_id)
         prepared = await asyncio.to_thread(self._copy_files, files, work_dir, run_id)
         message = self._compose_prompt(prompt, prepared)
@@ -202,6 +195,14 @@ class ProviderAgentHost:
         )
 
         request_context: dict[str, Any] = {"ui_locale": self.user.locale or "zh-CN"}
+        for section, key, context_key in (
+            ("skills", "skill_permissions", "_user_skill_permissions"),
+            ("providers", "provider_permissions", "_provider_permissions"),
+        ):
+            permissions = self.authz.permissions.get(section, {})
+            if permissions.get("allow_all") is not True:
+                grants = permissions.get(key)
+                request_context[context_key] = grants if isinstance(grants, list) else []
         if pinned_skills:
             request_context["_selected_capability"] = self._canonical_capability(
                 pinned_skills, run_provider_config,
@@ -210,13 +211,6 @@ class ProviderAgentHost:
                 request_context["_selected_capability"]["target_tool_names"] = [
                     str(item) for item in tools if str(item or "").strip()
                 ]
-        user_info = UserInfo(
-            user_id=self.user.user_id,
-            display_name=self.user.display_name,
-            tenant_id=self.user.tenant_id,
-            roles=list(self.user.roles),
-        )
-
         init_run(self.api_context, run_id, session_key, message, timeout)
         run = ProviderRunState(
             run_id=run_id,
@@ -237,7 +231,7 @@ class ProviderAgentHost:
                 session_key,
                 message,
                 timeout,
-                user_info,
+                self.authz.user,
                 self.request_cookies,
                 run_provider_config,
                 request_context,
@@ -415,21 +409,6 @@ class ProviderAgentHost:
                 )
             resolved.append(canonical)
         return tuple(resolved)
-
-    def _ensure_capacity(self) -> None:
-        active = sum(
-            1
-            for run in _RUNS.values()
-            if run.provider_type == self.provider_type
-            and run.user_id == self.user.user_id
-            and run.status not in _TERMINAL_STATUSES
-        )
-        if active >= MAX_CONCURRENT_RUNS_PER_PROVIDER_USER:
-            raise ProviderHttpRuntimeError(
-                "Too many concurrent provider runs",
-                status_code=429,
-                code="provider_run_concurrency_limit",
-            )
 
     def _build_session_key(self, run_id: str, session: ProviderSessionSpec) -> str:
         user_segment = normalize_runtime_user_id(self.user.user_id)
