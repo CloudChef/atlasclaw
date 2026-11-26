@@ -7,6 +7,7 @@ import { clearSession } from './session-manager.js'
 
 const AUTH_STORAGE_KEY = 'atlasclaw_auth_token'
 const AUTH_HEADER_NAME = 'AtlasClaw-Authenticate'
+let authTokenEpoch = 0
 
 export function redirectToLogin() {
   const current = `${window.location.pathname}${window.location.search}`
@@ -25,6 +26,9 @@ export function getAuthToken() {
 export function setAuthToken(token) {
   try {
     if (token) {
+      if (window.sessionStorage.getItem(AUTH_STORAGE_KEY) !== token) {
+        authTokenEpoch += 1
+      }
       sessionStorage.setItem(AUTH_STORAGE_KEY, token)
     }
   } catch (_error) {
@@ -34,22 +38,55 @@ export function setAuthToken(token) {
 
 export function clearAuthToken() {
   try {
+    if (window.sessionStorage.getItem(AUTH_STORAGE_KEY)) {
+      authTokenEpoch += 1
+    }
     sessionStorage.removeItem(AUTH_STORAGE_KEY)
   } catch (_error) {
     // ignore
   }
 }
 
-export function installAuthFetchInterceptor() {
-  if (window.__atlasclawFetchWrapped) {
+function tokenClaims(token) {
+  try {
+    const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')
+    return JSON.parse(atob(payload.padEnd(Math.ceil(payload.length / 4) * 4, '=')))
+  } catch (_error) {
+    return null
+  }
+}
+
+function isNewerToken(candidate, current) {
+  const nextClaims = tokenClaims(candidate)
+  const currentClaims = tokenClaims(current)
+  if (!nextClaims || !currentClaims) return false
+  if (nextClaims.sub && currentClaims.sub && nextClaims.sub !== currentClaims.sub) return false
+
+  const nextExpiry = Number(nextClaims.exp) || 0
+  const currentExpiry = Number(currentClaims.exp) || 0
+  return nextExpiry > currentExpiry || (
+    nextExpiry === currentExpiry && (Number(nextClaims.iat) || 0) > (Number(currentClaims.iat) || 0)
+  )
+}
+
+export function installAuthFetchInterceptor(targetWindow = window) {
+  if (!targetWindow || targetWindow.__atlasclawFetchWrapped) {
     return
   }
 
-  const rawFetch = window.fetch.bind(window)
-  window.fetch = (input, init = {}) => {
+  const rawFetch = targetWindow.fetch.bind(targetWindow)
+  targetWindow.fetch = async (input, init = {}) => {
     const nextInit = { ...init }
-    const headers = new Headers(nextInit.headers || {})
-    const token = getAuthToken()
+    const headers = new targetWindow.Headers(input?.headers || {})
+    new targetWindow.Headers(nextInit.headers || {}).forEach((value, name) => {
+      headers.set(name, value)
+    })
+    let token = ''
+    try {
+      token = targetWindow.sessionStorage.getItem(AUTH_STORAGE_KEY) || ''
+    } catch (_error) {
+      // ignore
+    }
 
     let url = ''
     if (typeof input === 'string') {
@@ -59,18 +96,56 @@ export function installAuthFetchInterceptor() {
       url = input.url
     }
 
-    const isApiRequest = url.includes('/api/')
-    const isLocalLogin = url.includes('/api/auth/local/login')
-    if (isApiRequest && !isLocalLogin && token && !headers.has(AUTH_HEADER_NAME)) {
+    let requestUrl
+    try {
+      requestUrl = new URL(url, targetWindow.location.href)
+    } catch (_error) {
+      requestUrl = null
+    }
+    const isSameOrigin = Boolean(requestUrl && requestUrl.origin === targetWindow.location.origin)
+    const isApiRequest = Boolean(isSameOrigin && requestUrl.pathname.includes('/api/'))
+    const isLocalLogin = Boolean(isApiRequest && requestUrl.pathname.includes('/api/auth/local/login'))
+    const suppliedAuthToken = headers.get(AUTH_HEADER_NAME) || ''
+    if (
+      isSameOrigin && isApiRequest && !isLocalLogin && token
+      && !suppliedAuthToken && !headers.has('Authorization')
+    ) {
       headers.set(AUTH_HEADER_NAME, token)
+    }
+    if (!isSameOrigin) {
+      headers.delete(AUTH_HEADER_NAME)
     }
 
     nextInit.headers = headers
-    nextInit.credentials = nextInit.credentials || 'include'
-    return rawFetch(input, nextInit)
+    nextInit.credentials = isSameOrigin ? (nextInit.credentials || 'include') : 'omit'
+    const requestToken = headers.get(AUTH_HEADER_NAME) || ''
+    const requestEpoch = authTokenEpoch
+    const usesSessionToken = Boolean(token && requestToken === token)
+    const response = await rawFetch(input, nextInit)
+    if (
+      isApiRequest && !isLocalLogin && usesSessionToken && requestEpoch === authTokenEpoch
+      && response?.ok
+    ) {
+      const renewedToken = response.headers?.get(AUTH_HEADER_NAME) || ''
+      const currentToken = (() => {
+        try {
+          return targetWindow.sessionStorage.getItem(AUTH_STORAGE_KEY) || ''
+        } catch (_error) {
+          return ''
+        }
+      })()
+      if (renewedToken && isNewerToken(renewedToken, currentToken)) {
+        try {
+          targetWindow.sessionStorage.setItem(AUTH_STORAGE_KEY, renewedToken)
+        } catch (_error) {
+          // ignore
+        }
+      }
+    }
+    return response
   }
 
-  window.__atlasclawFetchWrapped = true
+  targetWindow.__atlasclawFetchWrapped = true
 }
 
 export async function checkAuth({ redirect = true } = {}) {

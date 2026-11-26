@@ -657,6 +657,17 @@ if user.has_role("admin"):  # Never do this
 - Always use `deps.user_token` (or `deps.user_info.raw_token`) for upstream API calls
 - Never cache tokens beyond the auth strategy's TTL
 
+#### Local JWT Session Renewal
+
+- Successful authenticated activity may renew an unexpired AtlasClaw local JWT
+  to the configured `auth.jwt.expires_minutes` lifetime.
+- Verify the existing JWT before renewal; never revive an expired or invalid JWT.
+- Preserve identity, roles, additional claims, and the original `login_time`.
+- Return the renewed token in the `AtlasClaw-Authenticate` response header and
+  the configured HttpOnly auth cookie, scoped to the configured base path.
+- Do not renew anonymous requests, opaque API tokens, or upstream SSO tokens.
+- Do not add a background refresh timer; browser activity drives renewal.
+
 ### 6.3 Tool Filtering
 
 Use `ToolPolicy` to restrict tool access per agent:

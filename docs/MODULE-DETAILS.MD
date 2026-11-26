@@ -514,10 +514,11 @@ Constructor: `strategy: AuthStrategy`, `anonymous_fallback: bool = False`, `oidc
 **Skip Paths** (no auth required): `/health`, `/ping`, `/favicon.ico`, `/docs`, `/openapi.json`, `/static/`, `/styles/`, `/scripts/`, `/locales/`, `/config.json`, `/index.html`, `/login.html`
 
 **Auth Route Notes**:
-- `/api/auth/login`, `/api/auth/local/login`, `/api/auth/callback`, `/api/auth/logout`, and `/api/auth/me` are handled specially by the middleware rather than being unconditional skip paths.
+- `/api/auth/login`, `/api/auth/local/login`, `/api/auth/callback`, and `/api/auth/logout` are public auth routes; `/api/auth/me` requires an authenticated session.
 - In `host_cookie` mode, the middleware accepts either a valid AtlasClaw JWT session (for local workspace admin access) or configured embedded host cookies (for host end-user access).
 - When `auth.provider="host_cookie"` and `auth.local.enabled=true`, local admin login remains available for backend management surfaces.
 - Embedded host cookie mode is configured under `auth.host_cookie`, including the token header/cookie name and the host identity cookie names used for subject, display name, user ID, and tenant ID.
+- Successful authenticated activity renews an unexpired local AtlasClaw JWT to `auth.jwt.expires_minutes`, returning it through the default and configured auth headers and an HttpOnly SameSite=Lax cookie scoped to `base_path`. The original login time and identity claims are preserved; opaque API tokens and upstream SSO tokens are unchanged.
 
 
 **Function**: `setup_auth_middleware(app, auth_config, workspace_path=".") -> None`

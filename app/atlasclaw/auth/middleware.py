@@ -13,13 +13,17 @@ from urllib.parse import quote
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse, RedirectResponse
+from starlette.responses import JSONResponse, RedirectResponse, Response
 
 from app.atlasclaw.auth.config import AuthConfig
-from app.atlasclaw.auth.jwt_token import verify_atlas_token
+from app.atlasclaw.auth.jwt_token import issue_atlas_token, verify_atlas_token
 from app.atlasclaw.auth.models import ANONYMOUS_USER, AuthenticationError, UserInfo
 from app.atlasclaw.auth.strategy import AuthStrategy
-from app.atlasclaw.core.base_path import build_base_path_url, normalize_base_path
+from app.atlasclaw.core.base_path import (
+    build_base_path_url,
+    cookie_path_for_base_path,
+    normalize_base_path,
+)
 from app.atlasclaw.db.orm.user_access_token import (
     UserAccessTokenService,
     is_user_access_token,
@@ -34,7 +38,6 @@ _SSO_PATHS = frozenset({
     "/api/auth/local/login",
     "/api/auth/callback",
     "/api/auth/logout",
-    "/api/auth/me",
 })
 
 _HOST_COOKIE_PUBLIC_PATHS = frozenset({
@@ -142,7 +145,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     payload,
                     atlas_token,
                 )
-                return await call_next(request)
+                response = await call_next(request)
+                return self._renew_local_jwt_response(request, response, payload)
 
             if request.url.path in _HOST_COOKIE_PUBLIC_PATHS:
                 request.state.user_info = ANONYMOUS_USER
@@ -174,7 +178,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 logger.warning("Host cookie auth failed unexpectedly: %s %s", type(exc).__name__, exc)
                 return self._auth_failed_response(request)
 
-        # SSO paths: skip auth for SSO providers (login, callback, etc.)
+        # Login and callback routes are public; auth/me is authenticated so its
+        # successful use can slide a local JWT just like other API activity.
         if request.url.path in _SSO_PATHS:
             request.state.user_info = ANONYMOUS_USER
             return await call_next(request)
@@ -232,7 +237,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     return self._auth_failed_response(request)
 
             request.state.user_info = jwt_user_info
-            return await call_next(request)
+            response = await call_next(request)
+            return self._renew_local_jwt_response(request, response, payload)
 
         credential = self._extract_provider_credential(request)
         if not credential:
@@ -281,6 +287,66 @@ class AuthMiddleware(BaseHTTPMiddleware):
             extra=extra,
             auth_type=auth_type,
         )
+
+    def _renew_local_jwt_response(
+        self,
+        request: Request,
+        response: Response,
+        payload: dict,
+    ) -> Response:
+        """Refresh an authenticated local AtlasClaw JWT after successful activity."""
+        if request.url.path in _HOST_COOKIE_PUBLIC_PATHS:
+            return response
+        if response.status_code < 200 or response.status_code >= 300:
+            return response
+        if str(payload.get("auth_type", "local")).strip() != "local":
+            return response
+
+        jwt_cfg = self._auth_config.jwt.expanded()
+        roles = payload.get("roles", [])
+        if not isinstance(roles, list):
+            roles = []
+        reserved_claims = {
+            "sub",
+            "iss",
+            "iat",
+            "exp",
+            "login_time",
+            "is_admin",
+            "admin",
+            "roles",
+            "auth_type",
+        }
+        renewed_token = issue_atlas_token(
+            subject=str(payload["sub"]),
+            is_admin=bool(payload.get("is_admin", payload.get("admin", False))),
+            roles=roles,
+            auth_type="local",
+            secret_key=self._atlas_secret,
+            expires_minutes=jwt_cfg.expires_minutes,
+            issuer=self._atlas_issuer,
+            login_time=str(payload["login_time"]),
+            additional_claims={
+                key: value for key, value in payload.items() if key not in reserved_claims
+            },
+        )
+
+        response.headers["AtlasClaw-Authenticate"] = renewed_token
+        if self._atlas_header_name.lower() != "atlasclaw-authenticate":
+            response.headers[self._atlas_header_name] = renewed_token
+        response.headers["Cache-Control"] = "no-store"
+        config = getattr(request.app.state, "config", None)
+        base_path = normalize_base_path(getattr(config, "base_path", ""))
+        secure_cookie = request.url.scheme == "https"
+        response.set_cookie(
+            key=self._atlas_cookie_name,
+            value=renewed_token,
+            path=cookie_path_for_base_path(base_path),
+            httponly=True,
+            secure=secure_cookie,
+            samesite="lax",
+        )
+        return response
 
     def _current_provider_name(self) -> str:
         provider = self._strategy.primary_provider
