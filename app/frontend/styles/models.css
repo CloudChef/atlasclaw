@@ -1223,6 +1223,33 @@
 
 /* ========== Responsive ========== */
 
+.model-usage-panels { grid-template-columns: minmax(0, 1fr) 300px; }
+.model-usage-panel { min-width: 0; }
+.usage-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 12px; margin-bottom: 20px; }
+.usage-filters label { display: flex; flex: 1; min-width: 140px; flex-direction: column; gap: 6px; font-size: 12px; color: var(--color-text-secondary); }
+.usage-filters input { min-width: 0; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 8px; font: inherit; color: var(--color-text); background: #fff; }
+.usage-filters input:focus-visible, .usage-time:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.usage-table-scroll { overflow-x: auto; }
+.usage-table { min-width: 760px; }
+.usage-table thead th, .usage-table tbody td { padding: 12px 10px; }
+.usage-time { background: none; border: none; padding: 0; color: var(--color-primary); cursor: pointer; font: inherit; text-align: left; }
+.usage-time:hover { text-decoration: underline; }
+.usage-cell-sub { display: block; color: var(--color-text-secondary); font-size: 11px; margin-top: 4px; overflow-wrap: anywhere; }
+.usage-source { font-size: 12px; white-space: nowrap; }
+.usage-source-estimated { color: var(--color-warning, #b45309); }
+.usage-source-unavailable { color: var(--color-text-secondary); }
+.usage-details[hidden] { display: none; }
+.usage-details td { background: var(--color-neutral, #f8fafc); }
+.usage-details dl { margin: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 24px; }
+.usage-details dl > div:first-child { grid-column: 1 / -1; }
+.usage-details dt { font-size: 11px; color: var(--color-text-secondary); margin-bottom: 4px; }
+.usage-details dd { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+.usage-pagination { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 20px; font-size: 12px; color: var(--color-text-secondary); }
+.usage-pagination > span { margin-right: auto; }
+.usage-message { padding: 24px 0; margin: 0; color: var(--color-text-secondary); }
+.usage-summary-note { line-height: 1.6; margin: 20px 0 0; }
+#modelConfigUsage { font-size: 13px; }
+
 @media (max-width: 1200px) {
   .model-bottom-panels {
     grid-template-columns: 1fr;

@@ -958,6 +958,7 @@ class RunnerToolGateModelMixin:
             )
 
         async def _execute() -> Any:
+            from app.atlasclaw.agent.model_usage import usage_action
             run_kwargs: dict[str, Any] = {"deps": deps}
             if output_type is not None:
                 run_kwargs["output_type"] = output_type
@@ -970,10 +971,11 @@ class RunnerToolGateModelMixin:
             if model_settings is not None:
                 run_kwargs["model_settings"] = dict(model_settings)
             if hasattr(override_cm, "__aenter__"):
-                async with override_cm:
-                    result = await agent.run(user_message, **run_kwargs)
+                with usage_action(purpose):
+                    async with override_cm:
+                        result = await agent.run(user_message, **run_kwargs)
             else:
-                with override_cm:
+                with usage_action(purpose), override_cm:
                     result = await agent.run(user_message, **run_kwargs)
 
             output = result.output if hasattr(result, "output") else result

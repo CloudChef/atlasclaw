@@ -566,6 +566,7 @@ async def lifespan(app: FastAPI):
         return ""
 
     def _build_agent_for(agent_id: str, token: TokenEntry) -> Any:
+        from app.atlasclaw.agent.model_usage import build_usage_hooks
         agent_cfg = agent_configs.get(agent_id)
         if agent_cfg is None:
             agent_cfg = agent_loader.load_agent(agent_id)
@@ -578,6 +579,7 @@ async def lifespan(app: FastAPI):
         built_agent = Agent(
             model_instance,
             deps_type=SkillDeps,
+            capabilities=[build_usage_hooks(token)],
             system_prompt=agent_cfg.system_prompt or "You are an assistant.",
             **agent_options,
         )
