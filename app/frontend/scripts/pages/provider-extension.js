@@ -10,6 +10,7 @@
  */
 
 import { getAuthInfo } from '../app.js'
+import { installAuthFetchInterceptor, redirectToLogin } from '../auth.js'
 import { buildAppUrl, stripBasePath } from '../config.js'
 import { getCurrentLocale, translateIfExists } from '../i18n.js'
 import { showToast } from '../components/toast.js'
@@ -154,24 +155,41 @@ export async function mount(container, context = {}) {
     }
   }
 
-  frame.addEventListener('load', sendInit)
-  window.addEventListener('message', onMessage)
-  frame.src = entryUrl
+  const onFrameLoad = () => {
+    if (!mountState || mountState.frame !== frame) return
+    try {
+      const frameUrl = new URL(frame.contentWindow.location.href)
+      if (frameUrl.origin !== window.location.origin && frameUrl.href !== 'about:blank') return
+      installAuthFetchInterceptor(frame.contentWindow)
+      if (stripBasePath(frameUrl.pathname) === '/login.html') {
+        ready = true
+        window.clearTimeout(readyTimer)
+        redirectToLogin()
+        return
+      }
+    } catch (_error) {
+      return
+    }
+    sendInit()
+  }
 
   mountState = {
     container,
     frame,
     onMessage,
     readyTimer,
-    sendInit,
+    onFrameLoad,
   }
+  frame.addEventListener('load', onFrameLoad)
+  window.addEventListener('message', onMessage)
+  frame.src = entryUrl
 }
 
 export function unmount() {
   if (!mountState) return
-  const { onMessage, readyTimer, frame, sendInit } = mountState
+  const { onMessage, readyTimer, frame, onFrameLoad } = mountState
   window.clearTimeout(readyTimer)
   window.removeEventListener('message', onMessage)
-  frame?.removeEventListener('load', sendInit)
+  frame?.removeEventListener('load', onFrameLoad)
   mountState = null
 }

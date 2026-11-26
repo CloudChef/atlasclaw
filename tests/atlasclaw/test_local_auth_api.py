@@ -13,6 +13,9 @@ from app.atlasclaw.api.deps_context import get_api_context
 from app.atlasclaw.api.routes import APIContext, create_router, set_api_context
 from app.atlasclaw.auth.config import AuthConfig
 from app.atlasclaw.auth.jwt_token import issue_atlas_token
+from app.atlasclaw.auth.middleware import AuthMiddleware
+from app.atlasclaw.auth.providers.local import LocalAuthProvider
+from app.atlasclaw.auth.strategy import AuthStrategy
 from app.atlasclaw.db.database import DatabaseConfig, init_database
 from app.atlasclaw.db.orm.user import UserService
 from app.atlasclaw.db.schemas import UserCreate, UserUpdate
@@ -133,6 +136,49 @@ def test_auth_me_requires_valid_jwt(tmp_path):
         headers={"AtlasClaw-Authenticate": "bad-token"},
     )
     assert me_fail.status_code == 401
+
+    manager_cleanup(manager)
+
+
+def test_successful_local_login_auth_me_and_logout_keep_route_responses(tmp_path):
+    manager = init_database_sync(tmp_path)
+    client = _build_client(tmp_path)
+    client.app.add_middleware(
+        AuthMiddleware,
+        strategy=AuthStrategy(
+            providers=[LocalAuthProvider()],
+            workspace_path=str(tmp_path),
+            cache_ttl_seconds=0,
+        ),
+        auth_config=client.app.state.config.auth,
+    )
+
+    login_response = client.post(
+        "/api/auth/local/login",
+        json={"username": "admin", "password": "adminpass1"},
+    )
+    assert login_response.status_code == 200
+    assert "AtlasClaw-Authenticate" not in login_response.headers
+    original_token = login_response.json()["token"]
+
+    me_response = client.get(
+        "/api/auth/me",
+        headers={"AtlasClaw-Authenticate": original_token},
+    )
+    assert me_response.status_code == 200
+    assert me_response.headers["AtlasClaw-Authenticate"]
+    assert me_response.headers["Cache-Control"] == "no-store"
+
+    logout_response = client.get(
+        "/api/auth/logout?redirect=false",
+        headers={"AtlasClaw-Authenticate": me_response.headers["AtlasClaw-Authenticate"]},
+    )
+    assert logout_response.status_code == 200
+    assert "AtlasClaw-Authenticate" not in logout_response.headers
+    assert any(
+        "AtlasClaw-Authenticate=\"\"" in header or "AtlasClaw-Authenticate=" in header
+        for header in logout_response.headers.get_list("set-cookie")
+    )
 
     manager_cleanup(manager)
 

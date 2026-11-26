@@ -650,6 +650,13 @@ roles, or revoking the token takes effect without issuing a replacement credenti
 Successful authentication updates non-secret last-use metadata and does not propagate
 the plaintext into runtime `UserInfo.raw_token`.
 
+AtlasClaw local JWT sessions use sliding expiry: a successful authenticated API
+request renews the session to the configured `auth.jwt.expires_minutes` lifetime
+and returns it in the `AtlasClaw-Authenticate` response header and configured
+HttpOnly auth cookie. Renewal keeps the original login time and identity claims;
+an expired session is rejected and cannot be revived. Upstream SSO tokens and
+opaque API access tokens are not renewed.
+
 Token management requires administrator authentication other than an API token.
 API-token authentication is rejected with 403 for create, list, and revoke operations, which
 prevents a stolen integration token from minting or managing replacement credentials.
