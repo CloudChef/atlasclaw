@@ -352,6 +352,33 @@ class ChatAttachmentModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class ModelUsageModel(Base):
+    """Private per-call usage snapshots without prompts or API credentials."""
+
+    __tablename__ = "model_usage"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    user_id: Mapped[str] = mapped_column(String(128), index=True)
+    run_id: Mapped[str] = mapped_column(String(64), index=True)
+    session_key: Mapped[str] = mapped_column(Text)
+    model_config_id: Mapped[Optional[str]] = mapped_column(String(36), nullable=True, index=True)
+    provider: Mapped[str] = mapped_column(String(100))
+    model: Mapped[str] = mapped_column(String(255))
+    token_id: Mapped[str] = mapped_column(String(100))
+    key_label: Mapped[str] = mapped_column(String(32))
+    action: Mapped[str] = mapped_column(String(255))
+    input_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    output_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    total_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cache_read_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    cache_write_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    reasoning_tokens: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    source: Mapped[str] = mapped_column(String(16))
+    status: Mapped[str] = mapped_column(String(16))
+    duration_ms: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class ModelConfigModel(Base):
     """Model configuration for LLM models.
 

@@ -13,13 +13,22 @@
  * - unmount() - Cleanup when leaving page
  */
 
-import { t, updateContainerTranslations } from '../i18n.js'
+import { t, getCurrentLocale, updateContainerTranslations } from '../i18n.js'
 import { showToast } from '../components/toast.js'
 import { buildAssetUrl, buildApiUrl } from '../config.js'
 
 // ========== Module State ==========
 let mounted = false
 let containerRef = null
+let pageGeneration = 0
+let usagePage = 1
+let usageModel = ''
+let usageKey = ''
+let usageRequest = 0
+let sidebarRequest = 0
+let usageController = null
+let sidebarController = null
+const USAGE_PAGE_SIZE = 20
 
 // Model configs state
 let modelConfigs = []
@@ -410,35 +419,14 @@ const PAGE_HTML = `
 
     <!-- Right: Sidebar (~30%, 320px) -->
     <div class="model-form-sidebar">
-      <!-- Token Management Card (dark) - Mockup Style -->
+      <!-- Model usage summary -->
       <div class="sidebar-card sidebar-card-dark">
         <div class="sidebar-card-header">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
           <h3 data-i18n="model.tokenManagement">Token Management</h3>
         </div>
 
-        <!-- Quota Limit -->
-        <div class="sidebar-quota">
-          <div class="sidebar-quota-header">
-            <span class="sidebar-label" data-i18n="model.quotaLimit">QUOTA LIMIT</span>
-            <span class="sidebar-quota-value" data-i18n="model.quotaValue">2.5M MONTHLY</span>
-          </div>
-          <div class="sidebar-progress">
-            <div class="sidebar-progress-bar" style="width: 35%"></div>
-          </div>
-        </div>
-
-        <!-- Usage Threshold Alert -->
-        <div class="sidebar-threshold">
-          <span class="sidebar-label" data-i18n="model.usageThreshold">USAGE THRESHOLD ALERT</span>
-          <div class="sidebar-threshold-row">
-            <span class="sidebar-threshold-text" data-i18n="model.usageThresholdDesc">Notify at 80% usage</span>
-            <label class="toggle-switch toggle-switch-small">
-              <input type="checkbox" checked disabled>
-              <span class="toggle-slider"></span>
-            </label>
-          </div>
-        </div>
+        <div id="modelConfigUsage" aria-live="polite"></div>
 
         <!-- Config Tip -->
         <div class="sidebar-tip" data-i18n="model.configTip">
@@ -690,33 +678,112 @@ function updateApiKeyRequired(provider) {
 
 // ========== UI Rendering ==========
 
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, char => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+  })[char])
+}
+
+function formatUsageNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString(getCurrentLocale()) : '—'
+}
+
+function updateUsageSummary(summary = null) {
+  containerRef?.querySelectorAll('[data-usage-summary]').forEach(element => {
+    const field = element.dataset.usageSummary
+    const value = summary?.[field]
+    element.textContent = formatUsageNumber(value) + (field === 'average_duration_ms' && value != null ? ' ms' : '')
+  })
+}
+
+function renderUsageItems(items) {
+  if (!items.length) return `<p class="usage-message">${t('model.usage.empty')}</p>`
+  return `<div class="usage-table-scroll"><table class="model-table usage-table" id="modelUsageTable">
+    <thead><tr>${['time', 'model', 'key', 'input_tokens', 'output_tokens', 'total_tokens', 'source'].map(field => `<th scope="col">${t('model.usage.' + field)}</th>`).join('')}</tr></thead>
+    <tbody>${items.map((item, index) => {
+      const date = new Date(item.created_at)
+      const time = Number.isNaN(date.getTime()) ? '—' : date.toLocaleString(getCurrentLocale())
+      const source = ['reported', 'estimated', 'unavailable'].includes(item.source) ? item.source : 'unavailable'
+      return `<tr class="usage-row">
+        <td><button type="button" class="usage-time" data-usage-detail aria-controls="usageDetail${index}" aria-expanded="false"><time datetime="${escapeHtml(item.created_at)}">${escapeHtml(time)}</time></button></td>
+        <td>${escapeHtml(item.model)}<span class="usage-cell-sub">${escapeHtml(item.provider)}</span></td>
+        <td>${escapeHtml(item.key_label || '—')}<span class="usage-cell-sub">${escapeHtml(item.token_id)}</span></td>
+        <td>${formatUsageNumber(item.input_tokens)}</td><td>${formatUsageNumber(item.output_tokens)}</td><td>${formatUsageNumber(item.total_tokens)}</td>
+        <td><span class="usage-source usage-source-${source}">${t('model.usage.' + source)}</span></td>
+      </tr><tr class="usage-details" id="usageDetail${index}" hidden><td colspan="7"><dl>
+        ${[['action', item.action], ['status', t('model.usage.' + (item.status === 'failed' ? 'failed' : 'completed'))], ['duration', item.duration_ms == null ? null : `${formatUsageNumber(item.duration_ms)} ms`], ['run', item.run_id], ['session', item.session_key], ['cacheRead', item.cache_read_tokens], ['cacheWrite', item.cache_write_tokens], ['reasoning', item.reasoning_tokens]].map(([field, value]) => `<div><dt>${t('model.usage.' + field)}</dt><dd>${escapeHtml(value ?? '—')}</dd></div>`).join('')}
+      </dl></td></tr>`
+    }).join('')}</tbody></table></div>`
+}
+
+async function loadUsage() {
+  const content = containerRef?.querySelector('#modelUsageContent')
+  if (!content || !mounted) return
+  usageController?.abort()
+  usageController = new AbortController()
+  const request = ++usageRequest
+  const generation = pageGeneration
+  content.innerHTML = `<p class="usage-message">${t('model.loading')}</p>`
+  content.setAttribute('aria-busy', 'true')
+  updateUsageSummary()
+  containerRef.querySelector('#usagePrevious').disabled = true
+  containerRef.querySelector('#usageNext').disabled = true
+  containerRef.querySelector('#usagePageLabel').textContent = ''
+  const query = new URLSearchParams({ page: String(usagePage), page_size: String(USAGE_PAGE_SIZE) })
+  if (usageModel) query.set('model', usageModel)
+  if (usageKey) query.set('token_id', usageKey)
+  try {
+    const result = await fetch(buildApiUrl(`/api/model-usage?${query}`), { signal: usageController.signal })
+    if (!result.ok) throw new Error(`HTTP ${result.status}`)
+    const data = await result.json()
+    if (!mounted || request !== usageRequest || generation !== pageGeneration) return
+    const totalPages = Math.max(1, Math.ceil(data.total / USAGE_PAGE_SIZE))
+    if (usagePage > totalPages) {
+      usagePage = totalPages
+      loadUsage()
+      return
+    }
+    content.innerHTML = renderUsageItems(data.items)
+    updateUsageSummary(data.summary)
+    containerRef.querySelector('#usagePrevious').disabled = usagePage <= 1
+    containerRef.querySelector('#usageNext').disabled = usagePage >= totalPages
+    containerRef.querySelector('#usagePageLabel').textContent = t('model.usage.page', { page: usagePage, pages: totalPages, total: data.total })
+  } catch (error) {
+    if (!mounted || request !== usageRequest || generation !== pageGeneration) return
+    content.innerHTML = `<p class="usage-message" role="alert">${t('model.usage.error')} <button id="usageRetry" type="button" class="btn-secondary">${t('model.usage.retry')}</button></p>`
+  } finally {
+    if (mounted && request === usageRequest && generation === pageGeneration) content.setAttribute('aria-busy', 'false')
+  }
+}
+
+async function loadConfigUsage(configId) {
+  const content = containerRef?.querySelector('#modelConfigUsage')
+  if (!content) return
+  sidebarController?.abort()
+  sidebarController = new AbortController()
+  const request = ++sidebarRequest
+  const generation = pageGeneration
+  if (!configId) {
+    content.textContent = t('model.usage.saveFirst')
+    return
+  }
+  content.textContent = t('model.loading')
+  const query = new URLSearchParams({ model_config_id: configId, page: '1', page_size: '1' })
+  try {
+    const result = await fetch(buildApiUrl(`/api/model-usage?${query}`), { signal: sidebarController.signal })
+    if (!result.ok) throw new Error(`HTTP ${result.status}`)
+    const data = await result.json()
+    if (!mounted || request !== sidebarRequest || generation !== pageGeneration) return
+    content.innerHTML = ['total_tokens', 'input_tokens', 'output_tokens', 'calls', 'unknown_calls'].map(field => `<div class="token-spender"><span>${t('model.usage.' + field)}</span><span>${formatUsageNumber(data.summary[field])}</span></div>`).join('') + `<p class="token-meta usage-summary-note">${t('model.usage.note')}</p>`
+  } catch (error) {
+    if (mounted && request === sidebarRequest && generation === pageGeneration) content.textContent = t('model.usage.error')
+  }
+}
+
 function renderModelConfigs(configs) {
   modelConfigs = configs || []
   const container = containerRef?.querySelector('#modelConfigsList')
   if (!container) return
-
-  if (!configs || configs.length === 0) {
-    container.innerHTML = `
-      <div class="model-page-header">
-        <div class="model-page-header-left">
-          <p class="model-page-subtitle">${t('model.subtitle') || 'Orchestrate your model ecosystem, monitor real-time performance, and configure intelligent routing policies across distributed endpoints.'}</p>
-        </div>
-        <div class="model-page-header-actions">
-          <button class="btn-primary" id="btnCreateModelInPage">${t('model.deployModel') || '+ Deploy New Model'}</button>
-        </div>
-      </div>
-      <div class="connections-empty" data-i18n="model.noModels">${t('model.noModels')}</div>
-    `
-    // Bind create button event
-    const btnCreate = container.querySelector('#btnCreateModelInPage')
-    if (btnCreate) {
-      btnCreate.addEventListener('click', () => openCreateModal())
-    }
-    return
-  }
-
-  // Count active models
-  const activeCount = configs.filter(c => c.is_active).length
 
   // Render table row for each model
   const renderModelRow = (config) => {
@@ -758,55 +825,13 @@ function renderModelConfigs(configs) {
       </div>
     </div>
 
-    <!-- Stats Dashboard -->
     <div class="stats-dashboard">
-      <!-- 左侧大卡片：延迟 -->
-      <div class="stats-card stats-card-latency">
-        <div class="stats-card-header">
-          <span class="stats-card-title">${t('model.avgGlobalLatency') || 'AVG GLOBAL LATENCY'}</span>
-          <span class="stats-trend">~12.4%</span>
-        </div>
-        <div class="stats-big-number">142<span class="stats-unit">ms</span></div>
-        <div class="stats-chart">
-          <div class="chart-bar" style="height: 30%"></div>
-          <div class="chart-bar" style="height: 35%"></div>
-          <div class="chart-bar" style="height: 40%"></div>
-          <div class="chart-bar" style="height: 50%"></div>
-          <div class="chart-bar" style="height: 65%"></div>
-          <div class="chart-bar" style="height: 55%"></div>
-          <div class="chart-bar" style="height: 75%"></div>
-          <div class="chart-bar" style="height: 70%"></div>
-        </div>
-      </div>
-      
-      <!-- 中间卡片：集群 -->
-      <div class="stats-card stats-card-clusters">
-        <div class="stats-icon-box stats-icon-box-light">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 00-2.91-.09z"/>
-            <path d="M12 15l-3-3a22 22 0 012-3.95A12.88 12.88 0 0122 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 01-4 2z"/>
-            <path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/>
-            <path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>
-          </svg>
-        </div>
-        <span class="stats-card-title">${t('model.activeClusters') || 'ACTIVE CLUSTERS'}</span>
-        <div class="stats-big-number">24</div>
-        <span class="stats-card-footer">${t('model.regionsActive') || '9 Regions Active'}</span>
-      </div>
-      
-      <!-- 右侧卡片：请求量 -->
-      <div class="stats-card stats-card-requests">
-        <div class="stats-icon-box stats-icon-box-purple">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <ellipse cx="12" cy="5" rx="9" ry="3"/>
-            <path d="M21 12c0 1.66-4.03 3-9 3s-9-1.34-9-3"/>
-            <path d="M3 5v14c0 1.66 4.03 3 9 3s9-1.34 9-3V5"/>
-          </svg>
-        </div>
-        <span class="stats-card-title">${t('model.requests24h') || 'REQUESTS (24H)'}</span>
-        <div class="stats-big-number">1.2M</div>
-        <div class="stats-card-footer"><span class="stats-success-dot"></span> ${t('model.successRate') || '99.98% Success'}</div>
-      </div>
+      ${['total_tokens', 'input_tokens', 'output_tokens'].map((field, index) => `
+        <div class="stats-card ${index === 0 ? 'stats-card-latency' : index === 1 ? 'stats-card-clusters' : 'stats-card-requests'}">
+          <span class="stats-card-title">${t('model.usage.' + field)}</span>
+          <div class="stats-big-number" data-usage-summary="${field}">—</div>
+          <span class="stats-card-footer">${t('model.usage.scope')}</span>
+        </div>`).join('')}
     </div>
 
     <!-- Active Models Ecosystem Table -->
@@ -815,7 +840,7 @@ function renderModelConfigs(configs) {
         <h2 class="ecosystem-title">${t('model.activeEcosystem') || 'Active Models Ecosystem'}</h2>
         <div class="ecosystem-badges">
           <span class="badge badge-neutral">${t('model.totalModels', { count: configs.length }) || `Total: ${configs.length} Models`}</span>
-          <span class="badge badge-success">${t('model.allHealthy') || 'All Systems Healthy'}</span>
+
         </div>
       </div>
       <table class="model-table">
@@ -830,62 +855,42 @@ function renderModelConfigs(configs) {
           </tr>
         </thead>
         <tbody>
-          ${configs.map(config => renderModelRow(config)).join('')}
+          ${configs.length ? configs.map(config => renderModelRow(config)).join('') : `<tr><td colspan="6" class="connections-empty">${t('model.noModels')}</td></tr>`}
         </tbody>
       </table>
     </div>
 
-    <!-- Bottom Panels -->
-    <div class="model-bottom-panels">
-      <!-- Left: Dynamic Traffic Routing -->
-      <div class="panel-card">
-        <div class="panel-card-header">
-          <div>
-            <h3>${t('model.trafficRouting') || 'Dynamic Traffic Routing'}</h3>
-            <p class="panel-subtitle">${t('model.trafficRoutingDesc') || 'Manage how requests are distributed across your cluster'}</p>
-          </div>
-          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="var(--color-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="18" cy="18" r="3" fill="var(--color-primary)" stroke="none"/>
-            <circle cx="6" cy="6" r="3" fill="var(--color-primary)" stroke="none"/>
-            <path d="M13 6h3a2 2 0 012 2v7"/>
-            <path d="M11 18H8a2 2 0 01-2-2V9"/>
-          </svg>
+    <div class="model-bottom-panels model-usage-panels">
+      <section class="panel-card model-usage-panel" aria-labelledby="modelUsageTitle">
+        <div class="panel-card-header"><div>
+          <h3 id="modelUsageTitle">${t('model.usage.title')}</h3>
+          <p class="panel-subtitle">${t('model.usage.scope')}</p>
+        </div></div>
+        <form id="usageFilters" class="usage-filters">
+          <label>${t('model.usage.model')}<input id="usageModelFilter" list="usageModels" value="${escapeHtml(usageModel)}" placeholder="${t('model.usage.allModels')}"></label>
+          <datalist id="usageModels">${[...new Set(configs.map(config => config.model_id))].map(model => `<option value="${escapeHtml(model)}"></option>`).join('')}</datalist>
+          <label>${t('model.usage.key')}<input id="usageKeyFilter" value="${escapeHtml(usageKey)}" placeholder="${t('model.usage.allKeys')}"></label>
+          <button class="btn-secondary" type="submit">${t('model.usage.filter')}</button>
+          <button class="btn-secondary" id="usageReset" type="button">${t('model.usage.reset')}</button>
+        </form>
+        <div id="modelUsageContent" aria-live="polite"></div>
+        <div class="usage-pagination">
+          <span id="usagePageLabel"></span>
+          <button class="btn-secondary" id="usagePrevious" type="button" disabled>${t('model.usage.previous')}</button>
+          <button class="btn-secondary" id="usageNext" type="button" disabled>${t('model.usage.next')}</button>
         </div>
-        <div class="routing-strategies">
-          <button class="strategy-card strategy-active" data-strategy="latency-first">
-            <span class="strategy-label">${t('model.strategyLatencyFirst') || 'LATENCY-FIRST'}</span>
-            <span class="strategy-desc">${t('model.strategyLatencyFirstDesc') || 'Routes to fastest available node'}</span>
-          </button>
-          <button class="strategy-card" data-strategy="cost-first">
-            <span class="strategy-label">${t('model.strategyCostFirst') || 'COST-FIRST'}</span>
-            <span class="strategy-desc">${t('model.strategyCostFirstDesc') || 'Prioritizes cheapest model tiers'}</span>
-          </button>
-          <button class="strategy-card" data-strategy="balanced">
-            <span class="strategy-label">${t('model.strategyBalanced') || 'BALANCED'}</span>
-            <span class="strategy-desc">${t('model.strategyBalancedDesc') || 'Weighted distribution 50/50'}</span>
-          </button>
-        </div>
-      </div>
-      
-      <!-- Right: Token Economy -->
-      <div class="panel-card panel-card-dark">
-        <h3 class="token-title">${t('model.tokenEconomy') || 'Token Economy'}</h3>
-        <div class="token-label">${t('model.projectedMonthlySpend') || 'PROJECTED MONTHLY SPEND'}</div>
-        <div class="token-value">$12,450.00</div>
-        <div class="token-progress"><div class="token-progress-bar" style="width: 75%"></div></div>
-        <div class="token-meta">${t('model.budgetUsed') || '75% of $16,000 budget used'}</div>
-        <div class="token-divider"></div>
-        <div class="token-spenders-title">${t('model.topSpendersByApp') || 'TOP SPENDERS BY APP'}</div>
-        <div class="token-spender"><span>Customer Support Bot</span><span>$4.2k</span></div>
-        <div class="token-spender"><span>Market Intelligence</span><span>$3.8k</span></div>
-        <div class="token-spender"><span>Creative Suite AI</span><span>$1.1k</span></div>
-        <button class="token-manage-btn" disabled>${t('model.manageBilling') || 'Manage Billing & Quotas'}</button>
-      </div>
+      </section>
+      <aside class="panel-card panel-card-dark">
+        <h3 class="token-title">${t('model.usage.summary')}</h3>
+        ${['calls', 'requests', 'unknown_calls', 'estimated_calls', 'average_duration_ms'].map(field => `<div class="token-spender"><span>${t('model.usage.' + field)}</span><span data-usage-summary="${field}">—</span></div>`).join('')}
+        <p class="token-meta usage-summary-note">${t('model.usage.note')}</p>
+      </aside>
     </div>
   `
 
   // Bind events
   bindListEvents(container)
+  loadUsage()
 }
 
 /**
@@ -917,16 +922,37 @@ function bindListEvents(container) {
     })
   }
 
-  // Routing strategy toggle (mock)
-  const routingPanel = container.querySelector('.routing-strategies')
-  if (routingPanel) {
-    routingPanel.addEventListener('click', (e) => {
-      const btn = e.target.closest('.strategy-card')
-      if (!btn) return
-      routingPanel.querySelectorAll('.strategy-card').forEach(c => c.classList.remove('strategy-active'))
-      btn.classList.add('strategy-active')
+  container.querySelector('#usageFilters')?.addEventListener('submit', (event) => {
+    event.preventDefault()
+    usageModel = container.querySelector('#usageModelFilter').value.trim()
+    usageKey = container.querySelector('#usageKeyFilter').value.trim()
+    usagePage = 1
+    loadUsage()
+  })
+  container.querySelector('#usageReset')?.addEventListener('click', () => {
+    usageModel = ''
+    usageKey = ''
+    usagePage = 1
+    container.querySelector('#usageFilters').reset()
+    container.querySelector('#usageModelFilter').value = ''
+    container.querySelector('#usageKeyFilter').value = ''
+    loadUsage()
+  })
+  for (const [id, delta] of [['usagePrevious', -1], ['usageNext', 1]]) {
+    container.querySelector('#' + id)?.addEventListener('click', () => {
+      usagePage += delta
+      loadUsage()
     })
   }
+  container.querySelector('#modelUsageContent')?.addEventListener('click', (event) => {
+    if (event.target.closest('#usageRetry')) loadUsage()
+    const button = event.target.closest('[data-usage-detail]')
+    if (!button) return
+    const detail = document.getElementById(button.getAttribute('aria-controls'))
+    if (!detail) return
+    detail.hidden = !detail.hidden
+    button.setAttribute('aria-expanded', String(!detail.hidden))
+  })
 }
 
 // ========== View Switching ==========
@@ -956,6 +982,7 @@ function showFormView(isEdit = false, configData = null) {
 
   // Update translations
   updateContainerTranslations(formPage)
+  loadConfigUsage(isEdit ? configData.id : null)
 }
 
 function showListView() {
@@ -1222,8 +1249,9 @@ function setupApiKeyToggle() {
 // ========== Load Data ==========
 
 async function loadModelConfigs() {
+  const generation = pageGeneration
   const configs = await fetchModelConfigs()
-  renderModelConfigs(configs)
+  if (mounted && generation === pageGeneration) renderModelConfigs(configs)
 }
 
 // ========== Event Binding ==========
@@ -1403,7 +1431,12 @@ function unloadPageCSS() {
  * @param {{ params: Object, route: Object }} context - Route context
  */
 export async function mount(container, { params, route } = {}) {
+  const generation = ++pageGeneration
+  mounted = true
   containerRef = container
+  usagePage = 1
+  usageModel = ''
+  usageKey = ''
 
   // Load page-specific CSS
   loadPageCSS()
@@ -1419,9 +1452,11 @@ export async function mount(container, { params, route } = {}) {
 
   // Load provider data from backend
   await loadProviderData()
+  if (!mounted || generation !== pageGeneration) return
 
   // Load model configs
   await loadModelConfigs()
+  if (!mounted || generation !== pageGeneration) return
 
   // Bind all events
   bindEvents()
@@ -1433,6 +1468,14 @@ export async function mount(container, { params, route } = {}) {
  * Unmount models page - cleanup
  */
 export async function unmount() {
+  mounted = false
+  pageGeneration += 1
+  usageRequest += 1
+  sidebarRequest += 1
+  usageController?.abort()
+  sidebarController?.abort()
+  usageController = null
+  sidebarController = null
   // Clear debounce timer
   if (fetchDebounceTimer) {
     clearTimeout(fetchDebounceTimer)

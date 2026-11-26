@@ -250,16 +250,18 @@ class RunnerExecutionFlowPostMixin:
                 # service and must never change or delay the user-visible reply.
                 _log_step("post_success_auto_memory_start")
                 try:
-                    result = await auto_memory.write_after_success(
-                        deps=deps,
-                        session_key=session_key,
-                        run_id=run_id,
-                        user_message=user_message,
-                        assistant_message=final_assistant,
-                        final_messages=final_messages,
-                        run_single=getattr(self, "run_single", None),
-                        agent=state.get("runtime_agent") or getattr(self, "agent", None),
-                    )
+                    from app.atlasclaw.agent.model_usage import usage_action
+                    with usage_action("memory"):
+                        result = await auto_memory.write_after_success(
+                            deps=deps,
+                            session_key=session_key,
+                            run_id=run_id,
+                            user_message=user_message,
+                            assistant_message=final_assistant,
+                            final_messages=final_messages,
+                            run_single=getattr(self, "run_single", None),
+                            agent=state.get("runtime_agent") or getattr(self, "agent", None),
+                        )
                     diagnostics = getattr(result, "diagnostics", {}) or {}
                     if not isinstance(diagnostics, dict):
                         diagnostics = {}

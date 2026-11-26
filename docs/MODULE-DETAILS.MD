@@ -1906,6 +1906,26 @@ that have already started.
 
 ### 11.4 Pydantic Schemas (`db/schemas.py`)
 
+Model usage is stored per native model request in `model_usage`, including
+planning passes, structured-output retries, execution, and automatic memory
+calls. The shared model-request hook snapshots the actual model, token name,
+masked Key suffix, action, duration, and authenticated user. It stores neither
+credentials nor prompt/response text. Collection errors do not change model
+results. Provider jobs polled with the same response ID contribute only the
+increment over their prior cumulative token counters, including resumed jobs.
+Records begin when this collector is installed.
+
+`GET /api/model-usage` requires authentication and always limits results to the
+current user, including for administrators. Optional `model`, `token_id`, and
+`model_config_id` filters apply to both the paginated `items` and the full-scope
+`summary`. `page` starts at 1 and `page_size` is capped at 100. Dates are UTC.
+Input and output counts use PydanticAI's normalized provider totals. Cache
+counts are included in input and reasoning counts in output. Missing usage
+may use the existing text-only character heuristic, marked `estimated`.
+Multimodal responses without reported usage and failed calls without a
+response are marked `unavailable` with nullable token counts. No billing
+amounts or provider quotas are inferred.
+
 Request/response schemas for API validation:
 
 | Schema | Purpose |
