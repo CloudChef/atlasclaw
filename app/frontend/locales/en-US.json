@@ -467,6 +467,7 @@
   "ext": {
     "title": "Extension",
     "loading": "Loading…",
+    "stillLoading": "This page is taking longer than expected.",
     "loadFailed": "The provider page failed to load. Retry, or check your access.",
     "retry": "Retry"
   },
