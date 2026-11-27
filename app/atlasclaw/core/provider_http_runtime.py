@@ -372,7 +372,7 @@ class ProviderVisualRuntime:
         *,
         prompt: str,
         system_prompt: str,
-        timeout_seconds: float,
+        timeout_seconds: float | None = None,
         skill_id: str = "",
         data: bytes | None = None,
         media_type: str | None = None,
@@ -382,14 +382,14 @@ class ProviderVisualRuntime:
         """Run one provider-supplied visual prompt with the active Agent model.
 
         The provider owns extraction semantics and prompts. Core owns only model access,
-        timeout enforcement, and the binary-input transport used by Pydantic AI.
+        optional timeout enforcement, and the binary-input transport used by Pydantic AI.
 
         Args:
             data: Legacy single binary image supplied by the provider.
             media_type: MIME type for the legacy single image.
             prompt: Provider-owned task prompt for this asset.
             system_prompt: Provider-owned system contract used to cache a narrow agent.
-            timeout_seconds: Remaining provider request budget for this model call.
+            timeout_seconds: Optional remaining provider request budget for this model call.
             identifier: Safe legacy image label included in diagnostic errors.
             images: Ordered image dictionaries with data, media_type, and identifier.
 
@@ -397,7 +397,7 @@ class ProviderVisualRuntime:
             Text output produced by the active model.
 
         Raises:
-            ProviderHttpRuntimeError: If no model is configured, the deadline expires,
+            ProviderHttpRuntimeError: If no model is configured, the configured deadline expires,
                 or visual model execution fails.
         """
         model, model_settings, semaphore, usage_token, usage_deps = await self._acquire_model(
@@ -420,11 +420,15 @@ class ProviderVisualRuntime:
                     deps_type=SkillDeps,
                     capabilities=[build_usage_hooks(usage_token)],
                 )
+            visual_model_settings = dict(model_settings or {})
+            # Match text bridging: provider-owned long-running work must not inherit
+            # a finite transport timeout from the host Agent configuration.
+            visual_model_settings["timeout"] = None
             visual_agent = Agent(
                 model,
                 output_type=str,
                 system_prompt=system_prompt,
-                model_settings=model_settings,
+                model_settings=visual_model_settings,
                 retries=1,
                 **agent_options,
             )
@@ -469,20 +473,22 @@ class ProviderVisualRuntime:
                     code="visual_input_missing",
                 )
             error_identifier = ", ".join(image_labels) or identifier or "images"
+
+            async def run_with_optional_timeout(request):
+                if timeout_seconds is None:
+                    return await request
+                return await asyncio.wait_for(request, timeout=max(float(timeout_seconds), 0.1))
+
             try:
                 if usage_token is not None and usage_deps is not None:
                     from app.atlasclaw.agent.model_usage import usage_action
 
                     with usage_action("provider_bridge_visual"):
-                        result = await asyncio.wait_for(
-                            visual_agent.run(parts, deps=usage_deps),
-                            timeout=max(float(timeout_seconds), 0.1),
+                        result = await run_with_optional_timeout(
+                            visual_agent.run(parts, deps=usage_deps)
                         )
                 else:
-                    result = await asyncio.wait_for(
-                        visual_agent.run(parts),
-                        timeout=max(float(timeout_seconds), 0.1),
-                    )
+                    result = await run_with_optional_timeout(visual_agent.run(parts))
                 finish_reason = _last_visual_finish_reason(result.new_messages())
                 if finish_reason in {"length", "content_filter", "error"}:
                     raise ProviderHttpRuntimeError(
@@ -667,7 +673,7 @@ class ProviderHttpContext:
         *,
         prompt: str,
         system_prompt: str,
-        timeout_seconds: float,
+        timeout_seconds: float | None = None,
         skill_id: str = "",
         data: bytes | None = None,
         media_type: str | None = None,
@@ -679,7 +685,7 @@ class ProviderHttpContext:
         Args:
             prompt: Provider-owned prompt for the asset.
             system_prompt: Provider-owned conversion contract.
-            timeout_seconds: Remaining request budget for the model call.
+            timeout_seconds: Optional remaining request budget for the model call.
             data: Legacy provider-validated binary image or rendered page.
             media_type: MIME type for the legacy single image.
             identifier: Safe legacy asset label used in errors.

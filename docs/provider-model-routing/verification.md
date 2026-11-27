@@ -55,3 +55,5 @@ An existing startup/tool-group test-order leak was reproduced on clean main. The
 Migration 015 adds the policy table. Its SQLite upgrade/downgrade test preserves an existing user row; no external database migration was performed.
 
 Deploy the companion core change before the audit provider change, which supplies the new optional canonical Skill ID to the Core bridge. This verification did not deploy to 192.168.12.153 or make live OpenRouter requests. Direct CLI code bypassing Core does not acquire these policies automatically.
+
+The visual bridge now also accepts an omitted/`None` timeout, matching the text bridge. Long-running Provider audits await the model without an added host deadline; explicitly supplied deadlines still return 504 when exceeded. The visual, bridge authorization and bridge usage suites passed together (28 tests) after this contract change.

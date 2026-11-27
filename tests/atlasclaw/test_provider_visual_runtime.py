@@ -81,7 +81,7 @@ async def test_visual_runtime_sends_multiple_images_in_order_and_inherits_model_
     assert visual_agent.received[4].identifier == "page-2"
     assert visual_agent.received[4].data == b"two"
     assert captured["model_settings"] == {
-        "max_tokens": 49152, "extra_body": {"reasoning": {"effort": "low"}},
+        "max_tokens": 49152, "extra_body": {"reasoning": {"effort": "low"}}, "timeout": None,
     }
 
 
@@ -98,6 +98,42 @@ async def test_visual_runtime_preserves_legacy_single_image_call(monkeypatch: py
     assert len(visual_agent.received) == 2
     assert visual_agent.received[1].identifier == "page-7"
     assert visual_agent.received[1].data == b"legacy"
+
+
+@pytest.mark.asyncio
+async def test_visual_runtime_with_no_timeout_awaits_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime, visual_agent, captured = _runtime(monkeypatch, _AgentRunResult("ok", "stop"))
+
+    async def reject_wait_for(*_args, **_kwargs):
+        pytest.fail("no-timeout visual calls must not use asyncio.wait_for")
+
+    monkeypatch.setattr(visual_runtime_module.asyncio, "wait_for", reject_wait_for)
+    result = await runtime.run_visual(
+        images=[{"data": b"page", "media_type": "image/png", "identifier": "page-1"}],
+        prompt="Review", system_prompt="visual system",
+    )
+
+    assert result == "ok"
+    assert len(visual_agent.received) == 3
+    assert captured["model_settings"]["timeout"] is None
+
+
+@pytest.mark.asyncio
+async def test_visual_runtime_explicit_timeout_still_maps_to_504(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime, visual_agent, _captured = _runtime(monkeypatch, _AgentRunResult("ok", "stop"))
+
+    async def wait_forever(_parts):
+        await asyncio.sleep(5)
+
+    visual_agent.run = wait_forever
+    with pytest.raises(ProviderHttpRuntimeError) as exc:
+        await runtime.run_visual(
+            data=b"page", media_type="image/png", prompt="Review", system_prompt="visual system",
+            timeout_seconds=0.01,
+        )
+
+    assert exc.value.status_code == 504
+    assert exc.value.code == "visual_model_timeout"
 
 
 @pytest.mark.asyncio
@@ -119,6 +155,36 @@ async def test_http_context_forwards_multiple_images_to_visual_runtime(
     assert result == "ok"
     assert visual_agent.received[1] == "图像标识：page-4"
     assert visual_agent.received[2].identifier == "page-4"
+
+
+@pytest.mark.asyncio
+async def test_http_context_forwards_no_visual_timeout() -> None:
+    class Runtime:
+        def __init__(self):
+            self.timeout_seconds = "unset"
+
+        @property
+        def available(self):
+            return True
+
+        async def run_visual(self, **kwargs):
+            self.timeout_seconds = kwargs["timeout_seconds"]
+            return "ok"
+
+    runtime = Runtime()
+    context = ProviderHttpContext(
+        provider_type="audit-report", provider_instance="default", provider_config={},
+        path_params={}, user_id="user", tenant_id="tenant", is_admin=False,
+        visual_runtime=runtime,
+    )
+
+    result = await context.run_visual(
+        images=[{"data": b"page", "media_type": "image/png", "identifier": "page-1"}],
+        prompt="Review", system_prompt="visual system", timeout_seconds=None,
+    )
+
+    assert result == "ok"
+    assert runtime.timeout_seconds is None
 
 
 @pytest.mark.asyncio
