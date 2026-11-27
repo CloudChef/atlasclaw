@@ -132,6 +132,53 @@ def client(app):
 # ============== ModelConfigService Unit Tests ==============
 
 
+def test_saved_model_key_reaches_next_runtime_agent_without_restart(client):
+    """Exercise API persistence, runtime reload, session pins and agent caching together."""
+    from types import SimpleNamespace
+    from app.atlasclaw.agent.agent_pool import AgentInstancePool
+    from app.atlasclaw.agent.token_policy import DynamicTokenPolicy
+    from app.atlasclaw.agent.runner_tool.runner_execution_runtime import RunnerExecutionRuntimeMixin
+    from app.atlasclaw.bootstrap.startup_helpers import load_runtime_token_entries
+    from app.atlasclaw.core.token_pool import TokenEntry, TokenPool
+
+    fallback = TokenEntry("json", "custom", "fallback", "http://localhost/v1", "")
+    pool = TokenPool()
+    pool.register_token(fallback)
+    async def loader():
+        return await load_runtime_token_entries([fallback])
+    policy = DynamicTokenPolicy(pool, primary_token_id="json", token_loader=loader)
+    policy.get_or_select_session_token("same-session")
+    runner = SimpleNamespace(
+        agent="stale-seed", token_policy=policy, agent_pool=AgentInstancePool(),
+        agent_factory=lambda agent_id, token: (token.api_key, token.model), agent_id="main",
+    )
+    def resolve():
+        async def run():
+            agent, token_id, release = await RunnerExecutionRuntimeMixin._resolve_runtime_agent(
+                runner, "same-session", SimpleNamespace(extra={})
+            )
+            release()
+            return agent, token_id
+        return asyncio.run(run())
+
+    response = client.post("/api/model-configs", json={
+        "name": "managed", "provider": "openai", "model_id": "gpt-4o",
+        "base_url": "https://example.com/v1", "api_key": "first-admin-key",
+    })
+    assert response.status_code == 201
+    identifier = response.json()["id"]
+    assert "first-admin-key" not in response.text
+    assert resolve() == (("first-admin-key", "gpt-4o"), "managed")
+    response = client.put(f"/api/model-configs/{identifier}", json={"api_key": "second-admin-key"})
+    assert response.status_code == 200
+    assert resolve() == (("second-admin-key", "gpt-4o"), "managed")
+    assert client.put(f"/api/model-configs/{identifier}", json={"api_key": None}).status_code == 200
+    assert resolve() == (("second-admin-key", "gpt-4o"), "managed")
+    assert client.put(f"/api/model-configs/{identifier}", json={"is_active": False}).status_code == 200
+    assert resolve() == (("", "fallback"), "json")
+    assert "managed" not in pool.tokens
+
+
 class TestModelConfigService:
     """Tests for ModelConfigService CRUD operations."""
 
@@ -458,6 +505,64 @@ class TestModelConfigService:
 
 class TestModelConfigAPI:
     """Tests for Model Config API endpoints."""
+
+    def test_file_models_are_visible_masked_filtered_and_read_only(self, client, monkeypatch):
+        from app.atlasclaw.core.config_schema import AtlasClawConfig
+
+        monkeypatch.setenv("TEST_CONFIG_MODEL_KEY", "private-file-model-key-12345")
+        monkeypatch.delenv("MISSING_CONFIG_MODEL_KEY", raising=False)
+        config = AtlasClawConfig(model={"primary": "file-primary", "tokens": [
+            {"id": "file-primary", "provider": "openrouter", "model": "model/from-file",
+             "base_url": "https://openrouter.test/v1", "api_key": "${TEST_CONFIG_MODEL_KEY}"},
+            {"id": "missing-key", "provider": "openai", "model": "not-ready",
+             "base_url": "https://openai.test/v1", "api_key": "${MISSING_CONFIG_MODEL_KEY}"},
+        ]})
+        client.app.state.config = config
+        before = config.model_dump_json()
+        assert client.post("/api/model-configs", json={
+            "name": "database-model", "provider": "openai", "model_id": "editable",
+        }).status_code == 201
+        response = client.get("/api/model-configs?page_size=1")
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["total"] == 1
+        assert len(payload["model_configs"]) == 1
+        assert payload["model_configs"][0]["read_only"] is False
+        rows = payload["file_models"]
+        assert len(rows) == 2
+        assert rows[0]["source"] == "config_file" and rows[0]["read_only"] is True
+        assert rows[0]["model_id"] == "model/from-file" and rows[0]["is_active"] is True
+        assert rows[0]["context_window"] is None and rows[0]["max_tokens"] is None
+        assert rows[0]["api_key_masked"] and "api_key" not in rows[0]
+        assert "private-file-model-key-12345" not in response.text
+        assert rows[1]["is_active"] is False and rows[1]["api_key_masked"] is None
+        filtered = client.get("/api/model-configs?provider=openrouter").json()
+        assert len(filtered["file_models"]) == 1 and not filtered["model_configs"]
+        inactive = client.get("/api/model-configs?is_active=false").json()["file_models"]
+        assert [row["name"] for row in inactive] == ["missing-key"]
+        identifier = rows[0]["id"]
+        assert client.put(f"/api/model-configs/{identifier}", json={"model_id": "changed", "read_only": False}).status_code == 403
+        assert client.delete(f"/api/model-configs/{identifier}").status_code == 403
+        assert config.model_dump_json() == before
+        assert client.get("/api/model-configs", headers={"X-Test-Is-Admin": "false"}).status_code == 403
+
+    def test_legacy_file_primary_model_is_also_displayed(self, client):
+        from app.atlasclaw.core.config_schema import AtlasClawConfig
+
+        client.app.state.config = AtlasClawConfig(model={
+            "primary": "openai/legacy-model", "max_tokens": 8192,
+            "providers": {"openai": {"base_url": "https://openai.test/v1", "api_key": "legacy-test-key"}},
+        })
+        rows = client.get("/api/model-configs").json()["file_models"]
+        assert len(rows) == 1 and rows[0]["model_id"] == "legacy-model"
+        assert rows[0]["max_tokens"] == 8192 and rows[0]["read_only"] is True
+
+    @pytest.mark.parametrize("model_section", [None, {}, {"tokens": []}])
+    def test_database_only_deployment_does_not_invent_file_models(self, client, model_section):
+        from app.atlasclaw.core.config_schema import AtlasClawConfig
+
+        client.app.state.config = AtlasClawConfig(**({"model": model_section} if model_section is not None else {}))
+        assert client.get("/api/model-configs").json()["file_models"] == []
 
     def test_create_model_config_api(self, client):
         """Test POST /api/model-configs returns 201."""

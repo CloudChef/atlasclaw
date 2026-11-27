@@ -77,7 +77,7 @@ async def fetch_provider_models(body: FetchModelsRequest):
     api_key = body.api_key
     api_type = preset.api_type
 
-    if not base_url or not api_key:
+    if not api_key or (not base_url and api_type != "google"):
         return {"models": PROVIDER_MODELS.get(body.provider, []), "source": "preset"}
 
     try:
@@ -91,7 +91,8 @@ async def fetch_provider_models(body: FetchModelsRequest):
             }
             url = f"{base_url.rstrip('/')}/v1/models"
         elif api_type == "google":
-            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+            headers = {"x-goog-api-key": api_key}
+            url = "https://generativelanguage.googleapis.com/v1beta/models"
         else:
             headers = {"Authorization": f"Bearer {api_key}"}
             clean_url = base_url.rstrip("/")

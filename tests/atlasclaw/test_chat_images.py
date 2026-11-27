@@ -50,6 +50,34 @@ def png():
     return UploadFile(io.BytesIO(file.getvalue()), filename="image.png")
 
 
+@pytest.mark.asyncio
+async def test_first_capability_request_uses_newly_saved_model(db, monkeypatch):
+    from fastapi import APIRouter
+    from app.atlasclaw.api import routes_chat_attachments
+    from app.atlasclaw.bootstrap.startup_helpers import load_runtime_token_entries
+
+    async with db.get_session() as session:
+        await ModelConfigService.create(session, ModelConfigCreate(
+            name="new-model", provider="custom", model_id="vision-model",
+            base_url="http://test.invalid", api_key="test-admin-key", capabilities={"vision": True},
+        ))
+    fallback = TokenEntry("json", "custom", "text-model", "http://test.invalid", "")
+    pool = TokenPool(); pool.register_token(fallback)
+    async def loader():
+        return await load_runtime_token_entries([fallback])
+    policy = DynamicTokenPolicy(pool, primary_token_id="json", token_loader=loader)
+    async def owned_session(*args):
+        pass
+    monkeypatch.setattr(routes_chat_attachments, "_ensure_runnable_session", owned_session)
+    router = APIRouter()
+    routes_chat_attachments.register_chat_attachment_routes(router)
+    endpoint = next(route.endpoint for route in router.routes if route.path.endswith("/input-capabilities"))
+    ctx = SimpleNamespace(agent_runners={}, agent_runner=SimpleNamespace(token_policy=policy))
+    result = await endpoint(SessionKey(user_id="alice").to_string(), user=UserInfo(user_id="alice"), ctx=ctx)
+    assert result["model"] == "vision-model"
+    assert result["vision"] is True
+
+
 def test_image_request_validation_returns_422():
     app = FastAPI()
     install_request_validation_logging(app)

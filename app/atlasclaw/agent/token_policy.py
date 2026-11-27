@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Awaitable, Callable
 from threading import RLock
 from typing import Optional
 
@@ -19,12 +21,44 @@ class DynamicTokenPolicy:
         token_pool: TokenPool,
         strategy: str = "health",
         primary_token_id: Optional[str] = None,
+        token_loader: Optional[Callable[[], Awaitable[list[TokenEntry]]]] = None,
     ) -> None:
         self.token_pool = token_pool
         self.strategy = strategy
         self.primary_token_id = primary_token_id
+        self._configured_primary_token_id = primary_token_id
         self._session_token_map: dict[str, str] = {}
         self._lock = RLock()
+        self._token_loader = token_loader
+        self._refresh_lock = asyncio.Lock()
+        self._managed_credentials: dict[str, str] = {}
+
+    async def refresh_tokens(self) -> None:
+        """Reload committed configuration before selecting the next runtime agent."""
+        if self._token_loader is None:
+            return
+        async with self._refresh_lock:
+            entries = await self._token_loader()
+            self.token_pool.replace_tokens(entries)
+            if not entries:
+                raise RuntimeError("No usable model credentials are configured")
+            managed = [entry for entry in entries if entry.source_model_config_id]
+            credentials = {entry.source_model_config_id: entry.credential_fingerprint for entry in managed}
+            current = self.token_pool.tokens.get(self.primary_token_id)
+            with self._lock:
+                if managed:
+                    if current is None or not current.source_model_config_id:
+                        self.primary_token_id = managed[0].token_id
+                    if credentials != self._managed_credentials:
+                        # New credentials supersede defaults; preserve deliberate failover pins otherwise.
+                        self._session_token_map = {
+                            key: token_id for key, token_id in self._session_token_map.items()
+                            if token_id in self.token_pool.tokens
+                            and self.token_pool.tokens[token_id].source_model_config_id
+                        }
+                else:
+                    self.primary_token_id = self._configured_primary_token_id
+                self._managed_credentials = credentials
 
     def select_for_session(
         self,
@@ -93,13 +127,17 @@ class DynamicTokenPolicy:
         provider: Optional[str] = None,
         model: Optional[str] = None,
         eligible_token_ids: Optional[set[str]] = None,
+        expected_fingerprint: Optional[str] = None,
     ) -> Optional[TokenEntry]:
         """Mark the current session token unhealthy and rotate to the next candidate."""
         current = self.get_session_token(session_key)
         excluded_ids: set[str] = set()
         if current is not None:
-            self.token_pool.mark_token_unhealthy(current.token_id, reason=reason)
-            excluded_ids.add(current.token_id)
+            marked = self.token_pool.mark_token_unhealthy(
+                current.token_id, reason=reason, expected_fingerprint=expected_fingerprint,
+            )
+            if marked:
+                excluded_ids.add(current.token_id)
         with self._lock:
             self._session_token_map.pop(session_key, None)
 

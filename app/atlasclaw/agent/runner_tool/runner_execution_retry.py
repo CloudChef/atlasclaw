@@ -69,15 +69,18 @@ class RunnerExecutionRetryMixin:
         next_token = None
         image_filter = ({"eligible_token_ids": extra["_chat_vision_tokens"]}
                         if "_chat_vision_tokens" in extra else {})
+        credential_guard = ({"expected_fingerprint": extra["_selected_token_fingerprint"]}
+                            if extra.get("_selected_token_fingerprint") else {})
         if selected_token_id:
             if self.token_interceptor is not None:
-                self.token_interceptor.on_hard_failure(selected_token_id, error_text)
+                self.token_interceptor.on_hard_failure(selected_token_id, error_text, **credential_guard)
             next_token = self.token_policy.mark_session_token_unhealthy(
                 session_key,
                 reason=error_text,
                 provider=provider,
                 model=model,
                 **image_filter,
+                **credential_guard,
             )
             if next_token is None and provider:
                 next_token = self.token_policy.mark_session_token_unhealthy(
@@ -86,6 +89,7 @@ class RunnerExecutionRetryMixin:
                     provider=provider,
                     model=None,
                     **image_filter,
+                    **credential_guard,
                 )
             if next_token is None:
                 next_token = self.token_policy.mark_session_token_unhealthy(
@@ -94,6 +98,7 @@ class RunnerExecutionRetryMixin:
                     provider=None,
                     model=None,
                     **image_filter,
+                    **credential_guard,
                 )
         else:
             next_token = self.token_policy.get_or_select_session_token(

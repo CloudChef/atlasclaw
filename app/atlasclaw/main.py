@@ -127,6 +127,7 @@ from app.atlasclaw.bootstrap.startup_helpers import (
     derive_provider_namespace,
     ensure_default_local_admin,
     load_agent_config_from_db,
+    load_runtime_token_entries,
     merge_provider_instances,
     merge_token_entries,
     print_root_plugins,
@@ -549,6 +550,7 @@ async def lifespan(app: FastAPI):
         token_pool,
         strategy=config.model.selection_strategy,
         primary_token_id=primary_token_id,
+        token_loader=(lambda: load_runtime_token_entries(config_token_entries)) if db_initialized else None,
     )
     agent_pool = AgentInstancePool(max_concurrent_per_instance=4)
     token_interceptor = TokenHealthInterceptor(token_pool, health_store)

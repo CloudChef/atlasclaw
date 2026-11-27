@@ -103,7 +103,7 @@ describe('i18n Module', () => {
 
             const { loadLocale } = await import('../../app/frontend/scripts/i18n.js');
             await loadLocale('zh-CN');
-            expect(global.fetch).toHaveBeenCalledWith('/locales/zh-CN.json');
+            expect(global.fetch).toHaveBeenCalledWith('/locales/zh-CN.json', { cache: 'no-cache' });
         });
 
         test('should fall back to default on unsupported locale', async () => {
@@ -117,7 +117,7 @@ describe('i18n Module', () => {
             const { loadLocale } = await import('../../app/frontend/scripts/i18n.js');
             await loadLocale('invalid-locale');
             // Default locale is en-US as defined in source
-            expect(global.fetch).toHaveBeenCalledWith('/locales/en-US.json');
+            expect(global.fetch).toHaveBeenCalledWith('/locales/en-US.json', { cache: 'no-cache' });
         });
 
         test('should include provider secret update placeholder in bundled locale files', () => {
@@ -277,7 +277,7 @@ describe('i18n Module', () => {
             
             const { initI18n } = await import('../../app/frontend/scripts/i18n.js');
             await initI18n();
-            expect(global.fetch).toHaveBeenCalledWith('/locales/en-US.json');
+            expect(global.fetch).toHaveBeenCalledWith('/locales/en-US.json', { cache: 'no-cache' });
         });
 
         test('should detect browser locale when no saved preference', async () => {
@@ -290,7 +290,7 @@ describe('i18n Module', () => {
             
             const { initI18n } = await import('../../app/frontend/scripts/i18n.js');
             await initI18n();
-            expect(global.fetch).toHaveBeenCalledWith('/locales/en-US.json');
+            expect(global.fetch).toHaveBeenCalledWith('/locales/en-US.json', { cache: 'no-cache' });
         });
     });
 

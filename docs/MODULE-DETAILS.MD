@@ -154,7 +154,7 @@ Multi-token management for LLM API endpoints with health-aware selection.
 | `model` | `str` | -| Model name (e.g., `deepseek-chat`) |
 | `base_url` | `str` | -| API base URL |
 | `api_key` | `str` | -| API key (interpolated from env) |
-| `api_type` | `str` | `"openai"` | API type (`openai` or `anthropic`) |
+| `api_type` | `str` | `"openai"` | API type (`openai`, `anthropic`, or `google`); native Google uses the SDK endpoint when `base_url` is empty |
 | `priority` | `int` | `0` | Selection priority (higher = preferred) |
 | `weight` | `int` | `100` | Selection weight for weighted strategies |
 
@@ -913,7 +913,7 @@ Session-level token selection and pinning strategy.
 
 **Class: `DynamicTokenPolicy`**
 
-Constructor: `token_pool: TokenPool`, `strategy: str = "health"`, `primary_token_id: Optional[str] = None`
+Constructor: `token_pool: TokenPool`, `strategy: str = "health"`, `primary_token_id: Optional[str] = None`, optional async `token_loader`
 
 | Method | Signature | Description |
 |---|---|---|
@@ -921,11 +921,14 @@ Constructor: `token_pool: TokenPool`, `strategy: str = "health"`, `primary_token
 | `get_session_token` | `(session_key) -> TokenEntry?` | Get pinned token for session |
 | `get_or_select_session_token` | `(session_key, provider?, model?) -> TokenEntry?` | Get existing or select new |
 | `refresh_session_token` | `(session_key) -> TokenEntry?` | Re-select if current token unhealthy |
+| `refresh_tokens` | `async () -> None` | Reload committed database credentials before a run; remove disabled/deleted entries |
 | `release_session_token` | `(session_key) -> None` | Release pinned token |
 
-**Token Pinning**: Once a token is selected for a session, it's reused for the entire session unless it becomes unhealthy.
+**Token Pinning**: A selected database model remains pinned while enabled. Key and endpoint edits take effect on the next run, including existing sessions. When enabled UI models become available, file-default session pins are released so UI configuration can take effect.
 
 **Primary Token**: If `primary_token_id` is configured, it's always tried first if healthy.
+
+Enabled UI model configurations take precedence over file defaults. The current enabled database primary is retained; otherwise the first active model by priority becomes primary. Without enabled UI models, the configured file/database-token primary is restored. Runtime reload follows startup source precedence (model configurations, database tokens, file tokens) and fails the new run if credentials cannot be loaded or none remain.
 
 ### 3.8 Agent Instance Pool (`agent/agent_pool.py`)
 
@@ -939,9 +942,15 @@ Caches agent instances bound to specific tokens with per-instance concurrency co
 | `token_id` | `str` | Bound token ID |
 | `agent` | `Any` | PydanticAI Agent instance |
 | `concurrency_sem` | `asyncio.Semaphore` | Concurrency limiter |
+| `token` | `TokenEntry` | Private credential/configuration snapshot (omitted from repr) for cache invalidation |
 | `created_at` | `datetime` | Creation timestamp |
 
 **Property**: `cache_key` -Returns `"{agent_id}:{token_id}"`
+
+`get_or_create` reuses only instances whose token snapshot is unchanged. Changed credentials or endpoints create a new instance; in-flight runs retain their original instance and semaphore.
+
+Each run captures a credential fingerprint. Late failures and quota headers from
+an older credential cannot change the replacement credential's health state.
 
 **Class: `AgentInstancePool`**
 
@@ -1984,7 +1993,7 @@ LLM provider configuration and failover/retry logic.
 | `max_tokens` | `int` | `8192` |
 | `reasoning` | `bool` | `False` |
 
-**Dataclass: `ProviderConfig`** -`provider`, `base_url`, `api_key`, `api_type` (openai/anthropic), `models: list[ModelDefinition]`
+**Dataclass: `ProviderConfig`** -`provider`, `base_url`, `api_key`, `api_type` (openai/anthropic/google), `models: list[ModelDefinition]`
 
 **Functions**:
 - `resolve_env(value: str) -> str` -Resolve `${VAR}` or `${VAR:default}` patterns
@@ -2137,6 +2146,16 @@ Vanilla JavaScript SPA with Deep Chat integration for the chat interface.
 | `channels.html` | Channel configuration management UI |
 
 ### 15.4 Testing
+
+The Models page combines database-managed `model_configs` with `file_models` from
+the loaded deployment configuration. The list API keeps database pagination and
+`total` unchanged; file entries are separately marked `source=config_file` and
+`read_only=true`, expose only masked credentials, and cannot be updated or
+deleted through management APIs. Missing file limits remain unset in the UI.
+
+The usage table shows cache-read tokens in its final column. Cache-write tokens
+and reported/estimated/unavailable provenance remain in expandable details;
+estimated totals retain a visible label in the main row.
 
 **Framework**: Jest with jsdom environment. Tests in `tests/frontend/**/*.test.js`.
 

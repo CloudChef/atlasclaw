@@ -106,7 +106,7 @@ export async function loadLocale(locale) {
     }
     
     try {
-        const response = await fetch(buildAssetUrl(`/locales/${locale}.json`));
+        const response = await fetch(buildAssetUrl(`/locales/${locale}.json`), { cache: 'no-cache' });
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}`);
         }

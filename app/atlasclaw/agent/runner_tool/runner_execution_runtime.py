@@ -47,6 +47,7 @@ class RunnerExecutionRuntimeMixin:
         if self.token_policy is None or self.agent_pool is None or self.agent_factory is None:
             return self.agent, None, None
 
+        await self.token_policy.refresh_tokens()
         extra = deps.extra if isinstance(deps.extra, dict) else {}
         provider = extra.get("provider") if isinstance(extra.get("provider"), str) else None
         model = extra.get("model") if isinstance(extra.get("model"), str) else None
@@ -80,6 +81,7 @@ class RunnerExecutionRuntimeMixin:
             token,
             self.agent_factory,
         )
+        extra["_selected_token_fingerprint"] = token.credential_fingerprint
         await instance.concurrency_sem.acquire()
         return instance.agent, token.token_id, instance.concurrency_sem.release
     def _extract_rate_limit_headers(self, deps: SkillDeps) -> dict[str, str]:
