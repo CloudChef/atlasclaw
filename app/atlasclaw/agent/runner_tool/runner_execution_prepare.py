@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
 import re
@@ -43,6 +43,12 @@ from app.atlasclaw.agent.runner_tool.runner_tool_projection import (
 from app.atlasclaw.agent.stream import StreamEvent
 from app.atlasclaw.agent.thinking_stream import ThinkingStreamEmitter
 from app.atlasclaw.agent.tool_gate import CapabilityMatcher
+from app.atlasclaw.agent.skill_stage_context import (
+    build_stage_context_message,
+    completed_stage_for,
+    new_stage_state,
+    stage_identity,
+)
 from app.atlasclaw.agent.tool_gate_models import (
     CapabilitySelectorOutcome,
     ConversationTurnAction,
@@ -149,6 +155,127 @@ def should_resolve_target_md_skill(intent_plan: ToolIntentPlan | None) -> bool:
     if any(str(item).strip() for item in (intent_plan.target_tool_names or [])):
         return True
     return turn_action_requires_tool_execution(intent_plan)
+
+
+def _resolve_registered_executable_skill_id(
+    *,
+    intent_plan: ToolIntentPlan | None,
+    capability_index: list[dict[str, Any]],
+    skill_registry: Any,
+) -> tuple[str, str, str]:
+    """Resolve one selected executable Skill from the current authorized catalog."""
+    if intent_plan is None or skill_registry is None:
+        return "", "", ""
+    requested = {
+        str(item or "").strip().casefold()
+        for item in (intent_plan.target_skill_names or [])
+        if str(item or "").strip()
+    }
+    from app.atlasclaw.core.model_bindings import registered_skill_catalog
+
+    registered_executable = {
+        str(item.get("skill_id") or "").strip().casefold(): item
+        for item in registered_skill_catalog(skill_registry)
+        if item.get("source") == "executable" and str(item.get("skill_id") or "").strip()
+    }
+    requested_provider_skills = {
+        str(item or "").strip().casefold()
+        for item in (intent_plan.target_provider_skill_names or [])
+        if str(item or "").strip()
+    }
+    if requested_provider_skills:
+        provider_refs = [
+            str(item or "").strip()
+            for item in (intent_plan.target_provider_instances or [])
+            if str(item or "").strip()
+        ]
+        provider_types = {
+            str(item or "").strip().casefold()
+            for item in (intent_plan.target_provider_types or [])
+            if str(item or "").strip()
+        }
+        if (
+            len(requested_provider_skills) != 1
+            or len(provider_refs) != 1
+            or len(provider_types) != 1
+            or requested
+        ):
+            return "", "", ""
+        provider_type, instance_name = _split_provider_instance_ref(provider_refs[0])
+        if (
+            not provider_type
+            or not instance_name
+            or provider_type.casefold() not in provider_types
+        ):
+            return "", "", ""
+        normalized_ref = f"{provider_type}.{instance_name}".casefold()
+        provider_matches: set[str] = set()
+        for entry in capability_index:
+            if (
+                not isinstance(entry, dict)
+                or str(entry.get("kind") or "").strip().lower() != "provider_skill"
+            ):
+                continue
+            entry_provider_types = {
+                str(item or "").strip().casefold()
+                for item in (entry.get("target_provider_types") or [])
+                if str(item or "").strip()
+            }
+            entry_provider_refs = {
+                str(item or "").strip().casefold()
+                for item in (entry.get("target_provider_instances") or [])
+                if str(item or "").strip()
+            }
+            entry_provider_skill_names = {
+                str(item or "").strip().casefold()
+                for item in (entry.get("target_provider_skill_names") or [])
+                if str(item or "").strip()
+            }
+            if (
+                provider_type.casefold() not in entry_provider_types
+                or normalized_ref not in entry_provider_refs
+                or not requested_provider_skills.intersection(entry_provider_skill_names)
+            ):
+                continue
+            canonical = str(entry.get("qualified_skill_name") or "").strip()
+            catalog_entry = registered_executable.get(canonical.casefold())
+            if (
+                canonical
+                and catalog_entry is not None
+                and str(catalog_entry.get("provider_type") or "").strip().casefold()
+                == provider_type.casefold()
+            ):
+                provider_matches.add(canonical)
+        return (
+            (next(iter(provider_matches)), provider_type, instance_name)
+            if len(provider_matches) == 1
+            else ("", "", "")
+        )
+    if len(requested) != 1:
+        return "", "", ""
+    matches: set[str] = set()
+    for entry in capability_index:
+        if not isinstance(entry, dict) or str(entry.get("kind") or "").strip().lower() != "skill":
+            continue
+        names = {
+            str(value or "").strip().casefold()
+            for value in [
+                entry.get("name"),
+                entry.get("qualified_skill_name"),
+                *(entry.get("declared_tool_names") or []),
+                *(entry.get("target_skill_names") or []),
+            ]
+            if str(value or "").strip()
+        }
+        if not names.intersection(requested):
+            continue
+        canonical = str(
+            entry.get("qualified_skill_name") or entry.get("name") or ""
+        ).strip()
+        catalog_entry = registered_executable.get(canonical.casefold())
+        if catalog_entry is not None and not str(catalog_entry.get("provider_type") or "").strip():
+            matches.add(str(catalog_entry.get("skill_id") or canonical).strip())
+    return (next(iter(matches)), "", "") if len(matches) == 1 else ("", "", "")
 
 
 def build_user_selected_capability_scope(deps: SkillDeps) -> ToolIntentPlan | None:
@@ -1993,7 +2120,31 @@ class RunnerExecutionPreparePhaseMixin:
                 metadata={"phase": "start", "attempt": 0, "elapsed": 0.0},
             )
 
-            runtime_agent, selected_token_id, release_slot = await self._resolve_runtime_agent(session_key, deps)
+            runtime_agent, selected_token_id, release_slot = await self._resolve_runtime_agent(
+                session_key,
+                deps,
+                for_planning=True,
+            )
+            coordinator_agent = runtime_agent
+            coordinator_selection = (
+                deps.extra.get("_current_binding_selection")
+                if isinstance(deps.extra, dict)
+                else None
+            )
+            coordinator_token_id = selected_token_id
+            if isinstance(deps.extra, dict):
+                deps.extra["_coordinator_token_id"] = coordinator_token_id
+                coordinator_token = getattr(coordinator_selection, "token", None)
+                if coordinator_token is None and coordinator_token_id and self.token_policy is not None:
+                    coordinator_token = self.token_policy.token_pool.tokens.get(coordinator_token_id)
+                if coordinator_token is not None:
+                    deps.extra["_coordinator_model_metadata"] = {
+                        "provider": str(getattr(coordinator_token, "provider", "") or ""),
+                        "model": str(getattr(coordinator_token, "model", "") or ""),
+                        "base_url": str(getattr(coordinator_token, "base_url", "") or ""),
+                    }
+                else:
+                    deps.extra.pop("_coordinator_model_metadata", None)
             logger.warning(
                 "runtime token resolved: session=%s selected_token_id=%s managed_tokens=%s",
                 session_key,
@@ -2013,7 +2164,7 @@ class RunnerExecutionPreparePhaseMixin:
                 should_warn=runtime_context_guard.should_warn,
                 should_block=runtime_context_guard.should_block,
             )
-            if runtime_context_guard.should_warn:
+            if runtime_context_guard.should_warn and self.model_binding_resolver is None:
                 yield StreamEvent.runtime_update(
                     "warning",
                     (
@@ -2028,7 +2179,7 @@ class RunnerExecutionPreparePhaseMixin:
                         "elapsed": round(time.monotonic() - start_time, 1),
                     },
                 )
-            if runtime_context_guard.should_block:
+            if runtime_context_guard.should_block and self.model_binding_resolver is None:
                 failure_message = (
                     "Model context window is below the minimum safety threshold. "
                     f"tokens={runtime_context_guard.tokens}, source={runtime_context_guard.source}"
@@ -2285,6 +2436,56 @@ class RunnerExecutionPreparePhaseMixin:
                         preselected_md_skill_plan.target_tool_names
                     ),
                 )
+            elif isinstance(deps.extra, dict) and isinstance(
+                deps.extra.get("_skill_stage_retry_snapshot"), dict
+            ):
+                retry_snapshot = deps.extra["_skill_stage_retry_snapshot"]
+                retry_intent = retry_snapshot.get("tool_intent_plan")
+                retry_turn = retry_snapshot.get("conversation_turn_plan")
+                if isinstance(retry_intent, dict):
+                    capability_selector_intent_plan = ToolIntentPlan.model_validate(retry_intent)
+                if isinstance(retry_turn, dict):
+                    conversation_turn_plan = ConversationTurnPlan.model_validate(retry_turn)
+                if conversation_turn_plan is None:
+                    conversation_turn_plan = ConversationTurnPlan(
+                        route=ConversationTurnRoute.START_NEW,
+                        action=ConversationTurnAction.USE_TOOLS,
+                        stage_input=str(retry_snapshot.get("stage_input") or user_message or ""),
+                    )
+                selector_attempted = True
+                selector_outcome = "bound_stage_retry"
+                metadata_candidates = {
+                    "reason": "retry_same_validated_stage",
+                    "confidence": 1.0,
+                    "preferred_provider_instances": list(
+                        capability_selector_intent_plan.target_provider_instances
+                        if capability_selector_intent_plan is not None else []
+                    ),
+                    "preferred_provider_types": list(
+                        capability_selector_intent_plan.target_provider_types
+                        if capability_selector_intent_plan is not None else []
+                    ),
+                    "preferred_provider_skill_names": list(
+                        capability_selector_intent_plan.target_provider_skill_names
+                        if capability_selector_intent_plan is not None else []
+                    ),
+                    "preferred_skill_names": list(
+                        capability_selector_intent_plan.target_skill_names
+                        if capability_selector_intent_plan is not None else []
+                    ),
+                    "preferred_group_ids": list(
+                        capability_selector_intent_plan.target_group_ids
+                        if capability_selector_intent_plan is not None else []
+                    ),
+                    "preferred_capability_classes": list(
+                        capability_selector_intent_plan.target_capability_classes
+                        if capability_selector_intent_plan is not None else []
+                    ),
+                    "preferred_tool_names": list(
+                        capability_selector_intent_plan.target_tool_names
+                        if capability_selector_intent_plan is not None else []
+                    ),
+                }
             elif object_action_turn and has_turn_context_skill:
                 capability_selector_intent_plan = (
                     turn_context_intent_plan
@@ -2607,25 +2808,193 @@ class RunnerExecutionPreparePhaseMixin:
                         )
                         selector_started_at = time.monotonic()
                         selector_attempted = True
+                        candidate_state = (
+                            deps.extra.get("_skill_stage_candidate_state")
+                            if isinstance(deps.extra, dict)
+                            else None
+                        )
+                        candidate_target_id = ""
+                        if isinstance(candidate_state, dict):
+                            interrupted = candidate_state.get("active_stage")
+                            completed = candidate_state.get("completed_stages") or []
+                            if isinstance(interrupted, dict):
+                                candidate_target_id = str(
+                                    interrupted.get("target_skill_id") or ""
+                                ).strip()
+                            elif completed and isinstance(completed[-1], dict):
+                                candidate_target_id = str(
+                                    completed[-1].get("target_skill_id") or ""
+                                ).strip()
+                        candidate_active_capability_id = ""
+                        for entry in planning_capability_index:
+                            if not isinstance(entry, dict):
+                                continue
+                            target_names = [
+                                entry.get("qualified_skill_name"),
+                                entry.get("skill_name"),
+                                entry.get("capability_id"),
+                                *(entry.get("target_skill_names") or []),
+                            ]
+                            target_names.extend(entry.get("target_provider_skill_names") or [])
+                            if candidate_target_id and candidate_target_id.casefold() in {
+                                str(value or "").strip().casefold()
+                                for value in target_names
+                            }:
+                                candidate_active_capability_id = str(
+                                    entry.get("capability_id") or ""
+                                ).strip()
+                                if candidate_active_capability_id:
+                                    break
+                        candidate_available = bool(
+                            candidate_active_capability_id
+                            and isinstance(deps.extra, dict)
+                            and deps.extra.get("_skill_stage_candidate_context_message")
+                        )
+                        stage_continuation = bool(
+                            isinstance(deps.extra, dict)
+                            and deps.extra.get("_skill_stage_continuation")
+                        )
+                        planning_stage_context = bool(stage_continuation or candidate_available)
+                        planner_request = (
+                            str(deps.extra.get("_skill_stage_original_request") or "")
+                            if stage_continuation and isinstance(deps.extra, dict)
+                            else user_message
+                        )
                         conversation_turn_plan = await self._plan_conversation_turn_with_model(
-                            agent=runtime_agent or self.agent,
+                            agent=coordinator_agent or self.agent,
                             deps=deps,
                             # Plan from the real user turn. Synthetic follow-up context
                             # becomes execution input only after the typed route accepts
                             # CONTINUE_ACTIVE.
-                            user_message=user_message,
+                            user_message=planner_request,
                             recent_history=message_history,
                             capability_index=planning_capability_index,
                             # An explicit selection narrows the authorized start-new
                             # scope, while active continuations use the strict trace
                             # context assembled above.
-                            active_capability_context=active_capability_context,
+                            active_capability_context=(
+                                candidate_active_capability_id
+                                if candidate_available and not stage_continuation
+                                else active_capability_context
+                            ),
                             active_skill_instructions=active_skill_instructions,
                             active_workflow_context=strict_active_workflow_context,
                         )
+                        if (
+                            planning_stage_context
+                            and conversation_turn_plan is not None
+                            and conversation_turn_plan.route is ConversationTurnRoute.START_NEW
+                            and len(conversation_turn_plan.target_capability_ids) != 1
+                        ):
+                            logger.warning(
+                                "skill_stage_planning_ambiguous target_count=%s",
+                                len(conversation_turn_plan.target_capability_ids),
+                            )
+                            conversation_turn_plan = None
                         selector_elapsed_ms = round(
                             (time.monotonic() - selector_started_at) * 1000
                         )
+                    candidate_state = (
+                        deps.extra.get("_skill_stage_candidate_state")
+                        if isinstance(deps.extra, dict)
+                        else None
+                    )
+                    candidate_adopted = False
+                    candidate_direct_continuation = False
+                    if (
+                        isinstance(candidate_state, dict)
+                        and conversation_turn_plan is not None
+                        and conversation_turn_plan.route is ConversationTurnRoute.CONTINUE_ACTIVE
+                    ):
+                        interrupted_stage = candidate_state.get("active_stage")
+                        if isinstance(interrupted_stage, dict):
+                            from copy import deepcopy
+
+                            unknown_state = deepcopy(candidate_state)
+                            unknown_state["status"] = "unknown"
+                            unknown_state["failure"] = (
+                                "A Skill stage was interrupted after dispatch; its outcome is unknown "
+                                "and it was not replayed."
+                            )
+                            candidate_run_id = str(
+                                deps.extra.get("_skill_stage_candidate_run_id") or ""
+                            ).strip()
+                            session_manager_for_adoption = self._resolve_session_manager(
+                                session_key,
+                                deps,
+                            )
+                            await session_manager_for_adoption.update_extra(
+                                session_key,
+                                {
+                                    f"skill_stage_workflow:{candidate_run_id}": unknown_state,
+                                    "active_skill_stage_workflow_run_id": "",
+                                },
+                            )
+                            deps.extra["_skill_stage_stop"] = unknown_state["failure"]
+                            state["run_failed"] = True
+                            state["should_stop"] = True
+                            yield StreamEvent.runtime_update(
+                                "failed",
+                                unknown_state["failure"],
+                                metadata={"phase": "skill_stage_outcome_unknown"},
+                            )
+                            yield StreamEvent.error_event(unknown_state["failure"])
+                            return
+                        from copy import deepcopy
+
+                        adopted_state = deepcopy(candidate_state)
+                        follow_ups = adopted_state.setdefault("follow_up_requests", [])
+                        if not isinstance(follow_ups, list):
+                            follow_ups = []
+                            adopted_state["follow_up_requests"] = follow_ups
+                        if str(user_message or "").strip():
+                            follow_ups.append(str(user_message))
+                        adopted_state["run_id"] = str(run_id or "")
+                        adopted_state["status"] = "running"
+                        adopted_state.pop("active_stage", None)
+                        deps.extra["_skill_stage_state"] = adopted_state
+                        deps.extra["_skill_stage_adopted_state"] = adopted_state
+                        deps.extra["_skill_stage_continuation"] = True
+                        deps.extra["_skill_stage_internal_turn"] = True
+                        deps.extra["_skill_stage_context_message"] = build_stage_context_message(
+                            adopted_state
+                        )
+                        deps.extra.pop("_skill_stage_candidate_state", None)
+                        deps.extra.pop("_skill_stage_candidate_run_id", None)
+                        deps.extra.pop("_skill_stage_candidate_context_message", None)
+                        session_manager_for_adoption = self._resolve_session_manager(session_key, deps)
+                        await session_manager_for_adoption.update_extra(
+                            session_key,
+                            {
+                                f"skill_stage_workflow:{run_id}": adopted_state,
+                                "active_skill_stage_workflow_run_id": str(run_id or ""),
+                            },
+                        )
+                        candidate_adopted = True
+                        candidate_direct_continuation = (
+                            conversation_turn_plan.action is ConversationTurnAction.RESPOND
+                        )
+                        if conversation_turn_plan.action is ConversationTurnAction.USE_TOOLS:
+                            # CONTINUE_ACTIVE establishes that this new user turn belongs
+                            # to the saved task. Ask the coordinator once more to select
+                            # the next concrete Skill, with the saved results now active.
+                            conversation_turn_plan = await self._plan_conversation_turn_with_model(
+                                agent=coordinator_agent or self.agent,
+                                deps=deps,
+                                user_message=str(adopted_state.get("original_request") or user_message),
+                                recent_history=message_history,
+                                capability_index=planning_capability_index,
+                                stage_continuation=True,
+                            )
+                            if conversation_turn_plan is None:
+                                capability_selector_failed = True
+                            elif conversation_turn_plan.route is not ConversationTurnRoute.START_NEW:
+                                candidate_direct_continuation = True
+                                conversation_turn_plan = ConversationTurnPlan(
+                                    route=ConversationTurnRoute.CONTINUE_ACTIVE,
+                                    action=ConversationTurnAction.RESPOND,
+                                    reason="Coordinator completed the saved workflow from retained evidence.",
+                                )
                     if conversation_turn_plan is None:
                         capability_selector_failed = True
                         capability_selector_intent_plan = ToolIntentPlan(
@@ -2634,6 +3003,19 @@ class RunnerExecutionPreparePhaseMixin:
                             unavailable_runtime_capability=False,
                             reason="conversation_turn_plan_invalid",
                         )
+                    elif candidate_direct_continuation:
+                        model_user_message = build_stage_context_message(
+                            deps.extra["_skill_stage_state"],
+                            planned_input=str(user_message or ""),
+                        )
+                        tool_request_message = str(user_message or "")
+                        used_follow_up_context = False
+                        capability_selector_intent_plan = ToolIntentPlan(
+                            action=ToolIntentAction.DIRECT_ANSWER,
+                            selector_outcome=CapabilitySelectorOutcome.AUTHORIZED_CONTEXT,
+                            reason="Validated continuation of the persisted task context.",
+                        )
+                        selector_outcome = CapabilitySelectorOutcome.AUTHORIZED_CONTEXT.value
                     elif conversation_turn_plan.route is ConversationTurnRoute.CONTINUE_ACTIVE:
                         trace_bound_active_workflow = (
                             active_workflow_intent_plan is not None
@@ -2724,6 +3106,15 @@ class RunnerExecutionPreparePhaseMixin:
                         tool_request_message = user_message
                         model_user_message = user_message
                         used_follow_up_context = False
+                        if (
+                            isinstance(deps.extra, dict)
+                            and deps.extra.get("_skill_stage_continuation")
+                            and conversation_turn_plan.route is ConversationTurnRoute.ORDINARY
+                        ):
+                            stage_state = deps.extra.get("_skill_stage_state")
+                            if isinstance(stage_state, dict):
+                                model_user_message = build_stage_context_message(stage_state)
+                                tool_request_message = str(user_message or "")
                         if isinstance(deps.extra, dict):
                             deps.extra.pop("current_follow_up_context", None)
                         selector_payload = {
@@ -3161,6 +3552,307 @@ class RunnerExecutionPreparePhaseMixin:
                         or 262144
                     ),
                 )
+            if isinstance(deps.extra, dict):
+                original_request = str(
+                    deps.extra.get("_skill_stage_original_request") or user_message or ""
+                )
+                stage_input = str(
+                    getattr(conversation_turn_plan, "stage_input", "") or ""
+                ).strip()
+                if not stage_input:
+                    stage_input = original_request
+                deps.extra["_skill_stage_planned_input"] = stage_input
+                binding_target = None
+                stage_skill_id = ""
+                if isinstance(target_md_skill, dict):
+                    stage_skill_id = str(
+                        target_md_skill.get("qualified_name")
+                        or target_md_skill.get("provider_skill_name")
+                        or ""
+                    ).strip()
+                    provider_type = str(target_md_skill.get("provider") or "").strip().lower()
+                    instance_name = str(
+                        target_md_skill.get("instance_name")
+                        or target_md_skill.get("provider_instance_name")
+                        or ""
+                    ).strip()
+                    if provider_type and instance_name and stage_skill_id:
+                        from app.atlasclaw.core.model_bindings import BindingTarget
+
+                        binding_target = BindingTarget(
+                            kind="provider_skill",
+                            provider_type=provider_type,
+                            instance_name=instance_name,
+                            skill_id=stage_skill_id,
+                        )
+                    elif stage_skill_id:
+                        from app.atlasclaw.core.model_bindings import BindingTarget
+
+                        binding_target = BindingTarget(kind="standalone_skill", skill_id=stage_skill_id)
+                elif tool_intent_plan is not None and self.model_binding_resolver is not None:
+                    skill_registry = getattr(self.model_binding_resolver, "skill_registry", None)
+                    (
+                        stage_skill_id,
+                        executable_provider_type,
+                        executable_instance_name,
+                    ) = _resolve_registered_executable_skill_id(
+                        intent_plan=tool_intent_plan,
+                        capability_index=planning_capability_index,
+                        skill_registry=skill_registry,
+                    )
+                    if stage_skill_id:
+                        from app.atlasclaw.core.model_bindings import BindingTarget
+
+                        if executable_provider_type and executable_instance_name:
+                            binding_target = BindingTarget(
+                                kind="provider_skill",
+                                provider_type=executable_provider_type,
+                                instance_name=executable_instance_name,
+                                skill_id=stage_skill_id,
+                            )
+                        else:
+                            binding_target = BindingTarget(
+                                kind="standalone_skill",
+                                skill_id=stage_skill_id,
+                            )
+                if binding_target is None and (
+                    tool_intent_plan is not None
+                    and len(tool_intent_plan.target_provider_types) == 1
+                    and len(tool_intent_plan.target_provider_instances) == 1
+                ):
+                    provider_type = str(
+                        tool_intent_plan.target_provider_types[0] or ""
+                    ).strip().lower()
+                    instance_provider_type, instance_name = _split_provider_instance_ref(
+                        tool_intent_plan.target_provider_instances[0]
+                    )
+                    if instance_provider_type:
+                        provider_type = instance_provider_type.strip().lower()
+                    from app.atlasclaw.core.model_bindings import BindingTarget
+
+                    binding_target = BindingTarget(
+                        kind="provider",
+                        provider_type=provider_type,
+                        instance_name=instance_name,
+                    )
+                if binding_target is not None and self.model_binding_resolver is not None:
+                    # The coordinator finishes planning on A before B's model is acquired.
+                    if release_slot is not None:
+                        release_slot()
+                        release_slot = None
+                    runtime_agent, selected_token_id, release_slot = (
+                        await self._resolve_runtime_agent(
+                            session_key,
+                            deps,
+                            binding_target=binding_target,
+                        )
+                    )
+                    execution_selection = deps.extra.get("_current_binding_selection")
+                    if isinstance(target_md_skill, dict):
+                        target_md_skill["model_binding_source"] = str(
+                            getattr(execution_selection, "source", "") or ""
+                        )
+                    if isinstance(deps.extra, dict):
+                        deps.extra["_current_binding_selection"] = execution_selection
+                        deps.extra["_current_binding_target"] = binding_target
+                        if binding_target.kind in {"provider", "provider_skill"}:
+                            from app.atlasclaw.core.model_bindings import ProviderAdmission
+
+                            authz = deps.extra.get("_authorization_context")
+                            user_id = str(
+                                getattr(getattr(authz, "user", None), "user_id", "")
+                                or getattr(getattr(deps, "user_info", None), "user_id", "")
+                                or ""
+                            ).strip()
+                            run_id_value = str(deps.extra.get("run_id") or "").strip()
+                            admissions = deps.extra.setdefault("_provider_admissions", {})
+                            if not any(
+                                isinstance(item, ProviderAdmission)
+                                and item.provider_type.strip().lower()
+                                == binding_target.provider_type.strip().lower()
+                                and item.instance_name.strip() == binding_target.instance_name.strip()
+                                and item.user_id == user_id
+                                and item.run_id == run_id_value
+                                for item in admissions.values()
+                            ):
+                                admission = ProviderAdmission(
+                                    provider_type=binding_target.provider_type,
+                                    instance_name=binding_target.instance_name,
+                                    user_id=user_id,
+                                    run_id=run_id_value,
+                                )
+                                admissions[
+                                    f"{binding_target.provider_type}.{binding_target.instance_name}"
+                                ] = admission
+                    auto_continue = bool(
+                        conversation_turn_plan is not None
+                        and conversation_turn_plan.route is ConversationTurnRoute.START_NEW
+                        and conversation_turn_plan.action is ConversationTurnAction.USE_TOOLS
+                        and bool(stage_skill_id)
+                        and preselected_md_skill_plan is None
+                        and selected_capability_scope is None
+                        and not authenticated_webhook_authority
+                        and not object_action_turn
+                        and (
+                            bool(getattr(execution_selection, "policy_id", None))
+                            or bool(deps.extra.get("_skill_stage_continuation"))
+                        )
+                    )
+                    descriptor = {
+                        "target_skill_id": stage_skill_id or (
+                            f"provider:{binding_target.provider_type}.{binding_target.instance_name}"
+                            if binding_target.kind == "provider"
+                            else ""
+                        ),
+                        "planned_input": stage_input,
+                        "continue_after_success": auto_continue,
+                        "binding_policy_id": getattr(execution_selection, "policy_id", None),
+                    }
+                    selection_token = getattr(execution_selection, "token", None)
+                    authz = deps.extra.get("_authorization_context")
+                    user_id = str(
+                        getattr(getattr(authz, "user", None), "user_id", "")
+                        or getattr(getattr(deps, "user_info", None), "user_id", "")
+                        or ""
+                    ).strip()
+                    stage_state = deps.extra.get("_skill_stage_state")
+                    completed_stages = (
+                        stage_state.get("completed_stages", [])
+                        if isinstance(stage_state, dict)
+                        else []
+                    )
+                    parent_stage = (
+                        completed_stages[-1]
+                        if isinstance(completed_stages, list)
+                        and completed_stages
+                        and isinstance(completed_stages[-1], dict)
+                        else {}
+                    )
+                    parent_metadata = parent_stage.get("metadata")
+                    parent_stage_id = str(
+                        (parent_metadata.get("stage_id") if isinstance(parent_metadata, dict) else "")
+                        or parent_stage.get("identity")
+                        or ""
+                    )
+                    stage_metadata = {
+                        "run_id": str(run_id or ""),
+                        "stage_id": stage_identity(stage_skill_id, stage_input)
+                        if stage_skill_id else "",
+                        "parent_stage_id": parent_stage_id,
+                        "user_id": user_id,
+                        "provider_type": str(binding_target.provider_type or ""),
+                        "instance_name": str(binding_target.instance_name or ""),
+                        "skill_id": stage_skill_id,
+                        "policy_id": getattr(execution_selection, "policy_id", None),
+                        "policy_revision": int(
+                            getattr(execution_selection, "revision", 0) or 0
+                        ),
+                        "selection_source": str(
+                            getattr(execution_selection, "source", "") or ""
+                        ),
+                        "selection_reason": str(
+                            getattr(execution_selection, "reason", "") or ""
+                        ),
+                        "model_ref": str(getattr(selection_token, "token_id", "") or ""),
+                        "model_id": str(getattr(selection_token, "model", "") or ""),
+                        "model_provider": str(getattr(selection_token, "provider", "") or ""),
+                        "started_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    descriptor["metadata"] = stage_metadata
+                    deps.extra["_skill_stage_descriptor"] = descriptor
+                    yield StreamEvent.runtime_update(
+                        "model_binding_resolved",
+                        "Resolved the configured model for the selected capability.",
+                        metadata={**stage_metadata, "state": "model_binding_resolved"},
+                    )
+                    stage_continuation = bool(deps.extra.get("_skill_stage_continuation"))
+                    if stage_skill_id and isinstance(stage_state, dict):
+                        stage_state["status"] = "running"
+                        stage_state["active_stage"] = {
+                            "identity": stage_identity(stage_skill_id, stage_input),
+                            "target_skill_id": stage_skill_id,
+                            "planned_input": stage_input,
+                            "status": "started",
+                            "metadata": dict(stage_metadata),
+                        }
+                        update_extra = getattr(session_manager, "update_extra", None)
+                        if callable(update_extra):
+                            await update_extra(
+                                session_key,
+                                {f"skill_stage_workflow:{run_id}": stage_state},
+                            )
+                        yield StreamEvent.runtime_update(
+                            "skill_execution_started",
+                            f"Started Skill {stage_skill_id}.",
+                            metadata={
+                                **stage_metadata,
+                                "state": "skill_execution_started",
+                            },
+                        )
+                    if stage_skill_id and isinstance(tool_intent_plan, ToolIntentPlan):
+                        deps.extra["_skill_stage_retry_snapshot"] = {
+                            "tool_intent_plan": tool_intent_plan.model_dump(mode="python"),
+                            "conversation_turn_plan": (
+                                conversation_turn_plan.model_dump(mode="python")
+                                if conversation_turn_plan is not None else None
+                            ),
+                            "stage_input": stage_input,
+                        }
+                    if (
+                        stage_continuation
+                        and stage_skill_id
+                        and isinstance(stage_state, dict)
+                        and completed_stage_for(stage_state, stage_skill_id, stage_input) is not None
+                    ):
+                        deps.extra["_skill_stage_stop"] = "already_completed"
+                        state["run_failed"] = True
+                        state["should_stop"] = True
+                        message = "The coordinator selected a Skill stage that already completed with the same planned input; no tools were repeated."
+                        yield StreamEvent.runtime_update(
+                            "failed",
+                            message,
+                            metadata={"phase": "skill_stage_deduplicated", "target_skill_id": stage_skill_id},
+                        )
+                        yield StreamEvent.error_event(message)
+                        return
+                    if stage_skill_id and isinstance(stage_state, dict):
+                        stage_context = build_stage_context_message(
+                            stage_state,
+                            planned_input=stage_input,
+                        )
+                        deps.extra["_skill_stage_context_message"] = stage_context
+                        model_user_message = stage_context
+                        tool_request_message = stage_input
+                        used_follow_up_context = False
+                elif isinstance(deps.extra, dict):
+                    deps.extra.pop("_skill_stage_descriptor", None)
+                    deps.extra.pop("_current_binding_selection", None)
+                    if deps.extra.get("_chat_image_inputs"):
+                        if release_slot is not None:
+                            release_slot()
+                            release_slot = None
+                        runtime_agent, selected_token_id, release_slot = (
+                            await self._resolve_runtime_agent(session_key, deps)
+                        )
+                stage_state = deps.extra.get("_skill_stage_state")
+                if stage_skill_id and isinstance(stage_state, dict):
+                    stage_context = build_stage_context_message(
+                        stage_state,
+                        planned_input=stage_input,
+                    )
+                    deps.extra["_skill_stage_context_message"] = stage_context
+                    model_user_message = stage_context
+                    tool_request_message = stage_input
+                    used_follow_up_context = False
+                if self.model_binding_resolver is not None:
+                    runtime_context_window_info = self._resolve_runtime_context_window_info(
+                        selected_token_id,
+                        deps,
+                    )
+                    # Downstream context budgeting uses the model selected for this
+                    # Skill stage. Keep the existing coordinator guard above as the
+                    # only context-window admission check.
+                    runtime_context_window = runtime_context_window_info.tokens
             target_md_skill = enrich_target_md_skill_with_workflow_context(
                 target_md_skill=target_md_skill,
                 workflow_trace=workflow_context_for_execution,

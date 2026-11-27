@@ -42,38 +42,178 @@ class RunnerExecutionRuntimeMixin:
         self,
         session_key: str,
         deps: SkillDeps,
+        *,
+        binding_target: Any = None,
+        required_capabilities: dict[str, Any] | None = None,
+        for_planning: bool = False,
+        acquire_slot: bool = True,
     ) -> tuple[Any, Optional[str], Optional[Any]]:
-        """Resolve runtime agent instance and optional semaphore release callback."""
+        """Resolve an isolated model-bound agent and its binding selection."""
         if self.token_policy is None or self.agent_pool is None or self.agent_factory is None:
             return self.agent, None, None
 
         await self.token_policy.refresh_tokens()
         extra = deps.extra if isinstance(deps.extra, dict) else {}
-        provider = extra.get("provider") if isinstance(extra.get("provider"), str) else None
-        model = extra.get("model") if isinstance(extra.get("model"), str) else None
+        binding_selection = None
+        resolver = getattr(self, "model_binding_resolver", None)
+        if binding_target is None and resolver is not None:
+            from app.atlasclaw.core.model_bindings import BindingTarget
+            from app.atlasclaw.agent.selected_capability import get_selected_capability_from_deps
 
-        token = self.token_policy.get_or_select_session_token(
-            session_key,
-            provider=provider,
-            model=model,
-        )
-        if token is None and provider:
+            trusted_provider_type = str(extra.get("_trusted_provider_type") or "").strip().lower()
+            trusted_provider_instance = str(
+                extra.get("_trusted_provider_instance") or ""
+            ).strip()
+            selected = get_selected_capability_from_deps(deps)
+            if selected:
+                provider_type = str(selected.get("provider_type") or "").strip().lower()
+                instance_name = str(selected.get("instance_name") or "").strip()
+                provider_skill_names = selected.get("target_provider_skill_names") or []
+                standalone_skill_names = selected.get("target_skill_names") or []
+                canonical_selected_skill = str(
+                    selected.get("qualified_skill_name")
+                    or (provider_skill_names[0] if len(provider_skill_names) == 1 else "")
+                    or (standalone_skill_names[0] if len(standalone_skill_names) == 1 else "")
+                    or ""
+                ).strip()
+                if provider_type and instance_name and canonical_selected_skill:
+                    binding_target = BindingTarget(
+                        kind="provider_skill",
+                        provider_type=provider_type,
+                        instance_name=instance_name,
+                        skill_id=canonical_selected_skill,
+                    )
+                elif not provider_type and canonical_selected_skill:
+                    binding_target = BindingTarget(
+                        kind="standalone_skill",
+                        skill_id=canonical_selected_skill,
+                    )
+            if binding_target is None and trusted_provider_type and trusted_provider_instance:
+                binding_target = BindingTarget(
+                    kind="provider",
+                    provider_type=trusted_provider_type,
+                    instance_name=trusted_provider_instance,
+                )
+
+        if binding_target is not None and resolver is not None:
+            authz = extra.get("_authorization_context")
+            authz = await self._refresh_runtime_authorization_context(authz)
+            if authz is not None:
+                extra["_authorization_context"] = authz
+            if not required_capabilities:
+                requested_skill_id = str(getattr(binding_target, "skill_id", "") or "").strip()
+                for entry in extra.get("md_skills_snapshot") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    qualified = str(entry.get("qualified_name") or entry.get("name") or "").strip()
+                    if qualified.lower() != requested_skill_id.lower():
+                        continue
+                    metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else {}
+                    declared = metadata.get("capabilities")
+                    if isinstance(declared, dict):
+                        required_capabilities = {
+                            str(key): value for key, value in declared.items() if value is True
+                        }
+                    if metadata.get("requires_vision") is True:
+                        required_capabilities = {**(required_capabilities or {}), "vision": True}
+                    break
+            if extra.get("_chat_image_inputs") and not for_planning:
+                required_capabilities = {**(required_capabilities or {}), "vision": True}
+            admission = None
+            if binding_target.kind in {"provider", "provider_skill"}:
+                from app.atlasclaw.core.model_bindings import ProviderAdmission
+
+                authz_user_id = str(
+                    getattr(getattr(authz, "user", None), "user_id", "") or ""
+                ).strip()
+                run_id = str(extra.get("run_id") or "").strip()
+                provider_key = (
+                    str(binding_target.provider_type or "").strip().lower(),
+                    str(binding_target.instance_name or "").strip(),
+                )
+                admissions = extra.get("_provider_admissions")
+                if isinstance(admissions, dict):
+                    for candidate in admissions.values():
+                        if not isinstance(candidate, ProviderAdmission):
+                            continue
+                        if (
+                            candidate.provider_type.strip().lower() == provider_key[0]
+                            and candidate.instance_name.strip() == provider_key[1]
+                            and str(candidate.user_id) == authz_user_id
+                            and str(candidate.run_id) == run_id
+                        ):
+                            admission = candidate
+                            break
+            binding_selection = await resolver.resolve(
+                binding_target,
+                authz=authz,
+                required_capabilities=required_capabilities or {},
+                admission=admission,
+            )
+            token = getattr(binding_selection, "token", None)
+            retry_token = extra.pop("_binding_retry_token", None)
+            if retry_token is not None:
+                eligible_tokens = tuple(getattr(binding_selection, "eligible_tokens", ()) or ())
+                matching_token = next(
+                    (
+                        candidate
+                        for candidate in eligible_tokens
+                        if candidate.token_id == getattr(retry_token, "token_id", None)
+                        and candidate.credential_fingerprint
+                        == getattr(retry_token, "credential_fingerprint", None)
+                    ),
+                    None,
+                )
+                if matching_token is None:
+                    raise RuntimeError("The configured model policy no longer permits this retry credential")
+                binding_selection.token = matching_token
+                token = matching_token
+        else:
+            provider = extra.get("provider") if isinstance(extra.get("provider"), str) else None
+            model = extra.get("model") if isinstance(extra.get("model"), str) else None
+
             token = self.token_policy.get_or_select_session_token(
                 session_key,
                 provider=provider,
-                model=None,
+                model=model,
             )
+            if token is None and provider:
+                token = self.token_policy.get_or_select_session_token(
+                    session_key,
+                    provider=provider,
+                    model=None,
+                )
+            if token is None:
+                token = self.token_policy.get_or_select_session_token(
+                    session_key,
+                    provider=None,
+                    model=None,
+                )
+            if token is not None and extra.get("_chat_image_inputs") and not for_planning:
+                eligible_tokens = extra.get("_chat_vision_tokens")
+                if eligible_tokens is not None and token.token_id not in eligible_tokens:
+                    token = self.token_policy.token_pool.select_token(
+                        strategy=self.token_policy.strategy,
+                        eligible_token_ids=set(eligible_tokens),
+                    )
         if token is None:
-            token = self.token_policy.get_or_select_session_token(
-                session_key,
-                provider=None,
-                model=None,
-            )
-        if token is None:
+            if binding_target is not None and resolver is not None:
+                raise RuntimeError("No model satisfies the selected Skill binding and capabilities")
+            if extra.get("_chat_image_inputs"):
+                raise ImageInputError(
+                    "model_image_disabled",
+                    "Image analysis is not enabled for an available model.",
+                )
             return self.agent, None, None
 
         eligible = extra.get("_chat_vision_tokens")
-        if eligible is not None and token.token_id not in eligible:
+        if (
+            binding_target is None
+            and not for_planning
+            and extra.get("_chat_image_inputs")
+            and eligible is not None
+            and token.token_id not in eligible
+        ):
             raise ImageInputError("model_image_disabled", "Image analysis is not enabled for this model.")
 
         instance = await self.agent_pool.get_or_create(
@@ -82,8 +222,36 @@ class RunnerExecutionRuntimeMixin:
             self.agent_factory,
         )
         extra["_selected_token_fingerprint"] = token.credential_fingerprint
+        if binding_selection is not None:
+            extra["_current_binding_selection"] = binding_selection
+        else:
+            extra.pop("_current_binding_selection", None)
+        if binding_target is not None:
+            extra["_current_binding_target"] = binding_target
+        else:
+            extra.pop("_current_binding_target", None)
+        if not acquire_slot:
+            return instance.agent, token.token_id, None
         await instance.concurrency_sem.acquire()
         return instance.agent, token.token_id, instance.concurrency_sem.release
+
+    @staticmethod
+    async def _refresh_runtime_authorization_context(authz: Any) -> Any:
+        """Reload committed grants before a newly selected Skill boundary."""
+        if authz is None or getattr(authz, "user", None) is None:
+            return authz
+        try:
+            from app.atlasclaw.db import get_db_manager
+            from app.atlasclaw.auth.guards import resolve_authorization_context
+
+            manager = get_db_manager()
+            if not manager.is_initialized:
+                return authz
+            async with manager.get_session() as session:
+                return await resolve_authorization_context(session, authz.user)
+        except Exception:
+            logger.exception("Failed to refresh authorization before model binding resolution")
+            raise
     def _extract_rate_limit_headers(self, deps: SkillDeps) -> dict[str, str]:
         """Best-effort extraction of ratelimit headers from deps.extra."""
         extra = deps.extra if isinstance(deps.extra, dict) else {}
@@ -103,8 +271,16 @@ class RunnerExecutionRuntimeMixin:
     ) -> ContextWindowInfo:
         """Resolve context window info with source tags for runtime guard checks."""
         selected_token_window: Optional[int] = None
+        selection = None
         if selected_token_id and self.token_policy is not None:
-            token = self.token_policy.token_pool.tokens.get(selected_token_id)
+            selection = (
+                deps.extra.get("_current_binding_selection")
+                if isinstance(deps.extra, dict)
+                else None
+            )
+            token = getattr(selection, "token", None)
+            if token is None or token.token_id != selected_token_id:
+                token = self.token_policy.token_pool.tokens.get(selected_token_id)
             context_window = getattr(token, "context_window", None) if token else None
             if isinstance(context_window, int) and context_window > 0:
                 selected_token_window = context_window
@@ -116,6 +292,10 @@ class RunnerExecutionRuntimeMixin:
             or extra.get("configured_context_window")
             or extra.get("provider_config_context_window")
         )
+        if selection is not None:
+            # A target binding selects a concrete model. Use its own declared
+            # window instead of the coordinator/session model's configured window.
+            models_config_window = None
         default_window = self.compaction.config.context_window
 
         return resolve_context_window_info(

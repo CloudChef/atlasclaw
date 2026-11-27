@@ -150,6 +150,13 @@ def build_usage_hooks(token: TokenEntry) -> Hooks:
                     )
                     async with manager.get_session() as session:
                         session.add(record)
+                    extra = getattr(deps, "extra", None)
+                    if (
+                        isinstance(extra, dict)
+                        and extra.get("_skill_stage_active") is True
+                        and isinstance(extra.get("_skill_stage_usage_row_ids"), list)
+                    ):
+                        extra["_skill_stage_usage_row_ids"].append(record.id)
             except Exception:
                 # Metering must never change a model result or expose prompts/credentials.
                 logger.warning("Model usage could not be recorded", exc_info=False)

@@ -116,6 +116,15 @@ class RunnerExecutionFlowErrorMixin:
                 persist_user_metadata = self._persist_user_message_metadata_from_deps(
                     state.get("deps")
                 )
+                deps = state.get("deps")
+                extra = getattr(deps, "extra", {})
+                omit_internal_user = bool(
+                    isinstance(extra, dict)
+                    and extra.get("_skill_stage_internal_turn") is True
+                    and not str(user_message or "").strip()
+                )
+                if omit_internal_user:
+                    persist_user_metadata = {}
                 safe_messages = self._sanitize_turn_messages_for_persistence(
                     messages=latest_messages,
                     start_index=persist_run_output_start_index,
@@ -123,6 +132,7 @@ class RunnerExecutionFlowErrorMixin:
                     clear_tool_planning_text=True,
                     persist_user_message=user_message,
                     persist_user_metadata=persist_user_metadata,
+                    omit_user_prompts=omit_internal_user,
                 )
                 if thinking_emitter is not None:
                     async for event in thinking_emitter.close_if_active():

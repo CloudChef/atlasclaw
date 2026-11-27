@@ -10,6 +10,70 @@
 import { buildApiUrl } from './config.js';
 import { getCurrentLocale } from './i18n.js';
 
+async function providerManagementRequest(path, options = {}) {
+    const response = await fetch(buildApiUrl(`/api/provider-management${path}`), {
+        credentials: 'include',
+        ...options
+    });
+    if (!response.ok) {
+        let message = `Provider management request failed: ${response.status}`;
+        try {
+            const body = await response.json();
+            message = body.detail || body.message || message;
+        } catch (_) {
+            // Keep the status-based message when the error response has no JSON body.
+        }
+        const error = new Error(message);
+        error.status = response.status;
+        throw error;
+    }
+    return response.json();
+}
+
+export function listProviderManagementProviders() {
+    return providerManagementRequest('/providers');
+}
+
+export function getProviderManagementProvider(providerType, instanceName) {
+    return providerManagementRequest(`/providers/${encodeURIComponent(providerType)}/${encodeURIComponent(instanceName)}`);
+}
+
+export function saveProviderManagementProvider(providerType, instanceName, payload) {
+    return providerManagementRequest(`/providers/${encodeURIComponent(providerType)}/${encodeURIComponent(instanceName)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+}
+
+export function setProviderManagementActivation(providerType, instanceName, payload) {
+    return providerManagementRequest(`/providers/${encodeURIComponent(providerType)}/${encodeURIComponent(instanceName)}/activation`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+}
+
+export function listProviderManagementStandaloneSkills() {
+    return providerManagementRequest('/standalone-skills');
+}
+
+export function saveStandaloneSkillModelPolicy(skillId, payload) {
+    return providerManagementRequest(`/standalone-skills/${encodeURIComponent(skillId)}/model-policy`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+    });
+}
+
+export function listProviderManagementModelOptions(params = {}) {
+    const query = new URLSearchParams();
+    Object.entries(params).forEach(([key, value]) => {
+        if (value !== undefined && value !== null && value !== '') query.set(key, String(value));
+    });
+    return providerManagementRequest(`/model-options?${query.toString()}`);
+}
+
 export function buildWorkspaceFileDownloadUrl(path) {
     const params = new URLSearchParams();
     params.set('path', path);

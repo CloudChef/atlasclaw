@@ -110,7 +110,7 @@ Expected files: `main.py`, `api/deps_context.py`, agent runner/runtime/prepare/r
 
 Consume `BindingTarget`, `BindingSelection` and `ModelBindingResolver` defined by Task 1. Initialize on APIContext/runner, never expose resolver or secrets to client context. Existing TokenPool/agent pool APIs remain the execution mechanism.
 
-- [ ] Add failing tests: Provider A selection, selected Skill B override, standalone C independence, no planner call for pinned Skill, authorization failure, constrained failover, cached-session invalidation, parallel user isolation and credential refresh.
+- [ ] Add failing tests: Provider A selection, selected Skill B override, standalone C independence, no redundant target guessing or A-to-B round trip for a pinned Skill, authorization failure, constrained failover, cached-session invalidation, parallel user isolation and credential refresh. Explicit chat selection retains the existing input-collection/action decision within its fixed target; direct Provider text/visual stages do not enter the chat selector.
 - [ ] Route explicitly selected Provider/Skill before inference. For natural language planning, resolve the planner model first and execution binding after validated `target_md_skill`/capability selection. Do not mutate shared agent objects or duplicate tool execution.
 - [ ] Implement a real subsequent Skill dispatch boundary using the existing structured intent/capability machinery; a stored field alone is insufficient. Cross-model Skill stages receive normalized task history/results, keep user constraints and return output/artifacts to the same task; preserve tool-call/result pairing. Avoid a speculative orchestration framework.
 - [ ] Persist completed stages idempotently in existing task/session stores and recover completed results for subsequent turns/stages. Do not claim transparent mid-LLM resume or exactly-once external writes without evidence.
@@ -133,3 +133,5 @@ Owner: root. No additional reviewer subagents.
 ## Review ledger
 
 The main thread keeps task completion, findings and fixes under `.agent/workdir/sp-openspec/provider-skill-model-routing/`. Earlier model UI and provider copy PRs were already merged; no unfinished product diff was found before this change. Untracked browser/operator directories are excluded.
+
+Implementation and root review are complete. The checklists above record the planned execution steps; current verification results and integration notes are in [verification.md](verification.md).

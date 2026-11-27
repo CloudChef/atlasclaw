@@ -89,6 +89,7 @@ from .model_usage_routes import router as model_usage_router
 from .provider_info_routes import router as provider_info_router
 from .access_token_routes import router as access_token_router
 from .provider_http_routes import router as provider_http_router
+from .provider_management_routes import router as provider_management_router
 
 ALLOWED_AVATAR_CONTENT_TYPES = {
     "image/jpeg": ".jpg",
@@ -103,6 +104,7 @@ ROLE_MANAGEMENT_ACCESS_PERMISSIONS = (
     "roles.edit",
     "roles.delete",
     "roles.manage_permissions",
+    "provider_management.manage_permissions",
 )
 USER_MANAGEMENT_ACCESS_PERMISSIONS = (
     "users.view",
@@ -124,6 +126,7 @@ NON_ADMIN_ASSIGNABLE_PERMISSION_PATHS = frozenset({
     "agent_configs.view",
     "provider_configs.view",
     "model_configs.view",
+    "provider_management.view",
     "users.view",
     "roles.view",
 })
@@ -667,6 +670,7 @@ router.include_router(model_usage_router)
 router.include_router(provider_info_router)
 router.include_router(access_token_router)
 router.include_router(provider_http_router)
+router.include_router(provider_management_router, prefix="/provider-management")
 
 
 # ============== Agent Config Routes ==============
@@ -1176,6 +1180,8 @@ async def update_role(
                 else set()
             )
             user_managed_modules = {"skills", "providers", "channels"}
+            if str(old_role.identifier or "").strip().lower() == "user":
+                user_managed_modules.add("provider_management")
             # Force-restore locked modules and omitted user-managed modules on
             # partial permission updates for system roles.
             for module_id in list(new_perms.keys()):

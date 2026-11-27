@@ -552,6 +552,14 @@ async def lifespan(app: FastAPI):
         primary_token_id=primary_token_id,
         token_loader=(lambda: load_runtime_token_entries(config_token_entries)) if db_initialized else None,
     )
+    from app.atlasclaw.core.model_bindings import ModelBindingResolver
+
+    model_binding_resolver = ModelBindingResolver(
+        config=config,
+        skill_registry=_skill_registry,
+        provider_registry=_global_provider_registry,
+        token_policy=token_policy,
+    )
     agent_pool = AgentInstancePool(max_concurrent_per_instance=4)
     token_interceptor = TokenHealthInterceptor(token_pool, health_store)
 
@@ -631,6 +639,7 @@ async def lifespan(app: FastAPI):
         agent_pool=agent_pool,
         token_interceptor=token_interceptor,
         agent_factory=_build_agent_for,
+        model_binding_resolver=model_binding_resolver,
         context_pruning_settings=runtime_context_pruning_settings,
     )
 
@@ -963,6 +972,7 @@ async def lifespan(app: FastAPI):
         agent_runner=_agent_runner,
         agent_runners={"main": _agent_runner},
         service_provider_registry=_global_provider_registry,
+        model_binding_resolver=model_binding_resolver,
         available_providers=available_providers,
         provider_instances=provider_instances,
         webhook_manager=webhook_manager,

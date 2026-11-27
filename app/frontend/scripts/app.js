@@ -24,7 +24,8 @@ import {
   canAccessChannelManagement,
   canAccessModelManagement,
   canAccessRoleManagement,
-  canAccessUserManagement
+  canAccessUserManagement,
+  canAccessProviderManagement
 } from './permissions.js'
 
 const SCRIPT_VERSION = '51'
@@ -68,6 +69,14 @@ const routes = [
     title: 'model.pageTitle'
   },
   {
+    path: '/admin/providers',
+    loader: () => import(`./pages/provider-management.js?v=${SCRIPT_VERSION}`),
+    auth: true,
+    accessCheck: canAccessProviderManagement,
+    accessDeniedMessage: 'Access denied. You do not have permission to view Provider Management.',
+    title: 'providerManagement.title'
+  },
+  {
     path: '/ext/:providerType/:navId',
     loader: () => import(`./pages/provider-extension.js?v=${SCRIPT_VERSION}`),
     auth: true,
@@ -97,7 +106,8 @@ let currentAgentInfo = null
 const ROUTE_STYLES = [
   { match: /^\/admin\/users\/?$/, id: 'admin-users-page-css', href: '/styles/admin-users.css' },
   { match: /^\/account\/?$/, id: 'account-settings-page-css', href: '/styles/account-settings.css' },
-  { match: /^\/models\/?$/, id: 'models-page-css', href: '/styles/models.css' }
+  { match: /^\/models\/?$/, id: 'models-page-css', href: '/styles/models.css' },
+  { match: /^\/admin\/providers\/?$/, id: 'provider-management-page-css', href: '/styles/provider-management.css' }
 ]
 
 /**

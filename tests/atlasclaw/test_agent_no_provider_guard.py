@@ -111,12 +111,13 @@ class _PromptOnlyNoToolAgent:
         return SimpleNamespace(output="direct recovery was not expected")
 
     @asynccontextmanager
-    async def iter(self, user_message, *, deps, message_history):
+    async def iter(self, user_message, *, deps, message_history, **progress_kwargs):
         self.iter_calls.append(
             {
                 "user_message": user_message,
                 "deps": deps,
                 "message_history": list(message_history or []),
+                "progress_kwargs": dict(progress_kwargs),
             }
         )
         text = str(user_message or "")

@@ -340,7 +340,7 @@ class EmbedContextService:
             user_info,
             synthetic_session,
             request_cookies=request_cookies,
-            extra=build_authorization_extras(authz),
+            authorization_context=authz,
         )
         provider_instances = deps.extra.get("provider_instances", {})
         provider_bucket = provider_instances.get(integration.config.provider_type, {})

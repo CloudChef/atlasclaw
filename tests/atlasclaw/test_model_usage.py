@@ -74,6 +74,46 @@ async def test_native_calls_record_retries_without_counting_cache_twice(db):
 
 
 @pytest.mark.asyncio
+async def test_committed_usage_rows_are_linked_to_the_active_skill_stage(db):
+    async def respond(messages, info):
+        return ModelResponse(
+            parts=[TextPart("stage result")],
+            usage=RequestUsage(input_tokens=12, output_tokens=5),
+            model_name="bound-skill-model",
+        )
+
+    stage_row_ids: list[str] = []
+    deps = SkillDeps(
+        UserInfo(user_id="alice"),
+        session_key="stage-session",
+        extra={
+            "run_id": "stage-run",
+            "_skill_stage_active": True,
+            "_skill_stage_usage_row_ids": stage_row_ids,
+        },
+    )
+    agent = Agent(
+        FunctionModel(respond, model_name="bound-skill-model"),
+        deps_type=SkillDeps,
+        capabilities=[build_usage_hooks(token())],
+    )
+
+    await agent.run("perform the current Skill stage", deps=deps)
+
+    assert len(stage_row_ids) == 1
+    async with db.get_session() as session:
+        row = await session.get(ModelUsageModel, stage_row_ids[0])
+        assert row is not None
+        assert row.run_id == "stage-run"
+        assert row.model == "bound-skill-model"
+        assert row.user_id == "alice"
+
+    deps.extra["_skill_stage_active"] = False
+    await agent.run("outside a Skill stage", deps=deps)
+    assert len(stage_row_ids) == 1
+
+
+@pytest.mark.asyncio
 async def test_failures_record_unknown_usage_and_preserve_error(db):
     async def fail(messages, info):
         raise RuntimeError("upstream failed")

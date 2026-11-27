@@ -1354,6 +1354,28 @@ class TestRoleCRUDAPI:
         assert update_response.status_code == 200
         assert update_response.json()['permissions']['tokens']['view'] == original_tokens_view
 
+        admin_management_permissions = {
+            'view': False,
+            'enable_disable': False,
+            'configure_models': False,
+            'manage_permissions': False,
+        }
+        provider_management_response = client.put(
+            f"/api/roles/{admin_role['id']}",
+            json={'permissions': {'provider_management': admin_management_permissions}},
+            headers=headers,
+        )
+
+        # Admin model-management permissions are canonical defaults. They must
+        # be restored in the response too, rather than saved until next startup sync.
+        assert provider_management_response.status_code == 200
+        assert all(
+            provider_management_response.json()['permissions']['provider_management'].values()
+        )
+        refreshed_admin = client.get('/api/roles', headers=headers).json()['roles']
+        refreshed_admin = next(role for role in refreshed_admin if role['identifier'] == 'admin')
+        assert all(refreshed_admin['permissions']['provider_management'].values())
+
         _cleanup_manager(manager)
 
     def test_assigned_role_cannot_be_deleted(self, tmp_path):

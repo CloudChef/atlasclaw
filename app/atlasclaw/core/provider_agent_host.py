@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Optional, Sequence
 
 from app.atlasclaw.api.services.run_service import execute_agent_run, init_run
-from app.atlasclaw.auth.guards import has_skill_access
+from app.atlasclaw.auth.guards import has_provider_instance_access, has_skill_access
 from app.atlasclaw.core.chat_documents import document_prompt, sanitize_filename
 from app.atlasclaw.core.provider_host_services import (
     ProviderArtifact,
@@ -171,12 +171,33 @@ class ProviderAgentHost:
     ) -> ProviderRunHandle:
         """Start a provider-initiated agent run with explicit skill pinning."""
         _ = model_token_id
+        provider_instance = str(self.provider_config.get("instance_name") or "").strip()
+        if not provider_instance or not has_provider_instance_access(
+            self.authz, self.provider_type, provider_instance
+        ):
+            raise ProviderHttpRuntimeError(
+                "Provider instance permission denied",
+                status_code=403,
+                code="provider_permission_denied",
+            )
+        binding_resolver = getattr(self.api_context, "model_binding_resolver", None)
+        ensure_provider_enabled = getattr(binding_resolver, "ensure_provider_enabled", None)
+        if callable(ensure_provider_enabled):
+            await ensure_provider_enabled(self.provider_type, provider_instance)
         pinned_skills = tuple(
             str(item).strip() for item in skills if str(item or "").strip()
         )
         if pinned_skills:
             pinned_skills = self._resolve_skills(pinned_skills)
         run_id = uuid.uuid4().hex
+        from app.atlasclaw.core.model_bindings import ProviderAdmission
+
+        provider_admission = ProviderAdmission(
+            provider_type=self.provider_type,
+            instance_name=provider_instance,
+            user_id=str(self.user.user_id or ""),
+            run_id=run_id,
+        )
         session_spec = session or ProviderSessionSpec()
         session_key = self._build_session_key(run_id, session_spec)
         session_manager = self.api_context.session_manager_router.for_session_key(session_key)
@@ -194,7 +215,12 @@ class ProviderAgentHost:
             else self.provider_config
         )
 
-        request_context: dict[str, Any] = {"ui_locale": self.user.locale or "zh-CN"}
+        request_context: dict[str, Any] = {
+            "ui_locale": self.user.locale or "zh-CN",
+            "_trusted_provider_type": self.provider_type,
+            "_trusted_provider_instance": provider_instance,
+            "_trusted_provider_skill_ids": list(pinned_skills),
+        }
         for section, key, context_key in (
             ("skills", "skill_permissions", "_user_skill_permissions"),
             ("providers", "provider_permissions", "_provider_permissions"),
@@ -239,6 +265,8 @@ class ProviderAgentHost:
                     "max_tool_calls": int(max_tool_calls or 0),
                     "max_model_requests": int(max_model_requests or 0),
                 },
+                authorization_context=self.authz,
+                provider_admission=provider_admission,
             )
         )
         asyncio.create_task(self._consume_run(run, queue, session_manager))
@@ -380,28 +408,46 @@ class ProviderAgentHost:
     def _resolve_skills(self, skills: Sequence[str]) -> tuple[str, ...]:
         """Resolve bare skill ids to their registry-qualified names and check access."""
         registry = getattr(self.api_context, "skill_registry", None)
-        by_key: dict[str, str] = {}
+        by_key: dict[str, tuple[str, dict[str, Any]]] = {}
         if registry is not None:
             for entry in registry.md_snapshot():
+                if not isinstance(entry, dict):
+                    continue
                 name = str(entry.get("name") or "").strip()
                 qualified = str(entry.get("qualified_name") or name).strip() or name
                 for key in (name, qualified):
                     if key:
-                        by_key.setdefault(key.lower(), qualified)
+                        by_key.setdefault(key.lower(), (qualified, entry))
         resolved: list[str] = []
         for skill in skills:
             requested = str(skill or "").strip()
-            canonical = by_key.get(requested.lower())
-            if not canonical:
+            resolved_skill = by_key.get(requested.lower())
+            if not resolved_skill:
                 raise ProviderHttpRuntimeError(
                     f"Skill is unavailable: {requested}",
                     status_code=409,
                     code="skill_unavailable",
                 )
-            if not (
-                has_skill_access(self.authz, canonical)
-                or has_skill_access(self.authz, requested)
-            ):
+            canonical, skill_entry = resolved_skill
+            from app.atlasclaw.skills.permission_service import skill_permission_service
+
+            bound_provider_type = skill_permission_service.provider_type_from_md_skill_snapshot(
+                skill_entry
+            )
+            if bound_provider_type:
+                permitted = (
+                    bound_provider_type == self.provider_type
+                    and has_provider_instance_access(
+                        self.authz,
+                        self.provider_type,
+                        str(self.provider_config.get("instance_name") or ""),
+                    )
+                )
+            else:
+                permitted = has_skill_access(self.authz, canonical) or has_skill_access(
+                    self.authz, requested
+                )
+            if not permitted:
                 raise ProviderHttpRuntimeError(
                     f"Skill permission denied: {requested}",
                     status_code=403,

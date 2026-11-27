@@ -17,6 +17,7 @@ import {
 const MODULES = [
   ['skills', 'skills', 'roles.modules.skills', 'Skills', 'roles.modules.skillsDescription', 'Manage which skills this role can enable and use.'],
   ['providers', 'provider', 'roles.modules.providers', 'Providers', 'roles.modules.providersDescription', 'Manage which provider instances this role can access at runtime.'],
+  ['provider_management', 'provider', 'roles.modules.providerManagement', 'Provider Management', 'roles.modules.providerManagementDescription', 'View global provider routing, control activation, and configure model policies.'],
   ['channels', 'channels', 'roles.modules.channels', 'Channels', 'roles.modules.channelsDescription', 'Manage access to connection configuration and lifecycle actions.'],
   ['model_configs', 'model', 'roles.modules.modelConfigs', 'Model Configs', 'roles.modules.modelConfigsDescription', 'Control model catalog visibility and maintenance rights.'],
   ['users', 'users', 'roles.modules.users', 'Users', 'roles.modules.usersDescription', 'Define how this role may browse and administer workspace users.'],
@@ -36,6 +37,12 @@ const MODULE_PERMISSION_DEFINITIONS = {
   ],
   providers: [
     ['manage_permissions', 'roles.permissions.managePermissions', 'Manage Permissions', 'roles.providerPermissions.managePermissionsDescription', 'Edit which provider instances roles may access at runtime.']
+  ],
+  provider_management: [
+    ['view', 'roles.permissions.view', 'View', 'roles.providerManagementPermissions.viewDescription', 'View global Provider and Skill model policies.'],
+    ['enable_disable', 'roles.permissions.enableDisable', 'Enable / Disable', 'roles.providerManagementPermissions.enableDisableDescription', 'Enable or disable registered Providers for new tasks.'],
+    ['configure_models', 'roles.permissions.configureModels', 'Configure Models', 'roles.providerManagementPermissions.configureModelsDescription', 'Add, remove, and set defaults for Provider and Skill model policies.'],
+    ['manage_permissions', 'roles.permissions.managePermissions', 'Manage Permissions', 'roles.providerManagementPermissions.managePermissionsDescription', 'Edit which roles may view or change global Provider and Skill model policies.']
   ],
   channels: [
     ['manage_permissions', 'roles.permissions.managePermissions', 'Manage Permissions', 'roles.channelPermissions.managePermissionsDescription', 'Edit which channel types roles may access at runtime.']
@@ -256,6 +263,7 @@ function buildDefaultPermissions() {
   return {
     skills: { module_permissions: { view: false, enable_disable: false, manage_permissions: false }, allow_all: false, skill_permissions: [] },
     providers: { module_permissions: { manage_permissions: false }, allow_all: false, provider_permissions: [] },
+    provider_management: { view: false, enable_disable: false, configure_models: false, manage_permissions: false },
     channels: { module_permissions: { manage_permissions: false }, allow_all: false, channel_permissions: [] },
     tokens: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
     agent_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
@@ -659,6 +667,16 @@ function isSystemManagedBuiltinRole(role = draftRoleState) {
   return role?.is_builtin === true && ['admin', 'user'].includes(role?.identifier)
 }
 
+function canEditBuiltinModulePermissions(role, moduleId) {
+  if (!isSystemManagedBuiltinRole(role)) return true
+  if (['skills', 'providers', 'channels'].includes(moduleId)) return true
+  return role.identifier === 'user' && moduleId === 'provider_management'
+}
+
+function canManageRoleModule(moduleId, role = draftRoleState) {
+  return canManageModule(moduleId) && canEditBuiltinModulePermissions(role, moduleId)
+}
+
 function canManageAnyPermissions() {
   return MODULES.some(module => canManageModule(module.id))
 }
@@ -757,7 +775,7 @@ function renderModulePermissionTable(moduleId, permissionState, options = {}) {
     if (rightId === 'manage_permissions') return 1
     return 0
   })
-  const canManageCurrentModule = options.canManage ?? (canManageModule(moduleId) && !isSystemManagedBuiltinRole(draftRoleState))
+  const canManageCurrentModule = options.canManage ?? canManageRoleModule(moduleId)
   const accessAllDefinition = ACCESS_ALL_PERMISSION_DEFINITIONS[moduleId]
   const accessAllState = draftRoleState?.permissions?.[moduleId]?.allow_all === true
   return `
@@ -1093,9 +1111,7 @@ function renderEditor() {
   const statusDisabledAttr = draftRoleState.is_builtin || !canEditRoleMetadata() ? 'disabled' : ''
   const canDeleteCurrentRole = canDeleteRoles() && !draftRoleState.is_builtin && !draftRoleState.isNew
   const canSaveCurrentRole = canSaveRole()
-  const canManageActiveModule = canManageModule(activeModuleId) && (
-    !isSystemManagedBuiltinRole(draftRoleState) || ['skills', 'providers', 'channels'].includes(activeModuleId)
-  )
+  const canManageActiveModule = canManageRoleModule(activeModuleId)
 
   editorEl.innerHTML = `
     <div class="role-editor-shell">
@@ -1294,8 +1310,7 @@ function updateDraftField(field, value, shouldRender = true) {
 
 function toggleModulePermission(moduleId, permissionId, checked) {
   if (!draftRoleState) return
-  if (isSystemManagedBuiltinRole(draftRoleState) && !['skills', 'providers', 'channels'].includes(moduleId)) return
-  if (!canManageModule(moduleId)) return
+  if (!canManageRoleModule(moduleId)) return
   if (moduleId === 'skills') {
     draftRoleState.permissions.skills.module_permissions[permissionId] = checked
   } else if (moduleId === 'providers') {
@@ -1432,8 +1447,7 @@ function toggleAllVisibleChannels(checked) {
 
 function applyModuleAction(action) {
   if (!draftRoleState) return
-  if (isSystemManagedBuiltinRole(draftRoleState) && !['skills', 'providers', 'channels'].includes(activeModuleId)) return
-  if (!canManageModule(activeModuleId)) return
+  if (!canManageRoleModule(activeModuleId)) return
   if (action === 'restore-defaults') {
     const template = getRoleTemplate(draftRoleState.identifier)
     if (activeModuleId === 'skills') {

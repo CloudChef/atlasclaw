@@ -29,6 +29,12 @@ from app.atlasclaw.skills.permission_service import skill_permission_service
 SKILL_MODULE_PERMISSION_KEYS = {"view", "enable_disable", "manage_permissions"}
 PROVIDER_MODULE_PERMISSION_KEYS = {"manage_permissions"}
 CHANNEL_MODULE_PERMISSION_KEYS = {"manage_permissions"}
+PROVIDER_MANAGEMENT_PERMISSION_KEYS = {
+    "view",
+    "enable_disable",
+    "configure_models",
+    "manage_permissions",
+}
 
 
 @dataclass
@@ -246,6 +252,12 @@ def _normalize_permission_path(permission_path: str) -> list[str]:
         return ["providers", "module_permissions", parts[1]]
     if len(parts) == 2 and parts[0] == "channels" and parts[1] in CHANNEL_MODULE_PERMISSION_KEYS:
         return ["channels", "module_permissions", parts[1]]
+    if (
+        len(parts) == 2
+        and parts[0] == "provider_management"
+        and parts[1] in PROVIDER_MANAGEMENT_PERMISSION_KEYS
+    ):
+        return ["provider_management", parts[1]]
     return parts
 
 

@@ -672,6 +672,17 @@ class RunnerExecutionFlowStreamMixin:
                     },
                 )
 
+                if isinstance(getattr(deps, "extra", None), dict):
+                    deps.extra["_skill_stage_tool_dispatched"] = True
+                    deps.extra["_chat_tool_started"] = True
+                    tool_catalog = {
+                        str(tool.get("name") or "").strip(): tool
+                        for tool in (deps.extra.get("tools_snapshot") or [])
+                        if isinstance(tool, dict) and str(tool.get("name") or "").strip()
+                    }
+                    if any(tool_catalog.get(name, {}).get("read_only") is not True for name in current_node_tool_names):
+                        deps.extra["_skill_stage_side_effect_started"] = True
+
             tool_dispatch = await self.runtime_events.dispatch_tool_calls(
                 tool_calls_in_node,
                 tool_calls_count=int(state.get("tool_calls_count") or 0),

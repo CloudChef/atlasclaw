@@ -989,6 +989,7 @@ class RunnerToolEvidenceMixin:
         clear_tool_planning_text: bool = False,
         persist_user_message: str | None = None,
         persist_user_metadata: dict[str, Any] | None = None,
+        omit_user_prompts: bool = False,
     ) -> list[dict[str, Any]]:
         sanitized: list[dict[str, Any]] = []
         safe_start = max(0, min(int(start_index), len(messages)))
@@ -1005,6 +1006,8 @@ class RunnerToolEvidenceMixin:
                 continue
             item = dict(message)
             role = str(item.get("role", "")).strip().lower()
+            if omit_user_prompts and index >= safe_start and role == "user":
+                continue
             original_tool_calls = item.get("tool_calls")
             had_tool_calls = isinstance(original_tool_calls, list) and bool(original_tool_calls)
             if had_tool_calls and index >= safe_start:
@@ -1157,6 +1160,8 @@ class RunnerToolEvidenceMixin:
             metadata["attachments"] = extra["_chat_attachments"]
         context = extra.get("context") if isinstance(extra, dict) else None
         if isinstance(context, dict) and context.get("visible_user_turn") is False:
+            metadata["visible_user_turn"] = False
+        if isinstance(extra, dict) and extra.get("_skill_stage_internal_turn") is True:
             metadata["visible_user_turn"] = False
         context_scope = RunnerToolEvidenceMixin._validated_context_scope_from_deps(deps)
         if context_scope:

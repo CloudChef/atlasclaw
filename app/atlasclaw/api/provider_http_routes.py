@@ -11,6 +11,7 @@ import logging
 import tempfile
 from pathlib import Path
 from typing import Any
+import uuid
 
 import anyio
 import asyncio
@@ -25,6 +26,7 @@ from app.atlasclaw.auth.guards import (
     get_authorization_context,
 )
 from app.atlasclaw.core.provider_catalog import get_provider_catalog_instances
+from app.atlasclaw.core.model_bindings import ModelBindingError, ProviderAdmission
 from app.atlasclaw.core.provider_http_runtime import (
     ProviderHttpContext,
     ProviderHttpRuntimeError,
@@ -193,6 +195,16 @@ async def dispatch_provider_http_request(
         raise HTTPException(status_code=404, detail="Provider API route not found")
 
     api_context = get_api_context()
+    binding_resolver = getattr(api_context, "model_binding_resolver", None)
+    ensure_provider_enabled = getattr(binding_resolver, "ensure_provider_enabled", None)
+    if callable(ensure_provider_enabled):
+        try:
+            await ensure_provider_enabled(normalized_type, normalized_instance)
+        except ModelBindingError as exc:
+            raise HTTPException(
+                status_code=403,
+                detail={"code": "provider_disabled", "message": "Provider is disabled"},
+            ) from exc
     registry = getattr(api_context, "service_provider_registry", None)
     matcher = getattr(registry, "match_provider_http_route", None)
     if not callable(matcher):
@@ -208,10 +220,19 @@ async def dispatch_provider_http_request(
     )
     if not extension_only_default:
         ensure_provider_instance_access(authz, normalized_type, normalized_instance)
+    provider_admission = ProviderAdmission(
+        provider_type=normalized_type,
+        instance_name=normalized_instance,
+        user_id=str(authz.user.user_id or ""),
+        run_id=uuid.uuid4().hex,
+    )
     if route.access == "admin" and not authz.is_admin:
         raise HTTPException(status_code=403, detail="Admin privileges required")
 
     catalog = await get_provider_catalog_instances()
+    effective_provider_instances = getattr(binding_resolver, "effective_provider_instances", None)
+    if callable(effective_provider_instances):
+        catalog = await effective_provider_instances(catalog)
     provider_config = catalog.get(normalized_type, {}).get(normalized_instance)
     if provider_config is None and extension_only_default:
         provider_config = {}
@@ -259,7 +280,16 @@ async def dispatch_provider_http_request(
         tenant_id=str(authz.user.tenant_id or ""),
         is_admin=authz.is_admin,
         token_id=str(user_extra.get("api_token_id") or ""),
-        visual_runtime=ProviderVisualRuntime(api_context.agent_runner),
+        visual_runtime=ProviderVisualRuntime(
+            api_context.agent_runner,
+            binding_resolver=binding_resolver,
+            authz=authz,
+            provider_type=normalized_type,
+            provider_instance=normalized_instance,
+            user_id=str(authz.user.user_id or ""),
+            skill_registry=api_context.skill_registry,
+            admission=provider_admission,
+        ),
         host=host_services,
     )
     provider_ref = f"{normalized_type}.{normalized_instance}"

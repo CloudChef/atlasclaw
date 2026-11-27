@@ -120,6 +120,7 @@ class SkillMetadata(BaseModel):
     description: str = ""
     category: str = "utility"
     requires_auth: bool = False
+    requires_vision: bool = False
     timeout_seconds: int = 30
     location: str = "built-in"
     provider_type: Optional[str] = None
@@ -271,6 +272,7 @@ class SkillRegistry:
                 "location": meta.location,
                 "provider_type": meta.provider_type,
                 "instance_required": meta.instance_required,
+                "requires_vision": bool(meta.requires_vision),
                 "source": meta.source,
                 "group_ids": list(meta.group_ids),
                 "capability_class": meta.capability_class,
@@ -312,6 +314,7 @@ class SkillRegistry:
                 "location": meta.location,
                 "provider_type": meta.provider_type,
                 "instance_required": meta.instance_required,
+                "requires_vision": bool(meta.requires_vision),
                 "source": meta.source,
                 "group_ids": list(meta.group_ids),
                 "capability_class": meta.capability_class,
@@ -350,6 +353,7 @@ class SkillRegistry:
                 "name": meta.name,
                 "description": meta.description,
                 "source": source,
+                "requires_vision": bool(meta.requires_vision),
                 "provider_type": provider_type,
                 "group_ids": group_ids,
                 "capability_class": capability_class,
@@ -385,6 +389,7 @@ class SkillRegistry:
                     "name": meta.name,
                     "description": meta.description,
                     "source": "internal_runtime",
+                    "requires_vision": bool(meta.requires_vision),
                     "category": meta.category,
                     "group_ids": list(meta.group_ids or []),
                     "capability_class": meta.capability_class,
