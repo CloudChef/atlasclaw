@@ -161,18 +161,20 @@ Unknown fields anywhere in the manifest are ignored. Unknown `ui.nav[].layout` v
 
 ### 4.4 Provider-owned skills
 
-Skills under `skills/` are loaded with the provider namespace by default and are
-addressed as `provider:skill`. A skill that runs entirely on the **standard skill
-runtime** (its own scripts, no external provider credentials) declares:
+Skills under `skills/` retain the provider namespace and are addressed as
+`provider:skill`. This canonical identity controls Provider ownership,
+permissions, and inherited model policy. A Provider-owned Skill that uses the
+**standard skill runtime** for local scripts declares:
 
 ```yaml
 execution: standard
 ```
 
-in `SKILL.md` frontmatter. Such a skill is addressed by its bare name, can be
-pinned by its owning provider through `host.agent.run_skill()`, and receives the
-standard `skill_read` / `skill_write` / `skill_exec` tools. Skills without the
-flag stay provider-bound and keep the `provider:skill` identity.
+in `SKILL.md` frontmatter. This selects the local standard execution runtime; it
+does not remove Provider ownership or change the `provider:skill` identity.
+When selected, a docs-only standard Skill can receive the standard
+`skill_read` / `skill_write` / `skill_exec` tools. Skills loaded from the
+standalone Skill directories keep their bare-name identities.
 
 
 

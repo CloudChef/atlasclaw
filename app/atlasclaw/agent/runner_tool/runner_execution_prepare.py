@@ -633,7 +633,7 @@ def _md_skill_snapshot_has_provider_binding(
     *,
     provider_instances: Any = None,
 ) -> bool:
-    """Return whether a markdown skill must be selected through provider_name.skill."""
+    """Return whether a Markdown skill retains Provider ownership and identity."""
     if not isinstance(skill, dict):
         return False
     metadata = skill.get("metadata", {})
@@ -1914,29 +1914,36 @@ def _target_md_skill_is_provider_bound(
     target_md_skill: dict[str, Any],
     md_skills_snapshot: list[dict[str, Any]],
 ) -> bool:
-    """Return whether the selected markdown skill depends on a provider instance."""
+    """Return whether this selected Skill needs Provider tool execution.
+
+    A matching, registered ``execution: standard`` Skill keeps its Provider
+    ownership but uses the standard local runtime, so it may receive the
+    standard runtime tools. Only the exact selected snapshot can make that
+    execution-mode decision.
+    """
     provider = _normalize_text(target_md_skill.get("provider"))
-    if provider:
-        return True
     qname = _normalize_text(target_md_skill.get("qualified_name")).lower()
-    if not qname:
-        return False
-    for skill in md_skills_snapshot or []:
-        if not isinstance(skill, dict):
-            continue
-        skill_qname = _normalize_text(
-            skill.get("qualified_name") or skill.get("name")
-        ).lower()
-        if skill_qname != qname:
-            continue
-        metadata = skill.get("metadata")
-        if not isinstance(metadata, dict):
-            metadata = {}
-        return bool(
-            _normalize_text(metadata.get("provider_type"))
-            or _normalize_text(skill.get("provider"))
-        )
-    return False
+    if qname:
+        for skill in md_skills_snapshot or []:
+            if not isinstance(skill, dict):
+                continue
+            skill_qname = _normalize_text(
+                skill.get("qualified_name") or skill.get("name")
+            ).lower()
+            if skill_qname != qname:
+                continue
+            metadata = skill.get("metadata")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            execution = _normalize_text(metadata.get("execution")).lower()
+            if execution == "standard":
+                return False
+            return bool(
+                provider
+                or _normalize_text(metadata.get("provider_type"))
+                or _normalize_text(skill.get("provider"))
+            )
+    return bool(provider)
 
 
 def inject_standard_skill_runtime_tools(

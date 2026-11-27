@@ -689,6 +689,11 @@ def _register_md_tool_entry(
 
     metadata = entry.metadata if isinstance(entry.metadata, dict) else {}
     provider_type = str(metadata.get("provider_type", "")).strip() or entry.provider or None
+    script_provider_type = (
+        None
+        if str(metadata.get("execution", "")).strip().lower() == "standard"
+        else provider_type
+    )
     capability_class = _extract_capability_class(metadata, provider_type, tool_id=tool_id)
     result_mode = _extract_result_mode(metadata, tool_id=tool_id)
     if _capability_is_artifact(capability_class) and result_mode == "llm":
@@ -704,7 +709,7 @@ def _register_md_tool_entry(
         handler = load_handler_from_file(
             py_file,
             attr_name,
-            provider_type,
+            script_provider_type,
             invocation_config=invocation_config,
             tool_name=tool_name,
             result_mode=result_mode,

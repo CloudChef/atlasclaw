@@ -15,11 +15,12 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.atlasclaw.api.deps_context import APIContext, set_api_context
+from app.atlasclaw.api.deps_context import APIContext, get_api_context, set_api_context
 from app.atlasclaw.api.api_routes import router as api_router
 from app.atlasclaw.auth.guards import AuthorizationContext
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.core.config_schema import ModelConfig, TokenConfig
+from app.atlasclaw.core.model_bindings import BindingTarget, ModelBindingResolver
 from app.atlasclaw.core.provider_registry import ServiceProviderRegistry
 from app.atlasclaw.db import get_db_session_dependency
 from app.atlasclaw.db.database import DatabaseManager, DatabaseConfig, init_database
@@ -235,6 +236,97 @@ def test_skill_model_options_filter_capabilities_before_pagination(
     assert all(model["capabilities"].get("vision") is True for model in payload["models"])
     assert all("api_key" not in model for model in payload["models"])
     assert "text-secret" not in response.text
+
+
+def test_provider_owned_standard_skill_keeps_identity_for_management_and_binding(
+    provider_management_client: TestClient,
+    tmp_path: Path,
+) -> None:
+    ctx = get_api_context()
+    skill_root = tmp_path / "providers" / "audit-report" / "skills"
+    skill_dir = skill_root / "audit-report"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: audit-report\n"
+        "description: Audit reports\n"
+        "execution: standard\n"
+        "requires_vision: true\n"
+        "---\n"
+        "# Audit report\n",
+        encoding="utf-8",
+    )
+    assert ctx.skill_registry.load_from_directory(
+        str(skill_root), location="provider", provider="audit-report"
+    ) == 1
+    ctx.service_provider_registry.load_instances_from_config(
+        {"audit-report": {"default": {"display_name": "Audit Reports"}}}
+    )
+    ctx.provider_instances = ctx.service_provider_registry.get_all_instance_configs()
+
+    entry = ctx.skill_registry.get_md_skill("audit-report:audit-report")
+    assert entry is not None
+    assert entry.provider == "audit-report"
+    assert entry.qualified_name == "audit-report:audit-report"
+
+    providers_response = provider_management_client.get(
+        "/api/provider-management/providers"
+    )
+    assert providers_response.status_code == 200, providers_response.text
+    provider = next(
+        item
+        for item in providers_response.json()["providers"]
+        if item["provider_type"] == "audit-report"
+    )
+    assert [skill["skill_id"] for skill in provider["skills"]] == [
+        "audit-report:audit-report"
+    ]
+    assert provider["skills"][0]["requires_vision"] is True
+
+    standalone_response = provider_management_client.get(
+        "/api/provider-management/standalone-skills"
+    )
+    assert standalone_response.status_code == 200, standalone_response.text
+    assert "audit-report:audit-report" not in {
+        skill["skill_id"] for skill in standalone_response.json()["skills"]
+    }
+
+    options_response = provider_management_client.get(
+        "/api/provider-management/model-options",
+        params={
+            "target_kind": "provider_skill",
+            "provider_type": "audit-report",
+            "instance_name": "default",
+            "skill_id": "audit-report:audit-report",
+        },
+    )
+    assert options_response.status_code == 200, options_response.text
+    assert options_response.json()["required_capabilities"] == {"vision": True}
+
+    update_response = provider_management_client.put(
+        "/api/provider-management/providers/audit-report/default",
+        json=_provider_payload(policy=_explicit_file_policy()),
+    )
+    assert update_response.status_code == 200, update_response.text
+
+    resolver = ModelBindingResolver(
+        provider_management_client.app.state.config,
+        ctx.skill_registry,
+        ctx.service_provider_registry,
+        None,
+    )
+    selection = asyncio.run(
+        resolver.resolve(
+            BindingTarget(
+                kind="provider_skill",
+                provider_type="audit-report",
+                instance_name="default",
+                skill_id="audit-report:audit-report",
+            )
+        )
+    )
+    assert selection.source == "inherited_provider"
+    assert selection.token.token_id == "file-token:primary-token"
 
 
 def test_denied_user_cannot_view_or_write_provider_management(

@@ -903,10 +903,8 @@ single MD Skill.
         }
 
         provider_name = str(metadata.get("provider_type", "")).strip() or (provider or "").strip()
-        # Provider-owned skills that run on the standard skill runtime (scripts)
-        # opt out of provider-bound execution and are addressed by their bare name.
-        if str(metadata.get("execution", "")).strip().lower() == "standard":
-            provider_name = ""
+        # Provider ownership determines the canonical identity and authorization
+        # scope. Execution mode is evaluated separately by the runtime.
         qualified_name = f"{provider_name}:{name}" if provider_name else name
         if not self._matches_allowed_skill_names(
             allowed_skill_names,
