@@ -74,7 +74,7 @@ def _context(tmp_path: Path):
 def _authz(allowed: bool = True):
     return SimpleNamespace(
         is_admin=True,
-        permissions={"skills": {"allow_all": allowed}},
+        permissions={"skills": {"allow_all": allowed}, "providers": {"allow_all": True}},
         user=SimpleNamespace(user_id="u1", tenant_id="default", roles=["admin"], extra={}),
     )
 
@@ -86,7 +86,7 @@ def _host(ctx, tmp_path: Path, *, provider_type: str = "audit-report") -> Provid
         provider_type=provider_type,
         user=ProviderUser(user_id="u1", display_name="User One", is_admin=True, roles=("admin",)),
         data_dir=tmp_path / "provider-data",
-        provider_config={},
+        provider_config={"instance_name": "default"},
     )
 
 
@@ -118,7 +118,8 @@ async def test_run_skill_pins_skill_and_collects_artifact(tmp_path: Path, monkey
 
     async def fake_execute(
         api_ctx, run_id, session_key, message, timeout, user_info, cookies,
-        provider_config, request_context, run_limits=None,
+        provider_config, request_context, run_limits=None, authorization_context=None,
+        provider_admission=None,
     ):
         captured.update({
             "session_key": session_key,
@@ -168,10 +169,18 @@ async def test_unpinned_run_uses_actor_and_current_skill_and_provider_grants(tmp
         {"skill_id": "audit-report", "authorized": True, "enabled": True},
         {"skill_id": "other", "authorized": True, "enabled": False},
     ]
-    host.authz.permissions = {"skills": {"skill_permissions": grants}, "providers": {"provider_permissions": []}}
+    host.authz.permissions = {
+        "skills": {"allow_all": False, "skill_permissions": grants},
+        "providers": {
+            "allow_all": False,
+            "provider_permissions": [{
+                "provider_type": "audit-report", "instance_name": "default", "allowed": True,
+            }],
+        },
+    }
     captured = {}
 
-    async def fake_execute(ctx, run_id, session_key, prompt, timeout, user_info, cookies, config, request_context, run_limits):
+    async def fake_execute(ctx, run_id, session_key, prompt, timeout, user_info, cookies, config, request_context, run_limits, authorization_context=None, **kwargs):
         captured.update(user=user_info, context=request_context)
         ctx.active_runs[run_id]["status"] = "completed"
         ctx.sse_manager.close_stream(run_id)
@@ -181,7 +190,9 @@ async def test_unpinned_run_uses_actor_and_current_skill_and_provider_grants(tmp
     await handle.wait(timeout=5)
     assert captured["user"] is actor
     assert captured["context"]["_user_skill_permissions"] == grants
-    assert captured["context"]["_provider_permissions"] == []
+    assert captured["context"]["_provider_permissions"] == [{
+        "provider_type": "audit-report", "instance_name": "default", "allowed": True,
+    }]
     assert "_selected_capability" not in captured["context"]
 
 
@@ -195,7 +206,7 @@ async def test_provider_host_preserves_optional_timeout_and_has_no_run_count_cap
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def fake_execute(ctx, run_id, _session_key, _message, timeout_seconds, *_args):
+    async def fake_execute(ctx, run_id, _session_key, _message, timeout_seconds, *_args, **kwargs):
         seen_timeouts.append(timeout_seconds)
         started.set()
         await release.wait()
@@ -234,6 +245,7 @@ async def test_skill_permission_denied(tmp_path: Path) -> None:
     host = ProviderAgentHost(
         ctx, authz=_authz(allowed=False), provider_type="audit-report",
         user=ProviderUser(user_id="u1"), data_dir=tmp_path / "data",
+        provider_config={"instance_name": "default"},
     )
 
     with pytest.raises(ProviderHttpRuntimeError) as exc:

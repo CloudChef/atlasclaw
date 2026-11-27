@@ -41,7 +41,33 @@ def _leading_slash_command(message: str) -> str:
     return match.group(0).lower() if match else ""
 
 
-def _resolve_slash_capability(
+async def _filter_enabled_provider_instances(
+    *,
+    ctx: APIContext,
+    provider_instances: dict[str, Any],
+) -> dict[str, Any]:
+    """Remove globally disabled Providers from new task discovery and selection."""
+    resolver = getattr(ctx, "model_binding_resolver", None)
+    effective_instances = getattr(resolver, "effective_provider_instances", None)
+    if callable(effective_instances):
+        provider_instances = await effective_instances(provider_instances or {})
+    is_enabled = getattr(resolver, "provider_is_enabled", None)
+    if not callable(is_enabled):
+        return provider_instances
+    filtered: dict[str, Any] = {}
+    for provider_type, instances in (provider_instances or {}).items():
+        if not isinstance(instances, dict):
+            continue
+        active_instances: dict[str, Any] = {}
+        for instance_name, config in instances.items():
+            if await is_enabled(str(provider_type), str(instance_name)):
+                active_instances[str(instance_name)] = config
+        if active_instances:
+            filtered[str(provider_type)] = active_instances
+    return filtered
+
+
+async def _resolve_slash_capability(
     *,
     ctx: APIContext,
     authz: AuthorizationContext | None,
@@ -49,11 +75,15 @@ def _resolve_slash_capability(
     slash_command: str,
 ) -> dict[str, Any] | None:
     """Resolve an explicit slash command through the request-visible catalog."""
+    enabled_instances = await _filter_enabled_provider_instances(
+        ctx=ctx,
+        provider_instances=provider_instances,
+    )
     return resolve_selected_capability(
         ctx=ctx,
         selected={"command": slash_command},
         authz=authz,
-        provider_instances=provider_instances,
+        provider_instances=enabled_instances,
     )
 
 
@@ -120,6 +150,10 @@ def register_agent_routes(router: APIRouter) -> None:
                 detail="Failed to resolve permissions for agent capabilities.",
             ) from exc
         provider_config = build_provider_config(ctx) or (ctx.provider_instances or {})
+        provider_config = await _filter_enabled_provider_instances(
+            ctx=ctx,
+            provider_instances=provider_config,
+        )
         return build_agent_capabilities(
             ctx=ctx,
             authz=authz,
@@ -199,6 +233,20 @@ def register_agent_routes(router: APIRouter) -> None:
             ) from exc
 
         request_context = dict(request.context or {})
+        reserved_context_prefixes = (
+            "_trusted_provider_",
+            "_provider_admission",
+            "_provider_permissions",
+            "_user_skill_permissions",
+            "_authorization_context",
+            "_selected_capability",
+            "_skill_stage_",
+            "_binding_",
+            "_current_binding_",
+        )
+        for key in tuple(request_context):
+            if str(key).strip().lower().startswith(reserved_context_prefixes):
+                request_context.pop(key, None)
         if "embed_tool_name" in request_context or "allowed_page_tool_names" in request_context:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -268,6 +316,10 @@ def register_agent_routes(router: APIRouter) -> None:
         selected_capability = request_context.pop("selected_capability", None)
         canonical_capability: dict[str, Any] | None = None
         if selected_capability is not None:
+            provider_instances_for_request = await _filter_enabled_provider_instances(
+                ctx=ctx,
+                provider_instances=provider_instances_for_request,
+            )
             canonical_capability = resolve_selected_capability(
                 ctx=ctx,
                 selected=selected_capability,
@@ -283,7 +335,7 @@ def register_agent_routes(router: APIRouter) -> None:
 
         slash_command = _leading_slash_command(safe_message)
         if slash_command:
-            slash_capability = _resolve_slash_capability(
+            slash_capability = await _resolve_slash_capability(
                 ctx=ctx,
                 authz=resolved_authz,
                 provider_instances=provider_instances_for_request,
@@ -354,6 +406,7 @@ def register_agent_routes(router: APIRouter) -> None:
             request_cookies,
             provider_config,
             request_context,
+            authorization_context=resolved_authz,
         )
 
         return AgentRunResponse(

@@ -80,7 +80,51 @@ function showFailure(container, item) {
   })
 }
 
+function showSlowLoadState(state) {
+  if (mountState !== state || state.ready) return
+  const loading = state.container.querySelector('.provider-extension-loading')
+  if (!loading) return
+  const message = loading.querySelector('.provider-extension-loading-message')
+  if (message) {
+    message.textContent = translateIfExists('ext.stillLoading')
+      || 'This page is taking longer than expected.'
+  }
+  if (loading.querySelector('.provider-extension-retry')) return
+  const retry = document.createElement('button')
+  retry.type = 'button'
+  retry.className = 'provider-extension-retry'
+  retry.textContent = translateIfExists('ext.retry') || 'Retry'
+  retry.addEventListener('click', () => {
+    if (mountState !== state || state.ready) return
+    state.ready = false
+    if (message) message.textContent = translateIfExists('ext.loading') || 'Loading…'
+    retry.remove()
+    armReadyTimer(state)
+    state.frame.src = state.entryUrl
+  })
+  loading.append(retry)
+}
+
+function armReadyTimer(state) {
+  window.clearTimeout(state.readyTimer)
+  state.readyTimer = window.setTimeout(() => showSlowLoadState(state), READY_TIMEOUT_MS)
+}
+
+function disposeMountState() {
+  if (!mountState) return
+  const { onMessage, frame, onFrameLoad, onFrameError, readyTimer } = mountState
+  const oldState = mountState
+  mountState = null
+  window.clearTimeout(readyTimer)
+  window.removeEventListener('message', onMessage)
+  frame?.removeEventListener('load', onFrameLoad)
+  frame?.removeEventListener('error', onFrameError)
+  frame?.remove()
+  oldState.ready = true
+}
+
 export async function mount(container, context = {}) {
+  disposeMountState()
   const { providerType, navId } = parseRoute(context.params)
   if (!providerType || !navId) {
     showFailure(container, {})
@@ -91,7 +135,7 @@ export async function mount(container, context = {}) {
     <div class="provider-extension-host">
       <div class="provider-extension-loading" role="status">
         <span class="provider-extension-spinner" aria-hidden="true"></span>
-        <span>${escapeHtml(translateIfExists('ext.loading') || 'Loading…')}</span>
+        <span class="provider-extension-loading-message">${escapeHtml(translateIfExists('ext.loading') || 'Loading…')}</span>
       </div>
       <iframe class="provider-extension-frame"
               title="${escapeHtml(navId)}"
@@ -105,21 +149,27 @@ export async function mount(container, context = {}) {
     `/api/ui/extensions/${encodeURIComponent(providerType)}/${encodeURIComponent(navId)}/`
   )
 
-  let ready = false
-  const readyTimer = window.setTimeout(() => {
-    if (ready) return
-    showFailure(container, { title: navId, nav_id: navId })
-  }, READY_TIMEOUT_MS)
+  const state = {
+    container,
+    frame,
+    entryUrl,
+    ready: false,
+    readyTimer: null,
+    onMessage: null,
+    onFrameLoad: null,
+    onFrameError: null
+  }
 
   const onMessage = event => {
+    if (mountState !== state) return
     if (event.origin !== window.location.origin) return
     if (!frame || event.source !== frame.contentWindow) return
     const data = event.data
     if (!data || typeof data !== 'object') return
 
     if (data.type === 'atlasclaw:ready') {
-      ready = true
-      window.clearTimeout(readyTimer)
+      state.ready = true
+      window.clearTimeout(state.readyTimer)
       loading?.remove()
       return
     }
@@ -156,14 +206,14 @@ export async function mount(container, context = {}) {
   }
 
   const onFrameLoad = () => {
-    if (!mountState || mountState.frame !== frame) return
+    if (mountState !== state) return
     try {
       const frameUrl = new URL(frame.contentWindow.location.href)
       if (frameUrl.origin !== window.location.origin && frameUrl.href !== 'about:blank') return
       installAuthFetchInterceptor(frame.contentWindow)
       if (stripBasePath(frameUrl.pathname) === '/login.html') {
-        ready = true
-        window.clearTimeout(readyTimer)
+        state.ready = true
+        window.clearTimeout(state.readyTimer)
         redirectToLogin()
         return
       }
@@ -173,23 +223,22 @@ export async function mount(container, context = {}) {
     sendInit()
   }
 
-  mountState = {
-    container,
-    frame,
-    onMessage,
-    readyTimer,
-    onFrameLoad,
+  const onFrameError = () => {
+    if (mountState !== state) return
+    disposeMountState()
+    showFailure(container, { title: navId, nav_id: navId })
   }
+  state.onMessage = onMessage
+  state.onFrameLoad = onFrameLoad
+  state.onFrameError = onFrameError
+  mountState = state
   frame.addEventListener('load', onFrameLoad)
+  frame.addEventListener('error', onFrameError)
   window.addEventListener('message', onMessage)
+  armReadyTimer(state)
   frame.src = entryUrl
 }
 
 export function unmount() {
-  if (!mountState) return
-  const { onMessage, readyTimer, frame, onFrameLoad } = mountState
-  window.clearTimeout(readyTimer)
-  window.removeEventListener('message', onMessage)
-  frame?.removeEventListener('load', onFrameLoad)
-  mountState = null
+  disposeMountState()
 }

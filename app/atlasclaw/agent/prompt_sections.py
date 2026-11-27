@@ -18,12 +18,51 @@ from app.atlasclaw.agent.runner_tool.runner_tool_result_mode import sanitize_wor
 _RESPONSE_LANGUAGE_TEMPLATE_PATH = (
     Path(__file__).resolve().parents[1] / "templates" / "prompts" / "response_language.json"
 )
+_SKILL_STAGE_CONTEXT_TEMPLATE_PATH = (
+    Path(__file__).resolve().parents[1] / "templates" / "prompts" / "skill_stage_context.json"
+)
 
 
 @lru_cache(maxsize=1)
 def _load_response_language_template(path: Path) -> dict[str, list[str]]:
     """Load the shared language prompt resource once per process."""
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+@lru_cache(maxsize=1)
+def _load_skill_stage_context_template(path: Path) -> dict[str, str]:
+    """Load model-routing stage policy from the shared prompt resources."""
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def build_skill_stage_context_frame() -> str:
+    """Return the data framing label used for complete cross-Skill context."""
+    return _load_skill_stage_context_template(_SKILL_STAGE_CONTEXT_TEMPLATE_PATH)["context_frame"]
+
+
+def build_skill_stage_context_end() -> str:
+    """Return the closing delimiter for the complete context data block."""
+    return _load_skill_stage_context_template(_SKILL_STAGE_CONTEXT_TEMPLATE_PATH)["context_end"]
+
+
+def build_safe_attachment_metadata_frame() -> tuple[str, str]:
+    """Return delimiters for non-native attachment metadata in planner input."""
+    template = _load_skill_stage_context_template(_SKILL_STAGE_CONTEXT_TEMPLATE_PATH)
+    return template["attachment_data_frame"], template["attachment_data_end"]
+
+
+def build_skill_stage_coordinator_instructions() -> str:
+    """Return continuation guidance for the toolless planner only."""
+    return _load_skill_stage_context_template(_SKILL_STAGE_CONTEXT_TEMPLATE_PATH)[
+        "coordinator_instructions"
+    ]
+
+
+def build_planner_attachment_instructions() -> str:
+    """Return the planner's text-only attachment boundary guidance."""
+    return _load_skill_stage_context_template(_SKILL_STAGE_CONTEXT_TEMPLATE_PATH)[
+        "planner_attachment_instructions"
+    ]
 
 
 def build_standard_skill_runtime_policy(target_md_skill: dict[str, Any]) -> list[str]:

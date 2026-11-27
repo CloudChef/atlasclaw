@@ -163,3 +163,95 @@ def test_sqlite_downgrade_fails_when_duplicate_usernames_exist(tmp_path, monkeyp
 
     with pytest.raises(RuntimeError, match="duplicate usernames exist"):
         command.downgrade(cfg, "007")
+
+
+def test_capability_model_policy_015_upgrade_and_downgrade_preserves_legacy_data(
+    tmp_path: Path, monkeypatch
+) -> None:
+    db_path = tmp_path / "capability-model-policy.db"
+    config_path = _write_config(tmp_path, db_path)
+    monkeypatch.setenv("ATLASCLAW_CONFIG", str(config_path))
+    _force_alembic_url(monkeypatch)
+    cfg = _alembic_config(db_path)
+
+    command.upgrade(cfg, "014")
+    with sqlite3.connect(db_path) as conn:
+        _insert_user(conn, username="legacy-user", auth_type="local")
+
+    command.upgrade(cfg, "head")
+    with sqlite3.connect(db_path) as conn:
+        legacy_user_count = conn.execute(
+            "SELECT COUNT(*) FROM users WHERE username = ? AND auth_type = ?",
+            ("legacy-user", "local"),
+        ).fetchone()[0]
+        assert legacy_user_count == 1
+
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(capability_model_policies)")
+        }
+        assert columns == {
+            "id",
+            "target_kind",
+            "provider_type",
+            "instance_name",
+            "skill_id",
+            "enabled",
+            "model_mode",
+            "allowed_model_refs",
+            "default_model_ref",
+            "revision",
+            "updated_by",
+            "updated_at",
+        }
+        unique_index_columns = []
+        for index in conn.execute("PRAGMA index_list(capability_model_policies)"):
+            if index[2]:
+                unique_index_columns.append(tuple(
+                    row[2]
+                    for row in conn.execute(f"PRAGMA index_info('{index[1]}')")
+                ))
+        assert (
+            "target_kind",
+            "provider_type",
+            "instance_name",
+            "skill_id",
+        ) in unique_index_columns
+
+        policy_values = (
+            "policy-1",
+            "provider",
+            "crm",
+            "production",
+            "",
+            None,
+            "inherit",
+            "[]",
+            None,
+            1,
+            None,
+            datetime.utcnow().isoformat(sep=" "),
+        )
+        insert_policy = """
+            INSERT INTO capability_model_policies (
+                id, target_kind, provider_type, instance_name, skill_id, enabled,
+                model_mode, allowed_model_refs, default_model_ref, revision,
+                updated_by, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        conn.execute(insert_policy, policy_values)
+        conn.commit()
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(insert_policy, ("policy-2", *policy_values[1:]))
+
+    command.downgrade(cfg, "014")
+    with sqlite3.connect(db_path) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        assert "capability_model_policies" not in tables
+        assert conn.execute(
+            "SELECT COUNT(*) FROM users WHERE username = ? AND auth_type = ?",
+            ("legacy-user", "local"),
+        ).fetchone()[0] == 1

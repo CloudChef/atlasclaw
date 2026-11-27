@@ -698,7 +698,24 @@ class RunnerExecutionFlowPostMixin:
         user_message = state.get("user_message")
         system_prompt = state.get("system_prompt")
         deps = state.get("deps")
-        persist_user_metadata = self._persist_user_message_metadata_from_deps(deps)
+        extra = getattr(deps, "extra", {})
+        omit_internal_user = bool(
+            isinstance(extra, dict)
+            and extra.get("_skill_stage_internal_turn") is True
+            and not str(user_message or "").strip()
+        )
+        persist_user_metadata = (
+            {}
+            if omit_internal_user
+            else self._persist_user_message_metadata_from_deps(deps)
+        )
+        if (
+            not omit_internal_user
+            and str(user_message or "").strip()
+            and isinstance(extra, dict)
+            and extra.get("_skill_stage_internal_turn") is True
+        ):
+            persist_user_metadata.pop("visible_user_turn", None)
         try:
             raw_final_messages = agent_run.all_messages()
         except Exception:
@@ -934,6 +951,7 @@ class RunnerExecutionFlowPostMixin:
                 clear_tool_planning_text=tool_execution_required,
                 persist_user_message=user_message,
                 persist_user_metadata=persist_user_metadata,
+                omit_user_prompts=omit_internal_user,
             )
             await session_manager.persist_transcript(session_key, safe_messages)
             await self.runtime_events.trigger_run_context_ready(
@@ -1198,7 +1216,20 @@ class RunnerExecutionFlowPostMixin:
             clear_tool_planning_text=tool_execution_required,
             persist_user_message=user_message,
             persist_user_metadata=persist_user_metadata,
+            omit_user_prompts=omit_internal_user,
         )
+        if isinstance(getattr(deps, "extra", None), dict) and isinstance(
+            deps.extra.get("_skill_stage_descriptor"), dict
+        ):
+            stage_segment = persist_messages[persist_run_output_start_index:]
+            deps.extra["_skill_stage_latest_messages"] = [
+                dict(message)
+                for message in stage_segment
+                if isinstance(message, dict)
+                and str(message.get("role", "") or "").strip().lower()
+                in {"assistant", "tool", "toolresult", "tool_result"}
+            ]
+            deps.extra["_skill_stage_final_output"] = final_assistant
 
         if not assistant_output_streamed and final_assistant and not should_block_assistant_emit:
             state.get("thinking_emitter").assistant_emitted = True
@@ -1374,6 +1405,7 @@ class RunnerExecutionFlowPostMixin:
                     clear_tool_planning_text=tool_execution_required,
                     persist_user_message=user_message,
                     persist_user_metadata=persist_user_metadata,
+                    omit_user_prompts=omit_internal_user,
                 )
                 if not assistant_output_streamed:
                     thinking_emitter = state.get("thinking_emitter")
@@ -1413,6 +1445,7 @@ class RunnerExecutionFlowPostMixin:
                     clear_tool_planning_text=tool_execution_required,
                     persist_user_message=user_message,
                     persist_user_metadata=persist_user_metadata,
+                    omit_user_prompts=omit_internal_user,
                 )
                 await session_manager.persist_transcript(session_key, safe_messages)
                 await self.runtime_events.trigger_run_context_ready(
@@ -1481,6 +1514,7 @@ class RunnerExecutionFlowPostMixin:
                         clear_tool_planning_text=tool_execution_required,
                         persist_user_message=user_message,
                         persist_user_metadata=persist_user_metadata,
+                        omit_user_prompts=omit_internal_user,
                     )
                     if not assistant_output_streamed:
                         state.get("thinking_emitter").assistant_emitted = True
@@ -1511,6 +1545,7 @@ class RunnerExecutionFlowPostMixin:
                                 clear_tool_planning_text=tool_execution_required,
                                 persist_user_message=user_message,
                                 persist_user_metadata=persist_user_metadata,
+                                omit_user_prompts=omit_internal_user,
                             )
                             if not assistant_output_streamed:
                                 state.get("thinking_emitter").assistant_emitted = True
@@ -1540,6 +1575,7 @@ class RunnerExecutionFlowPostMixin:
                     clear_tool_planning_text=tool_execution_required,
                     persist_user_message=user_message,
                     persist_user_metadata=persist_user_metadata,
+                    omit_user_prompts=omit_internal_user,
                 )
                 await session_manager.persist_transcript(session_key, safe_messages)
                 await self.runtime_events.trigger_run_context_ready(

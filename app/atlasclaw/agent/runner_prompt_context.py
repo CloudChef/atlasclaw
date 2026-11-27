@@ -115,6 +115,15 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
     tool_names: set[str] = set()
     extra = deps.extra if isinstance(getattr(deps, "extra", None), dict) else {}
     provider_instances = extra.get("provider_instances")
+    tools_snapshot = collect_tools_snapshot(agent=agent, deps=deps)
+    skills_snapshot = collect_skills_snapshot(deps)
+
+    md_tool_names = {
+        str(tool_name or "").strip().casefold()
+        for entry in collect_md_skills_snapshot(deps)
+        for tool_name in _extract_md_tool_names(entry)
+        if str(tool_name or "").strip()
+    }
 
     capability_index.extend(
         collect_md_skill_capability_entries(deps, include_provider_bound=False)
@@ -122,8 +131,16 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
     capability_index.extend(
         collect_md_skill_capability_entries(deps, include_provider_bound=True)
     )
+    capability_index.extend(
+        _provider_executable_skill_capability_entries(
+            skills_snapshot=skills_snapshot,
+            tools_snapshot=tools_snapshot,
+            provider_instances=provider_instances,
+            md_tool_names=md_tool_names,
+        )
+    )
 
-    for item in collect_tools_snapshot(agent=agent, deps=deps):
+    for item in tools_snapshot:
         routing_visibility = _normalize_optional_text(
             item.get("routing_visibility", item.get("planner_visibility", ""))
         )
@@ -158,7 +175,7 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
             }
         )
 
-    for item in collect_skills_snapshot(deps):
+    for item in skills_snapshot:
         routing_visibility = _normalize_optional_text(
             item.get("routing_visibility", item.get("planner_visibility", ""))
         )
@@ -194,6 +211,108 @@ def collect_capability_index_snapshot(*, agent: Any, deps) -> list[dict]:
         )
 
     return capability_index
+
+
+def _provider_executable_skill_capability_entries(
+    *,
+    skills_snapshot: list[dict[str, Any]],
+    tools_snapshot: list[dict[str, Any]],
+    provider_instances: Any,
+    md_tool_names: set[str],
+) -> list[dict[str, Any]]:
+    """Expose executable Provider Skills only through their exact registered Skill and instance."""
+    entries: list[dict[str, Any]] = []
+    for skill in skills_snapshot:
+        if not isinstance(skill, dict):
+            continue
+        skill_id = str(skill.get("qualified_skill_name") or skill.get("name") or "").strip()
+        provider_type = _provider_type_from_skill_entry(skill)
+        if (
+            not skill_id
+            or not provider_type
+            or str(skill.get("source") or "").strip().lower() == "internal_runtime"
+            or str(skill.get("routing_visibility") or skill.get("planner_visibility") or "")
+            .strip()
+            .lower()
+            in {"hidden", "internal"}
+        ):
+            continue
+        matching_tools: list[dict[str, Any]] = []
+        for tool in tools_snapshot:
+            if not isinstance(tool, dict):
+                continue
+            tool_name = str(tool.get("name") or "").strip()
+            if not tool_name or tool_name.casefold() in md_tool_names:
+                continue
+            tool_visibility = str(
+                tool.get("routing_visibility") or tool.get("planner_visibility") or ""
+            ).strip().lower()
+            if tool_visibility in {"hidden", "internal"} or bool(tool.get("coordination_only")):
+                continue
+            if str(tool.get("provider_type") or "").strip().casefold() != provider_type.casefold():
+                continue
+            # Use explicit Skill identity metadata when available. A tool name can
+            # serve as the identity only when it exactly equals the registered Skill ID.
+            declared_skill_ids = {
+                str(value or "").strip().casefold()
+                for value in (
+                    tool.get("qualified_skill_name"),
+                    tool.get("skill_name"),
+                    tool_name,
+                )
+                if str(value or "").strip()
+            }
+            if skill_id.casefold() in declared_skill_ids:
+                matching_tools.append(tool)
+        if not matching_tools:
+            continue
+
+        instances = _provider_instance_entries(provider_instances, provider_type)
+        for resolved_provider_type, instance_name, _config in instances:
+            display_name = provider_skill_display_name(skill_id, resolved_provider_type)
+            target_fields = build_provider_skill_target_fields(
+                provider_type=resolved_provider_type,
+                instance_name=instance_name,
+                qualified_skill_name=skill_id,
+                skill_name=skill_id,
+                display_skill_name=display_name,
+            )
+            provider_skill_name = str(target_fields.get("provider_skill_name") or "").strip()
+            entries.append(
+                {
+                    "capability_id": provider_skill_capability_id(
+                        provider_name=instance_name,
+                        provider_type=resolved_provider_type,
+                        qualified_skill_name=skill_id,
+                        skill_name=skill_id,
+                        display_skill_name=display_name,
+                    ),
+                    "kind": "provider_skill",
+                    "name": provider_skill_name,
+                    "description": str(skill.get("description") or matching_tools[0].get("description") or ""),
+                    "locator": "",
+                    **target_fields,
+                    "artifact_types": _infer_artifact_types(
+                        name=skill_id,
+                        description=str(skill.get("description") or ""),
+                        capability_class=_normalize_optional_text(
+                            skill.get("capability_class") or matching_tools[0].get("capability_class")
+                        ),
+                        metadata=skill,
+                    ),
+                    "declared_tool_names": _normalize_string_list(
+                        [tool.get("name") for tool in matching_tools]
+                    ),
+                    "declares_executable_tools": True,
+                    "target_tool_names": _normalize_string_list(
+                        [tool.get("name") for tool in matching_tools]
+                    ),
+                    "target_capability_classes": _normalize_string_list(
+                        [tool.get("capability_class") for tool in matching_tools]
+                    ),
+                }
+            )
+    return entries
 
 
 def _provider_type_from_skill_entry(item: dict[str, Any]) -> str:
@@ -1034,8 +1153,14 @@ def _build_skill_metadata_index(
             "group_ids": _normalize_group_ids(item.get("group_ids", [])),
             "capability_class": str(item.get("capability_class", "")).strip(),
             "priority": _normalize_priority(item.get("priority")),
-            "skill_name": _normalize_optional_text(item.get("skill_name", "")),
-            "qualified_skill_name": _normalize_optional_text(item.get("qualified_skill_name", "")),
+            "skill_name": _normalize_optional_text(
+                item.get("skill_name", ""),
+                name if _normalize_optional_text(item.get("provider_type", "")) else "",
+            ),
+            "qualified_skill_name": _normalize_optional_text(
+                item.get("qualified_skill_name", ""),
+                name if _normalize_optional_text(item.get("provider_type", "")) else "",
+            ),
             "parameters_schema": _normalize_parameters_schema(item.get("parameters_schema", {})),
             "routing_visibility": _normalize_optional_text(
                 item.get("routing_visibility", ""),

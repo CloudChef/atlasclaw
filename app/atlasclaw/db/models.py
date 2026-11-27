@@ -13,7 +13,7 @@ Models:
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, JSON, UniqueConstraint
@@ -27,6 +27,11 @@ from app.atlasclaw.db.database import Base
 def generate_uuid() -> str:
     """Generate a UUID string."""
     return str(uuid.uuid4())
+
+
+def _utcnow_naive() -> datetime:
+    """Return a naive UTC timestamp for the database's existing DateTime columns."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def _extract_role_identifiers(raw_roles: Any) -> list[str]:
@@ -377,6 +382,44 @@ class ModelUsageModel(Base):
     status: Mapped[str] = mapped_column(String(16))
     duration_ms: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
+class CapabilityModelPolicyModel(Base):
+    """Global model policy or activation override for a Provider or Skill target."""
+
+    __tablename__ = "capability_model_policies"
+    __table_args__ = (
+        UniqueConstraint(
+            "target_kind",
+            "provider_type",
+            "instance_name",
+            "skill_id",
+            name="uq_capability_model_policy_target",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=generate_uuid)
+    target_kind: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    provider_type: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    instance_name: Mapped[str] = mapped_column(String(100), nullable=False, default="")
+    skill_id: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # NULL means use the Provider's existing active state/configuration.
+    enabled: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    model_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="inherit")
+    allowed_model_refs: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    default_model_ref: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    updated_by: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=_utcnow_naive, onupdate=_utcnow_naive, nullable=False
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<CapabilityModelPolicyModel(id={self.id}, target_kind={self.target_kind}, "
+            f"provider_type={self.provider_type}, instance_name={self.instance_name}, "
+            f"skill_id={self.skill_id}, revision={self.revision})>"
+        )
 
 
 class ModelConfigModel(Base):

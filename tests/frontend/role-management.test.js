@@ -31,6 +31,14 @@ const buildProvidersPermission = (overrides = {}, managePermissions = false, ext
   provider_permissions: buildProviderPermissions(overrides, extraPermissions)
 })
 
+const buildProviderManagementPermission = (overrides = {}) => ({
+  view: false,
+  enable_disable: false,
+  configure_models: false,
+  manage_permissions: false,
+  ...overrides
+})
+
 const buildSkillPermissions = (overrides = {}) => [
   { skill_id: 'jira-manager', skill_name: 'jira-manager', description: 'Jira integration', runtime_enabled: true, authorized: true, enabled: true },
   { skill_id: 'confluence', skill_name: 'confluence', description: 'Confluence integration', runtime_enabled: true, authorized: true, enabled: true },
@@ -72,6 +80,7 @@ const installMemorySkillCatalogFetchMock = () => {
 const buildAdminPermissions = () => ({
   skills: { module_permissions: { view: true, enable_disable: true, manage_permissions: true }, allow_all: true, skill_permissions: buildSkillPermissions() },
   providers: buildProvidersPermission({}, true, [], true),
+  provider_management: buildProviderManagementPermission({ view: true, enable_disable: true, configure_models: true, manage_permissions: true }),
   channels: buildChannelsPermission({}, true, [], true),
   tokens: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
   agent_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
@@ -190,6 +199,7 @@ describe('role management page', () => {
                 permissions: {
                   skills: { module_permissions: { view: true, enable_disable: true, manage_permissions: true }, allow_all: true, skill_permissions: buildSkillPermissions() },
                   providers: buildProvidersPermission({}, true, [], true),
+                  provider_management: buildProviderManagementPermission({ view: true, enable_disable: true, configure_models: true, manage_permissions: true }),
                   channels: buildChannelsPermission({}, true, [], true),
                   tokens: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
                   agent_configs: { view: true, create: true, edit: true, delete: true, manage_permissions: true },
@@ -209,6 +219,7 @@ describe('role management page', () => {
                 permissions: {
                   skills: { module_permissions: { view: false, enable_disable: false, manage_permissions: false }, allow_all: false, skill_permissions: buildSkillPermissions() },
                   providers: buildProvidersPermission(),
+                  provider_management: buildProviderManagementPermission(),
                   channels: buildChannelsPermission(),
                   tokens: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
                   agent_configs: { view: false, create: false, edit: false, delete: false, manage_permissions: false },
@@ -241,6 +252,7 @@ describe('role management page', () => {
                       [{ provider_type: 'ghost', display_name: 'Ghost', instance_name: 'old', allowed: true }]
                     )
                   },
+                  provider_management: buildProviderManagementPermission(),
                   channels: buildChannelsPermission(
                     { feishu: { allowed: false } },
                     false,
@@ -643,6 +655,97 @@ describe('role management page', () => {
       { provider_type: 'jira', instance_name: 'prod', allowed: false }
     ])
     expect(payload.permissions.providers.provider_permissions.map(provider => provider.provider_type)).not.toContain('ghost')
+  })
+
+  test('provider_management exposes four direct permissions and saves without changing runtime grants', async () => {
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+    container.querySelector('[data-role-select="role-ops"]').click()
+    container.querySelector('[data-module-id="provider_management"]').click()
+
+    const toggles = [...container.querySelectorAll('[data-module-toggle="provider_management"][data-permission-toggle]')]
+    expect(toggles.map(toggle => toggle.getAttribute('data-permission-toggle')).sort()).toEqual([
+      'configure_models', 'enable_disable', 'manage_permissions', 'view'
+    ])
+    const configureModels = container.querySelector('[data-module-toggle="provider_management"][data-permission-toggle="configure_models"]')
+    expect(configureModels.checked).toBe(false)
+    configureModels.checked = true
+    configureModels.dispatchEvent(new Event('change', { bubbles: true }))
+
+    container.querySelector('#saveRoleChanges').click()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const putCall = global.fetch.mock.calls.find(([url, options]) => url === '/api/roles/role-ops' && options?.method === 'PUT')
+    expect(putCall).toBeDefined()
+    const payload = JSON.parse(putCall[1].body)
+    expect(payload.permissions.provider_management).toEqual({
+      view: false,
+      enable_disable: false,
+      configure_models: true,
+      manage_permissions: false
+    })
+    expect(payload.permissions.providers.provider_permissions).toEqual([
+      { provider_type: 'smartcmp', instance_name: 'default', allowed: true },
+      { provider_type: 'jira', instance_name: 'prod', allowed: false }
+    ])
+    expect(payload.permissions.skills.skill_permissions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ skill_id: 'jira-manager', authorized: true, enabled: true }),
+      expect.objectContaining({ skill_id: 'confluence', authorized: false, enabled: false })
+    ]))
+  })
+
+  test('builtin admin provider_management rights are read-only', async () => {
+    const page = await import('../../app/frontend/scripts/pages/role-management.js')
+    const container = document.getElementById('page-root')
+
+    await page.mount(container)
+    container.querySelector('[data-role-select="role-admin"]').click()
+    container.querySelector('[data-module-id="provider_management"]').click()
+
+    const toggles = [...container.querySelectorAll('[data-module-toggle="provider_management"][data-permission-toggle]')]
+    expect(toggles.map(toggle => toggle.getAttribute('data-permission-toggle')).sort()).toEqual([
+      'configure_models', 'enable_disable', 'manage_permissions', 'view'
+    ])
+    expect(toggles.every(toggle => toggle.disabled)).toBe(true)
+    expect(toggles.every(toggle => toggle.checked)).toBe(true)
+  })
+
+  test('builtin user provider management rights require module permission governance', async () => {
+    mockCheckAuthUser = {
+      username: 'role-viewer',
+      is_admin: false,
+      permissions: { roles: { view: true, create: false, edit: false, delete: false, manage_permissions: false } }
+    }
+    let page = await import('../../app/frontend/scripts/pages/role-management.js')
+    let container = document.getElementById('page-root')
+    await page.mount(container)
+    container.querySelector('[data-role-select="role-user"]').click()
+    container.querySelector('[data-module-id="provider_management"]').click()
+    expect([...container.querySelectorAll('[data-module-toggle="provider_management"][data-permission-toggle]')].every(toggle => toggle.disabled)).toBe(true)
+    await page.unmount()
+
+    mockCheckAuthUser = {
+      username: 'provider-management-governor',
+      is_admin: false,
+      permissions: { provider_management: { manage_permissions: true } }
+    }
+    page = await import('../../app/frontend/scripts/pages/role-management.js')
+    container = document.getElementById('page-root')
+    await page.mount(container)
+    container.querySelector('[data-role-select="role-user"]').click()
+    container.querySelector('[data-module-id="provider_management"]').click()
+    const configureModels = container.querySelector('[data-module-toggle="provider_management"][data-permission-toggle="configure_models"]')
+    expect(configureModels.disabled).toBe(false)
+    configureModels.checked = true
+    configureModels.dispatchEvent(new Event('change', { bubbles: true }))
+    container.querySelector('#saveRoleChanges').click()
+    await new Promise(resolve => setTimeout(resolve, 0))
+
+    const putCall = global.fetch.mock.calls.find(([url, options]) => url === '/api/roles/role-user' && options?.method === 'PUT')
+    expect(putCall).toBeDefined()
+    expect(JSON.parse(putCall[1].body).permissions.provider_management.configure_models).toBe(true)
   })
 
   test('channels module saves explicit channel type allowlist', async () => {

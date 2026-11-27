@@ -233,6 +233,8 @@ def test_collect_tools_snapshot_infers_provider_capability_from_skills_snapshot(
             "description": "Search Jira issues",
             "provider_type": "jira",
             "category": "provider",
+            "skill_name": "jira_search",
+            "qualified_skill_name": "jira_search",
             "capability_class": "provider:jira",
         }
     ]

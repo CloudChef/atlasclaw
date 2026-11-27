@@ -147,13 +147,31 @@ class ProviderVisualRuntime:
     broader ``AgentRunner`` or request dependency graph.
     """
 
-    def __init__(self, agent_runner: Any) -> None:
-        """Capture the active model without exposing AgentRunner internals to providers."""
+    def __init__(
+        self,
+        agent_runner: Any,
+        *,
+        binding_resolver: Any = None,
+        authz: Any = None,
+        provider_type: str = "",
+        provider_instance: str = "",
+        user_id: str = "",
+        skill_registry: Any = None,
+        admission: Any = None,
+    ) -> None:
+        """Capture compatibility defaults and trusted identity for dynamic routing."""
+        self._agent_runner = agent_runner
+        self._binding_resolver = binding_resolver
+        self._authz = authz
+        self._provider_type = str(provider_type or "").strip().lower()
+        self._provider_instance = str(provider_instance or "").strip()
+        self._user_id = str(user_id or "").strip()
+        self._skill_registry = skill_registry
+        self._admission = admission
         agent = getattr(agent_runner, "agent", None)
         self._model = getattr(agent, "model", None)
         self._model_settings = getattr(agent, "model_settings", None)
         self.model_name = str(getattr(self._model, "model_name", "") or "").strip()
-        self._agents: dict[str, Agent[Any, str]] = {}
 
     @property
     def available(self) -> bool:
@@ -162,14 +180,200 @@ class ProviderVisualRuntime:
         This indicates model presence only; provider-specific format capability is
         still validated by the provider converter.
         """
-        return self._model is not None
+        return self._binding_resolver is not None or self._model is not None
+
+    async def _refresh_current_authorization_context(self) -> Any:
+        """Reload committed grants before each bridge call when a DB is available."""
+        authz = self._authz
+        user = getattr(authz, "user", None) if authz is not None else None
+        if user is None:
+            return authz
+        from fastapi import HTTPException
+
+        from app.atlasclaw.auth.guards import resolve_authorization_context
+        from app.atlasclaw.db import get_db_manager
+
+        try:
+            manager = get_db_manager()
+            if not manager.is_initialized:
+                return authz
+            async with manager.get_session() as session:
+                return await resolve_authorization_context(session, user)
+        except HTTPException as exc:
+            if exc.status_code in {401, 403}:
+                raise ProviderHttpRuntimeError(
+                    "Provider authorization is no longer valid",
+                    status_code=exc.status_code,
+                    code="provider_model_authz_denied",
+                ) from exc
+            raise ProviderHttpRuntimeError(
+                "Provider authorization could not be refreshed",
+                status_code=503,
+                code="provider_model_authz_unavailable",
+            ) from exc
+        except Exception as exc:
+            raise ProviderHttpRuntimeError(
+                "Provider authorization could not be refreshed",
+                status_code=503,
+                code="provider_model_authz_unavailable",
+            ) from exc
+
+    def _canonical_provider_skill(self, skill_id: str, *, authz: Any) -> str:
+        """Validate a bridge Skill ID against the trusted Provider registry."""
+        requested = str(skill_id or "").strip()
+        if not requested:
+            return ""
+        if self._skill_registry is None or not self._provider_type:
+            raise ProviderHttpRuntimeError(
+                "Provider Skill identity is unavailable",
+                status_code=503,
+                code="provider_skill_context_unavailable",
+            )
+        from app.atlasclaw.auth.guards import has_provider_instance_access
+        from app.atlasclaw.skills.permission_service import skill_permission_service
+
+        if authz is None or not has_provider_instance_access(
+            authz, self._provider_type, self._provider_instance
+        ):
+            raise ProviderHttpRuntimeError(
+                "Provider Skill permission denied",
+                status_code=403,
+                code="provider_skill_permission_denied",
+            )
+        canonical = ""
+        for entry in self._skill_registry.md_snapshot():
+            if not isinstance(entry, dict):
+                continue
+            qualified = str(entry.get("qualified_name") or "").strip()
+            if qualified.lower() != requested.lower():
+                continue
+            if skill_permission_service.provider_type_from_md_skill_snapshot(entry) != self._provider_type:
+                continue
+            canonical = qualified
+            break
+        if not canonical:
+            raise ProviderHttpRuntimeError(
+                f"Provider Skill is unavailable: {requested}",
+                status_code=404,
+                code="provider_skill_unavailable",
+            )
+        return canonical
+
+    async def _acquire_model(
+        self,
+        *,
+        skill_id: str,
+        required_capabilities: dict[str, Any],
+    ) -> tuple[Any, Any, Any, Any, Any]:
+        """Resolve a trusted binding, acquire its slot, and return call-local metering data."""
+        if self._binding_resolver is None:
+            if self._model is None:
+                return None, None, None, None, None
+            return self._model, self._model_settings, None, None, None
+
+        from app.atlasclaw.core.model_bindings import BindingTarget, ProviderAdmission
+
+        authz = await self._refresh_current_authorization_context()
+        if authz is None:
+            raise ProviderHttpRuntimeError(
+                "Authenticated Provider context is required for model routing",
+                status_code=403,
+                code="provider_model_authz_required",
+            )
+        canonical_skill = self._canonical_provider_skill(skill_id, authz=authz) if skill_id else ""
+        authz_user_id = str(getattr(getattr(authz, "user", None), "user_id", "") or "")
+        if self._user_id and authz_user_id != self._user_id:
+            raise ProviderHttpRuntimeError(
+                "Provider model user context is invalid",
+                status_code=403,
+                code="provider_model_authz_mismatch",
+            )
+        target = (
+            BindingTarget(
+                kind="provider_skill",
+                provider_type=self._provider_type,
+                instance_name=self._provider_instance,
+                skill_id=canonical_skill,
+            )
+            if canonical_skill
+            else BindingTarget(
+                kind="provider",
+                provider_type=self._provider_type,
+                instance_name=self._provider_instance,
+            )
+        )
+        selection = await self._binding_resolver.resolve(
+            target,
+            authz=authz,
+            required_capabilities=required_capabilities,
+            admission=self._admission,
+        )
+        token = getattr(selection, "token", None)
+        runner = self._agent_runner
+        pool = getattr(runner, "agent_pool", None)
+        factory = getattr(runner, "agent_factory", None)
+        if token is None or pool is None or not callable(factory):
+            raise ProviderHttpRuntimeError(
+                "A configured Provider model is required for this operation",
+                status_code=503,
+                code="provider_model_unavailable",
+            )
+        instance = await pool.get_or_create(
+            str(getattr(runner, "agent_id", "main") or "main"), token, factory
+        )
+        semaphore = getattr(instance, "concurrency_sem", None)
+        if semaphore is not None:
+            await semaphore.acquire()
+        selected_agent = getattr(instance, "agent", None)
+        selected_model = getattr(selected_agent, "model", None)
+        if selected_model is None:
+            if semaphore is not None:
+                semaphore.release()
+            raise ProviderHttpRuntimeError(
+                "A configured Provider model is required for this operation",
+                status_code=503,
+                code="provider_model_unavailable",
+            )
+        from app.atlasclaw.auth.models import UserInfo
+        from app.atlasclaw.core.deps import SkillDeps
+
+        admission = self._admission
+        admitted_run_id = ""
+        if (
+            isinstance(admission, ProviderAdmission)
+            and admission.provider_type.strip().lower() == self._provider_type
+            and admission.instance_name.strip() == self._provider_instance
+            and admission.user_id == authz_user_id
+        ):
+            admitted_run_id = str(admission.run_id or "").strip()
+        # Only copy the canonical actor identifier into model-call dependencies.
+        # Browser credentials and authorization metadata are not needed by the
+        # usage meter and must not enter the narrow bridge Agent context.
+        usage_deps = SkillDeps(
+            user_info=UserInfo(user_id=authz_user_id),
+            session_key=(
+                f"provider-http:{admitted_run_id}"
+                if admitted_run_id
+                else f"provider-http:{self._provider_type}:{self._provider_instance}"
+            ),
+            channel="provider_http",
+            extra={"run_id": admitted_run_id} if admitted_run_id else {},
+        )
+        return (
+            selected_model,
+            getattr(selected_agent, "model_settings", None),
+            semaphore,
+            token,
+            usage_deps,
+        )
 
     async def run_visual(
         self,
         *,
         prompt: str,
         system_prompt: str,
-        timeout_seconds: float,
+        timeout_seconds: float | None = None,
+        skill_id: str = "",
         data: bytes | None = None,
         media_type: str | None = None,
         identifier: str = "",
@@ -178,14 +382,14 @@ class ProviderVisualRuntime:
         """Run one provider-supplied visual prompt with the active Agent model.
 
         The provider owns extraction semantics and prompts. Core owns only model access,
-        timeout enforcement, and the binary-input transport used by Pydantic AI.
+        optional timeout enforcement, and the binary-input transport used by Pydantic AI.
 
         Args:
             data: Legacy single binary image supplied by the provider.
             media_type: MIME type for the legacy single image.
             prompt: Provider-owned task prompt for this asset.
             system_prompt: Provider-owned system contract used to cache a narrow agent.
-            timeout_seconds: Remaining provider request budget for this model call.
+            timeout_seconds: Optional remaining provider request budget for this model call.
             identifier: Safe legacy image label included in diagnostic errors.
             images: Ordered image dictionaries with data, media_type, and identifier.
 
@@ -193,93 +397,123 @@ class ProviderVisualRuntime:
             Text output produced by the active model.
 
         Raises:
-            ProviderHttpRuntimeError: If no model is configured, the deadline expires,
+            ProviderHttpRuntimeError: If no model is configured, the configured deadline expires,
                 or visual model execution fails.
         """
-        if self._model is None:
+        model, model_settings, semaphore, usage_token, usage_deps = await self._acquire_model(
+            skill_id=skill_id,
+            required_capabilities={"vision": True},
+        )
+        if model is None:
             raise ProviderHttpRuntimeError(
                 "A visual-capable Agent model is required for this provider operation",
                 status_code=503,
                 code="visual_model_unavailable",
             )
-        visual_agent = self._agents.get(system_prompt)
-        if visual_agent is None:
+        try:
+            agent_options: dict[str, Any] = {}
+            if usage_token is not None and usage_deps is not None:
+                from app.atlasclaw.agent.model_usage import build_usage_hooks
+                from app.atlasclaw.core.deps import SkillDeps
+
+                agent_options.update(
+                    deps_type=SkillDeps,
+                    capabilities=[build_usage_hooks(usage_token)],
+                )
+            visual_model_settings = dict(model_settings or {})
+            # Match text bridging: provider-owned long-running work must not inherit
+            # a finite transport timeout from the host Agent configuration.
+            visual_model_settings["timeout"] = None
             visual_agent = Agent(
-                self._model,
+                model,
                 output_type=str,
                 system_prompt=system_prompt,
-                model_settings=self._model_settings,
+                model_settings=visual_model_settings,
                 retries=1,
+                **agent_options,
             )
-            self._agents[system_prompt] = visual_agent
-        parts: list[Any] = [prompt]
-        image_labels: list[str] = []
-        if images is not None:
-            if not images:
+            parts: list[Any] = [prompt]
+            image_labels: list[str] = []
+            if images is not None:
+                if not images:
+                    raise ProviderHttpRuntimeError(
+                        "At least one visual image is required",
+                        status_code=422,
+                        code="visual_input_missing",
+                    )
+                for image in images:
+                    if not isinstance(image, dict):
+                        raise ProviderHttpRuntimeError(
+                            "Visual image input is invalid",
+                            status_code=422,
+                            code="visual_input_invalid",
+                        )
+                    image_data = image.get("data")
+                    image_type = image.get("media_type")
+                    image_id = str(image.get("identifier") or "image")
+                    if not isinstance(image_data, bytes) or not isinstance(image_type, str) or not image_type:
+                        raise ProviderHttpRuntimeError(
+                            "Visual image input is invalid",
+                            status_code=422,
+                            code="visual_input_invalid",
+                        )
+                    parts.extend([
+                        f"图像标识：{image_id}",
+                        BinaryContent(data=image_data, media_type=image_type, identifier=image_id),
+                    ])
+                    image_labels.append(image_id)
+            elif isinstance(data, bytes) and isinstance(media_type, str) and media_type:
+                label = identifier or "image"
+                parts.append(BinaryContent(data=data, media_type=media_type, identifier=label))
+                image_labels.append(label)
+            else:
                 raise ProviderHttpRuntimeError(
                     "At least one visual image is required",
                     status_code=422,
                     code="visual_input_missing",
                 )
-            for image in images:
-                if not isinstance(image, dict):
+            error_identifier = ", ".join(image_labels) or identifier or "images"
+
+            async def run_with_optional_timeout(request):
+                if timeout_seconds is None:
+                    return await request
+                return await asyncio.wait_for(request, timeout=max(float(timeout_seconds), 0.1))
+
+            try:
+                if usage_token is not None and usage_deps is not None:
+                    from app.atlasclaw.agent.model_usage import usage_action
+
+                    with usage_action("provider_bridge_visual"):
+                        result = await run_with_optional_timeout(
+                            visual_agent.run(parts, deps=usage_deps)
+                        )
+                else:
+                    result = await run_with_optional_timeout(visual_agent.run(parts))
+                finish_reason = _last_visual_finish_reason(result.new_messages())
+                if finish_reason in {"length", "content_filter", "error"}:
                     raise ProviderHttpRuntimeError(
-                        "Visual image input is invalid",
-                        status_code=422,
-                        code="visual_input_invalid",
+                        f"Provider visual model response is incomplete (finish_reason={finish_reason})",
+                        status_code=502,
+                        code="visual_model_incomplete",
                     )
-                image_data = image.get("data")
-                image_type = image.get("media_type")
-                image_id = str(image.get("identifier") or "image")
-                if not isinstance(image_data, bytes) or not isinstance(image_type, str) or not image_type:
-                    raise ProviderHttpRuntimeError(
-                        "Visual image input is invalid",
-                        status_code=422,
-                        code="visual_input_invalid",
-                    )
-                parts.extend([
-                    f"图像标识：{image_id}",
-                    BinaryContent(data=image_data, media_type=image_type, identifier=image_id),
-                ])
-                image_labels.append(image_id)
-        elif isinstance(data, bytes) and isinstance(media_type, str) and media_type:
-            label = identifier or "image"
-            parts.append(BinaryContent(data=data, media_type=media_type, identifier=label))
-            image_labels.append(label)
-        else:
-            raise ProviderHttpRuntimeError(
-                "At least one visual image is required",
-                status_code=422,
-                code="visual_input_missing",
-            )
-        error_identifier = ", ".join(image_labels) or identifier or "images"
-        try:
-            result = await asyncio.wait_for(
-                visual_agent.run(parts),
-                timeout=max(float(timeout_seconds), 0.1),
-            )
-            finish_reason = _last_visual_finish_reason(result.new_messages())
-            if finish_reason in {"length", "content_filter", "error"}:
+            except TimeoutError as exc:
                 raise ProviderHttpRuntimeError(
-                    f"Provider visual model response is incomplete (finish_reason={finish_reason})",
+                    f"Provider visual processing timed out for {error_identifier}",
+                    status_code=504,
+                    code="visual_model_timeout",
+                ) from exc
+            except ProviderHttpRuntimeError:
+                raise
+            except Exception as exc:
+                raise ProviderHttpRuntimeError(
+                    f"Provider visual processing failed for {error_identifier}: {type(exc).__name__}",
                     status_code=502,
-                    code="visual_model_incomplete",
-                )
-        except TimeoutError as exc:
-            raise ProviderHttpRuntimeError(
-                f"Provider visual processing timed out for {error_identifier}",
-                status_code=504,
-                code="visual_model_timeout",
-            ) from exc
-        except ProviderHttpRuntimeError:
-            raise
-        except Exception as exc:
-            raise ProviderHttpRuntimeError(
-                f"Provider visual processing failed for {error_identifier}: {type(exc).__name__}",
-                status_code=502,
-                code="visual_model_failed",
-            ) from exc
-        return str(result.output or "")
+                    code="visual_model_failed",
+                ) from exc
+            return str(result.output or "")
+        finally:
+            if semaphore is not None:
+                semaphore.release()
 
     async def run_text(
         self,
@@ -287,6 +521,7 @@ class ProviderVisualRuntime:
         prompt: str,
         system_prompt: str,
         timeout_seconds: float | None = None,
+        skill_id: str = "",
     ) -> str:
         """Run one provider-supplied text task directly on the active Core model.
 
@@ -297,28 +532,52 @@ class ProviderVisualRuntime:
             raise ProviderHttpRuntimeError(
                 "Provider text input is invalid", status_code=422, code="text_input_invalid"
             )
-        if self._model is None:
+        model, model_settings, semaphore, usage_token, usage_deps = await self._acquire_model(
+            skill_id=skill_id,
+            required_capabilities={},
+        )
+        if model is None:
             raise ProviderHttpRuntimeError(
                 "A configured Agent model is required for this provider operation",
                 status_code=503,
                 code="text_model_unavailable",
             )
         try:
-            text_model_settings = dict(self._model_settings or {})
+            text_model_settings = dict(model_settings or {})
             # The SDK's shared HTTP client has a finite platform default. Disable
             # the request-level timeout for this provider-owned long-running text call.
             text_model_settings["timeout"] = None
+            agent_options: dict[str, Any] = {}
+            if usage_token is not None and usage_deps is not None:
+                from app.atlasclaw.agent.model_usage import build_usage_hooks
+                from app.atlasclaw.core.deps import SkillDeps
+
+                agent_options.update(
+                    deps_type=SkillDeps,
+                    capabilities=[build_usage_hooks(usage_token)],
+                )
             text_agent = Agent(
-                self._model,
+                model,
                 output_type=str,
                 system_prompt=system_prompt,
                 model_settings=text_model_settings,
+                **agent_options,
             )
-            request = text_agent.run(prompt)
-            if timeout_seconds is None:
-                result = await request
+            if usage_token is not None and usage_deps is not None:
+                from app.atlasclaw.agent.model_usage import usage_action
+
+                with usage_action("provider_bridge_text"):
+                    request = text_agent.run(prompt, deps=usage_deps)
+                    if timeout_seconds is None:
+                        result = await request
+                    else:
+                        result = await asyncio.wait_for(request, timeout=float(timeout_seconds))
             else:
-                result = await asyncio.wait_for(request, timeout=float(timeout_seconds))
+                request = text_agent.run(prompt)
+                if timeout_seconds is None:
+                    result = await request
+                else:
+                    result = await asyncio.wait_for(request, timeout=float(timeout_seconds))
             finish_reason = _last_visual_finish_reason(result.new_messages())
             if finish_reason in {"length", "content_filter", "error"}:
                 raise ProviderHttpRuntimeError(
@@ -347,6 +606,9 @@ class ProviderVisualRuntime:
                 status_code=502,
                 code="text_model_failed",
             ) from exc
+        finally:
+            if semaphore is not None:
+                semaphore.release()
         output = str(result.output or "")
         if not output.strip():
             raise ProviderHttpRuntimeError(
@@ -411,7 +673,8 @@ class ProviderHttpContext:
         *,
         prompt: str,
         system_prompt: str,
-        timeout_seconds: float,
+        timeout_seconds: float | None = None,
+        skill_id: str = "",
         data: bytes | None = None,
         media_type: str | None = None,
         identifier: str = "",
@@ -422,7 +685,7 @@ class ProviderHttpContext:
         Args:
             prompt: Provider-owned prompt for the asset.
             system_prompt: Provider-owned conversion contract.
-            timeout_seconds: Remaining request budget for the model call.
+            timeout_seconds: Optional remaining request budget for the model call.
             data: Legacy provider-validated binary image or rendered page.
             media_type: MIME type for the legacy single image.
             identifier: Safe legacy asset label used in errors.
@@ -445,6 +708,7 @@ class ProviderHttpContext:
             prompt=prompt,
             system_prompt=system_prompt,
             timeout_seconds=timeout_seconds,
+            skill_id=skill_id,
             data=data,
             media_type=media_type,
             identifier=identifier,
@@ -452,7 +716,12 @@ class ProviderHttpContext:
         )
 
     async def run_text(
-        self, *, prompt: str, system_prompt: str, timeout_seconds: float | None = None
+        self,
+        *,
+        prompt: str,
+        system_prompt: str,
+        timeout_seconds: float | None = None,
+        skill_id: str = "",
     ) -> str:
         """Delegate one provider text task through Core's model bridge."""
         if self.visual_runtime is None:
@@ -462,7 +731,10 @@ class ProviderHttpContext:
                 code="text_model_unavailable",
             )
         return await self.visual_runtime.run_text(
-            prompt=prompt, system_prompt=system_prompt, timeout_seconds=timeout_seconds
+            prompt=prompt,
+            system_prompt=system_prompt,
+            timeout_seconds=timeout_seconds,
+            skill_id=skill_id,
         )
 
 

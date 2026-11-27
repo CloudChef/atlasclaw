@@ -13,7 +13,6 @@ from fastapi import HTTPException, Request, status
 from ..agent.routing import AgentRouter
 from ..agent.selected_capability import (
     SELECTED_CAPABILITY_KEY,
-    get_selected_capability_from_extra,
     selected_capability_provider_instance_ref,
 )
 from ..auth.guards import has_provider_instance_access
@@ -291,6 +290,7 @@ class APIContext:
     agent_runners: dict[str, Any] | None = None
     agent_router: Optional[AgentRouter] = None
     service_provider_registry: Optional[Any] = None
+    model_binding_resolver: Optional[Any] = None
     available_providers: dict[str, list[str]] = None
     provider_instances: dict[str, dict[str, dict[str, Any]]] = None
     webhook_manager: Optional[WebhookDispatchManager] = None
@@ -506,6 +506,9 @@ def build_scoped_deps(
     request_cookies: Optional[dict[str, str]] = None,
     provider_config: Optional[dict[str, Any]] = None,
     extra: Optional[dict[str, Any]] = None,
+    authorization_context: Any = None,
+    provider_admission: Any = None,
+    selected_capability: Optional[dict[str, Any]] = None,
 ) -> SkillDeps:
     """Build request-scoped dependencies for one authenticated agent run.
 
@@ -521,7 +524,28 @@ def build_scoped_deps(
     Returns:
         A fully resolved dependency container for the agent and its tools.
     """
-    _extra = extra or {}
+    reserved_prefixes = (
+        "_trusted_provider_",
+        "_provider_admission",
+        "_authorization_context",
+        "_selected_capability",
+        "_skill_stage_",
+        "_binding_",
+        "_current_binding_",
+    )
+    _extra = dict(extra or {})
+    _extra = {
+        key: value
+        for key, value in _extra.items()
+        if not str(key).strip().lower().startswith(reserved_prefixes)
+    }
+    nested_context = _extra.get("context")
+    if isinstance(nested_context, dict):
+        _extra["context"] = {
+            key: value
+            for key, value in nested_context.items()
+            if not str(key).strip().lower().startswith(reserved_prefixes)
+        }
     runtime_context_source = (
         dict(getattr(user_info, "extra", {}))
         if isinstance(getattr(user_info, "extra", {}), dict)
@@ -575,7 +599,14 @@ def build_scoped_deps(
         if isinstance(provider_config, dict) and provider_config
         else (ctx.provider_instances or {})
     )
-    provider_permissions = _get_provider_permissions_from_extra(_extra)
+    authz_permissions = getattr(authorization_context, "permissions", None)
+    authz_permissions = authz_permissions if isinstance(authz_permissions, dict) else {}
+    provider_section = authz_permissions.get("providers", {})
+    provider_permissions = (
+        provider_section.get("provider_permissions", [])
+        if isinstance(provider_section, dict) and provider_section.get("allow_all") is not True
+        else None
+    ) if authorization_context is not None else _get_provider_permissions_from_extra(_extra)
     visible_provider_instances = _filter_provider_instances_by_permissions(
         base_provider_instances,
         provider_permissions,
@@ -610,8 +641,13 @@ def build_scoped_deps(
 
     # Apply user skill permission filtering if provided via request context.
     # Sentinel: None = no RBAC (no-DB mode), list = RBAC resolved.
-    user_skill_permissions = _extra.get("_user_skill_permissions")
-    if user_skill_permissions is None:
+    skills_section = authz_permissions.get("skills", {})
+    user_skill_permissions = (
+        skills_section.get("skill_permissions", [])
+        if isinstance(skills_section, dict) and skills_section.get("allow_all") is not True
+        else None
+    ) if authorization_context is not None else _extra.get("_user_skill_permissions")
+    if authorization_context is None and user_skill_permissions is None:
         _ctx = _extra.get("context")
         if isinstance(_ctx, dict):
             user_skill_permissions = _ctx.get("_user_skill_permissions")
@@ -754,10 +790,27 @@ def build_scoped_deps(
                     _d_ids.add(_sid)
         if _d_ids:
             deps_extra["_disabled_skill_ids"] = _d_ids
-    if extra:
-        deps_extra.update(extra)
-    selected_capability = get_selected_capability_from_extra(deps_extra)
-    if selected_capability:
+    if _extra:
+        deps_extra.update(_extra)
+    # Public/nested request context cannot create trusted routing state. These
+    # values enter only through server-only arguments after route validation.
+    if authorization_context is not None:
+        deps_extra["_authorization_context"] = authorization_context
+    if provider_admission is not None:
+        from ..core.model_bindings import ProviderAdmission
+
+        if (
+            not isinstance(provider_admission, ProviderAdmission)
+            or str(provider_admission.user_id) != str(user_info.user_id)
+            or str(provider_admission.run_id) != str(deps_extra.get("run_id") or "")
+        ):
+            raise ValueError("Provider admission context does not match the scoped run")
+        deps_extra["_provider_admissions"] = {
+            f"{provider_admission.provider_type}.{provider_admission.instance_name}": provider_admission
+        }
+        deps_extra["_trusted_provider_type"] = provider_admission.provider_type
+        deps_extra["_trusted_provider_instance"] = provider_admission.instance_name
+    if isinstance(selected_capability, dict):
         deps_extra[SELECTED_CAPABILITY_KEY] = dict(selected_capability)
         provider_type, instance_name = selected_capability_provider_instance_ref(
             selected_capability

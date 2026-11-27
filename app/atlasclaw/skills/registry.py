@@ -120,6 +120,7 @@ class SkillMetadata(BaseModel):
     description: str = ""
     category: str = "utility"
     requires_auth: bool = False
+    requires_vision: bool = False
     timeout_seconds: int = 30
     location: str = "built-in"
     provider_type: Optional[str] = None
@@ -271,6 +272,7 @@ class SkillRegistry:
                 "location": meta.location,
                 "provider_type": meta.provider_type,
                 "instance_required": meta.instance_required,
+                "requires_vision": bool(meta.requires_vision),
                 "source": meta.source,
                 "group_ids": list(meta.group_ids),
                 "capability_class": meta.capability_class,
@@ -312,6 +314,7 @@ class SkillRegistry:
                 "location": meta.location,
                 "provider_type": meta.provider_type,
                 "instance_required": meta.instance_required,
+                "requires_vision": bool(meta.requires_vision),
                 "source": meta.source,
                 "group_ids": list(meta.group_ids),
                 "capability_class": meta.capability_class,
@@ -350,6 +353,7 @@ class SkillRegistry:
                 "name": meta.name,
                 "description": meta.description,
                 "source": source,
+                "requires_vision": bool(meta.requires_vision),
                 "provider_type": provider_type,
                 "group_ids": group_ids,
                 "capability_class": capability_class,
@@ -385,6 +389,7 @@ class SkillRegistry:
                     "name": meta.name,
                     "description": meta.description,
                     "source": "internal_runtime",
+                    "requires_vision": bool(meta.requires_vision),
                     "category": meta.category,
                     "group_ids": list(meta.group_ids or []),
                     "capability_class": meta.capability_class,
@@ -898,10 +903,8 @@ single MD Skill.
         }
 
         provider_name = str(metadata.get("provider_type", "")).strip() or (provider or "").strip()
-        # Provider-owned skills that run on the standard skill runtime (scripts)
-        # opt out of provider-bound execution and are addressed by their bare name.
-        if str(metadata.get("execution", "")).strip().lower() == "standard":
-            provider_name = ""
+        # Provider ownership determines the canonical identity and authorization
+        # scope. Execution mode is evaluated separately by the runtime.
         qualified_name = f"{provider_name}:{name}" if provider_name else name
         if not self._matches_allowed_skill_names(
             allowed_skill_names,

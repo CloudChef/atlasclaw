@@ -35,3 +35,4 @@ lark-oapi>=1.7.5
 dingtalk-stream>=0.24.3
 wecom-aibot-sdk>=1.0.8
 qrcode[pil]>=8.2
+pywin32>=306; sys_platform == "win32"

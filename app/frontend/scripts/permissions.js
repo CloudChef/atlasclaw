@@ -11,7 +11,8 @@ export const ROLE_MANAGEMENT_ACCESS_PERMISSIONS = [
   'roles.create',
   'roles.edit',
   'roles.delete',
-  'roles.manage_permissions'
+  'roles.manage_permissions',
+  'provider_management.manage_permissions'
 ]
 
 export const USER_MANAGEMENT_ACCESS_PERMISSIONS = [
@@ -32,6 +33,8 @@ export const MODEL_MANAGEMENT_ACCESS_PERMISSIONS = [
   'model_configs.edit',
   'model_configs.delete'
 ]
+
+export const PROVIDER_MANAGEMENT_ACCESS_PERMISSIONS = ['provider_management.view']
 
 function normalizePermissionPath(permissionPath) {
   const parts = String(permissionPath || '')
@@ -101,4 +104,8 @@ export function canAccessChannelManagement(authInfo) {
 
 export function canAccessModelManagement(authInfo) {
   return hasAnyPermission(authInfo, MODEL_MANAGEMENT_ACCESS_PERMISSIONS)
+}
+
+export function canAccessProviderManagement(authInfo) {
+  return hasAnyPermission(authInfo, PROVIDER_MANAGEMENT_ACCESS_PERMISSIONS)
 }

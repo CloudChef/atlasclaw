@@ -16,6 +16,9 @@ from app.atlasclaw.core.provider_http_runtime import (
     ProviderHttpRuntimeError,
     ProviderVisualRuntime,
 )
+from app.atlasclaw.auth.guards import AuthorizationContext
+from app.atlasclaw.auth.models import UserInfo
+from app.atlasclaw.core.token_pool import TokenEntry
 
 
 class _AgentRunResult:
@@ -32,7 +35,7 @@ class _VisualAgent:
         self.result = result
         self.received = None
 
-    async def run(self, parts):
+    async def run(self, parts, deps=None):
         self.received = parts
         return self.result
 
@@ -78,7 +81,7 @@ async def test_visual_runtime_sends_multiple_images_in_order_and_inherits_model_
     assert visual_agent.received[4].identifier == "page-2"
     assert visual_agent.received[4].data == b"two"
     assert captured["model_settings"] == {
-        "max_tokens": 49152, "extra_body": {"reasoning": {"effort": "low"}},
+        "max_tokens": 49152, "extra_body": {"reasoning": {"effort": "low"}}, "timeout": None,
     }
 
 
@@ -95,6 +98,42 @@ async def test_visual_runtime_preserves_legacy_single_image_call(monkeypatch: py
     assert len(visual_agent.received) == 2
     assert visual_agent.received[1].identifier == "page-7"
     assert visual_agent.received[1].data == b"legacy"
+
+
+@pytest.mark.asyncio
+async def test_visual_runtime_with_no_timeout_awaits_directly(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime, visual_agent, captured = _runtime(monkeypatch, _AgentRunResult("ok", "stop"))
+
+    async def reject_wait_for(*_args, **_kwargs):
+        pytest.fail("no-timeout visual calls must not use asyncio.wait_for")
+
+    monkeypatch.setattr(visual_runtime_module.asyncio, "wait_for", reject_wait_for)
+    result = await runtime.run_visual(
+        images=[{"data": b"page", "media_type": "image/png", "identifier": "page-1"}],
+        prompt="Review", system_prompt="visual system",
+    )
+
+    assert result == "ok"
+    assert len(visual_agent.received) == 3
+    assert captured["model_settings"]["timeout"] is None
+
+
+@pytest.mark.asyncio
+async def test_visual_runtime_explicit_timeout_still_maps_to_504(monkeypatch: pytest.MonkeyPatch) -> None:
+    runtime, visual_agent, _captured = _runtime(monkeypatch, _AgentRunResult("ok", "stop"))
+
+    async def wait_forever(_parts):
+        await asyncio.sleep(5)
+
+    visual_agent.run = wait_forever
+    with pytest.raises(ProviderHttpRuntimeError) as exc:
+        await runtime.run_visual(
+            data=b"page", media_type="image/png", prompt="Review", system_prompt="visual system",
+            timeout_seconds=0.01,
+        )
+
+    assert exc.value.status_code == 504
+    assert exc.value.code == "visual_model_timeout"
 
 
 @pytest.mark.asyncio
@@ -116,6 +155,36 @@ async def test_http_context_forwards_multiple_images_to_visual_runtime(
     assert result == "ok"
     assert visual_agent.received[1] == "图像标识：page-4"
     assert visual_agent.received[2].identifier == "page-4"
+
+
+@pytest.mark.asyncio
+async def test_http_context_forwards_no_visual_timeout() -> None:
+    class Runtime:
+        def __init__(self):
+            self.timeout_seconds = "unset"
+
+        @property
+        def available(self):
+            return True
+
+        async def run_visual(self, **kwargs):
+            self.timeout_seconds = kwargs["timeout_seconds"]
+            return "ok"
+
+    runtime = Runtime()
+    context = ProviderHttpContext(
+        provider_type="audit-report", provider_instance="default", provider_config={},
+        path_params={}, user_id="user", tenant_id="tenant", is_admin=False,
+        visual_runtime=runtime,
+    )
+
+    result = await context.run_visual(
+        images=[{"data": b"page", "media_type": "image/png", "identifier": "page-1"}],
+        prompt="Review", system_prompt="visual system", timeout_seconds=None,
+    )
+
+    assert result == "ok"
+    assert runtime.timeout_seconds is None
 
 
 @pytest.mark.asyncio
@@ -142,7 +211,7 @@ class _TextAgent:
         self.finish_reason = finish_reason
         self.calls = []
 
-    async def run(self, prompt):
+    async def run(self, prompt, deps=None):
         self.calls.append(prompt)
         return _AgentRunResult(self.output, self.finish_reason)
 
@@ -186,6 +255,134 @@ async def test_context_run_text_uses_one_core_model_call_and_inherits_settings_w
     assert text_agent.calls == ["Return one synthetic report stage."]
     assert captured["model_settings"] == {**model_settings, "timeout": None}
     assert "retries" not in captured
+
+
+@pytest.mark.asyncio
+async def test_provider_bridge_resolves_bound_skill_and_uses_fresh_selected_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, text_agent, captured, _settings = _text_runtime(monkeypatch)
+    credential = TokenEntry(
+        token_id="bound-token", provider="openai", model="bound-model",
+        base_url="https://example.invalid/v1", api_key="fresh-secret",
+    )
+    selected_model = object()
+    authz = AuthorizationContext(
+        user=UserInfo(user_id="alice"),
+        permissions={
+            "skills": {"allow_all": False, "skill_permissions": []},
+            "providers": {
+                "allow_all": False,
+                "provider_permissions": [{
+                    "provider_type": "audit-report", "instance_name": "default", "allowed": True,
+                }],
+            },
+        },
+    )
+    targets = []
+
+    class Resolver:
+        async def resolve(self, target, *, authz=None, required_capabilities=None, admission=None):
+            targets.append((target, authz, required_capabilities))
+            return SimpleNamespace(token=credential)
+
+    class Pool:
+        async def get_or_create(self, agent_id, token, factory):
+            return SimpleNamespace(
+                agent=SimpleNamespace(model=selected_model, model_settings={"temperature": 0.2}),
+                concurrency_sem=asyncio.Semaphore(1),
+            )
+
+    runner = SimpleNamespace(
+        agent=SimpleNamespace(model=object(), model_settings={"temperature": 0.1}),
+        agent_id="main", agent_pool=Pool(), agent_factory=lambda *_args: None,
+    )
+    registry = SimpleNamespace(md_snapshot=lambda: [{
+        "name": "audit-report", "qualified_name": "audit-report:audit-report",
+        "provider": "audit-report", "metadata": {"provider_type": "audit-report"},
+    }])
+    runtime = ProviderVisualRuntime(
+        runner,
+        binding_resolver=Resolver(),
+        authz=authz,
+        provider_type="audit-report",
+        provider_instance="default",
+        user_id="alice",
+        skill_registry=registry,
+    )
+    result = await runtime.run_text(
+        prompt="review", system_prompt="system", skill_id="audit-report:audit-report",
+    )
+
+    assert result == "text result"
+    assert captured["model"] is selected_model
+    assert targets[0][0].kind == "provider_skill"
+    assert targets[0][0].provider_type == "audit-report"
+    assert targets[0][0].instance_name == "default"
+    assert targets[0][0].skill_id == "audit-report:audit-report"
+    assert targets[0][1] is authz
+    assert targets[0][2] == {}
+    assert text_agent.calls == ["review"]
+
+
+@pytest.mark.asyncio
+async def test_provider_visual_binding_requests_vision_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, visual_agent, captured = _runtime(monkeypatch, _AgentRunResult("complete", "stop"))
+    token = TokenEntry(
+        token_id="vision-token", provider="openai", model="vision-model",
+        base_url="https://example.invalid/v1", api_key="fresh-secret",
+    )
+    selected_model = object()
+    targets = []
+    authz = AuthorizationContext(
+        user=UserInfo(user_id="alice"),
+        permissions={
+            "skills": {"allow_all": False, "skill_permissions": []},
+            "providers": {
+                "allow_all": False,
+                "provider_permissions": [{
+                    "provider_type": "audit-report", "instance_name": "default", "allowed": True,
+                }],
+            },
+        },
+    )
+
+    class Resolver:
+        async def resolve(self, target, *, authz=None, required_capabilities=None, admission=None):
+            targets.append(required_capabilities)
+            return SimpleNamespace(token=token)
+
+    class Pool:
+        async def get_or_create(self, agent_id, token, factory):
+            return SimpleNamespace(
+                agent=SimpleNamespace(model=selected_model, model_settings={}),
+                concurrency_sem=asyncio.Semaphore(1),
+            )
+
+    runtime = ProviderVisualRuntime(
+        SimpleNamespace(
+            agent=SimpleNamespace(model=object(), model_settings={}),
+            agent_id="main", agent_pool=Pool(), agent_factory=lambda *_args: None,
+        ),
+        binding_resolver=Resolver(),
+        authz=authz,
+        provider_type="audit-report",
+        provider_instance="default",
+        user_id="alice",
+        skill_registry=SimpleNamespace(md_snapshot=lambda: [{
+            "name": "audit-report", "qualified_name": "audit-report:audit-report",
+            "provider": "audit-report", "metadata": {"provider_type": "audit-report"},
+        }]),
+    )
+    await runtime.run_visual(
+        prompt="review", system_prompt="system", timeout_seconds=5,
+        data=b"page", media_type="image/png", skill_id="audit-report:audit-report",
+    )
+
+    assert targets == [{"vision": True}]
+    assert captured["model"] is selected_model
 
 
 @pytest.mark.asyncio

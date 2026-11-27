@@ -930,6 +930,54 @@ Constructor: `token_pool: TokenPool`, `strategy: str = "health"`, `primary_token
 
 Enabled UI model configurations take precedence over file defaults. The current enabled database primary is retained; otherwise the first active model by priority becomes primary. Without enabled UI models, the configured file/database-token primary is restored. Runtime reload follows startup source precedence (model configurations, database tokens, file tokens) and fails the new run if credentials cannot be loaded or none remain.
 
+### Global Provider/Skill Model Bindings (`core/model_bindings.py`)
+
+`BindingTarget` identifies `provider`, `provider_skill` or `standalone_skill` with
+canonical Provider type/instance and registered Skill ID. `ModelBindingResolver`
+combines the committed policy, safe model catalog, current authorization and actual
+input capabilities. `resolve(target, authz=..., required_capabilities=...,
+admission=...)` returns a `BindingSelection`; its credential-bearing token fields
+remain internal and are excluded from diagnostic representations.
+
+Policy models use `db-model:<id>`, `db-token:<id>` or `file-token:<Token ID>` refs.
+Source-qualified runtime identities prevent same-named configurations from sharing
+credentials or cache entries. Saved policy responses include only safe
+`allowed_models` metadata, retaining missing refs for administrators to repair.
+
+`ProviderAdmission` is a server-created exact instance/user/run admission snapshot;
+it can retain activation admission for an existing workflow but cannot grant
+Provider access or Skill authorization. New tasks check activation afresh.
+`effective_provider_instances()` reloads committed instance configuration and
+activation overlays, including DB instances re-enabled after startup. Discovery
+and HTTP dispatch use that fresh view instead of resurrecting cached JSON values.
+
+Management endpoints are mounted below `/api/provider-management` and require
+`provider_management.view`, `enable_disable` or `configure_models` as appropriate.
+`manage_permissions` governs the module through Role Management. No policy means
+the established platform default behavior, including JSON-only deployments.
+
+`agent/skill_stage_context.py` keeps completed normalized outputs and tool pairs
+in session-owned task state. The public runner returns to its coordinator between
+Skills and passes complete evidence plus the original and follow-up requests to
+the next execution model. Internal context envelopes are not user chat turns.
+Prompt framing and coordinator guidance live in
+`templates/prompts/skill_stage_context.json`.
+
+A session pointer exposes an interrupted workflow as a continuation candidate;
+the typed planner must accept `CONTINUE_ACTIVE` before it is adopted. A completed
+workflow replays its committed answer; an interrupted stage with a potentially
+completed write reports an unknown outcome and requires reconciliation rather
+than automatically repeating the external action. This is stage recovery, not
+resumption of an in-flight model stream.
+
+Safe binding/start/completion events include stage and parent IDs, policy revision,
+model identity, selection reason and timestamps. Completed stage metadata links
+the existing per-call usage rows; it does not create another token counter.
+Provider text/visual bridges
+refresh grants and credentials for each acquisition and reuse the existing model
+usage hooks with a minimal actor/run dependency context. Browser credentials and
+authorization objects are not copied into bridge model-call dependencies.
+
 ### 3.8 Agent Instance Pool (`agent/agent_pool.py`)
 
 Caches agent instances bound to specific tokens with per-instance concurrency control.

@@ -98,6 +98,7 @@ class ConversationTurnPlan(BaseModel):
     route: ConversationTurnRoute
     action: ConversationTurnAction
     target_capability_ids: list[str] = Field(default_factory=list)
+    stage_input: str = ""
     reason: str = ""
 
     model_config = ConfigDict(extra="forbid")

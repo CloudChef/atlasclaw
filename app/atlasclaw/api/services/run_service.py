@@ -47,6 +47,58 @@ def build_provider_config(ctx: APIContext) -> dict[str, Any]:
     return {}
 
 
+async def _filter_provider_instances_for_new_run(
+    ctx: APIContext,
+    provider_config: Optional[dict[str, Any]],
+    *,
+    admission: Any = None,
+) -> dict[str, Any]:
+    """Apply the current activation overlay while honoring a server admission."""
+    provider_config = provider_config or {}
+    original_provider_config = provider_config
+    resolver = getattr(ctx, "model_binding_resolver", None)
+    effective_instances = getattr(resolver, "effective_provider_instances", None)
+    if callable(effective_instances):
+        provider_config = await effective_instances(provider_config)
+        # A Provider host has already admitted this exact server-owned run. Keep
+        # its input config visible to that run if activation changed after start.
+        # All other new runs use only the fresh committed activation view.
+        admitted_type = str(getattr(admission, "provider_type", "") or "").strip().lower()
+        admitted_instance = str(getattr(admission, "instance_name", "") or "").strip()
+        if admitted_type and admitted_instance:
+            for provider_type, instances in original_provider_config.items():
+                if str(provider_type).strip().lower() != admitted_type or not isinstance(instances, dict):
+                    continue
+                admitted_config = instances.get(admitted_instance)
+                if isinstance(admitted_config, dict):
+                    bucket = provider_config.setdefault(str(provider_type), {})
+                    bucket.setdefault(admitted_instance, dict(admitted_config))
+                break
+    provider_is_enabled = getattr(resolver, "provider_is_enabled", None)
+    if not callable(provider_is_enabled):
+        return provider_config
+    admitted = (
+        str(getattr(admission, "provider_type", "") or "").strip().lower(),
+        str(getattr(admission, "instance_name", "") or "").strip(),
+    )
+    filtered: dict[str, Any] = {}
+    for provider_type, instances in provider_config.items():
+        if not isinstance(instances, dict):
+            continue
+        active_instances: dict[str, Any] = {}
+        for instance_name, instance_config in instances.items():
+            exact_admission = (
+                str(provider_type).strip().lower() == admitted[0]
+                and str(instance_name).strip() == admitted[1]
+                and bool(admitted[0] and admitted[1])
+            )
+            if exact_admission or await provider_is_enabled(str(provider_type), str(instance_name)):
+                active_instances[str(instance_name)] = instance_config
+        if active_instances:
+            filtered[str(provider_type)] = active_instances
+    return filtered
+
+
 def init_run(
     ctx: APIContext,
     run_id: str,
@@ -197,6 +249,8 @@ async def execute_agent_run(
     provider_config: Optional[dict[str, Any]] = None,
     request_context: Optional[dict[str, Any]] = None,
     run_limits: Optional[dict[str, int]] = None,
+    authorization_context: Optional[Any] = None,
+    provider_admission: Optional[Any] = None,
 ) -> None:
     """Execute one agent run and bridge runner events into SSE/status state.
 
@@ -231,6 +285,20 @@ async def execute_agent_run(
             "run_id": run_id,
             "context": request_context or {},
         }
+        if provider_admission is not None:
+            from ...core.model_bindings import ProviderAdmission
+
+            if (
+                not isinstance(provider_admission, ProviderAdmission)
+                or str(provider_admission.run_id) != str(run_id)
+                or str(provider_admission.user_id) != str(_user_info.user_id)
+            ):
+                raise RuntimeError("Provider admission context does not match the active run")
+        provider_config = await _filter_provider_instances_for_new_run(
+            ctx,
+            provider_config,
+            admission=provider_admission,
+        )
         limits = run_limits or {}
         if limits:
             model_limit = int(limits.get("max_model_requests", 0))
@@ -285,19 +353,21 @@ async def execute_agent_run(
         if retained:
             snapshot = await image_capabilities(runner)
             token = session_model(runner, session_key)
-            if token is None or not snapshot.get(token.token_id, False):
-                locale = str((request_context or {}).get("ui_locale", ""))
-                answer = (
-                    "当前模型未启用图片分析，请联系管理员配置支持图片的模型。"
-                    if locale.startswith("zh") else
-                    "Image analysis is not enabled for the current model. Ask your administrator to configure an image-capable model."
-                )
-                await complete_run_with_static_answer(
-                    ctx, run_id=run_id, session_key=session_key, user_message=message,
-                    answer=answer, reason="model_image_disabled", attachments=attachments,
-                )
-                return
-            image_budget = (token.context_window or 128000) // 2
+            token_pool = getattr(getattr(runner, "token_policy", None), "token_pool", None)
+            token_entries = list(getattr(token_pool, "tokens", {}).values())
+            vision_context_windows = [
+                int(entry.context_window)
+                for entry in token_entries
+                if entry.token_id in snapshot
+                and snapshot.get(entry.token_id)
+                and isinstance(getattr(entry, "context_window", None), int)
+                and entry.context_window > 0
+            ]
+            image_context_window = max(
+                vision_context_windows,
+                default=int(getattr(token, "context_window", 0) or 128000),
+            )
+            image_budget = image_context_window // 2
             if sum(image_token_allowance(ref) for ref in image_attachments) > image_budget:
                 raise AttachmentInputError("image_context_limit", "Reduce the image count or resolution for this model.")
             while sum(image_token_allowance(ref) for ref in retained) > image_budget:
@@ -327,6 +397,14 @@ async def execute_agent_run(
             request_cookies=request_cookies,
             provider_config=provider_config,
             extra=deps_extra,
+            authorization_context=authorization_context,
+            provider_admission=provider_admission,
+            selected_capability=(
+                request_context.get("_selected_capability")
+                if isinstance(request_context, dict)
+                and isinstance(request_context.get("_selected_capability"), dict)
+                else None
+            ),
         )
 
         def publish_progress(state: str, message: str, metadata: dict[str, Any]) -> None:

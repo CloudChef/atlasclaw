@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -488,6 +489,46 @@ def test_artifact_md_tool_defaults_to_tool_only_result_mode(tmp_path: Path) -> N
 
     metadata, _handler = registry.get("artifact_create")
     assert metadata.result_mode == "tool_only_ok"
+
+
+def test_provider_owned_standard_entrypoint_keeps_owner_without_provider_script_context(
+    tmp_path: Path,
+) -> None:
+    skill_root = tmp_path / "providers" / "audit-report" / "skills"
+    skill_dir = skill_root / "audit-report"
+    scripts_dir = skill_dir / "scripts"
+    scripts_dir.mkdir(parents=True)
+    (scripts_dir / "run.py").write_text("print('standard script ran')\n", encoding="utf-8")
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: audit-report\n"
+        "description: Audit reports\n"
+        "execution: standard\n"
+        "tool_run_name: audit_report_run\n"
+        "tool_run_entrypoint: scripts/run.py\n"
+        "---\n"
+        "# Audit report\n",
+        encoding="utf-8",
+    )
+
+    registry = SkillRegistry()
+    assert registry.load_from_directory(
+        str(skill_root), location="provider", provider="audit-report"
+    ) == 1
+    metadata, handler = registry.get("audit_report_run")
+    assert metadata.provider_type == "audit-report"
+    assert metadata.source == "provider"
+
+    ctx = SimpleNamespace(
+        deps=SimpleNamespace(
+            extra={
+                "provider_instances": {"audit-report": {"default": {}}},
+            }
+        )
+    )
+    result = asyncio.run(handler(ctx=ctx))
+    assert result["success"] is True
+    assert result["output"].strip() == "standard script ran"
 
 
 def test_artifact_md_tool_rejects_home_relative_user_requested_output(tmp_path: Path) -> None:

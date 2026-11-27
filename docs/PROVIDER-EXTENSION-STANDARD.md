@@ -161,18 +161,20 @@ Unknown fields anywhere in the manifest are ignored. Unknown `ui.nav[].layout` v
 
 ### 4.4 Provider-owned skills
 
-Skills under `skills/` are loaded with the provider namespace by default and are
-addressed as `provider:skill`. A skill that runs entirely on the **standard skill
-runtime** (its own scripts, no external provider credentials) declares:
+Skills under `skills/` retain the provider namespace and are addressed as
+`provider:skill`. This canonical identity controls Provider ownership,
+permissions, and inherited model policy. A Provider-owned Skill that uses the
+**standard skill runtime** for local scripts declares:
 
 ```yaml
 execution: standard
 ```
 
-in `SKILL.md` frontmatter. Such a skill is addressed by its bare name, can be
-pinned by its owning provider through `host.agent.run_skill()`, and receives the
-standard `skill_read` / `skill_write` / `skill_exec` tools. Skills without the
-flag stay provider-bound and keep the `provider:skill` identity.
+in `SKILL.md` frontmatter. This selects the local standard execution runtime; it
+does not remove Provider ownership or change the `provider:skill` identity.
+When selected, a docs-only standard Skill can receive the standard
+`skill_read` / `skill_write` / `skill_exec` tools. Skills loaded from the
+standalone Skill directories keep their bare-name identities.
 
 
 
@@ -402,7 +404,8 @@ text = await context.run_visual(
 
 Each image identifier is also sent as a text label immediately before its image,
 preserving the supplied order. Providers validate supported formats and input
-limits. The visual Agent inherits the active main Agent's explicit model settings;
+limits. Core resolves the authorized Provider/Skill model policy and applies that
+model's explicit settings;
 configured `temperature` and `max_tokens` are passed through. A truncated, filtered,
 or errored model response raises a technical failure; partial text is not returned
 as a successful result.
@@ -416,19 +419,25 @@ call the Core-managed bridge on `ProviderHttpContext`:
 result = await context.run_text(
     prompt="Perform this one text-processing stage.",
     system_prompt="Follow the provider-supplied stage contract.",
+    skill_id="provider-qualified-skill-id",  # optional registered Skill of this Provider
 )
 ```
 
-Core uses the model and explicit model settings captured from the authorized
-request's configured Agent. By default, this bridge adds no request deadline or
+Core resolves the current global binding for the authorized Provider instance and
+optional canonical `skill_id`; the same optional identity is accepted by
+`run_visual`. A supplied Skill must belong to the trusted Provider and remain
+available under the current actor's grants. Without `skill_id`, the Provider
+default policy applies. Credentials are resolved afresh and are never returned to
+the Provider. By default, this bridge adds no request deadline or
 output-token setting; callers may pass an explicit `timeout_seconds` when needed.
 This bridge runs one direct text model operation; it
 does not enter `ProviderAgentHost.start_run`, chat capability selection, or tool
 routing. It does not expose credentials. Empty input, unavailable models,
 execution errors, empty output, and incomplete model responses fail as
 technical errors; partial output is never returned as success. Ordinary
-`ProviderAgentHost.start_run` behavior and its skill/tool permissions are
-unchanged.
+`ProviderAgentHost.start_run` uses the same global model-policy resolver while
+retaining its existing skill/tool execution scopes. Provider code cannot use
+caller-supplied model IDs or Tokens to escape that policy.
 
 ### 6.3 Limits and lifecycle
 

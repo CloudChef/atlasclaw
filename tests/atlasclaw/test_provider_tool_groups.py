@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -28,7 +29,8 @@ from tests.atlasclaw.provider_schema_fixtures import managed_provider_definition
 
 
 @pytest.fixture(autouse=True)
-def provider_manifests() -> None:
+def provider_manifests(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    monkeypatch.setattr("app.atlasclaw.api.deps_context._api_context", None)
     clear_provider_schema_definitions()
     register_provider_schema_definition(
         managed_provider_definition(

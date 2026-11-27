@@ -89,6 +89,18 @@ AtlasClaw uses a hybrid storage approach combining file-system and relational da
   run. Enabled UI models take precedence over file defaults; updates replace the
   cached agent on the next run without interrupting in-flight work. Disabled and
   deleted database models are removed, while configured file tokens remain fallbacks.
+- Global Provider and Skill model policies are managed in the independent Provider
+  Management menu. Its four management permissions are assigned in Role Management;
+  execution still uses the current user's existing Provider/Skill grants.
+- Policies identify a Provider instance, its qualified Skill, or a standalone Skill.
+  Explicit models are concrete credential references, not names or file positions.
+  The Core resolver constrains defaults and failover to the compatible allowed set.
+- Skill/model transitions use task-local execution stages. Completed normalized
+  results and artifact references remain in the original task context; cached Agent
+  model objects are never modified to switch another user's request.
+
+The policy API, activation semantics, execution-stage context and validation cases
+are specified in [Provider/Skill model routing](provider-model-routing/design.md).
 
 ### 1.5 Multi-Channel Access
 

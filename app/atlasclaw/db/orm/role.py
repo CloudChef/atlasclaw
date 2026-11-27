@@ -228,6 +228,12 @@ def build_default_permissions() -> Dict[str, Any]:
             "allow_all": False,
             "provider_permissions": [],
         },
+        "provider_management": {
+            "view": False,
+            "enable_disable": False,
+            "configure_models": False,
+            "manage_permissions": False,
+        },
         "channels": {
             "module_permissions": {
                 "manage_permissions": False,
@@ -446,7 +452,12 @@ class RoleService:
                     # Reset locked modules to canonical defaults; runtime access
                     # modules are user-managed after initial seeding.
                     target_permissions = dict(normalized_definition_permissions)
-                    for module_id in ("skills", "providers", "channels"):
+                    editable_builtin_modules = ["skills", "providers", "channels"]
+                    if identifier == "user":
+                        # Administrators may explicitly delegate this module to
+                        # the built-in user role; keep that grant across startup.
+                        editable_builtin_modules.append("provider_management")
+                    for module_id in editable_builtin_modules:
                         target_permissions[module_id] = normalized_current_permissions.get(
                             module_id,
                             target_permissions[module_id],

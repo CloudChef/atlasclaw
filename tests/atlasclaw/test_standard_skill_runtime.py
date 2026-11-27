@@ -10,8 +10,12 @@ from types import SimpleNamespace
 
 from app.atlasclaw.agent.runner_prompt_context import collect_tools_snapshot
 from app.atlasclaw.agent.runner_tool.runner_execution_prepare import (
+    _md_skill_snapshot_has_provider_binding,
+    _target_md_skill_is_provider_bound,
     inject_standard_skill_runtime_tools,
+    resolve_selected_md_skill_target,
 )
+from app.atlasclaw.agent.tool_gate_models import ToolIntentAction, ToolIntentPlan
 from app.atlasclaw.auth.models import UserInfo
 from app.atlasclaw.core.deps import SkillDeps
 from app.atlasclaw.skills.registry import SkillRegistry
@@ -162,6 +166,131 @@ def test_standard_runtime_does_not_inject_for_provider_bound_docs_only_skill() -
     assert trace["reason"] == "target_skill_provider_bound"
     assert available == []
     assert target and "standard_runtime_enabled" not in target
+
+
+def test_provider_owned_standard_skill_keeps_canonical_id_and_uses_standard_runtime(
+    tmp_path: Path,
+) -> None:
+    provider_skill_root = tmp_path / "providers" / "audit-report" / "skills"
+    skill_dir = provider_skill_root / "audit-report"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: audit-report\n"
+        "description: Audit reports\n"
+        "execution: standard\n"
+        "---\n"
+        "# Audit report\n",
+        encoding="utf-8",
+    )
+
+    registry = SkillRegistry()
+    assert registry.load_from_directory(
+        str(provider_skill_root), location="provider", provider="audit-report"
+    ) == 1
+    entry = registry.get_md_skill("audit-report:audit-report")
+    assert entry is not None
+    assert entry.provider == "audit-report"
+    assert entry.qualified_name == "audit-report:audit-report"
+
+    snapshot = registry.md_snapshot()
+    assert len(snapshot) == 1
+    assert snapshot[0]["metadata"]["execution"] == "standard"
+    assert _md_skill_snapshot_has_provider_binding(snapshot[0]) is True
+
+    target_md_skill = {
+        "provider": "audit-report",
+        "qualified_name": "audit-report:audit-report",
+        "file_path": entry.file_path,
+    }
+    assert _target_md_skill_is_provider_bound(
+        target_md_skill=target_md_skill,
+        md_skills_snapshot=snapshot,
+    ) is False
+
+    deps = SkillDeps(
+        extra={
+            "internal_runtime_tools_snapshot": [
+                {"name": "skill_exec", "description": "exec", "source": "internal_runtime"},
+                {"name": "skill_write", "description": "write", "source": "internal_runtime"},
+            ],
+            "md_skills_snapshot": snapshot,
+            "provider_instances": {"audit-report": {"default": {}}},
+        }
+    )
+    target_md_skill = resolve_selected_md_skill_target(
+        agent=SimpleNamespace(tools=[]),
+        deps=deps,
+        intent_plan=ToolIntentPlan(
+            action=ToolIntentAction.USE_TOOLS,
+            target_provider_instances=["audit-report.default"],
+            target_provider_types=["audit-report"],
+            target_provider_skill_names=["default.audit-report"],
+        ),
+        max_file_bytes=20_000,
+    )
+    assert target_md_skill is not None
+    assert target_md_skill["provider"] == "audit-report"
+    assert target_md_skill["qualified_name"] == "audit-report:audit-report"
+    available, trace, resolved_target = inject_standard_skill_runtime_tools(
+        available_tools=[],
+        deps=deps,
+        target_md_skill=target_md_skill,
+    )
+    assert trace["enabled"] is True
+    assert {item["name"] for item in available} == {"skill_exec", "skill_write"}
+    assert resolved_target and resolved_target["standard_runtime_enabled"] is True
+
+
+def test_standard_execution_override_requires_exact_selected_provider_snapshot() -> None:
+    target = {
+        "provider": "audit-report",
+        "qualified_name": "audit-report:audit-report",
+    }
+    unrelated_standard_snapshot = [
+        {
+            "provider": "audit-report",
+            "qualified_name": "audit-report:other",
+            "metadata": {"execution": "standard"},
+        }
+    ]
+    assert _target_md_skill_is_provider_bound(
+        target_md_skill=target,
+        md_skills_snapshot=unrelated_standard_snapshot,
+    ) is True
+
+    no_execution_override_snapshot = [
+        {
+            "provider": "audit-report",
+            "qualified_name": "audit-report:audit-report",
+            "metadata": {},
+        }
+    ]
+    assert _target_md_skill_is_provider_bound(
+        target_md_skill=target,
+        md_skills_snapshot=no_execution_override_snapshot,
+    ) is True
+
+
+def test_standalone_standard_skill_keeps_bare_identity(tmp_path: Path) -> None:
+    skill_root = tmp_path / "standalone-skills"
+    skill_dir = skill_root / "local-audit"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: local-audit\n"
+        "description: Local audit\n"
+        "execution: standard\n"
+        "---\n"
+        "# Local audit\n",
+        encoding="utf-8",
+    )
+    registry = SkillRegistry()
+    assert registry.load_from_directory(str(skill_root), location="workspace") == 1
+    entry = registry.get_md_skill("local-audit")
+    assert entry is not None
+    assert entry.provider == ""
+    assert entry.qualified_name == "local-audit"
 
 
 def test_skill_exec_uses_work_dir_scoped_home_and_tmp(tmp_path: Path) -> None:
