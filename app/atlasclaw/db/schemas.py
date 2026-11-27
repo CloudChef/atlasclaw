@@ -12,7 +12,7 @@ These schemas are used for:
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, StringConstraints, field_validator
 from app.atlasclaw.core.token_pool import validate_capabilities
@@ -467,6 +467,8 @@ class ModelConfigResponse(BaseModel):
     """Schema for Model Config API response."""
 
     id: str
+    source: Literal["database"] = "database"
+    read_only: Literal[False] = False
     name: str
     display_name: Optional[str] = None
     provider: str
@@ -489,11 +491,33 @@ class ModelConfigResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class FileModelConfigResponse(BaseModel):
+    """Allowlisted, read-only view of a model loaded from deployment configuration."""
+
+    id: str
+    name: str
+    source: Literal["config_file"] = "config_file"
+    read_only: Literal[True] = True
+    provider: str
+    model_id: str
+    base_url: str
+    api_key_masked: Optional[str] = None
+    api_type: str
+    context_window: Optional[int] = None
+    max_tokens: Optional[int] = None
+    temperature: float
+    capabilities: Dict[str, Any] = Field(default_factory=dict)
+    priority: int
+    weight: int
+    is_active: bool
+
+
 class ModelConfigListResponse(BaseModel):
     """Schema for Model Config list API response."""
 
     model_configs: List[ModelConfigResponse]
     total: int
+    file_models: List[FileModelConfigResponse] = Field(default_factory=list)
 
 
 # ============== Pagination Schemas ==============

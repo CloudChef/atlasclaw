@@ -111,6 +111,16 @@ async def run_mysql_alembic_upgrade(db_config: DatabaseConfig) -> None:
 
 def create_pydantic_model(token: TokenEntry):
     """Create pydantic-ai model instance from token entry."""
+    if token.api_type == "google":
+        from pydantic_ai.models.google import GoogleModel
+        from pydantic_ai.providers.google import GoogleProvider
+
+        provider = GoogleProvider(
+            api_key=token.api_key,
+            base_url=token.base_url or None,
+        )
+        return GoogleModel(token.model, provider=provider)
+
     if token.api_type == "anthropic":
         from pydantic_ai.models.anthropic import AnthropicModel
         from pydantic_ai.providers.anthropic import AnthropicProvider
@@ -186,8 +196,9 @@ def _missing_token_fields(token: TokenEntry) -> tuple[str, ...]:
         "id": str(token.token_id or "").strip(),
         "provider": str(token.provider or "").strip(),
         "model": str(token.model or "").strip(),
-        "base_url": str(token.base_url or "").strip(),
     }
+    if token.api_type != "google":
+        values["base_url"] = str(token.base_url or "").strip()
     if not _provider_allows_empty_api_key(token.provider):
         values["api_key"] = str(token.api_key or "").strip()
     return tuple(name for name, value in values.items() if not value)
@@ -214,8 +225,8 @@ def _filter_usable_token_entries(
     return usable
 
 
-def build_token_entries(config) -> tuple[list[TokenEntry], Optional[str]]:
-    """Build usable token entries, excluding unresolved environment-backed entries."""
+def build_token_entries(config, *, include_unusable: bool = False) -> tuple[list[TokenEntry], Optional[str]]:
+    """Build runtime tokens; include_unusable is reserved for read-only configuration views."""
     tokens: list[TokenEntry] = []
     for token_cfg in config.model.tokens:
         token_id = str(token_cfg.id or "").strip()
@@ -243,6 +254,9 @@ def build_token_entries(config) -> tuple[list[TokenEntry], Optional[str]]:
         if raw_api_key and not api_key and "api_key" not in missing_fields:
             missing_fields.append("api_key")
         if missing_fields:
+            if include_unusable:
+                tokens.append(candidate)
+                continue
             print(
                 "[AtlasClaw] Warning: skipping unusable model token "
                 f"'{token_id or '<empty>'}'; missing {', '.join(missing_fields)}"
@@ -301,7 +315,7 @@ def build_token_entries(config) -> tuple[list[TokenEntry], Optional[str]]:
         context_window=None,
     )
     missing_fields = _missing_token_fields(candidate)
-    if missing_fields:
+    if missing_fields and not include_unusable:
         # Database model sources have not been loaded yet. Defer the final
         # failure to main's authoritative check after all sources are merged.
         print(
@@ -374,6 +388,14 @@ async def build_token_entries_from_model_configs(session: Any) -> list[TokenEntr
         entries,
         source="database model configurations",
     )
+
+
+async def load_runtime_token_entries(config_entries: list[TokenEntry]) -> list[TokenEntry]:
+    """Read committed credentials using the same source precedence as startup."""
+    async with get_db_manager().get_session() as session:
+        db_entries, _ = await build_token_entries_from_db(session)
+        model_entries = await build_token_entries_from_model_configs(session)
+    return merge_token_entries(model_entries, merge_token_entries(db_entries, config_entries))
 
 
 def merge_provider_instances(

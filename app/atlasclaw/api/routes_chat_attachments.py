@@ -111,8 +111,8 @@ def register_chat_attachment_routes(router: APIRouter) -> None:
         """
         await _ensure_runnable_session(ctx, user, session_key)
         runner = image_runner(ctx, session_key)
-        token = session_model(runner, session_key)
         capabilities = await image_capabilities(runner)
+        token = session_model(runner, session_key)
         return {
             "model": token.model if token else "", "vision": capabilities.get(token.token_id, False) if token else False,
             "max_files": MAX_FILES, "max_file_bytes": MAX_DOC_BYTES,

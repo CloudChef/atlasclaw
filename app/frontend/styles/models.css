@@ -132,6 +132,7 @@
   border-radius: 12px;
   padding: 24px;
   box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  color: var(--color-text, #1e293b);
 }
 
 /* 延迟卡片 - 浅灰背景与 mockup 一致 */
@@ -150,7 +151,7 @@
   font-size: 11px;
   letter-spacing: 1px;
   text-transform: uppercase;
-  color: rgba(0,0,0,0.45);
+  color: var(--color-text-secondary, #475569);
 }
 
 .stats-trend {
@@ -162,14 +163,14 @@
 .stats-big-number {
   font-size: 42px;
   font-weight: 700;
-  color: #1a1a2e;
+  color: var(--color-text, #1e293b);
   line-height: 1.1;
 }
 
 .stats-unit {
   font-size: 20px;
   font-weight: 400;
-  color: rgba(0,0,0,0.4);
+  color: var(--color-text-secondary, #475569);
   margin-left: 2px;
 }
 
@@ -195,29 +196,23 @@
   background: var(--color-primary);
 }
 
-/* Clusters card (dark) */
-.stats-card-clusters {
-  background: #2D2D3F;
-  color: #fff;
+.stats-card-input-tokens {
+  background: #f8fafc;
   display: flex;
   flex-direction: column;
 }
 
-.stats-card-clusters .stats-card-title {
-  color: rgba(255,255,255,0.7);
+.stats-card-input-tokens .stats-card-title {
+  color: var(--color-text-secondary, #475569);
   margin-top: 12px;
 }
 
-.stats-card-clusters .stats-big-number {
-  color: #fff;
+.stats-card-input-tokens .stats-big-number {
+  color: var(--color-text, #1e293b);
   font-size: 48px;
   flex: 1;
   display: flex;
   align-items: center;
-}
-
-.stats-card-clusters .stats-icon {
-  color: rgba(255,255,255,0.9);
 }
 
 /* Stats Icon Box */
@@ -232,8 +227,8 @@
 }
 
 .stats-icon-box-light {
-  background: rgba(255, 255, 255, 0.2);
-  color: #fff;
+  background: rgba(124, 131, 253, 0.12);
+  color: var(--color-primary);
 }
 
 .stats-icon-box-purple {
@@ -243,11 +238,7 @@
 
 .stats-card-footer {
   font-size: 12px;
-  color: rgba(0,0,0,0.45);
-}
-
-.stats-card-clusters .stats-card-footer {
-  color: rgba(255,255,255,0.6);
+  color: var(--color-text-secondary, #475569);
 }
 
 /* Requests card */
@@ -452,11 +443,6 @@
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
-.panel-card-dark {
-  background: linear-gradient(180deg, #2D2D5E 0%, #1A1A3E 100%);
-  color: #fff;
-}
-
 .panel-card-header {
   display: flex;
   justify-content: space-between;
@@ -474,10 +460,6 @@
   font-size: 13px;
   color: var(--color-text-secondary);
   margin: 0;
-}
-
-.panel-card-dark .panel-subtitle {
-  color: rgba(255, 255, 255, 0.6);
 }
 
 /* Routing Strategies */
@@ -560,14 +542,10 @@
 }
 
 /* Token Economy */
-.panel-card-dark h3 {
-  color: #fff;
-}
-
 .token-title {
   font-size: 22px;
   font-weight: 700;
-  color: #fff;
+  color: var(--color-text, #1e293b);
   margin: 0 0 20px 0;
 }
 
@@ -575,19 +553,19 @@
   font-size: 11px;
   letter-spacing: 1px;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--color-text-secondary, #475569);
 }
 
 .token-value {
   font-size: 36px;
   font-weight: 700;
-  color: #fff;
+  color: var(--color-text, #1e293b);
   margin: 4px 0 16px;
 }
 
 .token-progress {
   height: 4px;
-  background: rgba(255, 255, 255, 0.15);
+  background: #e2e8f0;
   border-radius: 2px;
   margin-bottom: 8px;
 }
@@ -600,13 +578,13 @@
 
 .token-meta {
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--color-text-secondary, #475569);
   margin-bottom: 20px;
 }
 
 .token-divider {
   height: 1px;
-  background: rgba(255, 255, 255, 0.12);
+  background: var(--color-border, #e2e8f0);
   margin-bottom: 20px;
 }
 
@@ -614,7 +592,7 @@
   font-size: 11px;
   letter-spacing: 1px;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--color-text-secondary, #475569);
   margin-bottom: 12px;
 }
 
@@ -623,16 +601,18 @@
   justify-content: space-between;
   padding: 8px 0;
   font-size: 14px;
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--color-text, #1e293b);
 }
+
+.token-spender span:first-child { color: var(--color-text-secondary, #475569); }
 
 .token-manage-btn {
   width: 100%;
   margin-top: 24px;
   padding: 12px 16px;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.15);
-  color: #fff;
+  background: #fff;
+  border: 1px solid var(--color-border, #e2e8f0);
+  color: var(--color-text, #1e293b);
   border-radius: 10px;
   font-size: 13px;
   font-weight: 500;
@@ -641,7 +621,7 @@
 }
 
 .token-manage-btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.12);
+  background: #f8fafc;
 }
 
 .token-manage-btn:disabled {
@@ -780,7 +760,16 @@
 
 .form-row-2col > .form-field {
   flex: 1;
+  min-width: 0;
 }
+
+.form-row-2col > .form-field > .form-input {
+  min-width: 0;
+  max-width: 100%;
+}
+
+#modelBaseUrlRow[hidden] { display: none; }
+#modelBaseUrl[readonly] { background: #f8fafc; color: var(--color-text-secondary, #475569); }
 
 /* Form Field */
 .form-section-card .form-field {
@@ -940,13 +929,12 @@
 }
 
 .sidebar-card {
+  background: #fff;
+  color: var(--color-text, #1e293b);
   border-radius: 12px;
   padding: 24px;
-}
-
-.sidebar-card-dark {
-  background: var(--color-secondary, #1E1E24);
-  color: #fff;
+  border: 1px solid var(--color-border, #e2e8f0);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
 .sidebar-card-header {
@@ -967,7 +955,7 @@
   font-size: 10px;
   letter-spacing: 1px;
   text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--color-text-secondary, #475569);
   margin-bottom: 6px;
   font-weight: 600;
 }
@@ -987,12 +975,12 @@
 .sidebar-quota-value {
   font-size: 13px;
   font-weight: 600;
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--color-text, #1e293b);
 }
 
 .sidebar-progress {
   height: 4px;
-  background: rgba(255, 255, 255, 0.15);
+  background: #e2e8f0;
   border-radius: 2px;
 }
 
@@ -1011,7 +999,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  background: rgba(255, 255, 255, 0.06);
+  background: #f8fafc;
   border-radius: 8px;
   padding: 10px 14px;
   margin-top: 8px;
@@ -1019,7 +1007,7 @@
 
 .sidebar-threshold-text {
   font-size: 13px;
-  color: rgba(255, 255, 255, 0.8);
+  color: var(--color-text, #1e293b);
 }
 
 .toggle-switch-small {
@@ -1029,10 +1017,10 @@
 .sidebar-tip {
   margin-top: 16px;
   padding: 12px;
-  background: rgba(124, 131, 253, 0.15);
+  background: #eef2ff;
   border-radius: 8px;
   font-size: 12px;
-  color: rgba(255, 255, 255, 0.7);
+  color: #334155;
   line-height: 1.5;
 }
 
@@ -1327,7 +1315,7 @@
 }
 .model-option-row + .model-option-row { border-top: 1px solid var(--color-border); }
 .model-option-copy { min-width: 0; }
-.model-option-title { font-size: 14px; font-weight: 600; color: var(--color-text-primary); cursor: pointer; }
+.model-option-title { font-size: 14px; font-weight: 600; color: var(--color-text, #1e293b); cursor: pointer; }
 .model-option-row .model-capability-hint { margin-top: 5px; }
 @media (max-width: 768px) {
   .model-parameter-grid { grid-template-columns: 1fr; gap: 16px; }

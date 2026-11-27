@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Awaitable, Callable
@@ -21,6 +22,7 @@ class AgentInstance:
     token_id: str
     agent: Any
     concurrency_sem: asyncio.Semaphore
+    token: TokenEntry | None = field(default=None, repr=False)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property
@@ -45,7 +47,7 @@ class AgentInstancePool:
         cache_key = f"{agent_id}:{token.token_id}"
         async with self._lock:
             existing = self._instances.get(cache_key)
-            if existing is not None:
+            if existing is not None and existing.token == token:
                 return existing
 
             maybe_agent = agent_factory(agent_id, token)
@@ -55,6 +57,7 @@ class AgentInstancePool:
                 token_id=token.token_id,
                 agent=agent,
                 concurrency_sem=asyncio.Semaphore(self._max_concurrent),
+                token=deepcopy(token),
             )
             self._instances[cache_key] = instance
             return instance

@@ -13,7 +13,7 @@
  * - unmount() - Cleanup when leaving page
  */
 
-import { t, getCurrentLocale, updateContainerTranslations } from '../i18n.js'
+import { t, translateIfExists, getCurrentLocale, loadLocale, updateContainerTranslations } from '../i18n.js'
 import { showToast } from '../components/toast.js'
 import { buildAssetUrl, buildApiUrl } from '../config.js'
 
@@ -302,41 +302,25 @@ const PAGE_HTML = `
 
         <!-- Form Fields -->
         <div class="form-fields">
-          <!-- Row 1: Display Name + Model ID (side by side) -->
+          <!-- Provider and model ID form the visible model identity. -->
           <div class="form-row form-row-2col">
             <div class="form-field">
-              <label class="form-label" data-i18n="model.displayName">MODEL DISPLAY NAME</label>
-              <input type="text" id="modelDisplayName" class="form-input" data-i18n-placeholder="model.displayNamePlaceholder" placeholder="e.g. Aurora-Pro-V1">
-            </div>
-            <div class="form-field">
-              <label class="form-label" data-i18n="model.name">MODEL ID <span class="required">*</span></label>
-              <input type="text" id="modelName" class="form-input" data-i18n-placeholder="model.namePlaceholder" placeholder="e.g. gpt-4-main" required>
-            </div>
-          </div>
-
-          <!-- Row 2: Infrastructure Provider (full width) -->
-          <div class="form-row">
-            <div class="form-field">
-              <label class="form-label" data-i18n="model.provider">INFRASTRUCTURE PROVIDER <span class="required">*</span></label>
-              <select id="modelProvider" class="form-input form-select">
+              <label class="form-label" for="modelProvider" data-i18n="model.provider">INFRASTRUCTURE PROVIDER <span class="required">*</span></label>
+              <select id="modelProvider" class="form-input form-select" required>
                 ${PROVIDER_OPTIONS_HTML}
               </select>
             </div>
-          </div>
-
-          <!-- Row 3: Model ID Selection (full width) -->
-          <div class="form-row">
             <div class="form-field">
-              <label class="form-label" data-i18n="model.modelId">MODEL ID <span class="required">*</span></label>
-              <select id="modelModelId" class="form-input form-select">
+              <label class="form-label" for="modelModelId" data-i18n="model.modelId">MODEL ID <span class="required">*</span></label>
+              <select id="modelModelId" class="form-input form-select" required>
                 <option value="" disabled selected data-i18n="model.modelIdPlaceholder">Select or enter model ID</option>
               </select>
               <input type="text" id="modelModelIdCustom" class="form-input" style="display: none; margin-top: 8px;" data-i18n-placeholder="model.modelIdCustomPlaceholder" placeholder="Enter custom model ID">
             </div>
           </div>
 
-          <!-- Row 4: API Endpoint URL (full width, with link icon) -->
-          <div class="form-row">
+          <!-- Provider-specific endpoint and key follow the model identity. -->
+          <div class="form-row" id="modelBaseUrlRow" hidden>
             <div class="form-field">
               <label class="form-label" data-i18n="model.baseUrl">API ENDPOINT URL</label>
               <div class="input-with-icon">
@@ -346,7 +330,7 @@ const PAGE_HTML = `
             </div>
           </div>
 
-          <!-- Row 5: API Authentication Key (full width, with key icon + eye toggle) -->
+          <!-- API Authentication Key (full width, with key icon + eye toggle) -->
           <div class="form-row">
             <div class="form-field">
               <label class="form-label" data-i18n="model.apiKey">API AUTHENTICATION KEY <span class="required api-key-required" id="apiKeyRequired" style="display:none">*</span></label>
@@ -420,7 +404,7 @@ const PAGE_HTML = `
     <!-- Right: Sidebar (~30%, 320px) -->
     <div class="model-form-sidebar">
       <!-- Model usage summary -->
-      <div class="sidebar-card sidebar-card-dark">
+      <div class="sidebar-card">
         <div class="sidebar-card-header">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
           <h3 data-i18n="model.tokenManagement">Token Management</h3>
@@ -469,7 +453,14 @@ async function fetchModelConfigs() {
     const res = await fetch(buildApiUrl('/api/model-configs'))
     if (!res.ok) throw new Error(`HTTP ${res.status}`)
     const data = await res.json()
-    return Array.isArray(data) ? data : (data.configs || data.model_configs || [])
+    if (Array.isArray(data)) return data.map(config => ({ source: 'database', ...config }))
+
+    const databaseConfigs = data.configs || data.model_configs || []
+    const fileModels = Array.isArray(data.file_models) ? data.file_models : []
+    return [
+      ...fileModels.map(config => ({ ...config, source: config.source || 'config_file', read_only: true })),
+      ...databaseConfigs.map(config => ({ ...config, source: config.source || 'database', read_only: config.read_only === true }))
+    ]
   } catch (error) {
     console.error('[ModelsPage] Failed to fetch:', error)
     return []
@@ -522,6 +513,8 @@ async function loadProviderData() {
     const data = await res.json()
 
     // Build PROVIDER_PRESETS and PROVIDER_MODELS from API response
+    PROVIDER_PRESETS = {}
+    PROVIDER_MODELS = {}
     for (const [name, info] of Object.entries(data)) {
       PROVIDER_PRESETS[name] = {
         base_url: info.base_url || '',
@@ -699,19 +692,22 @@ function updateUsageSummary(summary = null) {
 function renderUsageItems(items) {
   if (!items.length) return `<p class="usage-message">${t('model.usage.empty')}</p>`
   return `<div class="usage-table-scroll"><table class="model-table usage-table" id="modelUsageTable">
-    <thead><tr>${['time', 'model', 'key', 'input_tokens', 'output_tokens', 'total_tokens', 'source'].map(field => `<th scope="col">${t('model.usage.' + field)}</th>`).join('')}</tr></thead>
+    <thead><tr>${['time', 'model', 'key', 'input_tokens', 'output_tokens', 'total_tokens'].map(field => `<th scope="col">${t('model.usage.' + field)}</th>`).join('')}<th scope="col">${t('model.usage.cachedTokens')}</th></tr></thead>
     <tbody>${items.map((item, index) => {
       const date = new Date(item.created_at)
       const time = Number.isNaN(date.getTime()) ? '—' : date.toLocaleString(getCurrentLocale())
       const source = ['reported', 'estimated', 'unavailable'].includes(item.source) ? item.source : 'unavailable'
+      const estimatedLabel = source === 'estimated'
+        ? `<span class="usage-cell-sub usage-source usage-source-estimated">${t('model.usage.estimated')}</span>`
+        : ''
       return `<tr class="usage-row">
         <td><button type="button" class="usage-time" data-usage-detail aria-controls="usageDetail${index}" aria-expanded="false"><time datetime="${escapeHtml(item.created_at)}">${escapeHtml(time)}</time></button></td>
         <td>${escapeHtml(item.model)}<span class="usage-cell-sub">${escapeHtml(item.provider)}</span></td>
         <td>${escapeHtml(item.key_label || '—')}<span class="usage-cell-sub">${escapeHtml(item.token_id)}</span></td>
-        <td>${formatUsageNumber(item.input_tokens)}</td><td>${formatUsageNumber(item.output_tokens)}</td><td>${formatUsageNumber(item.total_tokens)}</td>
-        <td><span class="usage-source usage-source-${source}">${t('model.usage.' + source)}</span></td>
+        <td>${formatUsageNumber(item.input_tokens)}</td><td>${formatUsageNumber(item.output_tokens)}</td><td>${formatUsageNumber(item.total_tokens)}${estimatedLabel}</td>
+        <td>${formatUsageNumber(item.cache_read_tokens)}</td>
       </tr><tr class="usage-details" id="usageDetail${index}" hidden><td colspan="7"><dl>
-        ${[['action', item.action], ['status', t('model.usage.' + (item.status === 'failed' ? 'failed' : 'completed'))], ['duration', item.duration_ms == null ? null : `${formatUsageNumber(item.duration_ms)} ms`], ['run', item.run_id], ['session', item.session_key], ['cacheRead', item.cache_read_tokens], ['cacheWrite', item.cache_write_tokens], ['reasoning', item.reasoning_tokens]].map(([field, value]) => `<div><dt>${t('model.usage.' + field)}</dt><dd>${escapeHtml(value ?? '—')}</dd></div>`).join('')}
+        ${[['action', item.action], ['status', t('model.usage.' + (item.status === 'failed' ? 'failed' : 'completed'))], ['source', t('model.usage.' + source)], ['duration', item.duration_ms == null ? null : `${formatUsageNumber(item.duration_ms)} ms`], ['run', item.run_id], ['session', item.session_key], ['cacheRead', formatUsageNumber(item.cache_read_tokens)], ['cacheWrite', formatUsageNumber(item.cache_write_tokens)], ['reasoning', formatUsageNumber(item.reasoning_tokens)]].map(([field, value]) => `<div><dt>${t('model.usage.' + field)}</dt><dd>${escapeHtml(value ?? '—')}</dd></div>`).join('')}
       </dl></td></tr>`
     }).join('')}</tbody></table></div>`
 }
@@ -787,27 +783,34 @@ function renderModelConfigs(configs) {
 
   // Render table row for each model
   const renderModelRow = (config) => {
+    const readOnly = config.read_only === true || config.source === 'config_file'
+    const providerName = translateIfExists(`model.providers.${config.provider}`) || config.provider || '—'
+    const sourceName = config.source === 'config_file'
+      ? translateIfExists('model.sourceConfigFile') || 'Configuration file'
+      : translateIfExists('model.sourceDatabase') || 'Database'
     return `
-    <tr class="model-row" data-id="${config.id}">
+    <tr class="model-row" data-id="${escapeHtml(config.id)}" data-read-only="${readOnly}">
       <td class="model-identity-cell">
         <span class="model-badge">${getBadgeText(config)}</span>
         <div class="model-identity-info">
-          <span class="model-identity-name">${config.display_name || config.name}</span>
-          <span class="model-identity-sub">${config.model_id}</span>
+          <span class="model-identity-name">${escapeHtml(getCanonicalModelName(config))}</span>
         </div>
       </td>
       <td>
         <span class="status-dot ${config.is_active ? 'status-active' : 'status-inactive'}"></span>
         ${config.is_active ? (t('model.active') || 'Active') : (t('model.inactive') || 'Inactive')}
       </td>
-      <td>${t('model.providers.' + config.provider) || config.provider}</td>
-      <td>${(config.context_window || 128000).toLocaleString()}</td>
-      <td>${(config.max_tokens || 4096).toLocaleString()}</td>
+      <td>${escapeHtml(providerName)}</td>
+      <td>${formatModelLimit(config, 'context_window', 128000)}</td>
+      <td>${formatModelLimit(config, 'max_tokens', 4096)}</td>
+      <td>${escapeHtml(sourceName)}</td>
       <td class="model-actions-cell">
-        <a class="action-link action-configure" data-action="edit" data-id="${config.id}">${t('model.configure') || 'Configure'}</a>
-        <button class="action-btn action-delete" data-action="delete" data-id="${config.id}" title="${t('model.delete') || 'Delete'}">
+        ${readOnly
+          ? `<span class="model-actions-readonly">${escapeHtml(translateIfExists('model.readOnly') || 'Read only')}</span>`
+          : `<a class="action-link action-configure" data-action="edit" data-id="${escapeHtml(config.id)}">${t('model.configure') || 'Configure'}</a>
+        <button class="action-btn action-delete" data-action="delete" data-id="${escapeHtml(config.id)}" title="${escapeHtml(t('model.delete') || 'Delete')}">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg>
-        </button>
+        </button>`}
       </td>
     </tr>`
   }
@@ -827,7 +830,7 @@ function renderModelConfigs(configs) {
 
     <div class="stats-dashboard">
       ${['total_tokens', 'input_tokens', 'output_tokens'].map((field, index) => `
-        <div class="stats-card ${index === 0 ? 'stats-card-latency' : index === 1 ? 'stats-card-clusters' : 'stats-card-requests'}">
+        <div class="stats-card ${index === 0 ? 'stats-card-latency' : index === 1 ? 'stats-card-input-tokens' : 'stats-card-requests'}">
           <span class="stats-card-title">${t('model.usage.' + field)}</span>
           <div class="stats-big-number" data-usage-summary="${field}">—</div>
           <span class="stats-card-footer">${t('model.usage.scope')}</span>
@@ -851,11 +854,12 @@ function renderModelConfigs(configs) {
             <th>${t('model.tableProvider') || 'PROVIDER'}</th>
             <th>${t('model.tableContextWindow') || 'CONTEXT WINDOW'}</th>
             <th>${t('model.tableMaxTokens') || 'MAX TOKENS'}</th>
+            <th>${t('model.tableSource') || 'SOURCE'}</th>
             <th>${t('model.tableActions') || 'ACTIONS'}</th>
           </tr>
         </thead>
         <tbody>
-          ${configs.length ? configs.map(config => renderModelRow(config)).join('') : `<tr><td colspan="6" class="connections-empty">${t('model.noModels')}</td></tr>`}
+          ${configs.length ? configs.map(config => renderModelRow(config)).join('') : `<tr><td colspan="7" class="connections-empty">${t('model.noModels')}</td></tr>`}
         </tbody>
       </table>
     </div>
@@ -880,7 +884,7 @@ function renderModelConfigs(configs) {
           <button class="btn-secondary" id="usageNext" type="button" disabled>${t('model.usage.next')}</button>
         </div>
       </section>
-      <aside class="panel-card panel-card-dark">
+      <aside class="panel-card model-usage-summary">
         <h3 class="token-title">${t('model.usage.summary')}</h3>
         ${['calls', 'requests', 'unknown_calls', 'estimated_calls', 'average_duration_ms'].map(field => `<div class="token-spender"><span>${t('model.usage.' + field)}</span><span data-usage-summary="${field}">—</span></div>`).join('')}
         <p class="token-meta usage-summary-note">${t('model.usage.note')}</p>
@@ -891,6 +895,27 @@ function renderModelConfigs(configs) {
   // Bind events
   bindListEvents(container)
   loadUsage()
+}
+
+function formatModelLimit(config, field, fallback) {
+  const value = config[field]
+  if (config.source === 'config_file') {
+    return value == null ? '—' : escapeHtml(typeof value === 'number' ? value.toLocaleString() : value)
+  }
+  return escapeHtml((value || fallback).toLocaleString())
+}
+
+function getCanonicalModelName(config) {
+  return `${config.model_id || ''} (${config.provider || ''})`
+}
+
+function generateUuid() {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID()
+  const bytes = globalThis.crypto.getRandomValues(new Uint8Array(16))
+  bytes[6] = (bytes[6] & 0x0f) | 0x40
+  bytes[8] = (bytes[8] & 0x3f) | 0x80
+  const hex = [...bytes].map(byte => byte.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
 /**
@@ -1013,8 +1038,6 @@ function resetFormData() {
 
   // Reset all form fields
   const fields = {
-    '#modelName': '',
-    '#modelDisplayName': '',
     '#modelProvider': '',
     '#modelApiKey': '',
     '#modelBaseUrl': '',
@@ -1051,9 +1074,7 @@ function resetFormData() {
     customInput.value = ''
   }
 
-  // Reset base URL auto-fill tracking
-  const baseUrlInput = containerRef?.querySelector('#modelBaseUrl')
-  if (baseUrlInput) baseUrlInput.dataset.autoFilled = 'false'
+  syncProviderEndpoint('', { preserveCurrent: false })
 
   // Hide API Key required indicator
   updateApiKeyRequired('')
@@ -1068,12 +1089,11 @@ function fillFormData(config) {
     if (el) el.value = value ?? ''
   }
 
-  setValue('#modelName', config.name)
-  setValue('#modelDisplayName', config.display_name)
   setValue('#modelProvider', config.provider)
   setValue('#modelApiKey', config.api_key)
   setValue('#modelBaseUrl', config.base_url)
   setValue('#modelApiType', config.api_type || 'openai')
+  syncProviderEndpoint(config.provider || '', { preserveCurrent: Boolean(config.base_url) })
   setValue('#modelContextWindow', config.context_window || 128000)
   setValue('#modelMaxTokens', config.max_tokens || 4096)
   setValue('#modelTemperature', config.temperature ?? 0.7)
@@ -1095,9 +1115,22 @@ function fillFormData(config) {
   // Update model ID dropdown based on provider
   updateModelIdOptions(config.provider || '', config.model_id || '')
 
-  // Mark base_url as not auto-filled when editing
+}
+
+function syncProviderEndpoint(provider, { preserveCurrent = false } = {}) {
   const baseUrlInput = containerRef?.querySelector('#modelBaseUrl')
-  if (baseUrlInput) baseUrlInput.dataset.autoFilled = 'false'
+  const baseUrlRow = containerRef?.querySelector('#modelBaseUrlRow')
+  const apiTypeSelect = containerRef?.querySelector('#modelApiType')
+  const preset = PROVIDER_PRESETS[provider]
+  const isCustom = provider === 'custom'
+
+  if (!baseUrlInput) return
+  baseUrlInput.readOnly = !isCustom
+  if (!preserveCurrent) {
+    baseUrlInput.value = isCustom ? '' : (preset?.base_url || '')
+    if (apiTypeSelect) apiTypeSelect.value = preset?.api_type || 'openai'
+  }
+  if (baseUrlRow) baseUrlRow.hidden = !isCustom && !baseUrlInput.value && !preset?.base_url
 }
 
 // ========== Form Actions ==========
@@ -1121,8 +1154,6 @@ async function saveModelConfig() {
   const existingConfig = modelConfigs.find(config => config.id === editingModelId)
 
   const data = {
-    name: containerRef?.querySelector('#modelName')?.value?.trim(),
-    display_name: containerRef?.querySelector('#modelDisplayName')?.value?.trim() || null,
     provider: containerRef?.querySelector('#modelProvider')?.value?.trim(),
     model_id: (modelIdSelect?.value === '__custom__'
       ? modelIdCustom?.value?.trim()
@@ -1143,10 +1174,6 @@ async function saveModelConfig() {
   }
 
   // Validation
-  if (!data.name) {
-    showToast(t('model.nameRequired'), 'error')
-    return
-  }
   if (!data.provider) {
     showToast(t('model.providerRequired'), 'error')
     return
@@ -1155,6 +1182,7 @@ async function saveModelConfig() {
     showToast(t('model.modelIdRequired'), 'error')
     return
   }
+  if (!editingModelId) data.name = generateUuid()
   // API Key validation - required for cloud providers
   if (!NO_API_KEY_PROVIDERS.includes(data.provider) && !data.api_key && !existingConfig?.api_key_masked) {
     showToast(t('model.apiKeyRequired') || 'API Key is required for this provider', 'error')
@@ -1203,6 +1231,9 @@ async function confirmDelete() {
 // ========== Action Handlers ==========
 
 async function handleModelAction(action, configId, isActive) {
+  const config = modelConfigs.find(item => item.id === configId)
+  if (!config || config.read_only || config.source === 'config_file' || String(configId).startsWith('file:')) return
+
   switch (action) {
     case 'edit':
       await openEditModal(configId)
@@ -1299,20 +1330,7 @@ function bindEvents() {
     const handler = (e) => {
       // Update API Key required indicator
       updateApiKeyRequired(e.target.value)
-
-      const preset = PROVIDER_PRESETS[e.target.value]
-      if (preset) {
-        const baseUrlInput = containerRef?.querySelector('#modelBaseUrl')
-        const apiTypeSelect = containerRef?.querySelector('#modelApiType')
-        // Only auto-fill if the field is empty or user hasn't manually edited
-        if (!baseUrlInput.value || baseUrlInput.dataset.autoFilled === 'true') {
-          baseUrlInput.value = preset.base_url
-          baseUrlInput.dataset.autoFilled = 'true'
-        }
-        if (apiTypeSelect) {
-          apiTypeSelect.value = preset.api_type
-        }
-      }
+      syncProviderEndpoint(e.target.value)
       // Update model ID options for the selected provider
       updateModelIdOptions(e.target.value, '')
 
@@ -1361,16 +1379,6 @@ function bindEvents() {
     }
     modelIdSelect.addEventListener('change', handler)
     eventListeners.push({ el: modelIdSelect, type: 'change', handler })
-  }
-
-  // Mark base_url as manually edited when user types
-  const baseUrlInput = containerRef?.querySelector('#modelBaseUrl')
-  if (baseUrlInput) {
-    const handler = (e) => {
-      e.target.dataset.autoFilled = 'false'
-    }
-    baseUrlInput.addEventListener('input', handler)
-    eventListeners.push({ el: baseUrlInput, type: 'input', handler })
   }
 
   // Close delete dialog on backdrop click
@@ -1437,6 +1445,10 @@ export async function mount(container, { params, route } = {}) {
   usagePage = 1
   usageModel = ''
   usageKey = ''
+
+  // A long-lived SPA may still hold translations loaded before the current deployment.
+  await loadLocale(getCurrentLocale())
+  if (!mounted || generation !== pageGeneration) return
 
   // Load page-specific CSS
   loadPageCSS()

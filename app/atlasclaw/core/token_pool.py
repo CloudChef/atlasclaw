@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
@@ -33,6 +34,12 @@ class TokenEntry:
     context_window: Optional[int] = None
     capabilities: dict = field(default_factory=dict)
     source_model_config_id: Optional[str] = None
+
+    @property
+    def credential_fingerprint(self) -> str:
+        """Identify request credentials without putting a raw key in run metadata."""
+        fields = (self.provider, self.model, self.base_url, self.api_key, self.api_type)
+        return hashlib.sha256(repr(fields).encode("utf-8")).hexdigest()
 
 
 @dataclass
@@ -72,15 +79,29 @@ class TokenPool:
             if token.token_id not in self.health_status:
                 self.health_status[token.token_id] = TokenHealth()
 
+    def replace_tokens(self, entries: list[TokenEntry]) -> None:
+        """Install a complete runtime snapshot, retaining health for unchanged entries."""
+        with self._lock:
+            tokens = {entry.token_id: entry for entry in entries}
+            self.health_status = {
+                key: self.health_status.get(key, TokenHealth())
+                if self.tokens.get(key) == token else TokenHealth()
+                for key, token in tokens.items()
+            }
+            self.tokens = tokens
+
     def restore_health(self, token_id: str, health: TokenHealth) -> None:
         with self._lock:
             if token_id in self.tokens:
                 self.health_status[token_id] = health
 
-    def update_token_health(self, token_id: str, headers: dict[str, str]) -> None:
+    def update_token_health(
+        self, token_id: str, headers: dict[str, str], *, expected_fingerprint: Optional[str] = None,
+    ) -> bool:
         with self._lock:
-            if token_id not in self.tokens:
-                return
+            token = self.tokens.get(token_id)
+            if token is None or (expected_fingerprint and token.credential_fingerprint != expected_fingerprint):
+                return False
 
             def _to_int(name: str, default: int) -> int:
                 raw = headers.get(name) or headers.get(name.lower())
@@ -99,12 +120,16 @@ class TokenPool:
                 reset_requests_seconds=_to_int("x-ratelimit-reset-requests", prev.reset_requests_seconds),
                 last_error=prev.last_error,
             )
+            return True
 
-    def mark_token_unhealthy(self, token_id: str, *, reason: str = "") -> None:
+    def mark_token_unhealthy(
+        self, token_id: str, *, reason: str = "", expected_fingerprint: Optional[str] = None,
+    ) -> bool:
         """Mark a token unhealthy after a hard provider-side failure."""
         with self._lock:
-            if token_id not in self.tokens:
-                return
+            token = self.tokens.get(token_id)
+            if token is None or (expected_fingerprint and token.credential_fingerprint != expected_fingerprint):
+                return False
             self.health_status[token_id] = TokenHealth(
                 remaining_tokens=0,
                 remaining_requests=0,
@@ -112,6 +137,7 @@ class TokenPool:
                 reset_requests_seconds=0,
                 last_error=reason.strip(),
             )
+            return True
 
     def select_token(
         self,

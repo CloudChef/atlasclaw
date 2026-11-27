@@ -22,6 +22,7 @@ async def image_capabilities(runner) -> dict[str, bool]:
     policy = getattr(runner, "token_policy", None)
     if policy is None:
         return {}
+    await policy.refresh_tokens()
     tokens = policy.token_pool.tokens
     result = {key: token.capabilities.get("vision") is True for key, token in tokens.items()}
     source_ids = {t.source_model_config_id for t in tokens.values() if t.source_model_config_id}

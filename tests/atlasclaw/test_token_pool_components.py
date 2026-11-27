@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 
 import pytest
 
@@ -174,6 +175,98 @@ async def test_agent_instance_pool_cache_and_concurrency_limit() -> None:
 
     for _ in range(4):
         instance1.concurrency_sem.release()
+
+
+@pytest.mark.asyncio
+async def test_updated_credentials_rebuild_agent_without_interrupting_existing_instance() -> None:
+    pool = AgentInstancePool()
+    token = _token("editable")
+    factory = lambda agent_id, entry: (entry.api_key, entry.model, entry.base_url)
+    original = await pool.get_or_create("main", token, factory)
+    await original.concurrency_sem.acquire()
+    rotated = replace(token, api_key="replacement-key", model="new-model")
+    updated = await pool.get_or_create("main", rotated, factory)
+    assert updated is not original
+    assert updated.agent == ("replacement-key", "new-model", token.base_url)
+    assert original.agent[0] == "sk-test"
+    assert original.concurrency_sem._value == 3
+    assert await pool.get_or_create("main", rotated, factory) is updated
+    original.concurrency_sem.release()
+
+
+@pytest.mark.asyncio
+async def test_refresh_tokens_updates_pinned_sessions_and_removes_disabled_tokens() -> None:
+    original = _token("editable")
+    fallback = _token("json")
+    entries = [original, fallback]
+    async def loader():
+        return entries
+    pool = TokenPool()
+    pool.register_token(original)
+    policy = DynamicTokenPolicy(pool, primary_token_id="editable", token_loader=loader)
+    assert policy.get_or_select_session_token("existing") is original
+    pool.mark_token_unhealthy("editable", reason="old key rejected")
+    entries = [replace(original, api_key="new-key"), fallback]
+    await policy.refresh_tokens()
+    assert policy.get_session_token("existing").api_key == "new-key"
+    assert pool.get_token_health("editable").is_healthy
+    pool.mark_token_unhealthy("editable", reason="provider error")
+    await policy.refresh_tokens()
+    assert not pool.get_token_health("editable").is_healthy
+    entries = [fallback]
+    await policy.refresh_tokens()
+    assert policy.get_session_token("existing") is None
+    assert policy.get_or_select_session_token("existing") is fallback
+    assert "editable" not in pool.health_status
+
+
+@pytest.mark.asyncio
+async def test_empty_refreshed_pool_cannot_fall_back_to_seed_agent() -> None:
+    async def loader():
+        return []
+    pool = TokenPool()
+    pool.register_token(_token("removed"))
+    policy = DynamicTokenPolicy(pool, token_loader=loader)
+    with pytest.raises(RuntimeError, match="No usable model"):
+        await policy.refresh_tokens()
+    assert not pool.tokens
+
+
+def test_late_old_key_failure_and_quota_cannot_poison_replacement_key(tmp_path) -> None:
+    old = _token("rotated")
+    new = replace(old, api_key="replacement-key")
+    pool = TokenPool()
+    pool.register_token(old)
+    policy = DynamicTokenPolicy(pool)
+    policy.get_or_select_session_token("old-run")
+    interceptor = TokenHealthInterceptor(pool, TokenHealthStore(str(tmp_path)))
+    pool.replace_tokens([new])
+    interceptor.on_hard_failure("rotated", "old request 401", expected_fingerprint=old.credential_fingerprint)
+    policy.mark_session_token_unhealthy("old-run", reason="old request 401", expected_fingerprint=old.credential_fingerprint)
+    interceptor.on_response("rotated", {"x-ratelimit-remaining-tokens": "0"}, expected_fingerprint=old.credential_fingerprint)
+    assert pool.get_token_health("rotated").is_healthy
+    interceptor.on_hard_failure("rotated", "current request 401", expected_fingerprint=new.credential_fingerprint)
+    assert not pool.get_token_health("rotated").is_healthy
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("strategy", ["health", "random", "round_robin"])
+async def test_refresh_preserves_fallback_pin_until_managed_credentials_change(strategy) -> None:
+    managed = replace(_token("managed"), source_model_config_id="config-id", priority=10)
+    fallback = _token("file")
+    entries = [managed, fallback]
+    async def loader():
+        return entries
+    pool = TokenPool()
+    policy = DynamicTokenPolicy(pool, strategy=strategy, token_loader=loader)
+    await policy.refresh_tokens()
+    assert policy.get_or_select_session_token("session") is managed
+    assert policy.mark_session_token_unhealthy("session") is fallback
+    await policy.refresh_tokens()
+    assert policy.get_or_select_session_token("session") is fallback
+    entries = [replace(managed, api_key="fixed-key"), fallback]
+    await policy.refresh_tokens()
+    assert policy.get_or_select_session_token("session").api_key == "fixed-key"
 
 
 def test_token_interceptor_updates_pool_and_persists(tmp_path) -> None:

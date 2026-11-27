@@ -85,6 +85,10 @@ AtlasClaw uses a hybrid storage approach combining file-system and relational da
 - MySQL pool pre-ping defaults to disabled for aiomysql compatibility; enable
   `database.pool_pre_ping` only for deployments where SQLAlchemy pre-ping is known to work
 - Provider configs merge: JSON config + DB entries, with DB taking precedence on same `(provider_type, instance_name)`
+- Model credentials are reloaded from committed database state before each agent
+  run. Enabled UI models take precedence over file defaults; updates replace the
+  cached agent on the next run without interrupting in-flight work. Disabled and
+  deleted database models are removed, while configured file tokens remain fallbacks.
 
 ### 1.5 Multi-Channel Access
 

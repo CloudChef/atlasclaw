@@ -282,6 +282,8 @@ class RunnerExecutionLoopMixin(RunnerExecutionPreparePhaseMixin, RunnerExecution
             if selected_token_id and self.token_interceptor is not None:
                 headers = self._extract_rate_limit_headers(deps_obj)
                 if headers:
-                    self.token_interceptor.on_response(selected_token_id, headers)
+                    fingerprint = deps_obj.extra.get("_selected_token_fingerprint")
+                    guard = {"expected_fingerprint": fingerprint} if fingerprint else {}
+                    self.token_interceptor.on_response(selected_token_id, headers, **guard)
             if release_slot is not None:
                 release_slot()
