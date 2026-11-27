@@ -1,0 +1,181 @@
+<div id="provider-management-design" aria-label="Provider 管理界面设计">
+  <style>
+    #provider-management-design { --paper:#fff; --canvas:#f7f8fc; --ink:#222a40; --muted:#68758b; --border:#e4e8f0; --accent:#746bf0; --soft:#f1efff; color-scheme:light; background:var(--paper); color:var(--ink); font:14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif; border:1px solid var(--border); border-radius:12px; overflow:hidden; }
+    #provider-management-design * { box-sizing:border-box; }
+    #provider-management-design [hidden] { display:none!important; }
+    #provider-management-design button,#provider-management-design select,#provider-management-design input { font:inherit; }
+    #provider-management-design button { cursor:pointer; }
+    #provider-management-design button:focus-visible,#provider-management-design input:focus-visible,#provider-management-design select:focus-visible { outline:3px solid #bcb5ff; outline-offset:3px; }
+    #provider-management-design .layout { display:grid; grid-template-columns:174px minmax(0,1fr); position:relative; min-height:720px; }
+    #provider-management-design aside { padding:26px 13px; border-right:1px solid var(--border); background:#fbfbfe; }
+    #provider-management-design .brand { font-size:19px; font-weight:650; padding:0 10px 30px; letter-spacing:-.5px; }
+    #provider-management-design .brand span { color:var(--accent); margin-right:7px; font-size:24px; }
+    #provider-management-design .nav-label { color:var(--muted); font-size:11px; letter-spacing:1px; margin:20px 12px 9px; }
+    #provider-management-design .nav { display:flex; gap:10px; align-items:center; color:var(--muted); padding:11px 12px; margin-bottom:5px; border-radius:7px; }
+    #provider-management-design .nav.active { background:var(--soft); color:#5f55d6; font-weight:600; }
+    #provider-management-design .nav svg { width:16px; height:16px; }
+    #provider-management-design .workspace { background:var(--canvas); min-width:0; }
+    #provider-management-design header { display:flex; justify-content:space-between; align-items:center; padding:17px 26px; border-bottom:1px solid var(--border); background:var(--paper); font-size:12px; color:var(--muted); }
+    #provider-management-design .account { display:flex; align-items:center; gap:8px; }
+    #provider-management-design .avatar { background:var(--soft); color:#6055d9; border-radius:50%; width:28px; height:28px; display:grid; place-items:center; }
+    #provider-management-design main { padding:26px; }
+    #provider-management-design h1 { margin:0; font-size:26px; letter-spacing:-.6px; font-weight:650; }
+    #provider-management-design h2 { margin:0; font-size:16px; font-weight:600; }
+    #provider-management-design p { margin:5px 0 0; }
+    #provider-management-design .sub { color:var(--muted); font-size:12px; }
+    #provider-management-design .heading { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+    #provider-management-design .tag { color:#6257d6; background:var(--soft); border-radius:5px; padding:2px 8px; font-size:11px; }
+    #provider-management-design .tag.neutral { color:var(--muted); background:#f0f3f8; }
+    #provider-management-design .panel { background:var(--paper); border:1px solid var(--border); border-radius:9px; margin-top:22px; }
+    #provider-management-design .tabs { display:flex; gap:26px; border-bottom:1px solid var(--border); margin-top:23px; }
+    #provider-management-design .tab { border:0; border-bottom:2px solid transparent; padding:0 1px 12px; background:none; color:var(--muted); }
+    #provider-management-design .tab[aria-selected=true] { color:#6257d6; border-bottom-color:var(--accent); font-weight:600; }
+    #provider-management-design .panel-head { padding:18px 20px; display:flex; align-items:center; justify-content:space-between; gap:15px; flex-wrap:wrap; }
+    #provider-management-design .scroll { overflow-x:auto; }
+    #provider-management-design table { width:100%; border-collapse:collapse; text-align:left; font-size:12px; }
+    #provider-management-design th { font-weight:500; background:#f8f9fc; color:var(--muted); padding:11px 17px; border-block:1px solid var(--border); }
+    #provider-management-design td { padding:19px 17px; vertical-align:top; border-bottom:1px solid #edf0f5; }
+    #provider-management-design tr:last-child td { border-bottom:0; }
+    #provider-management-design .name { font-weight:600; font-size:13px; }
+    #provider-management-design .secondary { display:block; color:var(--muted); font-size:11px; margin-top:4px; }
+    #provider-management-design .model { overflow-wrap:anywhere; }
+    #provider-management-design .switch { display:inline-flex; align-items:center; gap:7px; white-space:nowrap; cursor:pointer; }
+    #provider-management-design input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; margin:0; flex-shrink:0; }
+    #provider-management-design input[type=checkbox][role=switch] { appearance:none; width:31px; height:18px; border-radius:20px; background:#cbd3e0; position:relative; transition:background .15s; }
+    #provider-management-design input[type=checkbox][role=switch]:checked { background:var(--accent); }
+    #provider-management-design input[type=checkbox][role=switch]:after { content:""; position:absolute; width:14px; height:14px; border-radius:50%; background:white; top:2px; left:2px; transition:transform .15s; }
+    #provider-management-design input[type=checkbox][role=switch]:checked:after { transform:translateX(13px); }
+    #provider-management-design .link { color:#655add; border:0; padding:0; background:none; font-size:12px; white-space:nowrap; }
+    #provider-management-design .button { display:inline-flex; align-items:center; justify-content:center; gap:7px; color:var(--ink); border:1px solid #dfe3ed; padding:9px 15px; border-radius:7px; background:var(--paper); }
+    #provider-management-design .button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+    #provider-management-design .button:disabled { cursor:not-allowed; opacity:.45; }
+    #provider-management-design .button svg { width:15px; height:15px; }
+    #provider-management-design .bottom-note { padding:12px 20px; border-top:1px solid var(--border); color:var(--muted); font-size:11px; }
+    #provider-management-design .permission { display:flex; gap:8px; align-items:flex-start; color:var(--muted); font-size:12px; margin-top:24px; }
+    #provider-management-design .permission svg { width:16px; height:16px; flex-shrink:0; margin-top:2px; }
+    #provider-management-design .prototype { color:var(--muted); font-size:11px; margin-top:30px; }
+    #provider-management-design .back { display:flex; align-items:center; gap:6px; color:var(--muted); background:none; border:0; padding:0; margin-bottom:15px; font-size:12px; }
+    #provider-management-design .back svg { width:14px; height:14px; }
+    #provider-management-design .section-content { padding:0 20px 20px; }
+    #provider-management-design .model-options { display:flex; flex-direction:column; gap:9px; margin:13px 0 18px; }
+    #provider-management-design .model-choice { display:flex; gap:10px; align-items:flex-start; padding:10px 12px; border:1px solid var(--border); border-radius:6px; cursor:pointer; }
+    #provider-management-design .model-choice.selected { background:#f9f8ff; border-color:#d9d4ff; }
+    #provider-management-design .model-choice input { margin-top:4px; }
+    #provider-management-design .model-choice .copy { flex:1; min-width:0; overflow-wrap:anywhere; font-size:12px; }
+    #provider-management-design .model-choice .tag { align-self:center; }
+    #provider-management-design .field { font-size:12px; display:block; }
+    #provider-management-design select { display:block; width:100%; min-width:0; background:var(--paper); color:var(--ink); border:1px solid #dce2ec; border-radius:6px; padding:9px 11px; margin-top:7px; }
+    #provider-management-design .default-row { display:grid; grid-template-columns:minmax(200px,1fr) 1fr; align-items:end; gap:20px; }
+    #provider-management-design .default-row .sub { margin-bottom:8px; }
+    #provider-management-design .foot { display:flex; justify-content:flex-end; gap:10px; margin-top:22px; }
+    #provider-management-design .status { color:#26734c; font-size:12px; margin-top:16px; }
+    #provider-management-design .error { color:#92601b; background:#fff7e9; border-radius:6px; padding:11px 12px; font-size:12px; margin-top:14px; }
+    #provider-management-design .veil { position:absolute; inset:0; background:rgba(45,49,80,.13); display:flex; justify-content:flex-end; z-index:3; }
+    #provider-management-design .editor { width:min(460px,100%); background:var(--paper); padding:25px; box-shadow:-8px 0 25px #2225400b; display:flex; flex-direction:column; }
+    #provider-management-design .editor-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
+    #provider-management-design .close { border:0; background:none; color:var(--muted); padding:6px; display:flex; }
+    #provider-management-design .close svg { width:18px; height:18px; }
+    #provider-management-design .editor-section { margin-top:24px; }
+    #provider-management-design .editor .foot { margin-top:auto; padding-top:24px; }
+    #provider-management-design .disabled-choice { opacity:.55; cursor:not-allowed; }
+    #provider-management-design .added-model { display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid var(--border); }
+    #provider-management-design .added-model .copy { min-width:0; flex:1; font-size:12px; overflow-wrap:anywhere; }
+    #provider-management-design .add-model { align-self:flex-start; margin-top:5px; color:#655add; }
+    #provider-management-design .empty-model { padding:9px 0; font-size:12px; color:var(--muted); }
+    #provider-management-design .picker-veil { z-index:5; justify-content:center; align-items:flex-start; padding:48px 20px; }
+    #provider-management-design .picker { width:min(520px,100%); background:var(--paper); border:1px solid var(--border); border-radius:10px; padding:24px; box-shadow:0 12px 40px #22254018; }
+    #provider-management-design .search { width:100%; border:1px solid #dce2ec; border-radius:7px; background:var(--paper); color:var(--ink); padding:10px 12px; margin-top:8px; }
+    #provider-management-design .picker .foot { margin-top:22px; }
+    @media(max-width:820px) { #provider-management-design .layout { grid-template-columns:1fr; } #provider-management-design aside { display:none; } }
+    @media(max-width:540px) { #provider-management-design main { padding:21px 14px; } #provider-management-design header { padding:14px; } #provider-management-design .default-row { grid-template-columns:1fr; gap:6px; } #provider-management-design td,#provider-management-design th { padding:13px; } #provider-management-design .model-choice { flex-wrap:wrap; } #provider-management-design .editor { padding:21px; } }
+    @media(prefers-reduced-motion:reduce) { #provider-management-design * { transition:none!important; } }
+  </style>
+  <div class="layout">
+    <aside aria-label="管理导航"><div class="brand"><span>✧</span>AtlasClaw</div><div class="nav-label">工作空间</div><div class="nav"><i data-lucide="message-square" aria-hidden="true"></i>对话</div><div class="nav"><i data-lucide="zap" aria-hidden="true"></i>Skill</div><div class="nav-label">管理</div><div class="nav active"><i data-lucide="puzzle" aria-hidden="true"></i>Provider 管理</div><div class="nav"><i data-lucide="cpu" aria-hidden="true"></i>模型管理</div><div class="nav"><i data-lucide="users" aria-hidden="true"></i>用户与角色</div></aside>
+    <div class="workspace">
+      <header><span id="pm-crumb">管理 / Provider 管理</span><div class="account"><span class="avatar">A</span>管理员</div></header>
+      <main>
+        <section id="pm-list">
+          <div class="heading"><h1>Provider 管理</h1><span class="tag">全局配置</span></div>
+          <p class="sub">管理 Provider 启停，分别配置 Provider、下属 Skill 和独立 Skill 可以使用的模型。</p>
+          <div class="tabs" role="tablist" aria-label="Provider 与独立 Skill"><button id="pm-providers-tab" class="tab" type="button" role="tab" aria-selected="true" aria-controls="pm-providers-panel">Provider</button><button id="pm-standalone-tab" class="tab" type="button" role="tab" aria-selected="false" aria-controls="pm-standalone-panel">独立 Skill</button></div>
+          <section id="pm-providers-panel" role="tabpanel" aria-labelledby="pm-providers-tab">
+          <div class="panel"><div class="panel-head"><h2>Provider 列表</h2><span class="sub">已安装的 Provider</span></div><div class="scroll"><table aria-label="Provider 列表"><thead><tr><th style="width:27%">Provider / 实例</th><th>启用状态</th><th style="width:33%">允许使用的模型</th><th>Skill</th><th>操作</th></tr></thead><tbody id="pm-provider-rows"></tbody></table></div><div class="bottom-note">停用后不再接受该 Provider 的新任务；正在执行的任务继续完成。</div></div>
+          </section>
+          <section id="pm-standalone-panel" role="tabpanel" aria-labelledby="pm-standalone-tab" hidden><div class="panel"><div class="panel-head"><div><h2>独立 Skill</h2><p class="sub">与 Provider 平级、不隶属于任何 Provider 的 Skill，可直接选择平台中的模型。</p></div></div><div class="scroll"><table aria-label="独立 Skill 模型配置"><thead><tr><th style="width:26%">Skill</th><th>所需能力</th><th style="width:42%">允许使用的模型 / 默认模型</th><th>操作</th></tr></thead><tbody id="pm-standalone-rows"></tbody></table></div><div class="bottom-note">独立 Skill 的模型配置不继承任何 Provider，未单独配置时使用平台默认模型。</div></div></section>
+          <div class="permission"><i data-lucide="shield-check" aria-hidden="true"></i><span>管理权限默认仅授予管理员。Provider 与两类 Skill 的模型配置均全局生效，用户可用范围仍由角色权限决定。</span></div>
+        </section>
+        <section id="pm-detail" hidden>
+          <button class="back" id="pm-back" type="button"><i data-lucide="arrow-left" aria-hidden="true"></i>返回 Provider 列表</button>
+          <div class="heading"><h1 id="pm-title">文档审核</h1><span class="tag">全局配置</span></div><p class="sub" id="pm-detail-sub"></p>
+          <div class="panel"><div class="panel-head"><div><h2>启用 Provider</h2><p class="sub">停用后，用户不能通过此 Provider 启动新任务。</p></div><label class="switch"><input id="pm-enabled" type="checkbox" role="switch" aria-label="启用当前 Provider"><span id="pm-enabled-label">已启用</span></label></div></div>
+          <div class="panel"><div class="panel-head"><div><h2>Provider 可用模型</h2><p class="sub">添加该 Provider 可以调用的模型，再设置默认模型。</p></div></div><div class="section-content"><div class="model-options" id="pm-models"></div><div class="default-row"><label class="field">默认模型<select id="pm-default"></select></label><p class="sub">默认模型仅从已添加的模型中选择。</p></div></div></div>
+          <div class="panel"><div class="panel-head"><div><h2>Skill 模型配置</h2><p class="sub">可以继承 Provider 配置，或为指定 Skill 单独选择模型。</p></div></div><div class="scroll"><table aria-label="Skill 模型配置"><thead><tr><th>Skill</th><th>所需能力</th><th style="width:38%">可用模型 / 默认模型</th><th>操作</th></tr></thead><tbody id="pm-skill-rows"></tbody></table></div><div class="bottom-note">Skill 单独选择的模型需属于 Provider 可用范围，并满足该 Skill 的能力要求。</div></div>
+          <div class="error" id="pm-error" role="alert" hidden></div>
+          <div class="foot"><button class="button" id="pm-discard" type="button">取消</button><button class="button primary" id="pm-save" type="button">保存 Provider 配置</button></div>
+        </section>
+        <div id="pm-status" class="status" role="status" aria-live="polite"></div><div class="prototype">交互原型 · 示例配置</div>
+      </main>
+    </div>
+    <div class="veil" id="pm-veil" hidden><section class="editor" role="dialog" aria-modal="true" aria-labelledby="pm-editor-title"><div class="editor-head"><h2 id="pm-editor-title">Skill 模型配置</h2><button class="close" id="pm-close" type="button" aria-label="关闭 Skill 配置"><i data-lucide="x" aria-hidden="true"></i></button></div><p class="sub" id="pm-editor-desc"></p><div class="editor-section"><label class="switch"><input type="checkbox" id="pm-inherit">继承 Provider 模型配置</label><p class="sub" style="margin-top:8px">关闭继承后，为此 Skill 单独选择可用模型。</p></div><div id="pm-custom" class="editor-section"><h2>允许使用的模型</h2><div class="model-options" id="pm-skill-models"></div><label class="field">默认模型<select id="pm-skill-default"></select></label></div><div class="error" id="pm-skill-error" role="alert" hidden></div><div class="editor-section"><p class="sub">图片分析任务仅可使用启用了图片分析能力的模型。</p></div><div class="foot"><button class="button" id="pm-skill-cancel" type="button">取消</button><button class="button primary" id="pm-skill-save" type="button">应用到 Provider 配置</button></div></section></div>
+    <div class="veil" id="pm-standalone-veil" hidden><section class="editor" role="dialog" aria-modal="true" aria-labelledby="pm-standalone-title"><div class="editor-head"><h2 id="pm-standalone-title">独立 Skill 模型配置</h2><button class="close" id="pm-standalone-close" type="button" aria-label="关闭独立 Skill 配置"><i data-lucide="x" aria-hidden="true"></i></button></div><p class="sub" id="pm-standalone-desc"></p><div class="editor-section"><span class="tag">全局配置</span><p class="sub" style="margin-top:10px">此 Skill 不属于任何 Provider，从平台已配置的模型中独立选择。</p></div><div class="editor-section"><label class="switch"><input type="checkbox" id="pm-platform-inherit">使用平台默认模型</label></div><div class="editor-section" id="pm-standalone-custom"><h2>允许使用的模型</h2><div class="model-options" id="pm-standalone-models"></div><label class="field">默认模型<select id="pm-standalone-default"></select></label></div><div class="error" id="pm-standalone-error" role="alert" hidden></div><div class="foot"><button class="button" id="pm-standalone-cancel" type="button">取消</button><button class="button primary" id="pm-standalone-save" type="button">保存 Skill 配置</button></div></section></div>
+    <div class="veil picker-veil" id="pm-picker-veil" hidden><section class="picker" role="dialog" aria-modal="true" aria-labelledby="pm-picker-title"><div class="editor-head"><h2 id="pm-picker-title">添加可用模型</h2><button class="close" id="pm-picker-close" type="button" aria-label="关闭模型选择"><i data-lucide="x" aria-hidden="true"></i></button></div><p class="sub">从已有模型配置中添加，已添加的模型不会重复显示。</p><label class="field" style="margin-top:20px">查找模型<input class="search" id="pm-picker-search" type="search" placeholder="搜索模型名称或服务商" autocomplete="off"></label><div class="model-options" id="pm-picker-results"></div><div class="foot"><button class="button" id="pm-picker-cancel" type="button">取消</button><button class="button primary" id="pm-picker-add" type="button" disabled>添加所选模型</button></div></section></div>
+  </div>
+  <script>
+    (()=>{
+      const root=document.getElementById('provider-management-design'), el=id=>root.querySelector('#pm-'+id);
+      const models={deepseek:{name:'deepseek/deepseek-v4.1-flash-1017',vision:false,source:'配置文件 · 只读'},vision:{name:'视觉模型（示例）',vision:true,source:'管理员配置'}};
+      const providers=[{id:'audit',name:'文档审核',type:'audit-report',instance:'默认实例',enabled:true,allowed:['deepseek'],default:'deepseek',skills:[{id:'audit-report',name:'报告审核',vision:false,inherit:true,allowed:[],default:''}]},{id:'image',name:'图像检查（示例 Provider）',type:'image-check',instance:'示例实例',enabled:false,allowed:['vision'],default:'vision',skills:[{id:'image-check',name:'图片检查（示例 Skill）',vision:true,inherit:false,allowed:['vision'],default:'vision'}]}];
+      const standalone=[{id:'document-summary',name:'文档摘要（示例 Skill）',vision:false,inherit:true,allowed:[],default:''},{id:'image-understanding',name:'图片理解（示例 Skill）',vision:true,inherit:false,allowed:['vision'],default:'vision'}];
+      const clone=x=>JSON.parse(JSON.stringify(x));
+      let selected=null,draft=null,skillDraft=null,skillId=null,returnFocus=null;
+      let independentDraft=null,independentId=null,independentFocus=null;
+      let picker=null;
+      const icon=()=>{if(globalThis.lucide)globalThis.lucide.createIcons();};
+      const compatible=(skill,ids)=>ids.filter(id=>models[id]&&(!skill.vision||models[id].vision));
+      function selectOptions(node,ids,current){node.replaceChildren();const empty=new Option('请选择默认模型','');node.add(empty);ids.forEach(id=>node.add(new Option(models[id].name+'（OpenRouter）',id)));node.value=ids.includes(current)?current:'';}
+      function list(){
+        el('provider-rows').replaceChildren();
+        providers.forEach(p=>{const tr=document.createElement('tr');tr.innerHTML='<td><span class="name"></span><span class="secondary identity"></span></td><td><label class="switch"><input type="checkbox" role="switch"><span></span></label></td><td class="model"><span class="model-list"></span><span class="secondary model-default"></span></td><td class="count"></td><td><button class="link" type="button">配置</button></td>';
+          tr.querySelector('.name').textContent=p.name;tr.querySelector('.identity').textContent=p.type+' / '+p.instance;
+          const check=tr.querySelector('input');check.checked=p.enabled;check.setAttribute('aria-label','启用'+p.name);tr.querySelector('.switch span').textContent=p.enabled?'已启用':'已停用';
+          check.onchange=()=>{p.enabled=check.checked;list();el('status').textContent=p.name+(p.enabled?'已启用（示例操作）。':'已停用（示例操作），不再接受新任务。');};
+          tr.querySelector('.model-list').textContent=p.allowed.map(id=>models[id].name).join('、')||'尚未选择模型';tr.querySelector('.model-default').textContent='默认：'+(models[p.default]?.name||'未选择');
+          tr.querySelector('.count').textContent=p.skills.length;tr.querySelector('button').onclick=()=>openProvider(p.id);el('provider-rows').append(tr);
+        });icon();
+      }
+      function choices(container,ids,selectedIds,disabled,change){container.replaceChildren();selectedIds.forEach(id=>{if(!models[id])return;const row=document.createElement('div');row.className='added-model';row.innerHTML='<span class="copy"><span class="model"></span><span class="secondary"></span></span><span class="tag neutral"></span><button class="link" type="button">移除</button>';row.querySelector('.model').textContent=models[id].name;row.querySelector('.secondary').textContent=!ids.includes(id)?'已不在 Provider 允许范围内，请移除':disabled(id)?'不满足此 Skill 的图片分析要求':'OpenRouter · '+models[id].source;row.querySelector('.tag').textContent=models[id].vision?'文本、图片':'文本';row.querySelector('button').setAttribute('aria-label','移除'+models[id].name);row.querySelector('button').onclick=()=>change(id,false);container.append(row);});if(!selectedIds.length){const empty=document.createElement('div');empty.className='empty-model';empty.textContent='尚未添加可用模型';container.append(empty);}const add=document.createElement('button');add.type='button';add.className='button add-model';add.textContent='＋ 添加可用模型';add.onclick=()=>openPicker(ids,selectedIds,disabled,change,container.id);container.append(add);}
+      function openPicker(ids,selectedIds,disabled,change,containerId){picker={ids:ids.filter(id=>!selectedIds.includes(id)),disabled,change,pending:new Set(),containerId};el('picker-search').value='';el('picker-veil').hidden=false;renderPicker();el('picker-search').focus();}
+      function renderPicker(){const term=el('picker-search').value.trim().toLowerCase(), visible=picker.ids.filter(id=>(models[id].name+' OpenRouter').toLowerCase().includes(term));el('picker-results').replaceChildren();visible.forEach(id=>{const label=document.createElement('label');label.className='model-choice'+(picker.pending.has(id)?' selected':'')+(picker.disabled(id)?' disabled-choice':'');label.innerHTML='<input type="checkbox"><span class="copy"><span class="model"></span><span class="secondary"></span></span><span class="tag neutral"></span>';const c=label.querySelector('input');c.checked=picker.pending.has(id);c.disabled=picker.disabled(id);c.setAttribute('aria-label',models[id].name);label.querySelector('.model').textContent=models[id].name;label.querySelector('.secondary').textContent=c.disabled?'不满足此 Skill 的图片分析要求':'OpenRouter · '+models[id].source;label.querySelector('.tag').textContent=models[id].vision?'文本、图片':'文本';c.onchange=()=>{if(c.checked)picker.pending.add(id);else picker.pending.delete(id);renderPicker();};el('picker-results').append(label);});if(!visible.length){const note=document.createElement('p');note.className='empty-model';note.textContent=term?'没有匹配的模型':'可用模型均已添加';el('picker-results').append(note);}el('picker-add').disabled=!picker.pending.size;el('picker-add').textContent=picker.pending.size?'添加所选模型（'+picker.pending.size+'）':'添加所选模型';}
+      function closePicker(){const id=picker?.containerId;el('picker-veil').hidden=true;picker=null;if(id)root.querySelector('#'+id+' .add-model')?.focus();}
+      el('picker-search').oninput=renderPicker;el('picker-close').onclick=closePicker;el('picker-cancel').onclick=closePicker;el('picker-veil').onclick=e=>{if(e.target===el('picker-veil'))closePicker();};el('picker-add').onclick=()=>{if(!picker||!picker.pending.size)return;const callback=picker.change, chosen=[...picker.pending];chosen.forEach(id=>callback(id,true));closePicker();};
+      function providerError(){if(!draft.enabled)return '';if(!draft.allowed.length)return '启用 Provider 前，请至少选择一个可用模型。';if(!draft.allowed.includes(draft.default))return '请选择 Provider 的默认模型。';for(const s of draft.skills){const effective=s.inherit?compatible(s,draft.allowed):s.allowed;if(!effective.length)return s.name+'没有符合能力要求的可用模型，请调整 Provider 或 Skill 配置。';if(!s.inherit&&s.allowed.some(id=>!draft.allowed.includes(id)||!compatible(s,[id]).length))return s.name+'的专属模型超出 Provider 范围或不满足能力要求，请重新配置。';if(!s.inherit&&!s.allowed.includes(s.default))return '请选择'+s.name+'的默认模型。';}return '';}
+      function renderProvider(){
+        el('enabled').checked=draft.enabled;el('enabled-label').textContent=draft.enabled?'已启用':'已停用';
+        choices(el('models'),Object.keys(models),draft.allowed,()=>false,(id,on)=>{draft.allowed=on?[...draft.allowed,id]:draft.allowed.filter(x=>x!==id);if(!draft.allowed.includes(draft.default))draft.default='';renderProvider();});
+        selectOptions(el('default'),draft.allowed,draft.default);el('skill-rows').replaceChildren();
+        draft.skills.forEach(s=>{const ids=s.inherit?compatible(s,draft.allowed):s.allowed;const primary=s.inherit?(ids.includes(draft.default)?draft.default:ids[0]):s.default;const tr=document.createElement('tr');tr.innerHTML='<td><span class="name"></span><span class="secondary skill-id"></span></td><td class="cap"></td><td class="model"><span class="mode"></span><span class="secondary effective"></span><span class="secondary default"></span></td><td><button class="link" type="button">配置模型</button></td>';tr.querySelector('.name').textContent=s.name;tr.querySelector('.skill-id').textContent=s.id;tr.querySelector('.cap').textContent=s.vision?'图片分析':'文本';tr.querySelector('.mode').textContent=s.inherit?'继承 Provider 配置':'单独配置';tr.querySelector('.effective').textContent='可用：'+(ids.map(id=>models[id].name).join('、')||'无符合条件的模型');tr.querySelector('.default').textContent='默认：'+(models[primary]?.name||'未选择');tr.querySelector('button').onclick=e=>openSkill(s.id,e.currentTarget);el('skill-rows').append(tr);});
+        const error=providerError();el('error').hidden=!error;el('error').textContent=error;el('save').disabled=!!error;
+      }
+      function openProvider(id){selected=id;draft=clone(providers.find(p=>p.id===id));el('list').hidden=true;el('detail').hidden=false;el('status').textContent='';el('title').textContent=draft.name;el('detail-sub').textContent=draft.type+' / '+draft.instance;el('crumb').textContent='管理 / Provider 管理 / '+draft.name;renderProvider();}
+      function back(){el('detail').hidden=true;el('list').hidden=false;el('crumb').textContent='管理 / Provider 管理';list();}
+      function renderSkill(){el('inherit').checked=skillDraft.inherit;el('custom').hidden=skillDraft.inherit;const original=draft.skills.find(s=>s.id===skillId);choices(el('skill-models'),draft.allowed,skillDraft.allowed,id=>!compatible(original,[id]).length,(id,on)=>{skillDraft.allowed=on?[...skillDraft.allowed,id]:skillDraft.allowed.filter(x=>x!==id);if(!skillDraft.allowed.includes(skillDraft.default))skillDraft.default='';renderSkill();});selectOptions(el('skill-default'),compatible(original,skillDraft.allowed.filter(id=>draft.allowed.includes(id))),skillDraft.default);let error='';if(skillDraft.inherit){if(!compatible(original,draft.allowed).length)error='Provider 没有满足此 Skill 能力要求的模型。';}else if(!skillDraft.allowed.length)error='请选择此 Skill 可以使用的模型。';else if(skillDraft.allowed.some(id=>!draft.allowed.includes(id)||!compatible(original,[id]).length))error='专属模型不在 Provider 允许范围内或不满足能力要求。';else if(!skillDraft.allowed.includes(skillDraft.default))error='请选择此 Skill 的默认模型。';el('skill-error').hidden=!error;el('skill-error').textContent=error;el('skill-save').disabled=!!error;}
+      function openSkill(id,trigger){skillId=id;skillDraft=clone(draft.skills.find(s=>s.id===id));returnFocus=trigger;el('editor-title').textContent=skillDraft.name;el('editor-desc').textContent=draft.name+' / '+skillDraft.id+' · '+(skillDraft.vision?'需要图片分析':'需要文本能力');el('veil').hidden=false;renderSkill();el('close').focus();}
+      function closeSkill(){el('veil').hidden=true;if(returnFocus?.isConnected)returnFocus.focus();}
+      function standaloneRows(){el('standalone-rows').replaceChildren();standalone.forEach(s=>{const tr=document.createElement('tr');tr.innerHTML='<td><span class="name"></span><span class="secondary"></span></td><td class="cap"></td><td class="model"><span class="mode"></span><span class="secondary allowed"></span><span class="secondary default"></span></td><td><button class="link" type="button">配置模型</button></td>';tr.querySelector('.name').textContent=s.name;tr.querySelector('.secondary').textContent=s.id;tr.querySelector('.cap').textContent=s.vision?'图片分析':'文本';tr.querySelector('.mode').textContent=s.inherit?'使用平台默认模型':'单独配置';tr.querySelector('.allowed').textContent=s.inherit?'不继承任何 Provider 配置':'可用：'+s.allowed.map(id=>models[id].name).join('、');tr.querySelector('.default').textContent='默认：'+(s.inherit?models.deepseek.name:models[s.default]?.name||'未选择');tr.querySelector('button').onclick=e=>{independentId=s.id;independentDraft=clone(s);independentFocus=e.currentTarget;el('standalone-title').textContent=s.name;el('standalone-desc').textContent='独立 Skill / '+s.id+' · '+(s.vision?'需要图片分析':'需要文本能力');el('standalone-veil').hidden=false;renderIndependent();el('standalone-close').focus();};el('standalone-rows').append(tr);});icon();}
+      function renderIndependent(){const s=independentDraft;el('platform-inherit').checked=s.inherit;el('standalone-custom').hidden=s.inherit;choices(el('standalone-models'),Object.keys(models),s.allowed,id=>!compatible(s,[id]).length,(id,on)=>{s.allowed=on?[...s.allowed,id]:s.allowed.filter(x=>x!==id);if(!s.allowed.includes(s.default))s.default='';renderIndependent();});selectOptions(el('standalone-default'),compatible(s,s.allowed),s.default);let error='';if(s.inherit&&s.vision&&!models.deepseek.vision)error='平台默认模型未启用图片分析，请为此 Skill 选择支持图片的模型。';else if(!s.inherit&&!s.allowed.length)error='请至少选择一个可用模型。';else if(!s.inherit&&s.allowed.some(id=>!compatible(s,[id]).length))error='所选模型不满足此 Skill 的能力要求。';else if(!s.inherit&&!s.allowed.includes(s.default))error='请选择此 Skill 的默认模型。';el('standalone-error').hidden=!error;el('standalone-error').textContent=error;el('standalone-save').disabled=!!error;}
+      function closeIndependent(){el('standalone-veil').hidden=true;if(independentFocus?.isConnected)independentFocus.focus();}
+      ['providers','standalone'].forEach(tab=>el(tab+'-tab').onclick=()=>{['providers','standalone'].forEach(name=>{const active=name===tab;el(name+'-tab').setAttribute('aria-selected',String(active));el(name+'-panel').hidden=!active;});el('status').textContent='';});
+      el('platform-inherit').onchange=()=>{independentDraft.inherit=el('platform-inherit').checked;renderIndependent();};el('standalone-default').onchange=()=>{independentDraft.default=el('standalone-default').value;renderIndependent();};el('standalone-close').onclick=closeIndependent;el('standalone-cancel').onclick=closeIndependent;el('standalone-veil').onclick=e=>{if(e.target===el('standalone-veil'))closeIndependent();};el('standalone-save').onclick=()=>{if(el('standalone-save').disabled)return;Object.assign(standalone.find(s=>s.id===independentId),clone(independentDraft));closeIndependent();standaloneRows();el('status').textContent='独立 Skill 的示例模型配置已保存，对所有有权执行该 Skill 的用户生效。';};
+      root.addEventListener('keydown',e=>{if(!el('picker-veil').hidden)return;if(el('standalone-veil').hidden)return;if(e.key==='Escape'){closeIndependent();return;}if(e.key==='Tab'){const items=[...el('standalone-veil').querySelectorAll('button,input,select')].filter(x=>!x.disabled&&x.getClientRects().length);if(e.shiftKey&&document.activeElement===items[0]){e.preventDefault();items.at(-1).focus();}else if(!e.shiftKey&&document.activeElement===items.at(-1)){e.preventDefault();items[0].focus();}}});
+      el('enabled').onchange=()=>{draft.enabled=el('enabled').checked;renderProvider();};el('default').onchange=()=>{draft.default=el('default').value;renderProvider();};
+      el('back').onclick=back;el('discard').onclick=()=>{el('status').textContent='';back();};
+      el('save').onclick=()=>{if(providerError())return;Object.assign(providers.find(p=>p.id===selected),clone(draft));const name=draft.name;back();el('status').textContent=name+'的示例配置已保存，对所有有权使用该 Provider 的用户生效。';};
+      el('inherit').onchange=()=>{skillDraft.inherit=el('inherit').checked;renderSkill();};el('skill-default').onchange=()=>{skillDraft.default=el('skill-default').value;renderSkill();};
+      el('skill-save').onclick=()=>{if(el('skill-save').disabled)return;Object.assign(draft.skills.find(s=>s.id===skillId),clone(skillDraft));closeSkill();renderProvider();};el('close').onclick=closeSkill;el('skill-cancel').onclick=closeSkill;el('veil').onclick=e=>{if(e.target===el('veil'))closeSkill();};
+      root.addEventListener('keydown',e=>{if(!el('picker-veil').hidden)return;if(el('veil').hidden)return;if(e.key==='Escape'){closeSkill();return;}if(e.key==='Tab'){const items=[...el('veil').querySelectorAll('button,input,select')].filter(x=>!x.disabled&&x.getClientRects().length);if(e.shiftKey&&document.activeElement===items[0]){e.preventDefault();items.at(-1).focus();}else if(!e.shiftKey&&document.activeElement===items.at(-1)){e.preventDefault();items[0].focus();}}});
+      root.addEventListener('keydown',e=>{if(el('picker-veil').hidden)return;if(e.key==='Escape'){closePicker();return;}if(e.key==='Tab'){const items=[...el('picker-veil').querySelectorAll('button,input')].filter(x=>!x.disabled&&x.getClientRects().length);if(e.shiftKey&&document.activeElement===items[0]){e.preventDefault();items.at(-1).focus();}else if(!e.shiftKey&&document.activeElement===items.at(-1)){e.preventDefault();items[0].focus();}}});
+      list();standaloneRows();openProvider('audit');
+    })();
+  </script>
+</div>
